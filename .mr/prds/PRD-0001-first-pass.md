@@ -188,7 +188,7 @@ tasks:
   - id: T-010
     title: "Blake3 content-hash caching for compiled WASM blobs"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Hash: blake3(source || cargo_toml || "wasm32-unknown-unknown").
       Cache path: {cache_dir}/blobs/{hash}.wasm.
@@ -1048,5 +1048,22 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Updated `crates/ironpad-app/src/compiler/mod.rs` — registered `build` module.
   - Updated `crates/ironpad-app/Cargo.toml` — added `tokio` and `tracing` as optional SSR-gated dependencies.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 33 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline and UI being functional.
+- **Constitution Compliance**: No violations.
+
+## 2026-03-06 — T-010 Completed
+- **Task**: Blake3 content-hash caching for compiled WASM blobs
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/compiler/cache.rs` — blake3 content-hash caching module with:
+    - `content_hash(source, cargo_toml)` — deterministic blake3 hash of `source || cargo_toml || "wasm32-unknown-unknown"` (64-char hex digest).
+    - `cache_blob_path(cache_dir, hash)` — returns `{cache_dir}/blobs/{hash}.wasm`.
+    - `try_cache_hit(cache_dir, hash)` — reads cached blob on hit, returns `None` on miss (filesystem errors treated as misses with warn-level logging).
+    - `store_blob(cache_dir, hash, wasm_bytes)` — writes blob to cache, creating `blobs/` directory if needed.
+    - Cache stats logging via `tracing` (info for hit/miss/store, warn for read errors).
+    - 9 unit tests: hash determinism, hash sensitivity to source/cargo_toml changes, hex format validation, path layout, miss on empty dir, store-and-hit round trip, directory auto-creation, real-hash round trip.
+  - Updated `crates/ironpad-app/src/compiler/mod.rs` — registered `cache` module.
+  - Updated `crates/ironpad-app/Cargo.toml` — added `blake3` as optional SSR-gated dependency, added `tempfile` as dev-dependency for cache tests.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 42 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline and UI being functional.
 - **Constitution Compliance**: No violations.
