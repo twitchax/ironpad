@@ -158,15 +158,7 @@ tasks:
   - id: T-007
     title: "Implement ironpad-cell crate"
     priority: 1
-    status: todo
-    notes: >
-      CellInput (wraps &[u8], deserialize<T>, is_empty, raw),
-      CellOutput (bytes + display, new<T>, with_display, empty, text),
-      CellResult (#[repr(C)] FFI struct),
-      ironpad_alloc / ironpad_dealloc (memory FFI for WASM host),
-      prelude module re-exporting bincode, serde, CellInput, CellOutput, CellResult.
-      See MegaPrd §7.3 for exact API. Target: wasm32-unknown-unknown.
-      Add unit tests.
+    status: done
 
   # ── Phase 2: Server-Side Compilation Pipeline ──────────────────────────
   - id: T-008
@@ -993,3 +985,20 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (3 tests pass), playwright skipped)
 - **Opportunistic UAT**: No UATs verifiable yet — all require running server or Playwright infrastructure.
 - **Constitution Compliance**: No violations.
+
+## 2026-03-06 — T-007 Completed
+- **Task**: Implement ironpad-cell crate
+- **Status**: ✅ Done
+- **Changes**:
+  - Implemented `crates/ironpad-cell/src/lib.rs` — full ironpad-cell API per MegaPrd §7.3
+  - `CellInput<'a>` — wraps `&[u8]` with `new()`, `deserialize::<T>()`, `is_empty()`, `raw()`
+  - `CellOutput` — serializes via bincode with `new::<T>()`, `with_display()`, `empty()`, `text()`
+  - `CellResult` — `#[repr(C)]` FFI struct (output_ptr, output_len, display_ptr, display_len) with `From<CellOutput>` conversion
+  - `ironpad_alloc(len) -> *mut u8` — WASM memory allocator (`#[no_mangle] extern "C"`)
+  - `ironpad_dealloc(ptr, len)` — WASM memory deallocator (`#[no_mangle] unsafe extern "C"`)
+  - `prelude` module — re-exports `bincode`, `serde::{Serialize, Deserialize}`, `CellInput`, `CellOutput`, `CellResult`
+  - Updated `crates/ironpad-cell/Cargo.toml` — enabled bincode `serde` feature for serde compat layer (bincode 2 requires opt-in)
+  - Added 11 unit tests: round-trip struct/vec serialization, CellInput helpers, CellOutput constructors, CellResult repr(C) layout, FFI alloc/dealloc smoke tests
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (14 tests pass), playwright skipped)
+- **Opportunistic UAT**: No UATs verifiable yet — all require running server or Playwright infrastructure.
+- **Constitution Compliance**: No violations. bincode 2 uses a different API than the pseudocode in MegaPrd §7.3 (which used bincode 1 style `serialize`/`deserialize`); adapted to use `bincode::serde::encode_to_vec` / `bincode::serde::decode_from_slice` with `bincode::config::standard()` while preserving identical semantics.
