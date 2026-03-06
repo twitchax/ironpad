@@ -199,7 +199,7 @@ tasks:
   - id: T-011
     title: "Rustc JSON diagnostic parser"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Parse --message-format=json output from cargo build.
       Extract: message, level (error/warning/note), code,
@@ -1065,5 +1065,24 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Updated `crates/ironpad-app/src/compiler/mod.rs` — registered `cache` module.
   - Updated `crates/ironpad-app/Cargo.toml` — added `blake3` as optional SSR-gated dependency, added `tempfile` as dev-dependency for cache tests.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 42 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline and UI being functional.
+- **Constitution Compliance**: No violations.
+
+## 2026-03-06 — T-011 Completed
+- **Task**: Rustc JSON diagnostic parser
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `serde_json = "1"` to workspace dependencies in root `Cargo.toml`.
+  - Added `serde` and `serde_json` as optional SSR-gated dependencies to `crates/ironpad-app/Cargo.toml`.
+  - Created `crates/ironpad-app/src/compiler/diagnostics.rs` — rustc JSON diagnostic parser with:
+    - Intermediate serde structs (`CargoMessage`, `RustcMessage`, `RustcCode`, `RustcSpan`) matching rustc's `--message-format=json` schema.
+    - `parse_diagnostics(cargo_stdout)` — parses multi-line cargo JSON output, filters for `"compiler-message"` entries, maps to `ironpad_common::Diagnostic` types.
+    - Level mapping: `error` → `Severity::Error`, `warning` → `Severity::Warning`, `note`/`help` → `Severity::Note`.
+    - Error code appended to message text when present (e.g., `"mismatched types [E0308]"`).
+    - Span filtering: only primary spans from `src/lib.rs` (the wrapped user code file) are included.
+    - `adjust_span()` — subtracts `WRAPPER_PREAMBLE_LINES` (4) from line numbers, filtering out spans that fall within the auto-generated wrapper preamble.
+    - 13 unit tests: type error parsing, warning parsing, artifact line skipping, note-level handling, preamble span filtering, dependency file span filtering, primary-only span filtering, multiline cargo output, empty input, malformed JSON, multiline span adjustment, preamble boundary edge case, first user line edge case.
+  - Updated `crates/ironpad-app/src/compiler/mod.rs` — registered `diagnostics` module.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 55 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline and UI being functional.
 - **Constitution Compliance**: No violations.

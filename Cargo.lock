@@ -1332,6 +1332,8 @@ dependencies = [
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
+ "serde",
+ "serde_json",
  "tempfile",
  "thaw",
  "thiserror 2.0.18",
