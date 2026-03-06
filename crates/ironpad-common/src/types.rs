@@ -1,0 +1,82 @@
+//! Shared types for the ironpad compilation pipeline, notebook persistence, and UI.
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+// ── Compilation Types ────────────────────────────────────────────────────────
+
+/// Request sent from the client to compile a single cell.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompileRequest {
+    pub cell_id: String,
+    pub source: String,
+    pub cargo_toml: String,
+}
+
+/// Response from the server after a compilation attempt.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompileResponse {
+    /// The compiled WASM blob (empty on failure).
+    pub wasm_blob: Vec<u8>,
+    /// Compiler diagnostics (errors, warnings, notes).
+    pub diagnostics: Vec<Diagnostic>,
+    /// Whether the result was served from cache.
+    pub cached: bool,
+}
+
+/// A single compiler diagnostic (error, warning, or note).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub message: String,
+    pub severity: Severity,
+    pub spans: Vec<Span>,
+}
+
+/// Severity level for a compiler diagnostic.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+    Note,
+}
+
+/// A source-code span associated with a diagnostic.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Span {
+    pub line_start: u32,
+    pub line_end: u32,
+    pub col_start: u32,
+    pub col_end: u32,
+    pub label: Option<String>,
+}
+
+// ── Notebook Persistence Types ───────────────────────────────────────────────
+
+/// Full notebook manifest, serialized as `ironpad.json` on disk.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotebookManifest {
+    pub id: Uuid,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub compiler_version: String,
+    pub cells: Vec<CellManifest>,
+}
+
+/// A single cell entry within a notebook manifest.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CellManifest {
+    pub id: String,
+    pub order: u32,
+    pub label: String,
+}
+
+/// Lightweight summary used for the notebook list view.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotebookSummary {
+    pub id: Uuid,
+    pub title: String,
+    pub updated_at: DateTime<Utc>,
+    pub cell_count: usize,
+}

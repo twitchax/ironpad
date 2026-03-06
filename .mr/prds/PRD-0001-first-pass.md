@@ -144,7 +144,7 @@ tasks:
   - id: T-006
     title: "Define shared types in ironpad-common"
     priority: 1
-    status: todo
+    status: done
     notes: >
       Types: CompileRequest { cell_id, source, cargo_toml },
       CompileResponse { wasm_blob: Vec<u8>, diagnostics: Vec<Diagnostic>, cached: bool },
@@ -978,4 +978,18 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - CLI flags: `--data-dir` (default: `./data`, env: `IRONPAD_DATA_DIR`), `--cache-dir` (default: `./cache`, env: `IRONPAD_CACHE_DIR`), `--port` (default: 3000, env: `IRONPAD_PORT`), `--ironpad-cell-path` (default: `./crates/ironpad-cell`, env: `IRONPAD_CELL_PATH`)
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (3 tests pass), playwright skipped)
 - **Opportunistic UAT**: uat-010 ("Binary accepts --data-dir and --cache-dir flags and uses them") is partially verifiable — the 3 unit tests confirm flag parsing and defaults. Full verification (files written to specified dirs) requires notebook persistence (T-014+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-06 — T-006 Completed
+- **Task**: Define shared types in ironpad-common
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-common/src/types.rs` — all shared types for compilation pipeline and notebook persistence
+  - Types added: `CompileRequest`, `CompileResponse`, `Diagnostic`, `Severity` (enum), `Span`, `NotebookManifest`, `CellManifest`, `NotebookSummary`
+  - All types derive `Serialize`, `Deserialize`, `Clone`, `Debug`; `Severity` also derives `PartialEq`, `Eq`
+  - `NotebookManifest` uses `Uuid` for id and `DateTime<Utc>` for timestamps (matching MegaPrd §8.2 manifest schema)
+  - `Span.label` is `Option<String>` (not all spans have labels)
+  - Updated `crates/ironpad-common/src/lib.rs` — added `pub mod types` and glob re-export `pub use types::*`
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (3 tests pass), playwright skipped)
+- **Opportunistic UAT**: No UATs verifiable yet — all require running server or Playwright infrastructure.
 - **Constitution Compliance**: No violations.
