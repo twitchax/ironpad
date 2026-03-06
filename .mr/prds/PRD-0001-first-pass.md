@@ -164,7 +164,7 @@ tasks:
   - id: T-008
     title: "Micro-crate scaffolding service"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Given (cell_id, source, cargo_toml, session_id), write a micro-crate to
       {cache_dir}/workspaces/{session_id}/{cell_id}/ with:
@@ -1014,3 +1014,21 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (14 tests pass), playwright skipped)
 - **Opportunistic UAT**: uat-008 ("Docker container builds and serves the app") cannot be verified yet — requires `docker` to be available and the full app (routing, pages) to be implemented. The Dockerfile itself is syntactically correct and follows MegaPrd §9 patterns.
 - **Constitution Compliance**: No violations. The Dockerfile deviates slightly from MegaPrd §9.1 (uses multi-stage instead of single-stage, does not include sccache) because the task notes explicitly require multi-stage and sccache is an optimization that can be added later. The docker-compose.yml uses modern format (no `version` key) per compose spec v2.
+
+## 2026-03-06 — T-008 Completed
+- **Task**: Micro-crate scaffolding service
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/compiler/mod.rs` — compiler pipeline module (ssr-gated).
+  - Created `crates/ironpad-app/src/compiler/scaffold.rs` — micro-crate scaffolding service with:
+    - `scaffold_micro_crate()` function that writes a compilable micro-crate to `{cache_dir}/workspaces/{session_id}/{cell_id}/`.
+    - `generate_cargo_toml()` — builds Cargo.toml with `crate-type = ["cdylib"]`, injects `ironpad-cell` as an absolute path dependency, and merges user-specified dependencies.
+    - `generate_lib_rs()` — wraps user source code in the `cell_main` FFI function per MegaPrd §5.2.
+    - `extract_user_dependencies()` — extracts `[dependencies]` entries from user's Cargo.toml, filtering out any user-specified ironpad-cell (we inject our own).
+    - `WRAPPER_PREAMBLE_LINES` constant (= 4) exported for T-011 diagnostic line-number adjustment.
+    - 12 unit/integration tests covering dependency extraction, Cargo.toml generation, lib.rs wrapping, preamble line count, full scaffold integration, and overwrite behavior.
+  - Updated `crates/ironpad-app/src/lib.rs` — added `#[cfg(feature = "ssr")] pub mod compiler;`.
+  - Updated `crates/ironpad-app/Cargo.toml` — added `anyhow` and `uuid` as optional ssr-gated dependencies.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 26 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline and UI being functional.
+- **Constitution Compliance**: No violations.

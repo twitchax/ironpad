@@ -1318,6 +1318,7 @@ dependencies = [
 name = "ironpad-app"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "http",
  "ironpad-common",
  "leptos",
@@ -1326,6 +1327,7 @@ dependencies = [
  "leptos_router",
  "thaw",
  "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
