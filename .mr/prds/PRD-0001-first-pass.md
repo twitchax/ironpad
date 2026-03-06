@@ -176,7 +176,7 @@ tasks:
   - id: T-009
     title: "Cargo build invocation for WASM target"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Invoke `cargo build --target wasm32-unknown-unknown --release
       --message-format=json` in the micro-crate directory.
@@ -1030,5 +1030,23 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Updated `crates/ironpad-app/src/lib.rs` — added `#[cfg(feature = "ssr")] pub mod compiler;`.
   - Updated `crates/ironpad-app/Cargo.toml` — added `anyhow` and `uuid` as optional ssr-gated dependencies.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 26 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline and UI being functional.
+- **Constitution Compliance**: No violations.
+
+## 2026-03-06 — T-009 Completed
+- **Task**: Cargo build invocation for WASM target
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/compiler/build.rs` — async `build_micro_crate()` function that:
+    - Invokes `cargo build --target wasm32-unknown-unknown --release --message-format=json` in the scaffolded micro-crate directory.
+    - Sets `CARGO_HOME` to `{cache_dir}/cargo-home/` for shared registry caching.
+    - Sets `CARGO_TARGET_DIR` to `{cache_dir}/targets/{session_id}/` for per-session incremental reuse.
+    - Enforces a 30-second hard timeout via `tokio::time::timeout`.
+    - Returns `BuildResult::Success` with the `.wasm` blob path, or `BuildResult::Failure` with raw stdout/stderr.
+    - Exports `cargo_home_dir()`, `target_dir()`, and `expected_wasm_path()` helpers for downstream consumers.
+    - 7 unit tests covering path computation for cargo home, target dirs, and WASM artifact paths with various cell ID formats.
+  - Updated `crates/ironpad-app/src/compiler/mod.rs` — registered `build` module.
+  - Updated `crates/ironpad-app/Cargo.toml` — added `tokio` and `tracing` as optional SSR-gated dependencies.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 33 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline and UI being functional.
 - **Constitution Compliance**: No violations.

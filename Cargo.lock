@@ -1327,6 +1327,8 @@ dependencies = [
  "leptos_router",
  "thaw",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
