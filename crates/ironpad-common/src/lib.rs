@@ -1,3 +1,5 @@
 //! Shared types for ironpad (server ↔ client).
-//!
-//! Types will be added by T-006.
+
+pub mod config;
+
+pub use config::AppConfig;

@@ -131,7 +131,7 @@ tasks:
   - id: T-005
     title: "CLI argument parsing and configuration module"
     priority: 1
-    status: todo
+    status: done
     notes: >
       Use clap in ironpad-server for: --data-dir (default: ./data),
       --cache-dir (default: ./cache), --port (default: 3000),
@@ -966,3 +966,16 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (0 tests, pass), playwright skipped)
 - **Opportunistic UAT**: No UATs verifiable yet — all require server running or Playwright infrastructure.
 - **Constitution Compliance**: No violations. Fixed a pre-existing fmt issue as it was directly blocking the `fmt-check` task in the CI pipeline (Root Cause Resolution principle).
+
+## 2026-03-06 — T-005 Completed
+- **Task**: CLI argument parsing and configuration module
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-common/src/config.rs` — `AppConfig` struct (data_dir, cache_dir, port, ironpad_cell_path) in the shared crate so server functions in ironpad-app can access it via `expect_context::<AppConfig>()`
+  - Updated `crates/ironpad-common/src/lib.rs` — added `pub mod config` and re-export of `AppConfig`
+  - Created `crates/ironpad-server/src/config.rs` — `CliArgs` clap parser with `#[arg(env = "...")]` for each flag, plus `From<CliArgs> for AppConfig` conversion and 3 unit tests
+  - Updated `crates/ironpad-server/src/main.rs` — parses CLI args, creates AppConfig, provides it via `leptos_routes_with_context`, overrides listen address with `--port` value
+  - CLI flags: `--data-dir` (default: `./data`, env: `IRONPAD_DATA_DIR`), `--cache-dir` (default: `./cache`, env: `IRONPAD_CACHE_DIR`), `--port` (default: 3000, env: `IRONPAD_PORT`), `--ironpad-cell-path` (default: `./crates/ironpad-cell`, env: `IRONPAD_CELL_PATH`)
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (3 tests pass), playwright skipped)
+- **Opportunistic UAT**: uat-010 ("Binary accepts --data-dir and --cache-dir flags and uses them") is partially verifiable — the 3 unit tests confirm flag parsing and defaults. Full verification (files written to specified dirs) requires notebook persistence (T-014+).
+- **Constitution Compliance**: No violations.
