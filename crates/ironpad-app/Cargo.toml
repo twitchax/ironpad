@@ -9,7 +9,7 @@ leptos_meta.workspace = true
 leptos_router.workspace = true
 leptos_axum = { workspace = true, optional = true }
 
-thaw = { workspace = true, optional = true }
+thaw.workspace = true
 
 ironpad-common = { workspace = true }
 
@@ -24,5 +24,4 @@ ssr = [
     "leptos_meta/ssr",
     "leptos_router/ssr",
     "dep:leptos_axum",
-    "dep:thaw",
 ]

@@ -95,7 +95,7 @@ tasks:
   - id: T-002
     title: "Configure cargo-leptos metadata and features"
     priority: 1
-    status: todo
+    status: done
     notes: >
       Add [package.metadata.leptos] to root or app Cargo.toml:
       output-name, site-root, site-pkg-dir, site-addr, bin-features=[ssr],
@@ -933,4 +933,20 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo build` ✅ succeeds (all 5 crates compile cleanly)
   - `cargo check` ✅ passes with no warnings
   - `cargo make uat` — not yet available (Makefile.toml with `uat` task is T-003)
+- **Constitution Compliance**: No violations.
+
+## 2026-03-06 — T-002 Completed
+- **Task**: Configure cargo-leptos metadata and features
+- **Status**: ✅ Done
+- **Changes**:
+  - Fixed `uuid` workspace dependency: added `js` feature required for `wasm32-unknown-unknown` target (enables `crypto.getRandomValues()` RNG in browser)
+  - Fixed `ironpad-app` workspace dependency: added `default-features = false` to resolve cargo warning about `default-features` being ignored in consumer crates
+  - Removed unrecognized `env` and `watch` metadata keys from `[[workspace.metadata.leptos]]` (deprecated in cargo-leptos 0.3.5)
+  - Made `thaw` a regular (non-optional) dependency in `ironpad-app` — required for both SSR and hydrate modes so Thaw UI components can properly hydrate client-side
+  - Removed `dep:thaw` from `ironpad-app`'s `ssr` feature (no longer optional)
+  - Installed `wasm-bindgen-cli` 0.2.114 to match the project's `wasm-bindgen` dependency version
+  - `cargo leptos build` ✅ succeeds (both server binary and WASM frontend compile cleanly)
+  - `cargo build` ✅ still succeeds
+  - `cargo make uat` — not yet available (Makefile.toml with `uat` task is T-003)
+- **Opportunistic UAT**: No UATs could be verified yet — uat-001 requires a running server (depends on routing/pages from later tasks), and `cargo make uat` requires Makefile.toml (T-003).
 - **Constitution Compliance**: No violations.
