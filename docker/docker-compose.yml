@@ -1,0 +1,21 @@
+services:
+  ironpad:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - notebooks:/data
+      - cache:/cache
+    environment:
+      - IRONPAD_DATA_DIR=/data
+      - IRONPAD_CACHE_DIR=/cache
+      - IRONPAD_PORT=3000
+      - IRONPAD_CELL_PATH=/app/crates/ironpad-cell
+      - RUST_LOG=info
+    restart: unless-stopped
+
+volumes:
+  notebooks:
+  cache:

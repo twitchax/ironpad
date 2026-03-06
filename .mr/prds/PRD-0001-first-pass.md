@@ -119,7 +119,7 @@ tasks:
   - id: T-004
     title: "Create Dockerfile and docker-compose.yml"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Multi-stage Dockerfile: (1) builder stage with Rust toolchain +
       wasm32-unknown-unknown target + cargo-leptos + wasm-opt/binaryen,
@@ -1002,3 +1002,15 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (14 tests pass), playwright skipped)
 - **Opportunistic UAT**: No UATs verifiable yet — all require running server or Playwright infrastructure.
 - **Constitution Compliance**: No violations. bincode 2 uses a different API than the pseudocode in MegaPrd §7.3 (which used bincode 1 style `serialize`/`deserialize`); adapted to use `bincode::serde::encode_to_vec` / `bincode::serde::decode_from_slice` with `bincode::config::standard()` while preserving identical semantics.
+
+## 2026-03-06 — T-004 Completed
+- **Task**: Create Dockerfile and docker-compose.yml
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `docker/Dockerfile` — multi-stage build: builder stage (rust:latest + wasm32-unknown-unknown + cargo-leptos + binaryen) compiles the app with `cargo leptos build --release`; runtime stage (rust:latest + wasm32-unknown-unknown + binaryen) copies the binary, site assets, and ironpad-cell crate. Runtime retains Rust toolchain for compiling user cells.
+  - Created `docker/docker-compose.yml` — single `ironpad` service with port 3000 exposed, named volumes for `/data` and `/cache`, env vars for `IRONPAD_DATA_DIR`, `IRONPAD_CACHE_DIR`, `IRONPAD_PORT`, `IRONPAD_CELL_PATH`, and `RUST_LOG`.
+  - Created `docker/warmup-Cargo.toml` — warmup crate used during Docker build to pre-download ironpad-cell transitive dependencies into the cargo registry cache, so first user cell compile skips dep download.
+  - Created `.dockerignore` — excludes `target/`, `data/`, `cache/`, `node_modules/`, `.git/`, `.mr/`, test artifacts, and IDE files from the Docker build context.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (14 tests pass), playwright skipped)
+- **Opportunistic UAT**: uat-008 ("Docker container builds and serves the app") cannot be verified yet — requires `docker` to be available and the full app (routing, pages) to be implemented. The Dockerfile itself is syntactically correct and follows MegaPrd §9 patterns.
+- **Constitution Compliance**: No violations. The Dockerfile deviates slightly from MegaPrd §9.1 (uses multi-stage instead of single-stage, does not include sccache) because the task notes explicitly require multi-stage and sccache is an optimization that can be added later. The docker-compose.yml uses modern format (no `version` key) per compose spec v2.

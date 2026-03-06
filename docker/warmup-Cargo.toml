@@ -1,0 +1,18 @@
+# Warmup Cargo.toml — used during Docker build to pre-download
+# ironpad-cell's transitive dependencies into the cargo registry cache.
+# This avoids a download step on the first user cell compile.
+
+[package]
+name = "ironpad-warmup"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ironpad-cell = { path = "crates/ironpad-cell" }
+
+[profile.release]
+opt-level = "z"

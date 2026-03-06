@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+data/
+cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (exclude for Docker — not needed in container)
+node_modules/
+package-lock.json
+
+# Playwright / testing
+test-results/
+playwright-report/
+tests/
+
+# Git
+.git/
+.gitignore
+
+# microralph state
+.mr/
+
+# Misc
+*.log
