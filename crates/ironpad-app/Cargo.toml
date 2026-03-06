@@ -1,0 +1,28 @@
+[package]
+name = "ironpad-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+leptos.workspace = true
+leptos_meta.workspace = true
+leptos_router.workspace = true
+leptos_axum = { workspace = true, optional = true }
+
+thaw = { workspace = true, optional = true }
+
+ironpad-common = { workspace = true }
+
+http.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []
+hydrate = ["leptos/hydrate"]
+ssr = [
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+    "dep:leptos_axum",
+    "dep:thaw",
+]

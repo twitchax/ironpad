@@ -1,0 +1,25 @@
+# Build artifacts
+/target
+/data
+/cache
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (for Playwright / Monaco)
+node_modules/
+package-lock.json
+
+# Playwright
+test-results/
+playwright-report/
+
+# Misc
+*.log
