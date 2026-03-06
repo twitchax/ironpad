@@ -105,7 +105,7 @@ tasks:
   - id: T-003
     title: "Create Makefile.toml with all dev/CI/UAT tasks"
     priority: 1
-    status: todo
+    status: done
     notes: >
       Follow microralph/razel patterns. Tasks:
       install-tools (cargo-binstall nextest, cargo-leptos, playwright),
@@ -948,5 +948,21 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo leptos build` ✅ succeeds (both server binary and WASM frontend compile cleanly)
   - `cargo build` ✅ still succeeds
   - `cargo make uat` — not yet available (Makefile.toml with `uat` task is T-003)
-- **Opportunistic UAT**: No UATs could be verified yet — uat-001 requires a running server (depends on routing/pages from later tasks), and `cargo make uat` requires Makefile.toml (T-003).
+- **Opportunistic UAT**: No UATs could be verified yet — uat-001 requires a running server (depends on routing/pages from later tasks), and Playwright infrastructure is not yet set up (T-045).
 - **Constitution Compliance**: No violations.
+
+## 2026-03-06 — T-003 Completed
+- **Task**: Create Makefile.toml with all dev/CI/UAT tasks
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `Makefile.toml` at workspace root with `[config] default_to_workspace = false` to run tasks at workspace level only
+  - Tasks implemented: `install-tools`, `dev`, `build`, `fmt`, `fmt-check`, `clippy`, `test`, `ci`, `uat`, `playwright`, `playwright-install`, `docker-build`, `docker-up`, `docker-down`, `docker-uat`
+  - `ci` = `fmt-check` → `clippy` → `test` (dependency chain)
+  - `uat` = `ci` → `playwright` (the one true gate)
+  - `test` uses `cargo nextest run --no-tests=pass` to handle zero-test state gracefully
+  - `playwright` task gracefully skips when no `playwright.config.ts` or test files exist (ready for T-045)
+  - Docker tasks (`docker-build`, `docker-up`, `docker-down`, `docker-uat`) gracefully skip when no Dockerfile exists (ready for T-004)
+  - Fixed pre-existing formatting issue in `crates/ironpad-server/src/main.rs` (discovered by `cargo fmt --check`)
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, test ✅ (0 tests, pass), playwright skipped)
+- **Opportunistic UAT**: No UATs verifiable yet — all require server running or Playwright infrastructure.
+- **Constitution Compliance**: No violations. Fixed a pre-existing fmt issue as it was directly blocking the `fmt-check` task in the CI pipeline (Root Cause Resolution principle).

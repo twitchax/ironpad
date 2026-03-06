@@ -1,0 +1,230 @@
+# ── ironpad — cargo-make task definitions ────────────────────────────────────
+#
+# Quick reference:
+#   cargo make dev           — Start cargo-leptos watch (dev server with live reload)
+#   cargo make build         — Release build via cargo-leptos
+#   cargo make ci            — fmt-check + clippy + test
+#   cargo make uat           — ci + playwright (the one true gate)
+#   cargo make test          — Run unit/integration tests via cargo nextest
+#   cargo make fmt           — Auto-format all code
+#   cargo make clippy        — Run clippy lints
+
+[config]
+default_to_workspace = false
+
+# ── Tool Installation ────────────────────────────────────────────────────────
+
+[tasks.install-tools]
+description = "Install required development tools"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "==> Installing cargo-binstall (if needed)..."
+command -v cargo-binstall >/dev/null 2>&1 || cargo install cargo-binstall
+
+echo "==> Installing cargo-nextest..."
+cargo binstall cargo-nextest --no-confirm --force 2>/dev/null || cargo install cargo-nextest
+
+echo "==> Installing cargo-leptos..."
+cargo binstall cargo-leptos --no-confirm --force 2>/dev/null || cargo install cargo-leptos
+
+echo "==> Installing cargo-make..."
+cargo binstall cargo-make --no-confirm --force 2>/dev/null || cargo install cargo-make
+
+echo "==> Installing Playwright browsers..."
+if command -v npx >/dev/null 2>&1 && [ -f package.json ]; then
+    npx playwright install --with-deps chromium
+else
+    echo "    (skipped — no package.json or npx not found)"
+fi
+
+echo "==> All tools installed."
+'''
+
+# ── Dev Server ───────────────────────────────────────────────────────────────
+
+[tasks.dev]
+description = "Start cargo-leptos watch (dev server with live reload)"
+command = "cargo"
+args = ["leptos", "watch"]
+
+# ── Build ────────────────────────────────────────────────────────────────────
+
+[tasks.build]
+description = "Release build via cargo-leptos"
+command = "cargo"
+args = ["leptos", "build", "--release"]
+
+# ── Formatting ───────────────────────────────────────────────────────────────
+
+[tasks.fmt]
+description = "Auto-format all Rust code"
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.fmt-check]
+description = "Check Rust formatting (no changes)"
+command = "cargo"
+args = ["fmt", "--all", "--check"]
+
+# ── Clippy ───────────────────────────────────────────────────────────────────
+
+[tasks.clippy]
+description = "Run clippy lints on all targets"
+command = "cargo"
+args = ["clippy", "--all-targets", "--", "-D", "warnings"]
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+
+[tasks.test]
+description = "Run unit/integration tests via cargo nextest"
+command = "cargo"
+args = ["nextest", "run", "--no-tests=pass"]
+
+# ── CI (fmt-check + clippy + test) ───────────────────────────────────────────
+
+[tasks.ci]
+description = "Full CI check: fmt-check → clippy → test"
+dependencies = ["fmt-check", "clippy", "test"]
+
+# ── Playwright ───────────────────────────────────────────────────────────────
+
+[tasks.playwright-install]
+description = "Install Playwright browsers"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ ! -f package.json ]; then
+    echo "No package.json found — skipping Playwright install."
+    exit 0
+fi
+
+npx playwright install --with-deps chromium
+'''
+
+[tasks.playwright]
+description = "Run Playwright end-to-end tests"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ ! -f playwright.config.ts ] && [ ! -f playwright.config.js ]; then
+    echo "No playwright config found — skipping Playwright tests."
+    echo "(Playwright tests will run once T-045 sets up the test infrastructure.)"
+    exit 0
+fi
+
+if [ ! -d tests/e2e ] || [ -z "$(find tests/e2e -name '*.spec.*' -o -name '*.test.*' 2>/dev/null)" ]; then
+    echo "No Playwright test files found in tests/e2e/ — skipping."
+    exit 0
+fi
+
+npx playwright test
+'''
+
+# ── UAT (the one true gate) ─────────────────────────────────────────────────
+
+[tasks.uat]
+description = "UAT: ci + playwright (the one true gate)"
+dependencies = ["ci", "playwright"]
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+
+[tasks.docker-build]
+description = "Build the Docker image"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ ! -f Dockerfile ] && [ ! -f docker/Dockerfile ]; then
+    echo "No Dockerfile found — skipping Docker build."
+    echo "(Docker build will work once T-004 creates the Dockerfile.)"
+    exit 0
+fi
+
+if [ -f docker/Dockerfile ]; then
+    docker build -f docker/Dockerfile -t ironpad .
+elif [ -f Dockerfile ]; then
+    docker build -t ironpad .
+fi
+'''
+
+[tasks.docker-up]
+description = "Start the Docker container via docker-compose"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ ! -f docker-compose.yml ] && [ ! -f docker/docker-compose.yml ]; then
+    echo "No docker-compose.yml found — skipping."
+    echo "(Docker compose will work once T-004 creates docker-compose.yml.)"
+    exit 0
+fi
+
+if [ -f docker/docker-compose.yml ]; then
+    docker compose -f docker/docker-compose.yml up -d
+else
+    docker compose up -d
+fi
+'''
+
+[tasks.docker-down]
+description = "Stop the Docker container via docker-compose"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ ! -f docker-compose.yml ] && [ ! -f docker/docker-compose.yml ]; then
+    echo "No docker-compose.yml found — skipping."
+    exit 0
+fi
+
+if [ -f docker/docker-compose.yml ]; then
+    docker compose -f docker/docker-compose.yml down
+else
+    docker compose down
+fi
+'''
+
+[tasks.docker-uat]
+description = "Build Docker image, start container, run playwright, tear down"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ ! -f Dockerfile ] && [ ! -f docker/Dockerfile ]; then
+    echo "No Dockerfile found — skipping Docker UAT."
+    echo "(Docker UAT will work once T-004 creates the Docker setup.)"
+    exit 0
+fi
+
+echo "==> Building Docker image..."
+cargo make docker-build
+
+echo "==> Starting container..."
+cargo make docker-up
+
+echo "==> Waiting for server to be ready..."
+for i in $(seq 1 30); do
+    if curl -s http://localhost:3000 > /dev/null 2>&1; then
+        echo "    Server is ready."
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo "    ERROR: Server did not start within 30s."
+        cargo make docker-down
+        exit 1
+    fi
+    sleep 1
+done
+
+echo "==> Running Playwright tests against container..."
+cargo make playwright || { cargo make docker-down; exit 1; }
+
+echo "==> Tearing down container..."
+cargo make docker-down
+
+echo "==> Docker UAT passed."
+'''
