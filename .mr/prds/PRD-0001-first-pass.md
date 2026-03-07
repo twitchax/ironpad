@@ -295,7 +295,7 @@ tasks:
   - id: T-019
     title: "App layout with header and status bar"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Thaw Layout component: header with "ironpad" branding,
       main content area (child routes), footer status bar.
@@ -1187,3 +1187,19 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped)
 - **Opportunistic UAT**: No UATs can be verified yet — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-019 Completed
+- **Task**: App layout with header and status bar
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/components/mod.rs` — new UI components module.
+  - Created `crates/ironpad-app/src/components/app_layout.rs` — app layout with:
+    - `LayoutContext` — shared reactive state (`Copy`-safe) with `RwSignal` fields for notebook_title, show_save_button, save_generation, cell_count, last_save_time, compiler_version. Provided via Leptos context so child pages (T-020, T-021) can update the header and status bar.
+    - `AppLayout` component — wraps child routes in Thaw `Layout` (absolute position) with `LayoutHeader`, content area, and custom footer.
+    - `HeaderContent` component — "ironpad" brand link (left), reactive notebook title (center, shown only when set), save `Button` with `ButtonAppearance::Primary` (right, shown only when `show_save_button` is true). Save click increments `save_generation` signal.
+    - `StatusBar` component — displays "Status: Ready", compiler version, cell count, and optional last-save time with pipe separators.
+  - Updated `crates/ironpad-app/src/lib.rs` — added `pub mod components`, imported `AppLayout`, wrapped `<Routes>` inside `<AppLayout>` (replaced bare `<main>` wrapper).
+  - Updated `style/main.scss` — added layout CSS: root layout (flex column, 100vh), header (48px, dark nav bar, flexbox three-section layout), brand styling (red accent with hover), notebook title (centered, truncated), content area (flex-grow, scrollable), status bar (28px, muted text, gap-separated items).
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
+- **Constitution Compliance**: Thaw 0.5.0-beta does not export `LayoutFooter`, so a custom `<footer>` element with CSS styling is used instead. This is a minor deviation from the task notes ("Use Thaw components: Layout, LayoutHeader, LayoutFooter") but unavoidable given the library API. `Layout` and `LayoutHeader` from Thaw are used as specified.

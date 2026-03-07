@@ -1,8 +1,111 @@
-/* ironpad — base styles (placeholder) */
+/* ironpad — base styles */
+
 body {
     margin: 0;
     padding: 0;
     font-family: system-ui, -apple-system, sans-serif;
     background: #1a1a2e;
     color: #eaeaea;
+}
+
+/* ── Root layout ─────────────────────────────────────────────────────────── */
+
+.ironpad-root-layout {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+.ironpad-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    height: 48px;
+    min-height: 48px;
+    background: #16213e;
+    border-bottom: 1px solid #0f3460;
+    z-index: 100;
+}
+
+.ironpad-header-left,
+.ironpad-header-center,
+.ironpad-header-right {
+    display: flex;
+    align-items: center;
+}
+
+.ironpad-header-left {
+    flex: 0 0 auto;
+}
+
+.ironpad-header-center {
+    flex: 1 1 auto;
+    justify-content: center;
+}
+
+.ironpad-header-right {
+    flex: 0 0 auto;
+}
+
+.ironpad-brand {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #e94560;
+    text-decoration: none;
+    letter-spacing: 0.5px;
+}
+
+.ironpad-brand:hover {
+    color: #ff6b81;
+}
+
+.ironpad-notebook-title {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: #b0b0cc;
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── Content area ────────────────────────────────────────────────────────── */
+
+.ironpad-content {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 24px;
+}
+
+/* ── Status bar ──────────────────────────────────────────────────────────── */
+
+.ironpad-status-bar {
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    height: 28px;
+    min-height: 28px;
+    background: #16213e;
+    border-top: 1px solid #0f3460;
+    font-size: 0.75rem;
+    color: #8888aa;
+    z-index: 100;
+}
+
+.ironpad-status-bar-inner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+
+.ironpad-status-item {
+    white-space: nowrap;
+}
+
+.ironpad-status-separator {
+    color: #444466;
 }

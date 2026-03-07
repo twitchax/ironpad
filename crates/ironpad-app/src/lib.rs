@@ -1,11 +1,14 @@
 #[cfg(feature = "ssr")]
 pub mod compiler;
 
+pub mod components;
+
 #[cfg(feature = "ssr")]
 pub mod notebook;
 
 pub mod server_fns;
 
+use components::app_layout::AppLayout;
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{
@@ -37,7 +40,8 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 ///
 /// Wraps the entire app in Thaw's ConfigProvider with a dark theme,
 /// sets up leptos_meta context, and defines routes for the home page
-/// and notebook editor.
+/// and notebook editor. All routes are wrapped in `AppLayout` which
+/// provides the header, content area, and status bar.
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
@@ -50,12 +54,12 @@ pub fn App() -> impl IntoView {
 
         <ConfigProvider theme>
             <Router>
-                <main>
+                <AppLayout>
                     <Routes fallback=|| "Page not found.".into_view()>
                         <Route path=StaticSegment("") view=HomePage/>
                         <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=NotebookEditorPage/>
                     </Routes>
-                </main>
+                </AppLayout>
             </Router>
         </ConfigProvider>
     }
