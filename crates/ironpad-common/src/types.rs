@@ -72,6 +72,13 @@ pub struct CellManifest {
     pub label: String,
 }
 
+/// The source code and Cargo.toml content of a cell.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CellContent {
+    pub source: String,
+    pub cargo_toml: String,
+}
+
 /// Lightweight summary used for the notebook list view.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NotebookSummary {

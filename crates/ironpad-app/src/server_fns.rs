@@ -1,5 +1,5 @@
 use ironpad_common::{
-    CellManifest, CompileRequest, CompileResponse, NotebookManifest, NotebookSummary,
+    CellContent, CellManifest, CompileRequest, CompileResponse, NotebookManifest, NotebookSummary,
 };
 use leptos::prelude::*;
 
@@ -196,6 +196,29 @@ pub async fn delete_notebook(id: String) -> Result<(), ServerFnError> {
         .map_err(|e| ServerFnError::new(format!("failed to delete notebook: {e}")))?;
 
     Ok(())
+}
+
+// ── Cell Content ─────────────────────────────────────────────────────────────
+
+/// Retrieves the source code and Cargo.toml content of a cell.
+#[server]
+pub async fn get_cell_content(
+    notebook_id: String,
+    cell_id: String,
+) -> Result<CellContent, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let nb_uuid = parse_uuid(&notebook_id)?;
+
+    let source = crate::notebook::cells::get_cell_source(&config.data_dir, &nb_uuid, &cell_id)
+        .map_err(|e| ServerFnError::new(format!("failed to read cell source: {e}")))?;
+
+    let cargo_toml =
+        crate::notebook::cells::get_cell_cargo_toml(&config.data_dir, &nb_uuid, &cell_id)
+            .map_err(|e| ServerFnError::new(format!("failed to read cell Cargo.toml: {e}")))?;
+
+    Ok(CellContent { source, cargo_toml })
 }
 
 // ── Cell CRUD ────────────────────────────────────────────────────────────────

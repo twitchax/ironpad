@@ -361,7 +361,7 @@ tasks:
   - id: T-025
     title: "Cell card component with tab bar"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Thaw Card wrapping a cell. Tab bar with "Code" and "Cargo.toml" tabs
       (Thaw Tabs). Each tab shows a Monaco editor instance.
@@ -1268,4 +1268,28 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Updated `style/main.scss` — added `.ironpad-monaco-container` CSS (min-height 200px, rounded bottom corners, overflow hidden).
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-025 Completed
+- **Task**: Cell card component with tab bar
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `CellContent` struct (source + cargo_toml) to `crates/ironpad-common/src/types.rs` for cell content transfer.
+  - Added `get_cell_content` server function to `crates/ironpad-app/src/server_fns.rs` — fetches cell source and Cargo.toml from disk.
+  - Refactored `CellItem` component in `crates/ironpad-app/src/pages/notebook_editor.rs`:
+    - Tab bar using Thaw `TabList` + `Tab` with "Code" and "Cargo.toml" tabs.
+    - Two independent Monaco editor instances (Rust + TOML) — shown/hidden based on selected tab.
+    - Cell content loaded lazily via `Resource` calling `get_cell_content`, with spinner fallback.
+    - Collapse/expand toggle button (▸/▾) with CSS-driven animation.
+    - Header elements: collapse button, order badge, editable label, status indicator placeholder ("idle"), run button (▶, placeholder for T-028), delete button (✕).
+    - Source and cargo_toml stored as `RwSignal` for downstream compile flow (T-028).
+    - `MonacoEditorHandle` signals exposed for imperative access.
+    - `on_change` callbacks keep reactive state in sync with editor content.
+  - Updated `style/main.scss`:
+    - Collapse button styles, cell body collapse animation (max-height + opacity).
+    - Status indicator styles for all states (idle, compiling, running, success, error).
+    - Tab bar styles (`.ironpad-cell-tabs`).
+    - Editor pane and loading spinner styles.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.

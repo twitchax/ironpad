@@ -263,6 +263,24 @@ body {
     width: 100%;
 }
 
+.ironpad-cell-collapse-btn {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: #8888aa;
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 2px 4px;
+    line-height: 1;
+    border-radius: 4px;
+    transition: color 0.2s, background 0.2s;
+}
+
+.ironpad-cell-collapse-btn:hover {
+    color: #eaeaea;
+    background: rgba(255, 255, 255, 0.08);
+}
+
 .ironpad-cell-order {
     font-size: 0.8rem;
     font-weight: 600;
@@ -298,19 +316,80 @@ body {
     gap: 4px;
 }
 
-.ironpad-cell-body-placeholder {
-    padding: 16px;
-    min-height: 60px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+/* ── Cell status indicator ──────────────────────────────────────────── */
+
+.ironpad-cell-status {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
-.ironpad-cell-placeholder-text {
-    color: #555577;
-    font-size: 0.85rem;
-    font-style: italic;
-    margin: 0;
+.ironpad-cell-status--idle {
+    color: #8888aa;
+    background: rgba(136, 136, 170, 0.15);
+}
+
+.ironpad-cell-status--compiling {
+    color: #f0c040;
+    background: rgba(240, 192, 64, 0.15);
+}
+
+.ironpad-cell-status--running {
+    color: #40a0f0;
+    background: rgba(64, 160, 240, 0.15);
+}
+
+.ironpad-cell-status--success {
+    color: #40c080;
+    background: rgba(64, 192, 128, 0.15);
+}
+
+.ironpad-cell-status--error {
+    color: #e94560;
+    background: rgba(233, 69, 96, 0.15);
+}
+
+/* ── Cell body / collapse ───────────────────────────────────────────── */
+
+.ironpad-cell-body {
+    overflow: hidden;
+    transition: max-height 0.25s ease, opacity 0.2s ease;
+    max-height: 1000px;
+    opacity: 1;
+}
+
+.ironpad-cell-body--collapsed {
+    max-height: 0;
+    opacity: 0;
+}
+
+/* ── Cell tab bar ───────────────────────────────────────────────────── */
+
+.ironpad-cell-tabs {
+    padding: 0 12px;
+    border-bottom: 1px solid #0f3460;
+}
+
+.ironpad-cell-tabs .thaw-tab-list {
+    gap: 0;
+}
+
+/* ── Cell editor pane ───────────────────────────────────────────────── */
+
+.ironpad-cell-editor-pane {
+    min-height: 0;
+}
+
+.ironpad-cell-loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100px;
+    padding: 24px;
 }
 
 /* ── Monaco editor container ──────────────────────────────────────── */
