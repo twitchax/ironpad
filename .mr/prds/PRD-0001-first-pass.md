@@ -49,7 +49,7 @@ acceptance_tests:
   - id: uat-005
     name: "Two-cell data flow works (cell 0 output piped as cell 1 input via bincode)"
     command: cargo make uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-006
     name: "Compiler errors render inline in Monaco with span highlighting"
     command: cargo make uat
@@ -610,7 +610,7 @@ tasks:
   - id: T-049
     title: "Playwright smoke test — two-cell data flow"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Test: create notebook with two cells. Cell 0 serializes a Vec<i32>,
       Cell 1 deserializes and sums it. Run both, verify Cell 1 output
@@ -1695,3 +1695,15 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - All status bar fields (compiler version, cell count, save time) remain reactive to notebook state changes.
   - `cargo make uat` ✅ passes (4 Playwright tests ✅)
 - **Constitution Compliance**: Minor API type change to `last_save_time` (Rule 5 — Public API Stability) was necessary to implement the required relative time display format ("2m ago"). All consumers updated in the same commit. No other violations.
+
+## 2025-07-17 — T-049 Completed
+- **Task**: Playwright smoke test — two-cell data flow
+- **Status**: ✅ Done
+- **Changes**:
+  - Added "two-cell data flow via bincode" Playwright test in `tests/e2e/notebook.spec.ts`
+  - Test creates a notebook, adds two cells via UI, injects custom Rust source via Node.js filesystem access (bypassing Monaco editor content manipulation issues), reloads the page, then runs all cells via Ctrl+Shift+Enter
+  - Cell 0 serializes `Vec<i32>` `[1, 2, 3, 4, 5]` via `CellOutput::new()` with display text
+  - Cell 1 deserializes via `CellInput::deserialize()`, sums to 15, outputs via `CellOutput::text()`
+  - Verifies Cell 0 output contains "Sent: [1, 2, 3, 4, 5]" and Cell 1 output contains "Sum: 15"
+  - `cargo make uat` ✅ passes (5 Playwright tests ✅)
+- **Constitution Compliance**: No violations.
