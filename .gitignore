@@ -17,6 +17,9 @@ Thumbs.db
 node_modules/
 package-lock.json
 
+# Monaco editor dist (copied from node_modules by `cargo make setup-monaco`)
+public/monaco/vs/
+
 # Playwright
 test-results/
 playwright-report/

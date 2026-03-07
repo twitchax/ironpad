@@ -30,6 +30,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <AutoReload options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>
+
+                // Monaco editor: AMD loader + worker configuration.
+                <script src="/monaco/vs/loader.js"></script>
+                <script src="/monaco/init.js"></script>
             </head>
             <body>
                 <App/>

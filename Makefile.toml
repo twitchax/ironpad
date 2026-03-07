@@ -42,10 +42,35 @@ fi
 echo "==> All tools installed."
 '''
 
+# ── Monaco Setup ─────────────────────────────────────────────────────────────
+
+[tasks.setup-monaco]
+description = "Install monaco-editor from npm and copy dist to public/monaco/"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ ! -f package.json ]; then
+    echo "No package.json found — skipping Monaco setup."
+    exit 0
+fi
+
+echo "==> Installing npm dependencies..."
+npm install --no-audit --no-fund
+
+echo "==> Copying Monaco dist to public/monaco/..."
+rm -rf public/monaco/vs
+mkdir -p public/monaco
+cp -r node_modules/monaco-editor/min/vs public/monaco/
+
+echo "==> Monaco setup complete."
+'''
+
 # ── Dev Server ───────────────────────────────────────────────────────────────
 
 [tasks.dev]
 description = "Start cargo-leptos watch (dev server with live reload)"
+dependencies = ["setup-monaco"]
 command = "cargo"
 args = ["leptos", "watch"]
 
@@ -53,6 +78,7 @@ args = ["leptos", "watch"]
 
 [tasks.build]
 description = "Release build via cargo-leptos"
+dependencies = ["setup-monaco"]
 command = "cargo"
 args = ["leptos", "build", "--release"]
 

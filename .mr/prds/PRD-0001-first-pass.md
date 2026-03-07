@@ -323,7 +323,7 @@ tasks:
   - id: T-022
     title: "Bundle Monaco editor JS/CSS with the server"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Monaco must be served from the ironpad server (no CDN, per MegaPrd OQ5 option b).
       Options: (a) npm install monaco-editor, copy dist to site assets,
@@ -1234,3 +1234,17 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
 - **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-022 Completed
+- **Task**: Bundle Monaco editor JS/CSS with the server
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `package.json` with `monaco-editor` (v0.55.1) dependency — Monaco is installed via npm and copied to `public/monaco/` at build time.
+  - Copied `node_modules/monaco-editor/min/vs/` to `public/monaco/vs/` — serves Monaco AMD loader, editor core, CSS, workers, and language assets from the ironpad server (no CDN, per MegaPrd OQ5 option b).
+  - Created `public/monaco/init.js` — configures the AMD loader (`require.config({ paths: { vs: "/monaco/vs" } })`) and sets `window.MonacoEnvironment.getWorkerUrl` to map worker labels (json, css, html, typescript, editor) to the correct content-hashed worker files under `/monaco/vs/assets/`.
+  - Updated `crates/ironpad-app/src/lib.rs` — added `<script src="/monaco/vs/loader.js">` and `<script src="/monaco/init.js">` to the shell's `<head>` section, ensuring the Monaco AMD loader and worker configuration are available on every page.
+  - Updated `Makefile.toml` — added `setup-monaco` task (runs `npm install` + copies dist files to `public/monaco/`), wired as dependency for `dev` and `build` tasks so Monaco is always available.
+  - Updated `.gitignore` — added `public/monaco/vs/` (generated from node_modules, not committed).
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
+- **Constitution Compliance**: No violations. The hashed worker filenames in `init.js` are tied to monaco-editor v0.55.1; when the dependency is updated, `setup-monaco` will copy new files and the hashes in `init.js` will need updating (documented in init.js comments).
