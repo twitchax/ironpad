@@ -65,7 +65,7 @@ acceptance_tests:
   - id: uat-009
     name: "Sample notebook is pre-loaded on first run"
     command: cargo make uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-010
     name: "Binary accepts --data-dir and --cache-dir flags and uses them"
     command: cargo make test
@@ -1788,3 +1788,14 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Asserts Monaco squiggly error markers appear (`.squiggly-error`)
   - Asserts error panel is visible with "mismatched types" diagnostic
   - All 7 Playwright tests pass
+
+## 2026-03-07 — uat-009 Verification
+- **UAT**: Sample notebook is pre-loaded on first run
+- **Status**: ✅ Verified
+- **Method**: New test + existing unit tests
+- **Details**:
+  - New E2E test: `tests/e2e/seed.spec.ts` — "sample notebook is pre-loaded on first run"
+  - Navigates to home page, verifies "Welcome to ironpad" notebook card is visible with 2 cells
+  - Clicks into the notebook and verifies 2 cell cards are present
+  - Existing unit tests in `crates/ironpad-app/src/notebook/seed.rs` cover seeding logic (5 tests)
+  - All 8 Playwright tests pass, all unit tests pass
