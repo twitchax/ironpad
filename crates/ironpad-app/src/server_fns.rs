@@ -1,5 +1,9 @@
-use ironpad_common::{CompileRequest, CompileResponse};
+use ironpad_common::{
+    CellManifest, CompileRequest, CompileResponse, NotebookManifest, NotebookSummary,
+};
 use leptos::prelude::*;
+
+// ── Compilation ──────────────────────────────────────────────────────────────
 
 /// Compile a single cell's Rust source into a WASM blob.
 ///
@@ -121,4 +125,211 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
             })
         }
     }
+}
+
+// ── Notebook CRUD ────────────────────────────────────────────────────────────
+
+/// Lists all notebooks, sorted by most recently updated.
+#[server]
+pub async fn list_notebooks() -> Result<Vec<NotebookSummary>, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+
+    let summaries = crate::notebook::storage::list_notebooks(&config.data_dir)
+        .map_err(|e| ServerFnError::new(format!("failed to list notebooks: {e}")))?;
+
+    Ok(summaries)
+}
+
+/// Creates a new notebook with the given title.
+#[server]
+pub async fn create_notebook(title: String) -> Result<NotebookManifest, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+
+    let manifest = crate::notebook::storage::create_notebook(&config.data_dir, &title)
+        .map_err(|e| ServerFnError::new(format!("failed to create notebook: {e}")))?;
+
+    Ok(manifest)
+}
+
+/// Retrieves a notebook manifest by ID.
+#[server]
+pub async fn get_notebook(id: String) -> Result<NotebookManifest, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let uuid = parse_uuid(&id)?;
+
+    let manifest = crate::notebook::storage::get_notebook(&config.data_dir, &uuid)
+        .map_err(|e| ServerFnError::new(format!("failed to get notebook: {e}")))?;
+
+    Ok(manifest)
+}
+
+/// Updates a notebook's title.
+#[server]
+pub async fn update_notebook(id: String, title: String) -> Result<NotebookManifest, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let uuid = parse_uuid(&id)?;
+
+    let manifest =
+        crate::notebook::storage::update_notebook(&config.data_dir, &uuid, Some(&title), None)
+            .map_err(|e| ServerFnError::new(format!("failed to update notebook: {e}")))?;
+
+    Ok(manifest)
+}
+
+/// Deletes a notebook by ID.
+#[server]
+pub async fn delete_notebook(id: String) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let uuid = parse_uuid(&id)?;
+
+    crate::notebook::storage::delete_notebook(&config.data_dir, &uuid)
+        .map_err(|e| ServerFnError::new(format!("failed to delete notebook: {e}")))?;
+
+    Ok(())
+}
+
+// ── Cell CRUD ────────────────────────────────────────────────────────────────
+
+/// Adds a new cell to a notebook.
+///
+/// If `after_cell_id` is provided, the cell is inserted after that cell;
+/// otherwise it is appended at the end. Returns the new cell manifest.
+#[server]
+pub async fn add_cell(
+    notebook_id: String,
+    after_cell_id: Option<String>,
+) -> Result<CellManifest, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let nb_uuid = parse_uuid(&notebook_id)?;
+
+    // Determine the next label by counting existing cells.
+    let manifest = crate::notebook::storage::get_notebook(&config.data_dir, &nb_uuid)
+        .map_err(|e| ServerFnError::new(format!("failed to read notebook: {e}")))?;
+    let label = format!("Cell {}", manifest.cells.len());
+
+    let cell_id = uuid::Uuid::new_v4().to_string();
+
+    let cell = crate::notebook::cells::add_cell(
+        &config.data_dir,
+        &nb_uuid,
+        &cell_id,
+        &label,
+        after_cell_id.as_deref(),
+    )
+    .map_err(|e| ServerFnError::new(format!("failed to add cell: {e}")))?;
+
+    Ok(cell)
+}
+
+/// Updates a cell's source code.
+#[server]
+pub async fn update_cell_source(
+    notebook_id: String,
+    cell_id: String,
+    source: String,
+) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let nb_uuid = parse_uuid(&notebook_id)?;
+
+    crate::notebook::cells::update_cell_source(&config.data_dir, &nb_uuid, &cell_id, &source)
+        .map_err(|e| ServerFnError::new(format!("failed to update cell source: {e}")))?;
+
+    Ok(())
+}
+
+/// Updates a cell's Cargo.toml.
+#[server]
+pub async fn update_cell_cargo_toml(
+    notebook_id: String,
+    cell_id: String,
+    cargo_toml: String,
+) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let nb_uuid = parse_uuid(&notebook_id)?;
+
+    crate::notebook::cells::update_cell_cargo_toml(
+        &config.data_dir,
+        &nb_uuid,
+        &cell_id,
+        &cargo_toml,
+    )
+    .map_err(|e| ServerFnError::new(format!("failed to update cell Cargo.toml: {e}")))?;
+
+    Ok(())
+}
+
+/// Deletes a cell from a notebook.
+#[server]
+pub async fn delete_cell(notebook_id: String, cell_id: String) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let nb_uuid = parse_uuid(&notebook_id)?;
+
+    crate::notebook::cells::delete_cell(&config.data_dir, &nb_uuid, &cell_id)
+        .map_err(|e| ServerFnError::new(format!("failed to delete cell: {e}")))?;
+
+    Ok(())
+}
+
+/// Reorders cells in a notebook.
+///
+/// `cell_ids` must contain the IDs of all existing cells in the desired order.
+#[server]
+pub async fn reorder_cells(
+    notebook_id: String,
+    cell_ids: Vec<String>,
+) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let nb_uuid = parse_uuid(&notebook_id)?;
+
+    crate::notebook::cells::reorder_cells(&config.data_dir, &nb_uuid, &cell_ids)
+        .map_err(|e| ServerFnError::new(format!("failed to reorder cells: {e}")))?;
+
+    Ok(())
+}
+
+/// Renames a cell's label.
+#[server]
+pub async fn rename_cell(
+    notebook_id: String,
+    cell_id: String,
+    label: String,
+) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let nb_uuid = parse_uuid(&notebook_id)?;
+
+    crate::notebook::cells::rename_cell(&config.data_dir, &nb_uuid, &cell_id, &label)
+        .map_err(|e| ServerFnError::new(format!("failed to rename cell: {e}")))?;
+
+    Ok(())
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Parses a UUID string, returning a `ServerFnError` on failure.
+#[cfg(feature = "ssr")]
+fn parse_uuid(id: &str) -> Result<uuid::Uuid, ServerFnError> {
+    id.parse::<uuid::Uuid>()
+        .map_err(|e| ServerFnError::new(format!("invalid notebook ID '{id}': {e}")))
 }

@@ -259,7 +259,7 @@ tasks:
   - id: T-016
     title: "Server functions for notebook and cell operations"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Leptos #[server] fns: list_notebooks, create_notebook(title),
       get_notebook(id), update_notebook(id, title),
@@ -1149,4 +1149,26 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Updated `crates/ironpad-app/src/notebook/mod.rs` — registered `cells` module.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on UI, server functions (T-016+), and Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-016 Completed
+- **Task**: Server functions for notebook and cell operations
+- **Status**: ✅ Done
+- **Changes**:
+  - Updated `crates/ironpad-app/src/server_fns.rs` — added 11 Leptos `#[server]` functions wrapping the notebook/cell storage layer:
+    - `list_notebooks()` → `Vec<NotebookSummary>` — lists all notebooks sorted by most recently updated.
+    - `create_notebook(title)` → `NotebookManifest` — creates a new notebook with the given title.
+    - `get_notebook(id)` → `NotebookManifest` — retrieves a notebook manifest by UUID string.
+    - `update_notebook(id, title)` → `NotebookManifest` — updates a notebook's title.
+    - `delete_notebook(id)` → `()` — deletes a notebook by ID.
+    - `add_cell(notebook_id, after_cell_id)` → `CellManifest` — adds a new cell with auto-generated UUID and sequential label.
+    - `update_cell_source(notebook_id, cell_id, source)` → `()` — updates a cell's source code.
+    - `update_cell_cargo_toml(notebook_id, cell_id, cargo_toml)` → `()` — updates a cell's Cargo.toml.
+    - `delete_cell(notebook_id, cell_id)` → `()` — deletes a cell from a notebook.
+    - `reorder_cells(notebook_id, cell_ids)` → `()` — reorders cells in a notebook.
+    - `rename_cell(notebook_id, cell_id, label)` → `()` — renames a cell's label.
+  - Added `parse_uuid()` SSR-gated helper for converting string IDs to `Uuid` with proper error handling.
+  - All server functions follow the existing `compile_cell` pattern: `expect_context::<AppConfig>()`, `map_err` to `ServerFnError::new()`.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on UI components (T-018+) and Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.
