@@ -33,7 +33,7 @@ acceptance_tests:
   - id: uat-001
     name: "Server starts and home page loads in browser"
     command: cargo make uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-002
     name: "Can create a new notebook from the home page"
     command: cargo make uat
@@ -589,7 +589,7 @@ tasks:
   - id: T-046
     title: "Playwright smoke test — home page loads"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Test: navigate to /, verify "ironpad" title/branding is visible,
       verify the page renders without JS errors.
@@ -1498,3 +1498,16 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests ✅, 1 Playwright test passes ✅).
 - **Opportunistic UAT**: uat-001 ("Server starts and home page loads in browser") is now functionally verified by the sanity Playwright test — server starts and responds to `/` with a non-error status. Formal verification deferred to T-046 which will add proper title/branding checks.
 - **Constitution Compliance**: Fixed pre-existing build issues (wasm-bindgen version, feature gates, Thaw SSR) that were tightly coupled to making Playwright work. These are root cause fixes (Rule 6) with minimal scope (Rule 3).
+
+## 2026-03-07 — T-046 Completed
+- **Task**: Playwright smoke test — home page loads
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `tests/e2e/home.spec.ts` with a Playwright test that:
+    - Navigates to `/` and asserts HTTP 200 response
+    - Verifies page title matches "ironpad"
+    - Verifies the `.ironpad-brand` link is visible with text "ironpad"
+    - Verifies the `.ironpad-home` content area is visible
+    - Collects and asserts no JS errors occurred during page load
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, tests ✅, 2 Playwright tests pass ✅)
+- **Opportunistic UAT**: uat-001 ("Server starts and home page loads in browser") is now formally verified — the new test confirms server starts, page loads at `/` with 200 status, title is "ironpad", and branding is visible.
