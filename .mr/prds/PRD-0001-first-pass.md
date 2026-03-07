@@ -548,7 +548,7 @@ tasks:
   - id: T-043
     title: "Dark theme CSS and overall styling"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Thaw ThemeProvider with dark mode as default.
       Custom CSS for: notebook layout spacing, cell card styling,
@@ -1663,3 +1663,22 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - All four required shortcuts are now implemented: Shift+Enter (run cell, via Monaco addAction), Ctrl+S (save, global listener), Ctrl+Shift+Enter (run all, global listener), Ctrl+Shift+N (add cell, global listener).
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
 - **Constitution Compliance**: No violations. Single file changed (Rule 3 — Minimal Changes). Follows existing keydown handler pattern (Rule 4 — Consistency). No public API changes (Rule 5).
+
+## 2026-03-07 — T-043 Completed
+- **Task**: Dark theme CSS and overall styling
+- **Status**: ✅ Done
+- **Changes**:
+  - Added CSS custom properties (`:root` variables) to `style/main.scss` for the ironpad color palette, typography, border radii, and transitions — centralizing the design tokens for consistency and future theme extensions.
+  - Added box-sizing reset (`border-box`) and improved base typography: `line-height: 1.5`, `-webkit-font-smoothing: antialiased`, font stack with Inter as primary sans-serif.
+  - Added `::selection` styling with accent color overlay.
+  - Added global anchor (`a`) styling with info-blue color, hover underline, and focus-visible outline ring.
+  - Added custom scrollbar styling for WebKit (`::-webkit-scrollbar*`) and Firefox (`scrollbar-width: thin; scrollbar-color`) matching the dark theme.
+  - Added Thaw component overrides via CSS variables on `.thaw-config-provider`: brand colors mapped to ironpad accent (#e94560), neutral backgrounds/foregrounds matched to ironpad palette, font family override.
+  - Styled individual Thaw components: `.thaw-button` (transitions, radius, focus ring), `.thaw-card` (radius, border, background), `.thaw-tab--selected` (accent color), `.thaw-spinner__spinner-tail` (accent stroke), `.thaw-tag` (pill radius, font sizing), `.thaw-layout` (background).
+  - Added focus ring utility for all interactive elements (`button:focus-visible`, `input:focus-visible`, etc.) using the accent color.
+  - Added monospace font-family consolidation rule applying `var(--ip-font-mono)` to `code`, `pre`, `kbd`, compile/error/output panels.
+  - Replaced hardcoded `'Fira Code', 'Consolas', monospace` font stacks in `.ironpad-compile-result`, `.ironpad-error-panel`, and `.ironpad-output-panel` with `var(--ip-font-mono)`.
+  - Added desktop-first responsive breakpoints: `@media (max-width: 1024px)` (full-width editor, reduced padding), `@media (max-width: 768px)` (smaller header, single-column notebook grid, wrapping cell headers, smaller Monaco), `@media (max-width: 480px)` (hidden notebook title, stacked home header).
+  - Total SCSS grew from 817 to 1065 lines.
+  - `cargo make uat` ✅ passes (4 Playwright tests ✅)
+- **Constitution Compliance**: No violations. CSS-only changes — no Rust code modified (Rule 3 — Minimal Changes). Follows existing SCSS class naming patterns (Rule 4 — Consistency). No public API changes (Rule 5). Centralized design tokens via CSS variables satisfies Rule 1 (DRY).
