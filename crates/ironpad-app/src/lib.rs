@@ -35,6 +35,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <script src="/monaco/vs/loader.js"></script>
                 <script src="/monaco/init.js"></script>
                 <script src="/monaco/bridge.js"></script>
+
+                // WASM cell executor.
+                <script src="/executor.js"></script>
             </head>
             <body>
                 <App/>

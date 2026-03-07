@@ -478,7 +478,7 @@ tasks:
   - id: T-036
     title: "WASM executor JS module"
     priority: 2
-    status: todo
+    status: done
     notes: >
       JavaScript module (served with the app) implementing the CellExecutor
       class from MegaPrd §7.5. Key methods:
@@ -1422,4 +1422,19 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
     - Uses span label when available, falls back to diagnostic message.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: uat-006 ("Compiler errors render inline in Monaco with span highlighting") is functionally implemented but cannot be verified without Playwright (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-036 Completed
+- **Task**: WASM executor JS module
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `public/executor.js` — JS module (`window.IronpadExecutor`) implementing the CellExecutor class from MegaPrd §7.5.
+  - `loadBlob(cellId, hash, wasmBytes)` — instantiates a WASM module via `WebAssembly.instantiate`, caches by cell ID + hash (skip if already loaded with same hash).
+  - `execute(cellId, inputBytes)` — allocates input in WASM linear memory via `ironpad_alloc`, calls `cell_main`, reads the `CellResult` struct (output_ptr, output_len, display_ptr, display_len) from memory, copies output bytes and decodes UTF-8 display text, cleans up all allocations via `ironpad_dealloc`. Returns `{ outputBytes, displayText }`.
+  - Handles both wasm32 C ABI calling conventions: sret (3-param, struct returned via pointer) and direct pointer return (2-param), detected via `cell_main.length`.
+  - Graceful error handling: validates all required exports (memory, ironpad_alloc, ironpad_dealloc, cell_main), catches WASM traps with cleanup, reports OOM from alloc failures.
+  - Added `unload(cellId)` for removing cached modules and `isLoaded(cellId, hash)` for cache queries.
+  - Updated `crates/ironpad-app/src/lib.rs` — added `<script src="/executor.js">` to the shell `<head>` section, making the executor available on page load.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+) and a running server.
 - **Constitution Compliance**: No violations.
