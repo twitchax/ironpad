@@ -41,7 +41,7 @@ acceptance_tests:
   - id: uat-003
     name: "Can add a cell to a notebook and see Monaco editor"
     command: cargo make uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-004
     name: "Can compile a trivial cell and see WASM execution output"
     command: cargo make uat
@@ -1767,3 +1767,12 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Test file: `tests/e2e/notebook.spec.ts` — test `"create notebook and add cell"` (line 4)
   - The test navigates to home page, clicks "+ New Notebook", verifies navigation to `/notebook/{id}`, and confirms the notebook editor is visible.
   - `cargo make uat` passed: 6/6 Playwright tests ✅
+
+## 2026-03-07 — uat-003 Verification
+- **UAT**: Can add a cell to a notebook and see Monaco editor
+- **Status**: ✅ Verified
+- **Method**: Enhanced existing test
+- **Details**:
+  - Test file: `tests/e2e/notebook.spec.ts` — "create notebook and add cell"
+  - Added explicit `.monaco-editor` visibility assertion with 15s timeout
+  - All 6 Playwright tests pass

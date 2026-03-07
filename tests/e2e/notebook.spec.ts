@@ -34,6 +34,11 @@ test.describe("Notebook", () => {
     await expect(cells).toHaveCount(1);
     await expect(page.locator(".ironpad-cell-editor-pane").first()).toBeVisible();
 
+    // Verify the Monaco editor is mounted inside the cell (uat-003).
+    await expect(
+      cells.first().locator(".monaco-editor").first()
+    ).toBeVisible({ timeout: 15_000 });
+
     // Click "+ Add Cell" again to add a second cell.
     await page.locator(".ironpad-add-cell-btn").last().click();
 
