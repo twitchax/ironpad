@@ -69,7 +69,7 @@ acceptance_tests:
   - id: uat-010
     name: "Binary accepts --data-dir and --cache-dir flags and uses them"
     command: cargo make test
-    uat_status: unverified
+    uat_status: verified
 
 tasks:
   # ── Phase 0: Project Scaffolding ───────────────────────────────────────
@@ -1799,3 +1799,13 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Clicks into the notebook and verifies 2 cell cards are present
   - Existing unit tests in `crates/ironpad-app/src/notebook/seed.rs` cover seeding logic (5 tests)
   - All 8 Playwright tests pass, all unit tests pass
+
+## 2026-03-07 — uat-010 Verification
+- **UAT**: Binary accepts --data-dir and --cache-dir flags and uses them
+- **Status**: ✅ Verified
+- **Method**: Existing tests
+- **Details**:
+  - `crates/ironpad-server/src/config.rs` — `config::tests::default_values`: verifies default `--data-dir` and `--cache-dir` values
+  - `crates/ironpad-server/src/config.rs` — `config::tests::cli_args_override`: verifies custom `--data-dir` and `--cache-dir` values are accepted
+  - `crates/ironpad-server/src/config.rs` — `config::tests::conversion_to_app_config`: verifies CLI args convert to `AppConfig` correctly
+  - All 122 tests pass via `cargo make test`
