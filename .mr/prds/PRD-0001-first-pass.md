@@ -496,7 +496,7 @@ tasks:
   - id: T-038
     title: "Cell I/O pipeline (output → next cell input)"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Notebook-level state tracking each cell's output bytes.
       When cell N executes, its output is stored and made available as
@@ -1455,4 +1455,18 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - All functions gated with `#[cfg(feature = "hydrate")]` — SSR build unaffected.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+) and a running server.
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-038 Completed
+- **Task**: Cell I/O pipeline (output → next cell input)
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `cell_outputs: RwSignal<HashMap<String, Vec<u8>>>` to `NotebookState` in `crates/ironpad-app/src/pages/notebook_editor.rs` — stores each cell's output bytes keyed by cell ID.
+  - Added `use std::collections::HashMap` import.
+  - Updated compile/execute flow to resolve previous cell's output: finds the cell's position in `state.cells`, looks up the prior cell's output from `cell_outputs` (cell 0 gets empty input).
+  - After successful execution, stores output bytes in `cell_outputs` for downstream cells.
+  - On re-execution, invalidates all downstream cells' cached outputs (this cell and all cells after it).
+  - On cell delete, removes the deleted cell's entry from `cell_outputs`.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: uat-005 ("Two-cell data flow works") is functionally implemented but cannot be verified without Playwright (T-045+).
 - **Constitution Compliance**: No violations.

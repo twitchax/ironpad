@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ironpad_common::{
     CellManifest, CompileRequest, CompileResponse, Diagnostic, ExecutionResult, NotebookManifest,
     Severity,
@@ -40,6 +42,9 @@ struct NotebookState {
     refresh_generation: RwSignal<u64>,
     /// Cell ID that should be scrolled to and focused after creation.
     pending_focus_cell: RwSignal<Option<String>>,
+    /// Per-cell output bytes from the last execution, keyed by cell ID.
+    /// Used to pipe cell N's output as cell N+1's input.
+    cell_outputs: RwSignal<HashMap<String, Vec<u8>>>,
 }
 
 // ── Notebook editor page ────────────────────────────────────────────────────
@@ -61,6 +66,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         active_cell: RwSignal::new(None),
         refresh_generation: RwSignal::new(0),
         pending_focus_cell: RwSignal::new(None),
+        cell_outputs: RwSignal::new(HashMap::new()),
     };
     provide_context(state);
 
@@ -205,6 +211,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id = cell.id.clone();
     let cell_id_for_click = cell.id.clone();
     let cell_id_for_delete = cell.id.clone();
+    let cell_id_for_delete_cleanup = cell.id.clone();
     let cell_id_for_focus = cell.id.clone();
 
     let is_active = move || state.active_cell.get().as_deref() == Some(cell_id.as_str());
@@ -276,6 +283,10 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
 
     Effect::new(move || {
         if let Some(Ok(())) = delete_action.value().get() {
+            // Remove deleted cell's cached output.
+            state.cell_outputs.update(|map| {
+                map.remove(&cell_id_for_delete_cleanup);
+            });
             state.refresh_generation.update(|g| *g += 1);
         }
     });
@@ -318,6 +329,38 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         let cid = cell_id_for_run.get_value();
         let current_source = source.get_untracked();
         let current_cargo_toml = cargo_toml.get_untracked();
+
+        // Resolve the previous cell's output bytes for the I/O pipeline.
+        // Cell 0 receives empty input; all others receive the prior cell's output.
+        let input_bytes = {
+            let cells = state.cells.get_untracked();
+            let my_idx = cells.iter().position(|c| c.id == cid);
+            match my_idx {
+                Some(idx) if idx > 0 => {
+                    let prev_id = &cells[idx - 1].id;
+                    state
+                        .cell_outputs
+                        .get_untracked()
+                        .get(prev_id)
+                        .cloned()
+                        .unwrap_or_default()
+                }
+                _ => vec![],
+            }
+        };
+
+        // Invalidate downstream cells' cached outputs (this cell and all after it).
+        {
+            let cells = state.cells.get_untracked();
+            let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+            let downstream_ids: Vec<String> =
+                cells[my_idx..].iter().map(|c| c.id.clone()).collect();
+            state.cell_outputs.update(|map| {
+                for id in &downstream_ids {
+                    map.remove(id);
+                }
+            });
+        }
 
         cell_status.set(CellStatus::Compiling);
         last_compile.set(None);
@@ -372,9 +415,19 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                 match executor::load_blob(&cell_id_for_exec, &hash, &blob).await {
                                     Ok(()) => {
                                         let exec_start = js_sys::Date::now();
-                                        // Cell input is empty for now; data flow wired by T-038.
-                                        match executor::execute_cell(&cell_id_for_exec, &[]) {
+                                        match executor::execute_cell(
+                                            &cell_id_for_exec,
+                                            &input_bytes,
+                                        ) {
                                             Ok((output_bytes, display_text)) => {
+                                                // Store output for downstream cells.
+                                                state.cell_outputs.update(|map| {
+                                                    map.insert(
+                                                        cell_id_for_exec.clone(),
+                                                        output_bytes.clone(),
+                                                    );
+                                                });
+
                                                 execution_result.set(Some(ExecutionResult {
                                                     display_text,
                                                     output_bytes,
