@@ -13,6 +13,10 @@ thaw.workspace = true
 
 ironpad-common = { workspace = true }
 
+wasm-bindgen = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement"] }
+
 http.workspace = true
 thiserror.workspace = true
 anyhow = { workspace = true, optional = true }
@@ -29,7 +33,7 @@ tempfile = "3"
 
 [features]
 default = []
-hydrate = ["leptos/hydrate"]
+hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:js-sys", "dep:web-sys"]
 ssr = [
     "leptos/ssr",
     "leptos_meta/ssr",

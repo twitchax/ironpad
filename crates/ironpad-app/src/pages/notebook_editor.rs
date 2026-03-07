@@ -4,6 +4,7 @@ use leptos_router::hooks::use_params_map;
 use thaw::{Button, Card, CardHeader, Spinner};
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::monaco_editor::MonacoEditor;
 use crate::server_fns::{add_cell, delete_cell, get_notebook, rename_cell, update_notebook};
 
 // ── Notebook-level reactive state ───────────────────────────────────────────
@@ -264,11 +265,10 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                 </div>
             </CardHeader>
 
-            <div class="ironpad-cell-body-placeholder">
-                <p class="ironpad-cell-placeholder-text">
-                    "Code editor will appear here (Monaco integration pending)"
-                </p>
-            </div>
+            <MonacoEditor
+                initial_value=""
+                language="rust"
+            />
         </Card>
     }
 }

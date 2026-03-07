@@ -335,7 +335,7 @@ tasks:
   - id: T-023
     title: "Monaco Leptos wrapper component via wasm-bindgen"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Create a MonacoEditor Leptos component that:
       (1) Renders a container div with a node_ref,
@@ -1248,3 +1248,24 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
 - **Constitution Compliance**: No violations. The hashed worker filenames in `init.js` are tied to monaco-editor v0.55.1; when the dependency is updated, `setup-monaco` will copy new files and the hashes in `init.js` will need updating (documented in init.js comments).
+
+## 2026-03-07 — T-023 Completed
+- **Task**: Monaco Leptos wrapper component via wasm-bindgen
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `public/monaco/bridge.js` — JS bridge (`window.IronpadMonaco`) wrapping Monaco AMD API with `create`, `getValue`, `setValue`, and `dispose` methods. Handles asynchronous Monaco loading via `require()` with queued operations.
+  - Created `crates/ironpad-app/src/components/monaco_editor.rs` — `MonacoEditor` Leptos component:
+    - Renders a container `<div>` with `NodeRef` for DOM access.
+    - On mount (via `Effect`), creates a Monaco editor through the JS bridge using `#[wasm_bindgen]` extern bindings.
+    - Props: `initial_value` (String), `language` (String, default "rust"), `on_change` (optional `Callback<String>`), `handle` (optional `RwSignal<Option<MonacoEditorHandle>>`).
+    - `MonacoEditorHandle` struct exposes imperative `get_value()` / `set_value()` methods.
+    - Cleanup via `on_cleanup` calls `dispose()` on unmount.
+    - SSR-safe: all JS interop gated behind `#[cfg(feature = "hydrate")]`.
+  - Updated `crates/ironpad-app/src/components/mod.rs` — exported `monaco_editor` module.
+  - Updated `crates/ironpad-app/Cargo.toml` — added `wasm-bindgen`, `js-sys`, `web-sys` (with `HtmlElement`, `HtmlDivElement` features) as optional deps behind `hydrate` feature.
+  - Updated `crates/ironpad-app/src/lib.rs` — added `<script src="/monaco/bridge.js">` to the shell `<head>`.
+  - Updated `crates/ironpad-app/src/pages/notebook_editor.rs` — replaced cell body placeholder with `<MonacoEditor initial_value="" language="rust"/>`.
+  - Updated `style/main.scss` — added `.ironpad-monaco-container` CSS (min-height 200px, rounded bottom corners, overflow hidden).
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
+- **Constitution Compliance**: No violations.

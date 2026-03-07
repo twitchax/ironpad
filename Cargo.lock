@@ -1329,6 +1329,7 @@ dependencies = [
  "chrono",
  "http",
  "ironpad-common",
+ "js-sys",
  "leptos",
  "leptos_axum",
  "leptos_meta",
@@ -1341,6 +1342,8 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

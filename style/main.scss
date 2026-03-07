@@ -313,6 +313,15 @@ body {
     margin: 0;
 }
 
+/* ── Monaco editor container ──────────────────────────────────────── */
+
+.ironpad-monaco-container {
+    width: 100%;
+    min-height: 200px;
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+}
+
 /* ── Add cell button ─────────────────────────────────────────────────── */
 
 .ironpad-add-cell-row {
