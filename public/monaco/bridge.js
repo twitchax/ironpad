@@ -116,6 +116,14 @@
       }
     },
 
+    focus: function (id) {
+      var record = editors[id];
+      if (!record) return;
+      if (record.editor) {
+        record.editor.focus();
+      }
+    },
+
     dispose: function (id) {
       var record = editors[id];
       if (!record) return;

@@ -38,6 +38,8 @@ struct NotebookState {
     active_cell: RwSignal<Option<String>>,
     /// Triggers a notebook refetch when incremented.
     refresh_generation: RwSignal<u64>,
+    /// Cell ID that should be scrolled to and focused after creation.
+    pending_focus_cell: RwSignal<Option<String>>,
 }
 
 // ── Notebook editor page ────────────────────────────────────────────────────
@@ -58,6 +60,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         cells: RwSignal::new(Vec::new()),
         active_cell: RwSignal::new(None),
         refresh_generation: RwSignal::new(0),
+        pending_focus_cell: RwSignal::new(None),
     };
     provide_context(state);
 
@@ -150,9 +153,10 @@ fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
         async move { add_cell(nb_id, after).await }
     });
 
-    // Refresh notebook when a cell is added.
+    // Refresh notebook when a cell is added, and mark the new cell for focus.
     Effect::new(move || {
-        if let Some(Ok(_)) = add_cell_action.value().get() {
+        if let Some(Ok(new_cell)) = add_cell_action.value().get() {
+            state.pending_focus_cell.set(Some(new_cell.id.clone()));
             state.refresh_generation.update(|g| *g += 1);
         }
     });
@@ -201,6 +205,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id = cell.id.clone();
     let cell_id_for_click = cell.id.clone();
     let cell_id_for_delete = cell.id.clone();
+    let cell_id_for_focus = cell.id.clone();
 
     let is_active = move || state.active_cell.get().as_deref() == Some(cell_id.as_str());
 
@@ -519,9 +524,51 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         }
     });
 
+    // ── Scroll-to & focus when this cell is newly added ─────────────────
+
+    let cell_wrapper_ref: NodeRef<leptos::html::Div> = NodeRef::new();
+
+    Effect::new(move || {
+        let pending = state.pending_focus_cell.get();
+        if pending.as_deref() != Some(cell_id_for_focus.as_str()) {
+            return;
+        }
+
+        // Clear the pending focus to avoid re-triggering.
+        state.pending_focus_cell.set(None);
+
+        // Scroll the cell card into view.
+        if let Some(el) = cell_wrapper_ref.get_untracked() {
+            let html_el: &web_sys::Element = &el;
+            html_el.scroll_into_view();
+        }
+
+        // Focus the source editor after a short delay to allow Monaco to
+        // initialise asynchronously via the AMD loader.
+        #[cfg(feature = "hydrate")]
+        {
+            use wasm_bindgen::prelude::*;
+
+            let handle = source_handle;
+            let closure = Closure::<dyn Fn()>::new(move || {
+                if let Some(h) = handle.get_untracked() {
+                    h.focus();
+                }
+            });
+            let focus_fn: js_sys::Function =
+                closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
+            closure.forget();
+
+            let _ = web_sys::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&focus_fn, 300);
+        }
+    });
+
     // ── Render ──────────────────────────────────────────────────────────
 
     view! {
+        <div node_ref=cell_wrapper_ref>
         <Card
             class=cell_class
             on:click=on_click
@@ -673,6 +720,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                 execution_result=execution_result
             />
         </Card>
+        </div>
     }
 }
 

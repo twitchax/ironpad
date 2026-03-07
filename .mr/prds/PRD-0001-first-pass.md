@@ -443,7 +443,7 @@ tasks:
   - id: T-033
     title: "Add Cell button between cells and at bottom"
     priority: 2
-    status: todo
+    status: done
     notes: >
       "+" button rendered between every pair of cells and at the bottom.
       On click, calls add_cell server fn (inserts after the preceding cell).
@@ -1377,3 +1377,18 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: Added `code` field to public `Diagnostic` struct — this is a necessary API change required by T-031's error code linking requirement. Backward-compatible due to `serde(default)`.
+
+## 2026-03-07 — T-033 Completed
+- **Task**: Add Cell button between cells and at bottom
+- **Status**: ✅ Done
+- **Changes**:
+  - The `AddCellButton` component and basic add-cell flow already existed from prior tasks. This task completed the missing scroll-to-and-focus behavior for newly added cells.
+  - Added `focus()` method to `IronpadMonaco` JS bridge (`public/monaco/bridge.js`).
+  - Added `focus` wasm-bindgen binding and `MonacoEditorHandle::focus()` method in `crates/ironpad-app/src/components/monaco_editor.rs`.
+  - Added `pending_focus_cell: RwSignal<Option<String>>` to `NotebookState` in `crates/ironpad-app/src/pages/notebook_editor.rs`.
+  - Updated add-cell effect to capture the new cell's ID and set `pending_focus_cell`.
+  - Added scroll-to-and-focus `Effect` in `CellItem` that triggers when `pending_focus_cell` matches, using `scrollIntoView()` and a 300ms delayed `focus()` call to allow Monaco async initialization.
+  - Wrapped cell `Card` in a `<div node_ref=cell_wrapper_ref>` for scroll targeting.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.

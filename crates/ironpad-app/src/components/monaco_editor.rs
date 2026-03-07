@@ -44,6 +44,10 @@ mod js {
             callback: &js_sys::Function,
         );
 
+        /// Focus the editor identified by `id`.
+        #[wasm_bindgen(js_namespace = IronpadMonaco)]
+        pub fn focus(id: f64);
+
         /// Dispose the editor identified by `id`, freeing resources.
         #[wasm_bindgen(js_namespace = IronpadMonaco)]
         pub fn dispose(id: f64);
@@ -85,6 +89,16 @@ impl MonacoEditorHandle {
         // Suppress unused-variable warning during SSR build.
         #[cfg(not(feature = "hydrate"))]
         let _ = value;
+    }
+
+    /// Focus the editor.  No-op during SSR or before mount.
+    pub fn focus(&self) {
+        #[cfg(feature = "hydrate")]
+        {
+            if let Some(id) = self.editor_id.get_untracked() {
+                js::focus(id);
+            }
+        }
     }
 
     /// Register a keybinding action on the editor.
