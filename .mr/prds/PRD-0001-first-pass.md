@@ -233,7 +233,7 @@ tasks:
   - id: T-014
     title: "Notebook filesystem CRUD"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Under {data_dir}/notebooks/{id}/:
       Create: generate UUID, write ironpad.json manifest + cells/ dir.
@@ -1108,3 +1108,24 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 56 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline, UI, and Playwright infrastructure being functional.
 - **Constitution Compliance**: T-012 was implemented alongside T-013 because T-013 explicitly references "optimize (T-012)" as a pipeline stage. Implementing them together avoids creating a compile_cell function that skips a documented step. No other constitutional violations.
+
+## 2026-03-07 — T-014 Completed
+- **Task**: Notebook filesystem CRUD
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `chrono` as optional SSR-gated dependency in `crates/ironpad-app/Cargo.toml`.
+  - Created `crates/ironpad-app/src/notebook/mod.rs` — notebook module declaration.
+  - Created `crates/ironpad-app/src/notebook/storage.rs` — full notebook filesystem CRUD:
+    - Path helpers: `notebooks_dir()`, `notebook_dir()`, `manifest_path()`.
+    - `create_notebook(data_dir, title)` — generates UUID, writes `ironpad.json` manifest, creates `cells/` directory.
+    - `get_notebook(data_dir, id)` — reads and parses `ironpad.json` manifest.
+    - `update_notebook(data_dir, id, title?, cells?)` — updates manifest fields, bumps `updated_at`.
+    - `delete_notebook(data_dir, id)` — removes entire notebook directory.
+    - `list_notebooks(data_dir)` — scans `notebooks/` dir, returns `Vec<NotebookSummary>` sorted by `updated_at` descending, gracefully skips malformed entries.
+    - Internal helpers: `write_manifest()`, `read_manifest()`.
+    - Uses `anyhow::Result` with `.context()` for error handling, `tracing` for diagnostics.
+    - 15 unit tests: create writes manifest and cells dir, get reads manifest, get missing returns error, update title, update cells, delete removes directory, delete missing returns error, list empty, list returns summaries, list sorted by updated_at descending, list skips malformed manifests, list skips non-directory entries, list skips dir without manifest, round-trip preserves all fields, summary cell_count matches.
+  - Updated `crates/ironpad-app/src/lib.rs` — added `#[cfg(feature = "ssr")] pub mod notebook;`.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 71 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — uat-007 (notebook persistence after save/reload) and uat-009 (sample notebook pre-loaded) depend on UI and server function tasks (T-016+, T-017+).
+- **Constitution Compliance**: No violations.

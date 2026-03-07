@@ -1,6 +1,9 @@
 #[cfg(feature = "ssr")]
 pub mod compiler;
 
+#[cfg(feature = "ssr")]
+pub mod notebook;
+
 pub mod server_fns;
 
 use leptos::prelude::*;
