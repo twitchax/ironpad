@@ -316,6 +316,71 @@ body {
     gap: 4px;
 }
 
+/* ── Cell menu dropdown ────────────────────────────────────────────── */
+
+.ironpad-cell-menu-wrapper {
+    position: relative;
+    display: inline-block;
+}
+
+.ironpad-cell-menu-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 99;
+}
+
+.ironpad-cell-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 100;
+    min-width: 160px;
+    background: #1a1a2e;
+    border: 1px solid #0f3460;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    padding: 4px 0;
+}
+
+.ironpad-cell-menu-item {
+    display: block;
+    width: 100%;
+    padding: 8px 14px;
+    background: transparent;
+    border: none;
+    color: #eaeaea;
+    font-size: 0.85rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.ironpad-cell-menu-item:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.ironpad-cell-menu-item:disabled {
+    color: #555;
+    cursor: not-allowed;
+}
+
+.ironpad-cell-menu-item--danger {
+    color: #e94560;
+}
+
+.ironpad-cell-menu-item--danger:hover:not(:disabled) {
+    background: rgba(233, 69, 96, 0.15);
+}
+
+.ironpad-cell-menu-divider {
+    height: 1px;
+    margin: 4px 0;
+    background: #0f3460;
+}
+
 /* ── Cell status indicator ──────────────────────────────────────────── */
 
 @keyframes ironpad-status-pulse {

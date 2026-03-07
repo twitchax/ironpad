@@ -349,6 +349,28 @@ pub async fn rename_cell(
     Ok(())
 }
 
+/// Duplicates a cell, creating a new cell with copied source and Cargo.toml.
+///
+/// Returns the new cell's manifest entry.
+#[server]
+pub async fn duplicate_cell(
+    notebook_id: String,
+    cell_id: String,
+) -> Result<CellManifest, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let nb_uuid = parse_uuid(&notebook_id)?;
+
+    let new_cell_id = uuid::Uuid::new_v4().to_string();
+
+    let cell =
+        crate::notebook::cells::duplicate_cell(&config.data_dir, &nb_uuid, &cell_id, &new_cell_id)
+            .map_err(|e| ServerFnError::new(format!("failed to duplicate cell: {e}")))?;
+
+    Ok(cell)
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Parses a UUID string, returning a `ServerFnError` on failure.

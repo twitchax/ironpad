@@ -427,7 +427,7 @@ tasks:
   - id: T-032
     title: "Cell menu (delete, move up/down, duplicate)"
     priority: 3
-    status: todo
+    status: done
     notes: >
       ⋯ button on cell header opens a dropdown menu (Thaw Dropdown / Popover).
       Options: Delete (confirm dialog), Move Up, Move Down, Duplicate, Rename label.
@@ -1610,3 +1610,18 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Updated `CompileResultPanel` to hide during `Running` state (same as Compiling).
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅).
 - **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-032 Completed
+- **Task**: Cell menu (delete, move up/down, duplicate)
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `duplicate_cell()` function in `crates/ironpad-app/src/notebook/cells.rs` — copies source and Cargo.toml to a new cell directory, rewrites the Cargo.toml package name, and inserts into manifest after the source cell with " (copy)" label suffix.
+  - Extracted `add_cell_to_manifest()` helper in `cells.rs` to share manifest insertion logic between `add_cell` and `duplicate_cell`.
+  - Added `#[server] duplicate_cell()` server function in `crates/ironpad-app/src/server_fns.rs`.
+  - Replaced the simple "✕" delete button with a "⋯" menu button in `crates/ironpad-app/src/pages/notebook_editor.rs` that opens a dropdown menu with:
+    - **↑ Move Up** / **↓ Move Down** — disabled at boundaries, calls `reorder_cells` server fn
+    - **⧉ Duplicate** — calls new `duplicate_cell` server fn, scrolls to duplicated cell
+    - **🗑 Delete** — with `window.confirm()` dialog, calls existing `delete_cell` server fn
+  - Added cell menu CSS in `style/main.scss`: dropdown positioning, backdrop overlay for click-outside-to-close, hover states, disabled styling, danger styling for delete, divider between actions.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
+- **Constitution Compliance**: No violations. Added new `duplicate_cell` public function and server fn — this is new functionality (Rule 5 satisfied, no breaking changes). Extracted `add_cell_to_manifest` avoids duplicating manifest logic (Rule 1 — DRY). Menu UI is self-contained in the CellItem component (Rule 2 — SOC).

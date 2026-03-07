@@ -90,35 +90,7 @@ pub fn add_cell(
     std::fs::write(&toml, default_cargo_toml(cell_id))
         .with_context(|| format!("Failed to write default Cargo.toml: {}", toml.display()))?;
 
-    // Update manifest.
-    let mut manifest = storage::get_notebook(data_dir, notebook_id)?;
-
-    let insert_idx = match after_cell_id {
-        Some(after_id) => manifest
-            .cells
-            .iter()
-            .position(|c| c.id == after_id)
-            .map(|pos| pos + 1)
-            .unwrap_or(manifest.cells.len()),
-        None => manifest.cells.len(),
-    };
-
-    let new_cell = CellManifest {
-        id: cell_id.to_string(),
-        order: 0, // renumbered below
-        label: label.to_string(),
-    };
-
-    manifest.cells.insert(insert_idx, new_cell);
-    renumber_cells(&mut manifest.cells);
-
-    storage::update_notebook(data_dir, notebook_id, None, Some(manifest.cells))?;
-
-    let cell = CellManifest {
-        id: cell_id.to_string(),
-        order: insert_idx as u32,
-        label: label.to_string(),
-    };
+    let cell = add_cell_to_manifest(data_dir, notebook_id, cell_id, label, after_cell_id)?;
 
     tracing::info!(notebook_id = %notebook_id, cell_id = %cell_id, "added cell");
     Ok(cell)
@@ -245,6 +217,70 @@ pub fn reorder_cells(data_dir: &Path, notebook_id: &Uuid, cell_ids: &[String]) -
     Ok(())
 }
 
+/// Duplicates a cell, creating a new cell with copied source and Cargo.toml.
+///
+/// The new cell is inserted immediately after the source cell in the manifest.
+/// A fresh UUID is assigned and the label gets a " (copy)" suffix.
+pub fn duplicate_cell(
+    data_dir: &Path,
+    notebook_id: &Uuid,
+    source_cell_id: &str,
+    new_cell_id: &str,
+) -> Result<CellManifest> {
+    // Read the source cell's content.
+    let src = get_cell_source(data_dir, notebook_id, source_cell_id)?;
+    let toml = get_cell_cargo_toml(data_dir, notebook_id, source_cell_id)?;
+
+    // Look up the source cell's label in the manifest.
+    let manifest = storage::get_notebook(data_dir, notebook_id)?;
+    let source_cell = manifest
+        .cells
+        .iter()
+        .find(|c| c.id == source_cell_id)
+        .with_context(|| format!("Cell not found: {source_cell_id}"))?;
+    let new_label = format!("{} (copy)", source_cell.label);
+
+    // Create the new cell directory with copied content.
+    let dir = cell_dir(data_dir, notebook_id, new_cell_id);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create cell directory: {}", dir.display()))?;
+
+    let src_path = source_path(data_dir, notebook_id, new_cell_id);
+    std::fs::write(&src_path, &src)
+        .with_context(|| format!("Failed to write duplicated source: {}", src_path.display()))?;
+
+    // Rewrite the Cargo.toml [package] name to match the new cell ID.
+    let new_toml = toml.replace(
+        &format!("name = \"{source_cell_id}\""),
+        &format!("name = \"{new_cell_id}\""),
+    );
+
+    let toml_path = cargo_toml_path(data_dir, notebook_id, new_cell_id);
+    std::fs::write(&toml_path, &new_toml).with_context(|| {
+        format!(
+            "Failed to write duplicated Cargo.toml: {}",
+            toml_path.display()
+        )
+    })?;
+
+    // Insert the new cell into the manifest after the source cell.
+    let cell = add_cell_to_manifest(
+        data_dir,
+        notebook_id,
+        new_cell_id,
+        &new_label,
+        Some(source_cell_id),
+    )?;
+
+    tracing::info!(
+        notebook_id = %notebook_id,
+        source_cell_id = %source_cell_id,
+        new_cell_id = %new_cell_id,
+        "duplicated cell"
+    );
+    Ok(cell)
+}
+
 /// Renames a cell's label in the notebook manifest.
 pub fn rename_cell(
     data_dir: &Path,
@@ -269,6 +305,47 @@ pub fn rename_cell(
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
+
+/// Inserts a new cell entry into the notebook manifest.
+///
+/// If `after_cell_id` is `Some`, inserts after that cell; otherwise appends.
+/// Returns the resulting `CellManifest` with the correct order.
+fn add_cell_to_manifest(
+    data_dir: &Path,
+    notebook_id: &Uuid,
+    cell_id: &str,
+    label: &str,
+    after_cell_id: Option<&str>,
+) -> Result<CellManifest> {
+    let mut manifest = storage::get_notebook(data_dir, notebook_id)?;
+
+    let insert_idx = match after_cell_id {
+        Some(after_id) => manifest
+            .cells
+            .iter()
+            .position(|c| c.id == after_id)
+            .map(|pos| pos + 1)
+            .unwrap_or(manifest.cells.len()),
+        None => manifest.cells.len(),
+    };
+
+    let new_cell = CellManifest {
+        id: cell_id.to_string(),
+        order: 0, // renumbered below
+        label: label.to_string(),
+    };
+
+    manifest.cells.insert(insert_idx, new_cell);
+    renumber_cells(&mut manifest.cells);
+
+    storage::update_notebook(data_dir, notebook_id, None, Some(manifest.cells))?;
+
+    Ok(CellManifest {
+        id: cell_id.to_string(),
+        order: insert_idx as u32,
+        label: label.to_string(),
+    })
+}
 
 /// Renumbers cell order fields sequentially starting from 0.
 fn renumber_cells(cells: &mut [CellManifest]) {

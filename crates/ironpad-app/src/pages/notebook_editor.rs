@@ -12,8 +12,8 @@ use crate::components::app_layout::LayoutContext;
 use crate::components::error_panel::ErrorPanel;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::{
-    add_cell, compile_cell, delete_cell, get_cell_content, get_notebook, rename_cell,
-    update_cell_cargo_toml, update_cell_source, update_notebook,
+    add_cell, compile_cell, delete_cell, duplicate_cell, get_cell_content, get_notebook,
+    rename_cell, reorder_cells, update_cell_cargo_toml, update_cell_source, update_notebook,
 };
 
 // ── Cell status ─────────────────────────────────────────────────────────────
@@ -394,6 +394,125 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         let current = label.get_untracked();
         rename_action.dispatch(current);
     };
+
+    // ── Menu state ──────────────────────────────────────────────────────
+
+    let menu_open = RwSignal::new(false);
+
+    // ── Move (reorder) action ───────────────────────────────────────────
+
+    let cell_id_for_move = StoredValue::new(cell.id.clone());
+    let nb_id_for_move = state.notebook_id.get_untracked();
+    let move_action = Action::new(move |new_ids: &Vec<String>| {
+        let nb_id = nb_id_for_move.clone();
+        let ids = new_ids.clone();
+        async move { reorder_cells(nb_id, ids).await }
+    });
+
+    Effect::new(move || {
+        if let Some(Ok(())) = move_action.value().get() {
+            state.refresh_generation.update(|g| *g += 1);
+        }
+    });
+
+    let on_move_up = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        menu_open.set(false);
+        let cid = cell_id_for_move.get_value();
+        let cells = state.cells.get_untracked();
+        let Some(my_idx) = cells.iter().position(|c| c.id == cid) else {
+            return;
+        };
+        if my_idx == 0 {
+            return;
+        }
+        let mut ids: Vec<String> = cells.iter().map(|c| c.id.clone()).collect();
+        ids.swap(my_idx, my_idx - 1);
+        move_action.dispatch(ids);
+    };
+
+    let on_move_down = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        menu_open.set(false);
+        let cid = cell_id_for_move.get_value();
+        let cells = state.cells.get_untracked();
+        let Some(my_idx) = cells.iter().position(|c| c.id == cid) else {
+            return;
+        };
+        if my_idx + 1 >= cells.len() {
+            return;
+        }
+        let mut ids: Vec<String> = cells.iter().map(|c| c.id.clone()).collect();
+        ids.swap(my_idx, my_idx + 1);
+        move_action.dispatch(ids);
+    };
+
+    // ── Duplicate action ────────────────────────────────────────────────
+
+    let cell_id_for_dup = cell.id.clone();
+    let nb_id_for_dup = state.notebook_id.get_untracked();
+    let dup_action = Action::new(move |_: &()| {
+        let nb_id = nb_id_for_dup.clone();
+        let cid = cell_id_for_dup.clone();
+        async move { duplicate_cell(nb_id, cid).await }
+    });
+
+    Effect::new(move || {
+        if let Some(Ok(new_cell)) = dup_action.value().get() {
+            state.pending_focus_cell.set(Some(new_cell.id.clone()));
+            state.refresh_generation.update(|g| *g += 1);
+        }
+    });
+
+    let on_duplicate = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        menu_open.set(false);
+        dup_action.dispatch(());
+    };
+
+    // ── Delete with confirmation ────────────────────────────────────────
+
+    let on_delete_confirmed = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        menu_open.set(false);
+        #[cfg(feature = "hydrate")]
+        {
+            let confirmed = web_sys::window()
+                .unwrap()
+                .confirm_with_message("Delete this cell? This cannot be undone.")
+                .unwrap_or(false);
+            if confirmed {
+                delete_action.dispatch(());
+            }
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            delete_action.dispatch(());
+        }
+    };
+
+    // ── Move boundary checks ────────────────────────────────────────────
+
+    let cell_id_for_boundary = StoredValue::new(cell.id.clone());
+    let is_first = Signal::derive(move || {
+        let cid = cell_id_for_boundary.get_value();
+        state
+            .cells
+            .get()
+            .first()
+            .map(|c| c.id == cid)
+            .unwrap_or(true)
+    });
+
+    let is_last = Signal::derive(move || {
+        let cid = cell_id_for_boundary.get_value();
+        state
+            .cells
+            .get()
+            .last()
+            .map(|c| c.id == cid)
+            .unwrap_or(true)
+    });
 
     // ── Run cell action (compile flow) ──────────────────────────────────
 
@@ -956,15 +1075,63 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                 }
                             }}
                         </Button>
-                        <Button
-                            appearance=ButtonAppearance::Subtle
-                            on_click=move |ev: leptos::ev::MouseEvent| {
-                                ev.stop_propagation();
-                                delete_action.dispatch(());
-                            }
-                        >
-                            "✕"
-                        </Button>
+
+                        <div class="ironpad-cell-menu-wrapper">
+                            <Button
+                                appearance=ButtonAppearance::Subtle
+                                on_click=move |ev: leptos::ev::MouseEvent| {
+                                    ev.stop_propagation();
+                                    menu_open.update(|v| *v = !*v);
+                                }
+                            >
+                                "⋯"
+                            </Button>
+
+                            {move || {
+                                if !menu_open.get() {
+                                    return view! { <div /> }.into_any();
+                                }
+
+                                let first = is_first.get();
+                                let last = is_last.get();
+
+                                view! {
+                                    <div
+                                        class="ironpad-cell-menu-backdrop"
+                                        on:click=move |_| menu_open.set(false)
+                                    />
+                                    <div class="ironpad-cell-menu">
+                                        <button
+                                            class="ironpad-cell-menu-item"
+                                            disabled=first
+                                            on:click=on_move_up
+                                        >
+                                            "↑ Move Up"
+                                        </button>
+                                        <button
+                                            class="ironpad-cell-menu-item"
+                                            disabled=last
+                                            on:click=on_move_down
+                                        >
+                                            "↓ Move Down"
+                                        </button>
+                                        <button
+                                            class="ironpad-cell-menu-item"
+                                            on:click=on_duplicate
+                                        >
+                                            "⧉ Duplicate"
+                                        </button>
+                                        <div class="ironpad-cell-menu-divider" />
+                                        <button
+                                            class="ironpad-cell-menu-item ironpad-cell-menu-item--danger"
+                                            on:click=on_delete_confirmed
+                                        >
+                                            "🗑 Delete"
+                                        </button>
+                                    </div>
+                                }.into_any()
+                            }}
+                        </div>
                     </div>
                 </div>
             </CardHeader>
