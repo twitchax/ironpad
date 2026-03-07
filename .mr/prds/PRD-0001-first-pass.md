@@ -647,7 +647,7 @@ tasks:
   - id: T-052
     title: "Unit tests for notebook persistence"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Tests in ironpad-server (using tempdir):
       - Create notebook → directory structure is correct.
@@ -1565,3 +1565,15 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 117 tests ✅, 4 Playwright tests ✅)
 - **Note**: PRD specified "Tests in ironpad-server" but the compilation pipeline code lives in `ironpad-app` (under the `ssr` feature). Tests were added to `ironpad-app::compiler` where the code resides, following Rust convention of co-locating tests with their modules.
 - **Constitution Compliance**: No violations. Tests added alongside existing code (Rule 4 — Consistency). No public API changes (Rule 5).
+
+## 2026-03-07 — T-052 Completed
+- **Task**: Unit tests for notebook persistence
+- **Status**: ✅ Done
+- **Changes**:
+  - All 6 test scenarios specified by T-052 were already implemented in earlier tasks within `crates/ironpad-app/src/notebook/`:
+    - `storage.rs` (15 tests): `create_notebook_writes_manifest_and_cells_dir`, `get_notebook_reads_manifest`, `update_notebook_title`, `update_notebook_cells`, `delete_notebook_removes_directory`, `list_notebooks_returns_summaries`, `list_notebooks_sorted_by_updated_at_descending`, `round_trip_manifest_preserves_all_fields`, plus error/edge-case tests
+    - `cells.rs` (26 tests): `add_cell_creates_directory_and_files`, `add_cell_writes_default_source`, `add_cell_writes_default_cargo_toml`, `update_cell_source_overwrites_file`, `update_cell_cargo_toml_overwrites_file`, `delete_cell_removes_directory`, `delete_cell_updates_manifest`, `reorder_cells_changes_order`, `reorder_cells_preserves_labels`, `rename_cell_updates_label`, plus error/edge-case tests
+  - All 41 notebook persistence tests pass with `cargo test --package ironpad-app --features ssr -- notebook`
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
+- **Note**: PRD specified "Tests in ironpad-server" but the persistence code lives in `ironpad-app` (under the `ssr` feature). Tests were co-located with their modules following Rust convention, consistent with T-051's approach.
+- **Constitution Compliance**: No violations. No code changes needed — all tests already existed (Rule 3 — Minimal Changes). Consistent with project patterns (Rule 4).
