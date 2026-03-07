@@ -6,6 +6,7 @@ pub mod components;
 #[cfg(feature = "ssr")]
 pub mod notebook;
 
+pub mod pages;
 pub mod server_fns;
 
 use components::app_layout::AppLayout;
@@ -15,6 +16,7 @@ use leptos_router::{
     components::{Route, Router, Routes},
     ParamSegment, StaticSegment,
 };
+use pages::HomePage;
 use thaw::{ConfigProvider, Theme};
 
 /// Server-side shell rendered around the app.
@@ -62,15 +64,6 @@ pub fn App() -> impl IntoView {
                 </AppLayout>
             </Router>
         </ConfigProvider>
-    }
-}
-
-/// Placeholder home page — will be replaced by T-020.
-#[component]
-fn HomePage() -> impl IntoView {
-    view! {
-        <h1>"ironpad"</h1>
-        <p>"Interactive Rust Notebooks"</p>
     }
 }
 

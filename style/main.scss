@@ -109,3 +109,84 @@ body {
 .ironpad-status-separator {
     color: #444466;
 }
+
+/* ── Home page ──────────────────────────────────────────────────────────── */
+
+.ironpad-home {
+    max-width: 960px;
+    margin: 0 auto;
+}
+
+.ironpad-home-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+}
+
+.ironpad-home-header h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0;
+    color: #eaeaea;
+}
+
+.ironpad-home-loading {
+    display: flex;
+    justify-content: center;
+    padding: 48px 0;
+}
+
+.ironpad-home-empty {
+    text-align: center;
+    padding: 48px 0;
+    color: #8888aa;
+}
+
+.ironpad-home-empty p {
+    margin: 8px 0;
+}
+
+.ironpad-notebook-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+}
+
+.ironpad-notebook-card-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+}
+
+.ironpad-notebook-card-link:hover .ironpad-notebook-card {
+    border-color: #e94560;
+}
+
+.ironpad-notebook-card {
+    width: 100%;
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    transition: border-color 0.2s;
+    cursor: pointer;
+}
+
+.ironpad-notebook-card-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #eaeaea;
+}
+
+.ironpad-notebook-card-body {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    color: #8888aa;
+}
+
+.ironpad-error {
+    color: #e94560;
+    text-align: center;
+    padding: 24px 0;
+}

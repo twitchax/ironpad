@@ -306,13 +306,7 @@ tasks:
   - id: T-020
     title: "Home page with notebook list and create button"
     priority: 2
-    status: todo
-    notes: >
-      Fetch notebook list via list_notebooks server fn.
-      Render as a grid/list of cards (Thaw Card) showing title, updated_at, cell count.
-      Click card → navigate to /notebook/{id}.
-      "New Notebook" button → calls create_notebook, navigates to new notebook.
-      Empty state message when no notebooks exist.
+    status: done
 
   - id: T-021
     title: "Notebook editor page skeleton"
@@ -1203,3 +1197,23 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
 - **Constitution Compliance**: Thaw 0.5.0-beta does not export `LayoutFooter`, so a custom `<footer>` element with CSS styling is used instead. This is a minor deviation from the task notes ("Use Thaw components: Layout, LayoutHeader, LayoutFooter") but unavoidable given the library API. `Layout` and `LayoutHeader` from Thaw are used as specified.
+
+## 2026-03-07 — T-020 Completed
+- **Task**: Home page with notebook list and create button
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/pages/mod.rs` — new pages module for route-level components.
+  - Created `crates/ironpad-app/src/pages/home_page.rs` — full `HomePage` component:
+    - Resets `LayoutContext` signals on mount (clears notebook title, hides save button, zeros cell count).
+    - Uses `Resource::new` to fetch notebooks via `list_notebooks` server fn.
+    - Renders notebook list as a responsive CSS grid of Thaw `Card` components, each showing title, cell count, and last-updated timestamp.
+    - Cards link to `/notebook/{id}` for client-side navigation.
+    - "New Notebook" button uses `Action` to call `create_notebook("Untitled Notebook")`, with an `Effect` that navigates to the new notebook on success.
+    - Empty state message when no notebooks exist.
+    - Loading state with Thaw `Spinner` via `Suspense`/`Suspend`.
+    - `NotebookCard` sub-component for individual notebook cards with `CardHeader` and metadata body.
+  - Updated `crates/ironpad-app/src/lib.rs` — added `pub mod pages`, imported `pages::HomePage`, removed inline placeholder `HomePage` component.
+  - Updated `style/main.scss` — added home page styles: centered max-width container, flexbox header with title and button, responsive grid layout for cards (`auto-fill, minmax(280px, 1fr)`), card hover border accent, loading/empty/error states.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
+- **Constitution Compliance**: No violations. Thaw `Card` has a default `width: 720px` which is overridden via `.ironpad-notebook-card { width: 100% }` to work within the grid layout — this is standard CSS customization, not a Thaw API deviation.
