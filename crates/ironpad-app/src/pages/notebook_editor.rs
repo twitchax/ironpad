@@ -6,8 +6,8 @@ use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner, Tab, TabList};
 use crate::components::app_layout::LayoutContext;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::{
-    add_cell, delete_cell, get_cell_content, get_notebook, rename_cell, update_cell_source,
-    update_notebook,
+    add_cell, delete_cell, get_cell_content, get_notebook, rename_cell, update_cell_cargo_toml,
+    update_cell_source, update_notebook,
 };
 
 // ── Notebook-level reactive state ───────────────────────────────────────────
@@ -214,6 +214,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── Dirty state (unsaved changes indicator) ─────────────────────────
 
     let source_dirty = RwSignal::new(false);
+    let cargo_toml_dirty = RwSignal::new(false);
 
     // ── Load cell content ───────────────────────────────────────────────
 
@@ -327,6 +328,49 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         source.set(val);
     });
 
+    #[cfg(feature = "hydrate")]
+    let on_cargo_toml_change = {
+        use wasm_bindgen::prelude::*;
+
+        let nb_id_save = state.notebook_id.get_untracked();
+        let cid_save = cell.id.clone();
+        let debounce_handle: RwSignal<i32> = RwSignal::new(0);
+
+        let closure = Closure::<dyn Fn()>::new(move || {
+            let val = cargo_toml.get_untracked();
+            let nb_id = nb_id_save.clone();
+            let cid = cid_save.clone();
+            leptos::task::spawn_local(async move {
+                if update_cell_cargo_toml(nb_id, cid, val.clone())
+                    .await
+                    .is_ok()
+                    && cargo_toml.get_untracked() == val
+                {
+                    cargo_toml_dirty.set(false);
+                }
+            });
+        });
+        let save_fn: js_sys::Function =
+            closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        closure.forget();
+
+        Callback::new(move |val: String| {
+            cargo_toml.set(val);
+            cargo_toml_dirty.set(true);
+
+            let win = web_sys::window().unwrap();
+            let prev = debounce_handle.get_untracked();
+            if prev != 0 {
+                win.clear_timeout_with_handle(prev);
+            }
+            let handle = win
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&save_fn, 1_000)
+                .unwrap();
+            debounce_handle.set(handle);
+        })
+    };
+
+    #[cfg(not(feature = "hydrate"))]
     let on_cargo_toml_change = Callback::new(move |val: String| {
         cargo_toml.set(val);
     });
@@ -421,7 +465,9 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         <Tab value="code">
                             {move || if source_dirty.get() { "Code ●" } else { "Code" }}
                         </Tab>
-                        <Tab value="cargo-toml">"Cargo.toml"</Tab>
+                        <Tab value="cargo-toml">
+                            {move || if cargo_toml_dirty.get() { "Cargo.toml ●" } else { "Cargo.toml" }}
+                        </Tab>
                     </TabList>
                 </div>
 

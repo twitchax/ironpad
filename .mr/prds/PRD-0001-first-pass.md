@@ -382,12 +382,7 @@ tasks:
   - id: T-027
     title: "Cell Cargo.toml editor (Monaco for Cargo.toml)"
     priority: 2
-    status: todo
-    notes: >
-      Monaco instance in the "Cargo.toml" tab with language="toml".
-      On change, debounce and call update_cell_cargo_toml server fn.
-      Pre-populate with default Cargo.toml (per MegaPrd §8.3).
-      Expose current cargo_toml value for the compile flow.
+    status: done
 
   - id: T-028
     title: "Cell run button with compile and execute flow"
@@ -1308,6 +1303,20 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - SSR build retains simple signal-update callback (no debounce plumbing).
   - Updated "Code" tab label to show `"Code ●"` when `source_dirty` is true.
   - Added `update_cell_source` to imports in `notebook_editor.rs`.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-027 Completed
+- **Task**: Cell Cargo.toml editor (Monaco for Cargo.toml)
+- **Status**: ✅ Done
+- **Changes**:
+  - Added debounce-save to the Cargo.toml Monaco editor in `crates/ironpad-app/src/pages/notebook_editor.rs`.
+  - Mirrors the source editor pattern: `#[cfg(feature = "hydrate")]` branch uses `Closure` + `setTimeout`/`clearTimeout` with 1 s debounce window to call `update_cell_cargo_toml` server fn.
+  - SSR build retains simple signal-update callback (no debounce plumbing).
+  - Added `cargo_toml_dirty` signal for unsaved-changes tracking.
+  - Updated "Cargo.toml" tab label to show `"Cargo.toml ●"` when `cargo_toml_dirty` is true.
+  - Added `update_cell_cargo_toml` to imports in `notebook_editor.rs`.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.
