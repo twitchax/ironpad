@@ -37,7 +37,7 @@ acceptance_tests:
   - id: uat-002
     name: "Can create a new notebook from the home page"
     command: cargo make uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-003
     name: "Can add a cell to a notebook and see Monaco editor"
     command: cargo make uat
@@ -1758,3 +1758,12 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Added CSS for skeleton loaders, error boundaries, and toast overrides matching the dark theme in `style/main.scss`.
   - `cargo make uat` ✅ passes — fmt-check ✅, clippy ✅, all tests ✅, 6 Playwright tests ✅
 - **Constitution Compliance**: No violations. Changes are minimal and focused (Rule 3). Follows existing patterns — Thaw components, CSS custom properties, Suspense fallbacks (Rule 4). No public API changes (Rule 5).
+
+## 2026-03-07 — uat-002 Verification
+- **UAT**: Can create a new notebook from the home page
+- **Status**: ✅ Verified
+- **Method**: Existing test
+- **Details**:
+  - Test file: `tests/e2e/notebook.spec.ts` — test `"create notebook and add cell"` (line 4)
+  - The test navigates to home page, clicks "+ New Notebook", verifies navigation to `/notebook/{id}`, and confirms the notebook editor is visible.
+  - `cargo make uat` passed: 6/6 Playwright tests ✅
