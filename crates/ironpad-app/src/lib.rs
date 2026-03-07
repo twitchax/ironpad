@@ -31,9 +31,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <HydrationScripts options/>
                 <MetaTags/>
 
-                // Monaco editor: AMD loader + worker configuration + Rust bridge.
+                // Monaco editor: AMD loader + worker configuration + languages + Rust bridge.
                 <script src="/monaco/vs/loader.js"></script>
                 <script src="/monaco/init.js"></script>
+                <script src="/monaco/languages.js"></script>
                 <script src="/monaco/bridge.js"></script>
 
                 // WASM cell executor.

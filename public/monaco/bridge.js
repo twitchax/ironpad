@@ -13,12 +13,20 @@
     if (monacoPromise) return monacoPromise;
 
     monacoPromise = new Promise(function (resolve) {
+      function finalize(m) {
+        window.monaco = m;
+        // Register custom languages and theme (from languages.js).
+        if (window.IronpadLanguages && window.IronpadLanguages.register) {
+          window.IronpadLanguages.register(m);
+        }
+        resolve(m);
+      }
+
       if (window.monaco) {
-        resolve(window.monaco);
+        finalize(window.monaco);
       } else {
         require(["vs/editor/editor.main"], function (m) {
-          window.monaco = m;
-          resolve(m);
+          finalize(m);
         });
       }
     });
@@ -40,7 +48,7 @@
         var editor = monaco.editor.create(container, {
           value: value,
           language: language,
-          theme: "vs-dark",
+          theme: "ironpad-dark",
           minimap: { enabled: false },
           lineNumbers: "on",
           automaticLayout: true,

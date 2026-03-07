@@ -349,13 +349,7 @@ tasks:
   - id: T-024
     title: "Monaco language configuration for Rust and TOML"
     priority: 3
-    status: todo
-    notes: >
-      Configure Monaco with Rust syntax highlighting (monarch grammar).
-      Configure TOML syntax highlighting.
-      Set theme to match ironpad dark theme (vs-dark base, customized).
-      Configure basic editor options: minimap off, line numbers on,
-      automatic layout, word wrap, font size.
+    status: done
 
   # ── Phase 6: UI — Cell Component ───────────────────────────────────────
   - id: T-025
@@ -1591,3 +1585,14 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 122 tests ✅, 4 Playwright tests ✅)
 - **Opportunistic UAT**: uat-009 ("Sample notebook is pre-loaded on first run") is functionally implemented but cannot be fully verified via Playwright without a dedicated test that starts with a clean data directory. The seeding logic is covered by 5 unit tests.
 - **Constitution Compliance**: No violations. New module follows existing patterns (Rule 4), minimal changes to existing files (Rule 3), seed logic in notebook module respects SOC (Rule 2).
+
+## 2026-03-07 — T-024 Completed
+- **Task**: Monaco language configuration for Rust and TOML
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `public/monaco/languages.js` — registers a proper TOML monarch grammar (section headers, dotted keys, multi-line strings, datetime, inline tables, arrays) and defines the custom "ironpad-dark" editor theme based on vs-dark with ironpad's color palette (#1a1a2e bg, #e94560 accent, #16213e panels)
+  - Updated `public/monaco/bridge.js` — calls `IronpadLanguages.register(monaco)` after AMD load to apply custom languages/theme; changed editor theme from "vs-dark" to "ironpad-dark"
+  - Updated `crates/ironpad-app/src/lib.rs` — added `<script src="/monaco/languages.js">` in the HTML shell head (between init.js and bridge.js)
+  - Rust syntax highlighting uses Monaco's built-in monarch grammar (already bundled); editor options (minimap off, line numbers on, automatic layout, word wrap, fontSize 14) were already configured in bridge.js
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
+- **Constitution Compliance**: No violations. New file follows existing patterns (Rule 4), minimal changes to existing files (Rule 3), language config is separated from bridge logic (Rule 2).
