@@ -634,7 +634,7 @@ tasks:
   - id: T-051
     title: "Unit tests for compilation pipeline"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Tests in ironpad-server:
       - Micro-crate scaffolding generates valid Cargo.toml and wrapped lib.rs.
@@ -1546,3 +1546,22 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, tests ✅, 4 Playwright tests pass ✅)
 - **Opportunistic UAT**: uat-004 ("Can compile a trivial cell and see WASM execution output") is now covered by this test.
 - **Constitution Compliance**: The scaffold and build fixes are root cause resolutions (Rule 6) for bugs discovered during test implementation. No violations.
+
+## 2026-03-07 — T-051 Completed
+- **Task**: Unit tests for compilation pipeline
+- **Status**: ✅ Done
+- **Changes**:
+  - Added 8 cross-module pipeline integration tests in `crates/ironpad-app/src/compiler/mod.rs`:
+    - `scaffolded_crate_has_valid_cargo_toml_and_lib_rs`: Verifies scaffolding produces valid Cargo.toml (with [package], cdylib crate-type, ironpad-cell dep) and lib.rs (with prelude import, cell_main FFI, embedded user code)
+    - `identical_inputs_produce_same_hash_and_scaffold_content`: Verifies hash determinism and scaffold output determinism for identical inputs
+    - `changed_source_invalidates_hash`: Verifies different source code produces different content hashes
+    - `changed_cargo_toml_invalidates_hash`: Verifies different Cargo.toml produces different content hashes
+    - `wrapper_offset_matches_generated_lib_rs_layout`: Verifies WRAPPER_PREAMBLE_LINES constant matches actual generated lib.rs layout
+    - `diagnostic_spans_correctly_map_to_user_code_lines`: Verifies diagnostic parser adjusts wrapper line numbers to user code coordinates using WRAPPER_PREAMBLE_LINES
+    - `pipeline_hash_scaffold_diagnostics_round_trip`: End-to-end pipeline test exercising hash → scaffold → verify offset → parse mock diagnostics (without invoking cargo build)
+    - `cache_round_trip_with_pipeline_hash`: Tests hash → cache miss → store → cache hit → different hash miss flow
+  - Per-module unit tests for all T-051 requirements already existed from earlier task implementations (scaffold.rs: 12 tests, cache.rs: 9 tests, diagnostics.rs: 30+ tests, build.rs: 8 tests)
+  - Total test count increased from 109 to 117 (all passing)
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 117 tests ✅, 4 Playwright tests ✅)
+- **Note**: PRD specified "Tests in ironpad-server" but the compilation pipeline code lives in `ironpad-app` (under the `ssr` feature). Tests were added to `ironpad-app::compiler` where the code resides, following Rust convention of co-locating tests with their modules.
+- **Constitution Compliance**: No violations. Tests added alongside existing code (Rule 4 — Consistency). No public API changes (Rule 5).
