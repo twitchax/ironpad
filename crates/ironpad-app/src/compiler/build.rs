@@ -60,6 +60,10 @@ pub async fn build_micro_crate(
     std::fs::create_dir_all(&cargo_home)?;
     std::fs::create_dir_all(&target_dir)?;
 
+    // Canonicalize paths so they resolve correctly when cargo runs in crate_dir.
+    let cargo_home = std::fs::canonicalize(&cargo_home)?;
+    let target_dir = std::fs::canonicalize(&target_dir)?;
+
     tracing::info!(
         crate_dir = %crate_dir.display(),
         target_dir = %target_dir.display(),

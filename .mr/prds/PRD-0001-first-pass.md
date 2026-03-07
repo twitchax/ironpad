@@ -45,7 +45,7 @@ acceptance_tests:
   - id: uat-004
     name: "Can compile a trivial cell and see WASM execution output"
     command: cargo make uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-005
     name: "Two-cell data flow works (cell 0 output piped as cell 1 input via bincode)"
     command: cargo make uat
@@ -606,7 +606,7 @@ tasks:
   - id: T-048
     title: "Playwright smoke test — compile and execute a trivial cell"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Test: create notebook, type trivial Rust code in cell 0
       (e.g., CellOutput::text("hello")), click Run, wait for compilation,
@@ -1527,3 +1527,22 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, tests ✅, 3 Playwright tests pass ✅)
 - **Opportunistic UAT**: uat-002 ("Can create a new notebook from the home page") and uat-003 ("Can add a cell to a notebook and see Monaco editor") are now functionally covered by this test.
 - **Constitution Compliance**: No violations. Test adapted to actual app behavior (empty notebooks) rather than changing application logic.
+
+## 2026-03-07 — T-048 Completed
+- **Task**: Playwright smoke test — compile and execute a trivial cell
+- **Status**: ✅ Done
+- **Changes**:
+  - Added Playwright test in `tests/e2e/notebook.spec.ts` that:
+    - Creates a new notebook and adds a cell (which gets default code `CellOutput::text("hello from ironpad").into()`)
+    - Clicks the run button ("▶") to trigger compilation
+    - Waits for the compiling status to appear and then resolve
+    - Verifies the cell reaches "success" status
+    - Verifies the output panel displays "hello from ironpad"
+    - Uses 180s test timeout to accommodate cold WASM builds
+  - Fixed workspace detection bug in `crates/ironpad-app/src/compiler/scaffold.rs`:
+    - Added `[workspace]` section to generated micro-crate Cargo.toml to prevent Cargo from walking up to the root workspace
+  - Fixed relative path bug in `crates/ironpad-app/src/compiler/build.rs`:
+    - Canonicalized `CARGO_HOME` and `CARGO_TARGET_DIR` paths before passing to cargo subprocess, fixing WASM blob placement when cache_dir is relative and cargo runs in the micro-crate directory
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, tests ✅, 4 Playwright tests pass ✅)
+- **Opportunistic UAT**: uat-004 ("Can compile a trivial cell and see WASM execution output") is now covered by this test.
+- **Constitution Compliance**: The scaffold and build fixes are root cause resolutions (Rule 6) for bugs discovered during test implementation. No violations.

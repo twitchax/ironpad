@@ -75,6 +75,8 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[workspace]
+
 [dependencies]
 ironpad-cell = {{ path = "{cell_path_str}" }}
 "#

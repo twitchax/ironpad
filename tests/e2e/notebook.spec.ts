@@ -43,4 +43,57 @@ test.describe("Notebook", () => {
     // Verify no JS errors occurred.
     expect(jsErrors).toEqual([]);
   });
+
+  test("compile and execute a trivial cell", async ({ page }) => {
+    // Compilation can take a while (cold cargo build to WASM).
+    test.setTimeout(180_000);
+
+    // Collect JS errors (filter known WASM hydration noise).
+    const jsErrors: string[] = [];
+    page.on("pageerror", (error) => {
+      if (!error.message.includes("unreachable")) {
+        jsErrors.push(error.message);
+      }
+    });
+
+    // Create a new notebook.
+    await page.goto("/");
+    await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.locator("button", { hasText: "+ New Notebook" }).click();
+    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page.locator(".ironpad-editor")).toBeVisible();
+
+    // Add a cell (default code: CellOutput::text("hello from ironpad").into()).
+    await page.locator(".ironpad-add-cell-btn").first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell).toBeVisible();
+
+    // Click the run button ("▶") to compile and execute.
+    const runButton = cell.locator(".ironpad-cell-actions button").first();
+    await expect(runButton).toBeVisible();
+    await runButton.click();
+
+    // Wait for compilation to start.
+    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeVisible({
+      timeout: 5_000,
+    });
+
+    // Wait for compilation to finish (status leaves "compiling").
+    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeHidden({
+      timeout: 120_000,
+    });
+
+    // Verify the cell reached success status.
+    await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 5_000,
+    });
+
+    // Verify the output panel appeared and contains the expected text.
+    const outputText = cell.locator(".ironpad-output-display-text");
+    await expect(outputText).toBeVisible({ timeout: 5_000 });
+    await expect(outputText).toContainText("hello from ironpad");
+
+    // Verify no JS errors occurred.
+    expect(jsErrors).toEqual([]);
+  });
 });
