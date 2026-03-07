@@ -31,8 +31,8 @@ pub struct LayoutContext {
     pub save_generation: RwSignal<u64>,
     /// Total cell count displayed in the status bar.
     pub cell_count: RwSignal<usize>,
-    /// Human-readable "last saved" timestamp for the status bar.
-    pub last_save_time: RwSignal<Option<String>>,
+    /// Epoch milliseconds of the last save (used to compute relative time).
+    pub last_save_time: RwSignal<Option<f64>>,
     /// Visual state of the save button (Idle → Saving → Saved → Idle).
     pub save_status: RwSignal<SaveStatus>,
     /// Compiler/toolchain version string.
@@ -199,8 +199,50 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
 
 // ── Status bar ──────────────────────────────────────────────────────────────
 
+/// Format an epoch-ms timestamp as a human-readable relative string.
+#[cfg(feature = "hydrate")]
+fn format_relative_time(epoch_ms: f64, now_ms: f64) -> String {
+    let diff_secs = ((now_ms - epoch_ms) / 1000.0).max(0.0) as u64;
+
+    match diff_secs {
+        0..=4 => "just now".to_string(),
+        5..=59 => format!("{}s ago", diff_secs),
+        60..=3599 => {
+            let mins = diff_secs / 60;
+            format!("{}m ago", mins)
+        }
+        3600..=86399 => {
+            let hours = diff_secs / 3600;
+            format!("{}h ago", hours)
+        }
+        _ => {
+            let days = diff_secs / 86400;
+            format!("{}d ago", days)
+        }
+    }
+}
+
 #[component]
 fn StatusBar(ctx: LayoutContext) -> impl IntoView {
+    // Tick counter that bumps every 30 s so the relative timestamp refreshes.
+    let tick = RwSignal::new(0u64);
+
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::prelude::*;
+
+        let closure = Closure::<dyn Fn()>::new(move || {
+            tick.update(|t| *t += 1);
+        });
+        let _ = web_sys::window()
+            .unwrap()
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                30_000,
+            );
+        closure.forget();
+    }
+
     view! {
         <div class="ironpad-status-bar-inner">
             <span class="ironpad-status-item">
@@ -216,15 +258,22 @@ fn StatusBar(ctx: LayoutContext) -> impl IntoView {
                 "Cells: "
                 {move || ctx.cell_count.get().to_string()}
             </span>
-            {move || ctx.last_save_time.get().map(|time| {
-                view! {
-                    <span class="ironpad-status-separator">"|"</span>
-                    <span class="ironpad-status-item">
-                        "Saved: "
-                        {time}
-                    </span>
-                }
-            })}
+            {move || {
+                // Touch `tick` so the closure re-runs on each interval.
+                let _ = tick.get();
+                ctx.last_save_time.get().map(|epoch_ms| {
+                    let relative = {
+                        #[cfg(feature = "hydrate")]
+                        { format_relative_time(epoch_ms, js_sys::Date::now()) }
+                        #[cfg(not(feature = "hydrate"))]
+                        { let _ = epoch_ms; "just now".to_string() }
+                    };
+                    view! {
+                        <span class="ironpad-status-separator">"|"</span>
+                        <span class="ironpad-status-item">"Saved: " {relative}</span>
+                    }
+                })
+            }}
         </div>
     }
 }

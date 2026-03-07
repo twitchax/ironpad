@@ -560,7 +560,7 @@ tasks:
   - id: T-044
     title: "Status bar implementation"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Footer bar showing: compiler version ("stable"),
       cell count ("Cells: N"), last save time ("Saved: 2m ago").
@@ -1682,3 +1682,16 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Total SCSS grew from 817 to 1065 lines.
   - `cargo make uat` ✅ passes (4 Playwright tests ✅)
 - **Constitution Compliance**: No violations. CSS-only changes — no Rust code modified (Rule 3 — Minimal Changes). Follows existing SCSS class naming patterns (Rule 4 — Consistency). No public API changes (Rule 5). Centralized design tokens via CSS variables satisfies Rule 1 (DRY).
+
+## 2026-03-07 — T-044 Completed
+- **Task**: Status bar implementation
+- **Status**: ✅ Done
+- **Changes**:
+  - Changed `LayoutContext::last_save_time` from `RwSignal<Option<String>>` (absolute HH:MM:SS) to `RwSignal<Option<f64>>` (epoch milliseconds) to enable relative time display.
+  - Added `format_relative_time()` helper in `app_layout.rs` that converts epoch-ms deltas to human-readable strings: "just now", "30s ago", "2m ago", "1h ago", "3d ago".
+  - Added 30-second interval tick in the `StatusBar` component (hydrate-only) so the relative timestamp updates automatically.
+  - Updated `notebook_editor.rs` to store `js_sys::Date::now()` instead of a formatted time string on save.
+  - Thaw 0.5.0-beta has no `LayoutFooter` component; the existing `<footer>` HTML element within `Layout` is the correct approach.
+  - All status bar fields (compiler version, cell count, save time) remain reactive to notebook state changes.
+  - `cargo make uat` ✅ passes (4 Playwright tests ✅)
+- **Constitution Compliance**: Minor API type change to `last_save_time` (Rule 5 — Public API Stability) was necessary to implement the required relative time display format ("2m ago"). All consumers updated in the same commit. No other violations.

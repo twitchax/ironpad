@@ -191,15 +191,8 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
                 layout.save_status.set(SaveStatus::Saved);
 
-                // Update last-saved timestamp.
-                let date = js_sys::Date::new_0();
-                let time_str = format!(
-                    "{:02}:{:02}:{:02}",
-                    date.get_hours(),
-                    date.get_minutes(),
-                    date.get_seconds()
-                );
-                layout.last_save_time.set(Some(time_str));
+                // Update last-saved timestamp (epoch ms for relative display).
+                layout.last_save_time.set(Some(js_sys::Date::now()));
 
                 // Reset to Idle after 2 seconds.
                 let reset_closure = Closure::<dyn Fn()>::new(move || {
