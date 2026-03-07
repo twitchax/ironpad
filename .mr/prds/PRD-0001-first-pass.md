@@ -654,7 +654,7 @@ tasks:
   - id: T-053
     title: "Integration test — compile and execute E2E"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Test that requires the Rust toolchain (wasm32-unknown-unknown target).
       Scaffolds a micro-crate, compiles it, verifies the .wasm blob is produced.
@@ -1716,4 +1716,18 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Test creates a notebook, adds a cell (default source with "hello from ironpad"), waits for debounce, saves via Ctrl+S, navigates to home via brand link, clicks notebook in the list to navigate back, and verifies the cell's Monaco editor still contains the expected source code
   - Used `.first()` on `.view-lines` locator to handle multiple Monaco editor instances per cell (Code + Cargo.toml tabs)
   - `cargo make uat` ✅ passes (6 Playwright tests ✅)
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-053 Completed
+- **Task**: Integration test — compile and execute E2E
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `e2e_tests` module in `crates/ironpad-app/src/compiler/mod.rs` with 3 integration tests:
+    - `compile_trivial_cell_produces_valid_wasm_blob`: scaffolds + builds a trivial cell, verifies WASM magic bytes
+    - `compile_bad_code_returns_diagnostics`: builds intentionally broken code, verifies E0308 diagnostic is returned
+    - `compile_and_cache_round_trip`: full pipeline — scaffold → build → cache store → cache hit verification
+  - All tests marked `#[ignore]` (slow: invoke real `cargo build --target wasm32-unknown-unknown`)
+  - Added `test-integration` task in `Makefile.toml` (`cargo nextest run --run-ignored=ignored-only`)
+  - Wired `test-integration` into `uat` task dependencies (runs after `ci`, before `playwright`)
+  - `cargo make uat` ✅ passes — all 3 E2E tests pass (~5s each), 6 Playwright tests pass
 - **Constitution Compliance**: No violations.

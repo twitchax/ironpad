@@ -226,3 +226,178 @@ mod pipeline_tests {
         dir
     }
 }
+
+// ── E2E integration tests (require Rust toolchain + wasm32-unknown-unknown) ──
+
+#[cfg(test)]
+mod e2e_tests {
+    use std::path::PathBuf;
+
+    use super::build::{build_micro_crate, BuildResult};
+    use super::cache::{content_hash, store_blob, try_cache_hit};
+    use super::diagnostics::parse_diagnostics;
+    use super::scaffold::scaffold_micro_crate;
+
+    /// Resolve the path to the `ironpad-cell` crate relative to this crate's manifest.
+    fn ironpad_cell_path() -> PathBuf {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir.join("../ironpad-cell")
+    }
+
+    fn tempdir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ironpad-e2e-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // ── Successful compilation ──────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore] // Slow: invokes `cargo build --target wasm32-unknown-unknown`.
+    async fn compile_trivial_cell_produces_valid_wasm_blob() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "trivial";
+        let source = "    CellOutput::empty().into()";
+        let cargo_toml = "[dependencies]";
+
+        // Scaffold the micro-crate.
+        let crate_dir = scaffold_micro_crate(
+            &cache_dir, &cell_path, session_id, cell_id, source, cargo_toml,
+        )
+        .expect("scaffold should succeed");
+
+        assert!(crate_dir.join("Cargo.toml").is_file());
+        assert!(crate_dir.join("src/lib.rs").is_file());
+
+        // Build to WASM.
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+            .await
+            .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                assert!(wasm_path.exists(), "WASM blob should exist on disk");
+
+                let wasm_bytes = std::fs::read(&wasm_path).unwrap();
+                assert!(
+                    wasm_bytes.len() > 8,
+                    "WASM blob should not be trivially small"
+                );
+
+                // Validate WASM magic number: \0asm
+                assert_eq!(
+                    &wasm_bytes[..4],
+                    b"\x00asm",
+                    "WASM blob should start with the WASM magic number",
+                );
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "expected successful compilation but got failure.\nstdout: {stdout}\nstderr: {stderr}"
+                );
+            }
+        }
+    }
+
+    // ── Compilation failure produces diagnostics ────────────────────────
+
+    #[tokio::test]
+    #[ignore] // Slow: invokes `cargo build --target wasm32-unknown-unknown`.
+    async fn compile_bad_code_returns_diagnostics() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "badcode";
+        // Deliberately broken: assigning a string to i32.
+        let source = "    let x: i32 = \"oops\";\n    CellOutput::empty().into()";
+        let cargo_toml = "[dependencies]";
+
+        let crate_dir = scaffold_micro_crate(
+            &cache_dir, &cell_path, session_id, cell_id, source, cargo_toml,
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+            .await
+            .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Failure { stdout, .. } => {
+                let diagnostics = parse_diagnostics(&stdout);
+                assert!(
+                    !diagnostics.is_empty(),
+                    "type error should produce at least one diagnostic",
+                );
+
+                let has_type_error = diagnostics.iter().any(|d| {
+                    d.message.contains("mismatched types") || d.code.as_deref() == Some("E0308")
+                });
+                assert!(
+                    has_type_error,
+                    "diagnostics should include type mismatch error, got: {diagnostics:?}",
+                );
+            }
+            BuildResult::Success { .. } => {
+                panic!("expected compilation failure for invalid code, but build succeeded");
+            }
+        }
+    }
+
+    // ── Full pipeline: compile → cache → cache hit ─────────────────────
+
+    #[tokio::test]
+    #[ignore] // Slow: invokes `cargo build --target wasm32-unknown-unknown`.
+    async fn compile_and_cache_round_trip() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-cache";
+        let cell_id = "cached";
+        let source = "    CellOutput::text(\"hello from e2e\").into()";
+        let cargo_toml = "[dependencies]";
+
+        // Step 1: Hash the input (should be a cache miss).
+        let hash = content_hash(source, cargo_toml);
+        assert!(
+            try_cache_hit(&cache_dir, &hash).is_none(),
+            "should be a cache miss before compilation",
+        );
+
+        // Step 2: Scaffold and build.
+        let crate_dir = scaffold_micro_crate(
+            &cache_dir, &cell_path, session_id, cell_id, source, cargo_toml,
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+            .await
+            .expect("build should not return an infra error");
+
+        let wasm_bytes = match result {
+            BuildResult::Success { wasm_path, .. } => {
+                std::fs::read(&wasm_path).expect("should read WASM blob")
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!("expected success but got failure.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+        };
+
+        // Step 3: Store in cache.
+        store_blob(&cache_dir, &hash, &wasm_bytes).expect("store_blob should succeed");
+
+        // Step 4: Verify cache hit returns identical bytes.
+        let cached = try_cache_hit(&cache_dir, &hash).expect("should be a cache hit after storing");
+        assert_eq!(
+            cached, wasm_bytes,
+            "cached blob should match the compiled blob byte-for-byte",
+        );
+
+        // Step 5: Different source should miss the cache.
+        let different_hash = content_hash("    CellOutput::text(\"different\").into()", cargo_toml);
+        assert!(
+            try_cache_hit(&cache_dir, &different_hash).is_none(),
+            "different source should not hit the cache",
+        );
+    }
+}

@@ -108,6 +108,11 @@ description = "Run unit/integration tests via cargo nextest"
 command = "cargo"
 args = ["nextest", "run", "--no-tests=pass"]
 
+[tasks.test-integration]
+description = "Run slow integration tests (requires wasm32-unknown-unknown toolchain)"
+command = "cargo"
+args = ["nextest", "run", "--run-ignored=ignored-only", "--no-tests=pass"]
+
 # ── CI (fmt-check + clippy + test) ───────────────────────────────────────────
 
 [tasks.ci]
@@ -153,8 +158,8 @@ npx playwright test
 # ── UAT (the one true gate) ─────────────────────────────────────────────────
 
 [tasks.uat]
-description = "UAT: ci + playwright (the one true gate)"
-dependencies = ["ci", "playwright"]
+description = "UAT: ci + integration tests + playwright (the one true gate)"
+dependencies = ["ci", "test-integration", "playwright"]
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 
