@@ -9,7 +9,7 @@
 
 # ── Stage 1: Builder ─────────────────────────────────────────────────────────
 
-FROM rust:latest AS builder
+FROM rust:1.93.0 AS builder
 
 RUN rustup target add wasm32-unknown-unknown
 
@@ -26,7 +26,7 @@ RUN cargo leptos build --release
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 
-FROM rust:latest AS runtime
+FROM rust:1.93.0 AS runtime
 
 # The runtime needs the Rust toolchain + wasm target for compiling user cells.
 RUN rustup target add wasm32-unknown-unknown

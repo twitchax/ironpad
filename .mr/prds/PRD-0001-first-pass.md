@@ -61,7 +61,7 @@ acceptance_tests:
   - id: uat-008
     name: "Docker container builds and serves the app"
     command: cargo make docker-uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-009
     name: "Sample notebook is pre-loaded on first run"
     command: cargo make uat
@@ -665,7 +665,7 @@ tasks:
   - id: T-054
     title: "Docker build and run verification"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Verify: `cargo make docker-build` succeeds.
       `cargo make docker-up` starts the container.
@@ -1731,3 +1731,17 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Wired `test-integration` into `uat` task dependencies (runs after `ci`, before `playwright`)
   - `cargo make uat` ✅ passes — all 3 E2E tests pass (~5s each), 6 Playwright tests pass
 - **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-054 Completed
+- **Task**: Docker build and run verification
+- **Status**: ✅ Done
+- **Changes**:
+  - Pinned Dockerfile `FROM rust:latest` to `FROM rust:1.93.0` in both builder and runtime stages to fix `thaw` crate compilation failure (`queries overflow the depth limit!`) on `rust:1.94.0` (the current `rust:latest`).
+  - Verified `cargo make docker-build` succeeds (~8 min build).
+  - Verified `cargo make docker-up` starts the container and port 3000 is accessible within 1 second.
+  - Verified home page loads with "Welcome to ironpad" sample notebook.
+  - Verified volume persistence: notebook data survives `docker compose restart`.
+  - Verified `cargo make docker-down` stops the container cleanly (~10s).
+  - Opportunistically verified uat-008 ("Docker container builds and serves the app") — marked as verified.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 6 Playwright tests ✅)
+- **Constitution Compliance**: No violations. Single file changed (docker/Dockerfile) with minimal version pin (Rule 3 — Minimal Changes). Follows existing Dockerfile patterns (Rule 4 — Consistency). No public API changes (Rule 5).
