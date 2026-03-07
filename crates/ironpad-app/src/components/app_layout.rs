@@ -1,6 +1,16 @@
 use leptos::prelude::*;
 use thaw::{Button, ButtonAppearance, Layout, LayoutHeader, LayoutPosition};
 
+// ── Save status ─────────────────────────────────────────────────────────────
+
+/// Visual state of the save button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveStatus {
+    Idle,
+    Saving,
+    Saved,
+}
+
 // ── Layout context ──────────────────────────────────────────────────────────
 
 /// Shared reactive state between the layout shell and child pages.
@@ -19,6 +29,8 @@ pub struct LayoutContext {
     pub cell_count: RwSignal<usize>,
     /// Human-readable "last saved" timestamp for the status bar.
     pub last_save_time: RwSignal<Option<String>>,
+    /// Visual state of the save button (Idle → Saving → Saved → Idle).
+    pub save_status: RwSignal<SaveStatus>,
     /// Compiler/toolchain version string.
     pub compiler_version: RwSignal<String>,
 }
@@ -31,6 +43,7 @@ impl LayoutContext {
             save_generation: RwSignal::new(0),
             cell_count: RwSignal::new(0),
             last_save_time: RwSignal::new(None),
+            save_status: RwSignal::new(SaveStatus::Idle),
             compiler_version: RwSignal::new("stable".to_string()),
         }
     }
@@ -69,6 +82,14 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
         ctx.save_generation.update(|g| *g += 1);
     };
 
+    let save_label = move || match ctx.save_status.get() {
+        SaveStatus::Idle => "Save",
+        SaveStatus::Saving => "Saving…",
+        SaveStatus::Saved => "Saved ✓",
+    };
+
+    let save_disabled = Signal::derive(move || ctx.save_status.get() == SaveStatus::Saving);
+
     view! {
         <div class="ironpad-header-left">
             <a href="/" class="ironpad-brand">"ironpad"</a>
@@ -86,8 +107,9 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                     <Button
                         appearance=ButtonAppearance::Primary
                         on_click=on_save
+                        disabled=save_disabled
                     >
-                        "Save"
+                        {save_label}
                     </Button>
                 }
             })}

@@ -518,7 +518,7 @@ tasks:
   - id: T-040
     title: "Save notebook (Ctrl+S and save button)"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Save button in header. Ctrl+S keyboard shortcut.
       Collects current state of all cells (source, cargo_toml, order, labels)
@@ -1469,4 +1469,18 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - On cell delete, removes the deleted cell's entry from `cell_outputs`.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: uat-005 ("Two-cell data flow works") is functionally implemented but cannot be verified without Playwright (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-040 Completed
+- **Task**: Save notebook (Ctrl+S and save button)
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `SaveStatus` enum (Idle/Saving/Saved) and `save_status` signal to `LayoutContext` in `crates/ironpad-app/src/components/app_layout.rs`.
+  - Save button now shows dynamic text ("Save" → "Saving…" → "Saved ✓") and is disabled during save.
+  - Added `save_generation` signal to `NotebookState` in `crates/ironpad-app/src/pages/notebook_editor.rs`.
+  - Registered a document-level Ctrl+S / Cmd+S keyboard shortcut that prevents the browser default and fires the save flow.
+  - Save-generation watcher propagates save to all cells, calls `update_notebook` to bump `updated_at`, updates `last_save_time` in the status bar, and resets button to "Save" after 2 seconds.
+  - Each `CellItem` watches `state.save_generation` and immediately flushes its current source and cargo_toml content, clearing dirty flags on success.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: uat-007 ("Notebook persists after save and page reload") is functionally implemented but cannot be verified without Playwright (T-045+).
 - **Constitution Compliance**: No violations.

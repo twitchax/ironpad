@@ -45,6 +45,8 @@ struct NotebookState {
     /// Per-cell output bytes from the last execution, keyed by cell ID.
     /// Used to pipe cell N's output as cell N+1's input.
     cell_outputs: RwSignal<HashMap<String, Vec<u8>>>,
+    /// Triggers all cells to immediately flush their content to the server.
+    save_generation: RwSignal<u64>,
 }
 
 // ── Notebook editor page ────────────────────────────────────────────────────
@@ -67,6 +69,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         refresh_generation: RwSignal::new(0),
         pending_focus_cell: RwSignal::new(None),
         cell_outputs: RwSignal::new(HashMap::new()),
+        save_generation: RwSignal::new(0),
     };
     provide_context(state);
 
@@ -93,6 +96,88 @@ pub fn NotebookEditorPage() -> impl IntoView {
             state.cells.set(manifest.cells.clone());
         }
     });
+
+    // ── Ctrl+S / Cmd+S keyboard shortcut ────────────────────────────────
+
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::prelude::*;
+
+        let closure =
+            Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+                if (e.ctrl_key() || e.meta_key()) && e.key() == "s" {
+                    e.prevent_default();
+                    layout.save_generation.update(|g| *g += 1);
+                }
+            });
+
+        web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())
+            .unwrap();
+
+        closure.forget();
+    }
+
+    // ── Save-generation watcher ─────────────────────────────────────────
+    //
+    // When the save button (or Ctrl+S) fires, propagate to cells,
+    // bump the notebook manifest timestamp, and show feedback.
+
+    #[cfg(feature = "hydrate")]
+    {
+        use crate::components::app_layout::SaveStatus;
+        use wasm_bindgen::prelude::*;
+
+        let prev_gen = RwSignal::new(layout.save_generation.get_untracked());
+
+        Effect::new(move || {
+            let gen = layout.save_generation.get();
+            if gen == prev_gen.get_untracked() {
+                return;
+            }
+            prev_gen.set(gen);
+
+            // Signal all cells to flush their pending content.
+            state.save_generation.update(|g| *g += 1);
+
+            layout.save_status.set(SaveStatus::Saving);
+
+            let nb_id = state.notebook_id.get_untracked();
+            let title = layout.notebook_title.get_untracked().unwrap_or_default();
+
+            leptos::task::spawn_local(async move {
+                // Bump notebook updated_at (and persist title).
+                let _ = update_notebook(nb_id, title).await;
+
+                layout.save_status.set(SaveStatus::Saved);
+
+                // Update last-saved timestamp.
+                let date = js_sys::Date::new_0();
+                let time_str = format!(
+                    "{:02}:{:02}:{:02}",
+                    date.get_hours(),
+                    date.get_minutes(),
+                    date.get_seconds()
+                );
+                layout.last_save_time.set(Some(time_str));
+
+                // Reset to Idle after 2 seconds.
+                let reset_closure = Closure::<dyn Fn()>::new(move || {
+                    layout.save_status.set(SaveStatus::Idle);
+                });
+                let _ = web_sys::window()
+                    .unwrap()
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        reset_closure.as_ref().unchecked_ref(),
+                        2_000,
+                    );
+                reset_closure.forget();
+            });
+        });
+    }
 
     view! {
         <div class="ironpad-editor">
@@ -213,6 +298,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_delete = cell.id.clone();
     let cell_id_for_delete_cleanup = cell.id.clone();
     let cell_id_for_focus = cell.id.clone();
+    let cell_id_for_flush = cell.id.clone();
 
     let is_active = move || state.active_cell.get().as_deref() == Some(cell_id.as_str());
 
@@ -675,6 +761,49 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_cargo_toml_change = Callback::new(move |val: String| {
         cargo_toml.set(val);
     });
+
+    // ── Notebook-level save flush ───────────────────────────────────────
+    //
+    // When the user triggers a notebook save (Ctrl+S or save button),
+    // immediately persist this cell's current source and cargo_toml.
+
+    #[cfg(feature = "hydrate")]
+    {
+        let nb_id_flush = state.notebook_id.get_untracked();
+        let cid_flush = cell_id_for_flush;
+        let prev_save_gen = RwSignal::new(state.save_generation.get_untracked());
+
+        Effect::new(move || {
+            let gen = state.save_generation.get();
+            if gen == prev_save_gen.get_untracked() {
+                return;
+            }
+            prev_save_gen.set(gen);
+
+            let src = source.get_untracked();
+            let toml = cargo_toml.get_untracked();
+            let nb_id = nb_id_flush.clone();
+            let cid = cid_flush.clone();
+
+            leptos::task::spawn_local(async move {
+                if update_cell_source(nb_id.clone(), cid.clone(), src.clone())
+                    .await
+                    .is_ok()
+                    && source.get_untracked() == src
+                {
+                    source_dirty.set(false);
+                }
+
+                if update_cell_cargo_toml(nb_id, cid, toml.clone())
+                    .await
+                    .is_ok()
+                    && cargo_toml.get_untracked() == toml
+                {
+                    cargo_toml_dirty.set(false);
+                }
+            });
+        });
+    }
 
     // ── CSS classes ─────────────────────────────────────────────────────
 
