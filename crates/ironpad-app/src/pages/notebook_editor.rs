@@ -1,4 +1,6 @@
-use ironpad_common::{CellManifest, NotebookManifest};
+use ironpad_common::{
+    CellManifest, CompileRequest, CompileResponse, Diagnostic, NotebookManifest, Severity,
+};
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner, Tab, TabList};
@@ -6,9 +8,20 @@ use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner, Tab, TabList};
 use crate::components::app_layout::LayoutContext;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::{
-    add_cell, delete_cell, get_cell_content, get_notebook, rename_cell, update_cell_cargo_toml,
-    update_cell_source, update_notebook,
+    add_cell, compile_cell, delete_cell, get_cell_content, get_notebook, rename_cell,
+    update_cell_cargo_toml, update_cell_source, update_notebook,
 };
+
+// ── Cell status ─────────────────────────────────────────────────────────────
+
+/// Reactive cell execution status for the UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CellStatus {
+    Idle,
+    Compiling,
+    Success,
+    Error,
+}
 
 // ── Notebook-level reactive state ───────────────────────────────────────────
 
@@ -193,6 +206,12 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         state.active_cell.set(Some(cell_id_for_click.clone()));
     };
 
+    // ── Cell status & compile result ────────────────────────────────────
+
+    let cell_status = RwSignal::new(CellStatus::Idle);
+    let last_compile: RwSignal<Option<CompileResponse>> = RwSignal::new(None);
+    let compile_time_ms: RwSignal<Option<f64>> = RwSignal::new(None);
+
     // ── Collapse state ──────────────────────────────────────────────────
 
     let collapsed = RwSignal::new(false);
@@ -269,6 +288,107 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         let current = label.get_untracked();
         rename_action.dispatch(current);
     };
+
+    // ── Run cell action (compile flow) ──────────────────────────────────
+
+    // Trigger signal: incrementing this dispatches a compile.
+    let run_trigger = RwSignal::new(0u64);
+    let cell_id_for_run = StoredValue::new(cell.id.clone());
+
+    // The actual compile flow, driven by `run_trigger`.
+    Effect::new(move || {
+        let gen = run_trigger.get();
+        if gen == 0 {
+            return;
+        }
+
+        // Avoid double-dispatch while already compiling.
+        if cell_status.get_untracked() == CellStatus::Compiling {
+            return;
+        }
+
+        let cid = cell_id_for_run.get_value();
+        let current_source = source.get_untracked();
+        let current_cargo_toml = cargo_toml.get_untracked();
+
+        cell_status.set(CellStatus::Compiling);
+        last_compile.set(None);
+        compile_time_ms.set(None);
+
+        leptos::task::spawn_local(async move {
+            #[cfg(feature = "hydrate")]
+            let start = js_sys::Date::now();
+
+            let request = CompileRequest {
+                cell_id: cid,
+                source: current_source,
+                cargo_toml: current_cargo_toml,
+            };
+
+            let result = compile_cell(request).await;
+
+            #[cfg(feature = "hydrate")]
+            compile_time_ms.set(Some(js_sys::Date::now() - start));
+            #[cfg(not(feature = "hydrate"))]
+            compile_time_ms.set(Some(0.0));
+
+            match result {
+                Ok(response) => {
+                    let has_errors = response
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.severity == Severity::Error);
+
+                    if !response.wasm_blob.is_empty() && !has_errors {
+                        // Compilation succeeded.
+                        // TODO(T-036/T-037): Execute WASM blob via executor.
+                        cell_status.set(CellStatus::Success);
+                    } else {
+                        cell_status.set(CellStatus::Error);
+                    }
+
+                    last_compile.set(Some(response));
+                }
+                Err(e) => {
+                    cell_status.set(CellStatus::Error);
+                    last_compile.set(Some(CompileResponse {
+                        wasm_blob: vec![],
+                        diagnostics: vec![Diagnostic {
+                            message: format!("Server error: {e}"),
+                            severity: Severity::Error,
+                            spans: vec![],
+                        }],
+                        cached: false,
+                    }));
+                }
+            }
+        });
+    });
+
+    // ── Shift+Enter keybinding registration ─────────────────────────────
+    //
+    // Once the source Monaco editor handle is available, register a
+    // Shift+Enter action that triggers the compile flow.
+
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::prelude::*;
+
+        Effect::new(move || {
+            let Some(handle) = source_handle.get() else {
+                return;
+            };
+
+            let closure = Closure::<dyn Fn()>::new(move || {
+                run_trigger.update(|g| *g += 1);
+            });
+            let cb: js_sys::Function = closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
+            closure.forget();
+
+            // Monaco KeyMod.Shift (1024) | KeyCode.Enter (3) = 1027
+            handle.add_action("ironpad.runCell", &[1027], &cb);
+        });
+    }
 
     // ── On-change callbacks for Monaco editors ──────────────────────────
     //
@@ -432,8 +552,28 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         }
                     />
 
-                    <span class="ironpad-cell-status ironpad-cell-status--idle">
-                        "idle"
+                    <span class=move || {
+                        let suffix = match cell_status.get() {
+                            CellStatus::Idle => "idle",
+                            CellStatus::Compiling => "compiling",
+                            CellStatus::Success => "success",
+                            CellStatus::Error => "error",
+                        };
+                        format!("ironpad-cell-status ironpad-cell-status--{suffix}")
+                    }>
+                        {move || {
+                            match cell_status.get() {
+                                CellStatus::Idle => "idle".to_string(),
+                                CellStatus::Compiling => "compiling…".to_string(),
+                                CellStatus::Success => {
+                                    match compile_time_ms.get() {
+                                        Some(ms) => format!("✓ {ms:.0}ms"),
+                                        None => "✓ done".to_string(),
+                                    }
+                                }
+                                CellStatus::Error => "✕ error".to_string(),
+                            }
+                        }}
                     </span>
 
                     <div class="ironpad-cell-actions">
@@ -441,10 +581,16 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                             appearance=ButtonAppearance::Subtle
                             on_click=move |ev: leptos::ev::MouseEvent| {
                                 ev.stop_propagation();
-                                // Run button placeholder — wired up in T-028.
+                                run_trigger.update(|g| *g += 1);
                             }
                         >
-                            "▶"
+                            {move || {
+                                if cell_status.get() == CellStatus::Compiling {
+                                    "⏳"
+                                } else {
+                                    "▶"
+                                }
+                            }}
                         </Button>
                         <Button
                             appearance=ButtonAppearance::Subtle
@@ -510,7 +656,149 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                     })}
                 </Suspense>
             </div>
+
+            // ── Compile result panel ────────────────────────────────────
+            <CompileResultPanel
+                cell_status=cell_status
+                last_compile=last_compile
+                compile_time_ms=compile_time_ms
+            />
         </Card>
+    }
+}
+
+// ── Compile result panel ─────────────────────────────────────────────────────
+
+/// Displays compilation results below a cell: success info or error diagnostics.
+///
+/// Hidden when the cell has not been compiled yet (Idle state).
+/// Rich output and error panels are provided by T-030 and T-031; this gives
+/// basic inline feedback for the compile flow.
+#[component]
+fn CompileResultPanel(
+    cell_status: RwSignal<CellStatus>,
+    last_compile: RwSignal<Option<CompileResponse>>,
+    compile_time_ms: RwSignal<Option<f64>>,
+) -> impl IntoView {
+    view! {
+        {move || {
+            let status = cell_status.get();
+
+            // Hide panel when idle or compiling (spinner is shown in the header).
+            if status == CellStatus::Idle || status == CellStatus::Compiling {
+                return view! { <div /> }.into_any();
+            }
+
+            let Some(response) = last_compile.get() else {
+                return view! { <div /> }.into_any();
+            };
+
+            match status {
+                CellStatus::Success => {
+                    let blob_size = response.wasm_blob.len();
+                    let cached = response.cached;
+                    let time = compile_time_ms.get().unwrap_or(0.0);
+                    let warnings: Vec<Diagnostic> = response
+                        .diagnostics
+                        .into_iter()
+                        .filter(|d| d.severity == Severity::Warning)
+                        .collect();
+
+                    view! {
+                        <div class="ironpad-compile-result ironpad-compile-result--success">
+                            <div class="ironpad-compile-result-summary">
+                                {format!(
+                                    "✓ Compiled ({:.1} KB, {time:.0}ms{})",
+                                    blob_size as f64 / 1024.0,
+                                    if cached { ", cached" } else { "" },
+                                )}
+                            </div>
+                            {if !warnings.is_empty() {
+                                view! {
+                                    <div class="ironpad-compile-warnings">
+                                        <For
+                                            each=move || warnings.clone()
+                                            key=|d| d.message.clone()
+                                            let:diag
+                                        >
+                                            <DiagnosticItem diagnostic=diag />
+                                        </For>
+                                    </div>
+                                }.into_any()
+                            } else {
+                                view! { <div /> }.into_any()
+                            }}
+                        </div>
+                    }.into_any()
+                }
+
+                CellStatus::Error => {
+                    let diagnostics = response.diagnostics.clone();
+
+                    view! {
+                        <div class="ironpad-compile-result ironpad-compile-result--error">
+                            <For
+                                each=move || diagnostics.clone()
+                                key=|d| d.message.clone()
+                                let:diag
+                            >
+                                <DiagnosticItem diagnostic=diag />
+                            </For>
+                        </div>
+                    }.into_any()
+                }
+
+                _ => view! { <div /> }.into_any(),
+            }
+        }}
+    }
+}
+
+// ── Diagnostic item ─────────────────────────────────────────────────────────
+
+/// Renders a single compiler diagnostic with severity and span info.
+#[component]
+fn DiagnosticItem(diagnostic: Diagnostic) -> impl IntoView {
+    let severity_class = match diagnostic.severity {
+        Severity::Error => "ironpad-diag--error",
+        Severity::Warning => "ironpad-diag--warning",
+        Severity::Note => "ironpad-diag--note",
+    };
+
+    let severity_label = match diagnostic.severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Note => "note",
+    };
+
+    let spans_text = diagnostic
+        .spans
+        .iter()
+        .map(|s| {
+            let loc = format!("L{}:{}", s.line_start, s.col_start);
+            match &s.label {
+                Some(label) => format!("{loc} — {label}"),
+                None => loc,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    view! {
+        <div class=format!("ironpad-diag {severity_class}")>
+            <span class="ironpad-diag-severity">{severity_label}</span>
+            <span class="ironpad-diag-message">{diagnostic.message.clone()}</span>
+            {if !spans_text.is_empty() {
+                view! {
+                    <div class="ironpad-diag-spans">
+                        {spans_text.into_iter().map(|s| view! {
+                            <span class="ironpad-diag-span">{s}</span>
+                        }).collect_view()}
+                    </div>
+                }.into_any()
+            } else {
+                view! { <div /> }.into_any()
+            }}
+        </div>
     }
 }
 

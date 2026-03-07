@@ -387,7 +387,7 @@ tasks:
   - id: T-028
     title: "Cell run button with compile and execute flow"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Run button (▶) on cell header. On click:
       (1) Set status to "compiling", (2) Call compile_cell server fn with current
@@ -1317,6 +1317,26 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Added `cargo_toml_dirty` signal for unsaved-changes tracking.
   - Updated "Cargo.toml" tab label to show `"Cargo.toml ●"` when `cargo_toml_dirty` is true.
   - Added `update_cell_cargo_toml` to imports in `notebook_editor.rs`.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-028 Completed
+- **Task**: Cell run button with compile and execute flow
+- **Status**: ✅ Done
+- **Changes**:
+  - Wired the ▶ run button on each cell to call `compile_cell` server fn with current source + Cargo.toml.
+  - Added `CellStatus` enum (Idle, Compiling, Success, Error) in `notebook_editor.rs` for reactive cell status tracking.
+  - Added reactive status indicator in cell header — shows "idle", "compiling…", "✓ {time}ms", or "✕ error" with matching CSS classes.
+  - Run button shows ⏳ while compiling to prevent double-dispatch.
+  - Added `CompileResultPanel` component below each cell: shows compilation summary (blob size, timing, cached) on success, and structured diagnostics on error.
+  - Added `DiagnosticItem` component for rendering individual diagnostics with severity coloring and span info.
+  - Bound Shift+Enter keybinding in the source Monaco editor to trigger the compile flow.
+  - Extended Monaco bridge (`public/monaco/bridge.js`) with `addAction()` method for keybinding registration, including pending action queue for editors not yet ready.
+  - Extended `MonacoEditorHandle` (`monaco_editor.rs`) with `add_action()` method for registering Monaco actions from Rust.
+  - Added CSS for compile result panel and diagnostic rendering in `style/main.scss`.
+  - Uses trigger signal pattern (`RwSignal<u64>`) for the run flow, avoiding closure cloning issues.
+  - WASM execution (T-036/T-037) is deferred — compile succeeds but execution is a TODO placeholder.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.

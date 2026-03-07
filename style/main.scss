@@ -430,3 +430,75 @@ body {
     border-color: #e94560;
     color: #eaeaea;
 }
+
+/* ── Compile result panel ────────────────────────────────────────────── */
+
+.ironpad-compile-result {
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    font-family: 'Fira Code', 'Consolas', monospace;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.ironpad-compile-result--success .ironpad-compile-result-summary {
+    color: #40c080;
+}
+
+.ironpad-compile-result--error {
+    color: #e8e0d0;
+}
+
+.ironpad-compile-warnings {
+    margin-top: 4px;
+}
+
+/* ── Diagnostic items ────────────────────────────────────────────────── */
+
+.ironpad-diag {
+    padding: 4px 0;
+    line-height: 1.4;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.ironpad-diag:last-child {
+    border-bottom: none;
+}
+
+.ironpad-diag-severity {
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    margin-right: 6px;
+    letter-spacing: 0.5px;
+}
+
+.ironpad-diag--error .ironpad-diag-severity {
+    color: #e94560;
+}
+
+.ironpad-diag--warning .ironpad-diag-severity {
+    color: #f0c040;
+}
+
+.ironpad-diag--note .ironpad-diag-severity {
+    color: #40a0f0;
+}
+
+.ironpad-diag-message {
+    color: #e8e0d0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.ironpad-diag-spans {
+    margin-top: 2px;
+    padding-left: 12px;
+}
+
+.ironpad-diag-span {
+    display: block;
+    color: #8888aa;
+    font-size: 0.75rem;
+}

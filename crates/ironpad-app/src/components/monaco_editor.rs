@@ -35,6 +35,15 @@ mod js {
         #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "setValue")]
         pub fn set_value(id: f64, value: &str);
 
+        /// Register a keybinding action on the editor identified by `id`.
+        #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "addAction")]
+        pub fn add_action(
+            id: f64,
+            action_id: &str,
+            keybindings: &js_sys::Array,
+            callback: &js_sys::Function,
+        );
+
         /// Dispose the editor identified by `id`, freeing resources.
         #[wasm_bindgen(js_namespace = IronpadMonaco)]
         pub fn dispose(id: f64);
@@ -76,6 +85,29 @@ impl MonacoEditorHandle {
         // Suppress unused-variable warning during SSR build.
         #[cfg(not(feature = "hydrate"))]
         let _ = value;
+    }
+
+    /// Register a keybinding action on the editor.
+    ///
+    /// `keybindings` uses Monaco's numeric keybinding constants
+    /// (e.g. `KeyMod.Shift | KeyCode.Enter` = 1027).
+    /// No-op during SSR or before mount.
+    pub fn add_action(&self, action_id: &str, keybindings: &[i32], callback: &js_sys::Function) {
+        #[cfg(feature = "hydrate")]
+        {
+            if let Some(id) = self.editor_id.get_untracked() {
+                let kb_array = js_sys::Array::new();
+                for &kb in keybindings {
+                    kb_array.push(&wasm_bindgen::JsValue::from(kb));
+                }
+                js::add_action(id, action_id, &kb_array, callback);
+            }
+        }
+
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = (action_id, keybindings, callback);
+        }
     }
 }
 

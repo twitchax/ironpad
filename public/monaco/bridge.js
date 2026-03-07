@@ -59,6 +59,14 @@
           record.pendingValue = null;
         }
 
+        // Apply any actions that were queued before the editor was ready.
+        if (record.pendingActions) {
+          record.pendingActions.forEach(function (action) {
+            editor.addAction(action);
+          });
+          record.pendingActions = null;
+        }
+
         if (onChange) {
           editor.onDidChangeModelContent(function () {
             onChange(editor.getValue());
@@ -83,6 +91,28 @@
         record.editor.setValue(value);
       } else {
         record.pendingValue = value;
+      }
+    },
+
+    addAction: function (id, actionId, keybindings, callback) {
+      var record = editors[id];
+      if (!record) return;
+
+      var action = {
+        id: actionId,
+        label: actionId,
+        keybindings: keybindings,
+        run: function () {
+          callback();
+        },
+      };
+
+      if (record.editor) {
+        record.editor.addAction(action);
+      } else {
+        // Queue action registration until the editor is ready.
+        if (!record.pendingActions) record.pendingActions = [];
+        record.pendingActions.push(action);
       }
     },
 
