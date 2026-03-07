@@ -1,6 +1,8 @@
 #[cfg(feature = "ssr")]
 pub mod compiler;
 
+pub mod server_fns;
+
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{

@@ -212,7 +212,7 @@ tasks:
   - id: T-012
     title: "WASM optimization (wasm-opt, best-effort)"
     priority: 3
-    status: todo
+    status: done
     notes: >
       After successful compilation, attempt `wasm-opt -Oz` on the blob.
       If wasm-opt is not installed, skip silently (log at debug level).
@@ -221,7 +221,7 @@ tasks:
   - id: T-013
     title: "compile_cell server function"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Leptos #[server] fn that ties together T-008 through T-012:
       receive CompileRequest, check cache (T-010), on miss scaffold (T-008),
@@ -1086,3 +1086,25 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 55 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline and UI being functional.
 - **Constitution Compliance**: No violations.
+
+## 2026-03-06 — T-012 & T-013 Completed
+- **Task**: WASM optimization (wasm-opt, best-effort) + compile_cell server function
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/compiler/optimize.rs` — best-effort wasm-opt optimization module (T-012):
+    - `optimize_wasm(wasm_bytes, work_dir)` — writes bytes to temp file, runs `wasm-opt -Oz`, returns optimized bytes on success or original bytes if wasm-opt is unavailable or fails.
+    - Logs optimization stats (original/optimized sizes, bytes saved) at info level, skips silently at debug level.
+    - 1 unit test: verifies fallback to original bytes when wasm-opt is missing or input is invalid.
+  - Created `crates/ironpad-app/src/server_fns.rs` — Leptos `#[server]` fn `compile_cell` (T-013):
+    - Receives `CompileRequest` (cell_id, source, cargo_toml).
+    - Gets `AppConfig` via `expect_context`.
+    - Computes content hash, checks cache — returns cached blob on hit.
+    - On miss: scaffolds micro-crate (T-008), builds via cargo (T-009), parses diagnostics (T-011), runs wasm-opt optimization (T-012), stores blob in cache (T-010).
+    - On build failure: returns parsed diagnostics, or synthesizes a raw-output diagnostic if structured parsing yields nothing.
+    - Uses `tracing::info!` for timing/status at each pipeline stage.
+    - Uses session_id "default" for shared incremental build cache (single-user MVP).
+  - Updated `crates/ironpad-app/src/compiler/mod.rs` — registered `optimize` module.
+  - Updated `crates/ironpad-app/src/lib.rs` — registered `server_fns` module (not feature-gated, as `#[server]` macro handles SSR/hydrate gating internally).
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 56 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on the full compilation pipeline, UI, and Playwright infrastructure being functional.
+- **Constitution Compliance**: T-012 was implemented alongside T-013 because T-013 explicitly references "optimize (T-012)" as a pipeline stage. Implementing them together avoids creating a compile_cell function that skips a documented step. No other constitutional violations.
