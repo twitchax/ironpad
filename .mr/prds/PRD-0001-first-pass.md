@@ -394,7 +394,7 @@ tasks:
   - id: T-029
     title: "Cell status indicator"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Visual indicator on cell header showing current state:
       idle (gray), compiling (yellow/spinner), running (blue/spinner),
@@ -1596,3 +1596,17 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Rust syntax highlighting uses Monaco's built-in monarch grammar (already bundled); editor options (minimap off, line numbers on, automatic layout, word wrap, fontSize 14) were already configured in bridge.js
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
 - **Constitution Compliance**: No violations. New file follows existing patterns (Rule 4), minimal changes to existing files (Rule 3), language config is separated from bridge logic (Rule 2).
+
+## 2026-03-07 — T-029 Completed
+- **Task**: Cell status indicator
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `Running` variant to `CellStatus` enum in `crates/ironpad-app/src/pages/notebook_editor.rs` — represents the state between successful compilation and WASM execution completion.
+  - Replaced plain `<span>` status indicator with Thaw `Tag` component (`TagSize::ExtraSmall`) in the cell header, using custom CSS classes for color-coding.
+  - Status states with visual indicators: `● idle` (gray), `◐ compiling…` (yellow, pulsing), `◐ running…` (blue, pulsing), `✓ {time}ms` (green), `✕ error` (red).
+  - Wired `Running` state transition: set after successful compilation, before WASM blob loading/execution; returns to `Success` or `Error` after execution.
+  - Added CSS `@keyframes ironpad-status-pulse` animation for compiling and running states (opacity pulse 1→0.5→1).
+  - Updated guard clause and run button to handle both `Compiling` and `Running` states.
+  - Updated `CompileResultPanel` to hide during `Running` state (same as Compiling).
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅).
+- **Constitution Compliance**: No violations.

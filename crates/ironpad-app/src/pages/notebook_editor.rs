@@ -6,7 +6,7 @@ use ironpad_common::{
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
-use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner, Tab, TabList};
+use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner, Tab, TabList, Tag, TagSize};
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::error_panel::ErrorPanel;
@@ -23,6 +23,7 @@ use crate::server_fns::{
 enum CellStatus {
     Idle,
     Compiling,
+    Running,
     Success,
     Error,
 }
@@ -407,8 +408,11 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             return;
         }
 
-        // Avoid double-dispatch while already compiling.
-        if cell_status.get_untracked() == CellStatus::Compiling {
+        // Avoid double-dispatch while already compiling or running.
+        if matches!(
+            cell_status.get_untracked(),
+            CellStatus::Compiling | CellStatus::Running
+        ) {
             return;
         }
 
@@ -491,6 +495,8 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         #[cfg(feature = "hydrate")]
                         {
                             use crate::components::executor;
+
+                            cell_status.set(CellStatus::Running);
 
                             let blob = response.wasm_blob.clone();
                             last_compile.set(Some(response));
@@ -905,19 +911,24 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         }
                     />
 
-                    <span class=move || {
-                        let suffix = match cell_status.get() {
-                            CellStatus::Idle => "idle",
-                            CellStatus::Compiling => "compiling",
-                            CellStatus::Success => "success",
-                            CellStatus::Error => "error",
-                        };
-                        format!("ironpad-cell-status ironpad-cell-status--{suffix}")
-                    }>
+                    <Tag
+                        size=TagSize::ExtraSmall
+                        class=Signal::derive(move || {
+                            let suffix = match cell_status.get() {
+                                CellStatus::Idle => "idle",
+                                CellStatus::Compiling => "compiling",
+                                CellStatus::Running => "running",
+                                CellStatus::Success => "success",
+                                CellStatus::Error => "error",
+                            };
+                            format!("ironpad-cell-status ironpad-cell-status--{suffix}")
+                        })
+                    >
                         {move || {
                             match cell_status.get() {
-                                CellStatus::Idle => "idle".to_string(),
-                                CellStatus::Compiling => "compiling…".to_string(),
+                                CellStatus::Idle => "● idle".to_string(),
+                                CellStatus::Compiling => "◐ compiling…".to_string(),
+                                CellStatus::Running => "◐ running…".to_string(),
                                 CellStatus::Success => {
                                     match compile_time_ms.get() {
                                         Some(ms) => format!("✓ {ms:.0}ms"),
@@ -927,7 +938,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                 CellStatus::Error => "✕ error".to_string(),
                             }
                         }}
-                    </span>
+                    </Tag>
 
                     <div class="ironpad-cell-actions">
                         <Button
@@ -938,7 +949,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                             }
                         >
                             {move || {
-                                if cell_status.get() == CellStatus::Compiling {
+                                if matches!(cell_status.get(), CellStatus::Compiling | CellStatus::Running) {
                                     "⏳"
                                 } else {
                                     "▶"
@@ -1044,7 +1055,7 @@ fn CompileResultPanel(
             let status = cell_status.get();
 
             // Hide panel when idle or compiling (spinner is shown in the header).
-            if status == CellStatus::Idle || status == CellStatus::Compiling {
+            if matches!(status, CellStatus::Idle | CellStatus::Compiling | CellStatus::Running) {
                 return view! { <div /> }.into_any();
             }
 

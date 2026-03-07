@@ -318,6 +318,11 @@ body {
 
 /* ── Cell status indicator ──────────────────────────────────────────── */
 
+@keyframes ironpad-status-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
 .ironpad-cell-status {
     flex-shrink: 0;
     font-size: 0.7rem;
@@ -336,11 +341,13 @@ body {
 .ironpad-cell-status--compiling {
     color: #f0c040;
     background: rgba(240, 192, 64, 0.15);
+    animation: ironpad-status-pulse 1.2s ease-in-out infinite;
 }
 
 .ironpad-cell-status--running {
     color: #40a0f0;
     background: rgba(64, 160, 240, 0.15);
+    animation: ironpad-status-pulse 1.2s ease-in-out infinite;
 }
 
 .ironpad-cell-status--success {
