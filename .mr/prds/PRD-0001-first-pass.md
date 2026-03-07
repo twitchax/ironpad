@@ -311,7 +311,7 @@ tasks:
   - id: T-021
     title: "Notebook editor page skeleton"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Route /notebook/{id}: fetch notebook via get_notebook server fn.
       Render notebook title (editable), list of cell components (ordered),
@@ -1217,3 +1217,20 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
 - **Constitution Compliance**: No violations. Thaw `Card` has a default `width: 720px` which is overridden via `.ironpad-notebook-card { width: 100% }` to work within the grid layout — this is standard CSS customization, not a Thaw API deviation.
+
+## 2026-03-07 — T-021 Completed
+- **Task**: Notebook editor page skeleton
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/pages/notebook_editor.rs` — full notebook editor skeleton:
+    - `NotebookState` — reactive state struct (`Copy`-safe) with `RwSignal` fields for `notebook_id`, `cells` (ordered list), `active_cell`, and `refresh_generation` (triggers re-fetch). Provided via Leptos context for child components.
+    - `NotebookEditorPage` component — extracts notebook ID from URL params via `use_params_map`, fetches notebook via `get_notebook` server fn with `Resource::new`, wires up `LayoutContext` (sets title, shows save button, updates cell count and compiler version), renders loading/error/content states.
+    - `NotebookContent` component — renders editable title (`<input>` with `on:blur` save via `update_notebook` server fn), ordered cell list, and `AddCellButton` between each cell and at the end. Add-cell action calls `add_cell` server fn and triggers notebook refresh.
+    - `CellItem` component — Thaw `Card` with dynamic active-state class (via `Signal::derive`), cell order badge, editable label input (with `rename_cell` on blur), delete button (calls `delete_cell` and triggers refresh), and placeholder body for future Monaco integration.
+    - `AddCellButton` component — dashed-border button centered between cells, dispatches add action with optional `after_cell_id` for insertion positioning.
+  - Updated `crates/ironpad-app/src/pages/mod.rs` — registered `notebook_editor` module and re-exported `NotebookEditorPage`.
+  - Updated `crates/ironpad-app/src/lib.rs` — imported `NotebookEditorPage` from `pages` module, removed inline placeholder component.
+  - Updated `style/main.scss` — added notebook editor styles: editor container (max-width 960px), editable title input (transparent background, red accent on focus), cell list (flex column), cell cards (dark background, border transitions, active state highlight), cell header (order badge + label input + action buttons), placeholder body, add-cell button (dashed border, hover opacity transition).
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on Playwright infrastructure (T-045+) and a running server.
+- **Constitution Compliance**: No violations.

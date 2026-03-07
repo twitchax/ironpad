@@ -190,3 +190,155 @@ body {
     text-align: center;
     padding: 24px 0;
 }
+
+/* ── Notebook editor ─────────────────────────────────────────────────── */
+
+.ironpad-editor {
+    max-width: 960px;
+    margin: 0 auto;
+}
+
+.ironpad-editor-loading {
+    display: flex;
+    justify-content: center;
+    padding: 48px 0;
+}
+
+.ironpad-editor-title-row {
+    margin-bottom: 24px;
+}
+
+.ironpad-editor-title-input {
+    width: 100%;
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #eaeaea;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 4px 0;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.ironpad-editor-title-input:focus {
+    border-bottom-color: #e94560;
+}
+
+.ironpad-editor-title-input:hover {
+    border-bottom-color: #0f3460;
+}
+
+/* ── Cell list ───────────────────────────────────────────────────────── */
+
+.ironpad-cell-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+/* ── Cell card ───────────────────────────────────────────────────────── */
+
+.ironpad-cell-card {
+    width: 100%;
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    transition: border-color 0.2s;
+    cursor: pointer;
+}
+
+.ironpad-cell-card:hover {
+    border-color: #2a4a7f;
+}
+
+.ironpad-cell-card--active {
+    border-color: #e94560;
+}
+
+.ironpad-cell-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+
+.ironpad-cell-order {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #8888aa;
+    flex-shrink: 0;
+    font-family: monospace;
+}
+
+.ironpad-cell-label-input {
+    flex: 1 1 auto;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #b0b0cc;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid transparent;
+    padding: 2px 4px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.ironpad-cell-label-input:focus {
+    border-bottom-color: #e94560;
+}
+
+.ironpad-cell-label-input:hover {
+    border-bottom-color: #0f3460;
+}
+
+.ironpad-cell-actions {
+    flex-shrink: 0;
+    display: flex;
+    gap: 4px;
+}
+
+.ironpad-cell-body-placeholder {
+    padding: 16px;
+    min-height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ironpad-cell-placeholder-text {
+    color: #555577;
+    font-size: 0.85rem;
+    font-style: italic;
+    margin: 0;
+}
+
+/* ── Add cell button ─────────────────────────────────────────────────── */
+
+.ironpad-add-cell-row {
+    display: flex;
+    justify-content: center;
+    padding: 6px 0;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+}
+
+.ironpad-add-cell-row:hover {
+    opacity: 1;
+}
+
+.ironpad-add-cell-btn {
+    background: transparent;
+    border: 1px dashed #0f3460;
+    border-radius: 6px;
+    color: #8888aa;
+    font-size: 0.8rem;
+    padding: 4px 16px;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+}
+
+.ironpad-add-cell-btn:hover {
+    border-color: #e94560;
+    color: #eaeaea;
+}

@@ -16,7 +16,7 @@ use leptos_router::{
     components::{Route, Router, Routes},
     ParamSegment, StaticSegment,
 };
-use pages::HomePage;
+use pages::{HomePage, NotebookEditorPage};
 use thaw::{ConfigProvider, Theme};
 
 /// Server-side shell rendered around the app.
@@ -64,14 +64,5 @@ pub fn App() -> impl IntoView {
                 </AppLayout>
             </Router>
         </ConfigProvider>
-    }
-}
-
-/// Placeholder notebook editor page — will be replaced by T-021.
-#[component]
-fn NotebookEditorPage() -> impl IntoView {
-    view! {
-        <h1>"Notebook Editor"</h1>
-        <p>"Loading notebook..."</p>
     }
 }
