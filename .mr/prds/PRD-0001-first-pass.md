@@ -534,7 +534,7 @@ tasks:
   - id: T-042
     title: "Keyboard shortcuts"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Global keyboard listener (on the notebook editor page):
       Shift+Enter — run current (focused) cell,
@@ -1653,3 +1653,13 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Input auto-focuses and selects all text when entering edit mode for quick replacement.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
 - **Constitution Compliance**: No violations. Consolidated title editing from two places (header span + content input) to one (header click-to-edit), satisfying Rule 1 (DRY). No public API changes (Rule 5). Minimal files changed (Rule 3).
+
+## 2026-03-07 — T-042 Completed
+- **Task**: Keyboard shortcuts
+- **Status**: ✅ Done
+- **Changes**:
+  - Added Ctrl+Shift+N / Cmd+Shift+N shortcut to the global keydown listener in `crates/ironpad-app/src/pages/notebook_editor.rs` — adds a new cell below the currently active cell (or at the top if no cell is active). Calls `add_cell` server fn, sets `pending_focus_cell` for auto-focus, and bumps `refresh_generation`.
+  - Renamed the section comment from "Ctrl+S / Cmd+S keyboard shortcut" to "Global keyboard shortcuts" since the listener now handles three shortcuts: Ctrl+S (save), Ctrl+Shift+Enter (run all), and Ctrl+Shift+N (add cell).
+  - All four required shortcuts are now implemented: Shift+Enter (run cell, via Monaco addAction), Ctrl+S (save, global listener), Ctrl+Shift+Enter (run all, global listener), Ctrl+Shift+N (add cell, global listener).
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
+- **Constitution Compliance**: No violations. Single file changed (Rule 3 — Minimal Changes). Follows existing keydown handler pattern (Rule 4 — Consistency). No public API changes (Rule 5).

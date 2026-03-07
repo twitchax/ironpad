@@ -104,7 +104,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         }
     });
 
-    // ── Ctrl+S / Cmd+S keyboard shortcut ────────────────────────────────
+    // ── Global keyboard shortcuts ───────────────────────────────────────
 
     #[cfg(feature = "hydrate")]
     {
@@ -129,6 +129,22 @@ pub fn NotebookEditorPage() -> impl IntoView {
                     if !cell_ids.is_empty() {
                         state.run_all_queue.set(cell_ids);
                     }
+                }
+
+                // Ctrl+Shift+N — add new cell below the current active cell.
+                if (e.ctrl_key() || e.meta_key())
+                    && e.shift_key()
+                    && (e.key() == "N" || e.key() == "n")
+                {
+                    e.prevent_default();
+                    let nb_id = state.notebook_id.get_untracked();
+                    let after_cell_id = state.active_cell.get_untracked();
+                    leptos::task::spawn_local(async move {
+                        if let Ok(new_cell) = add_cell(nb_id, after_cell_id).await {
+                            state.pending_focus_cell.set(Some(new_cell.id.clone()));
+                            state.refresh_generation.update(|g| *g += 1);
+                        }
+                    });
                 }
             });
 
