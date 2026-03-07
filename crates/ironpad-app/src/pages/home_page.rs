@@ -1,7 +1,7 @@
 use ironpad_common::NotebookSummary;
 use leptos::prelude::*;
 use leptos_router::{hooks::use_navigate, NavigateOptions};
-use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner};
+use thaw::{Button, ButtonAppearance, Card, CardHeader, Skeleton, SkeletonItem};
 
 use crate::components::app_layout::LayoutContext;
 use crate::server_fns::{create_notebook, list_notebooks};
@@ -53,8 +53,10 @@ pub fn HomePage() -> impl IntoView {
             </div>
 
             <Suspense fallback=move || view! {
-                <div class="ironpad-home-loading">
-                    <Spinner label="Loading notebooks..." />
+                <div class="ironpad-notebook-grid">
+                    <NotebookCardSkeleton />
+                    <NotebookCardSkeleton />
+                    <NotebookCardSkeleton />
                 </div>
             }>
                 {move || Suspend::new(async move {
@@ -75,9 +77,18 @@ pub fn HomePage() -> impl IntoView {
                         }.into_any(),
 
                         Err(e) => view! {
-                            <p class="ironpad-error">
-                                {format!("Failed to load notebooks: {e}")}
-                            </p>
+                            <div class="ironpad-error-boundary">
+                                <div class="ironpad-error-boundary-icon">"⚠"</div>
+                                <p class="ironpad-error-boundary-message">
+                                    {format!("Failed to load notebooks: {e}")}
+                                </p>
+                                <Button
+                                    appearance=ButtonAppearance::Primary
+                                    on_click=move |_| { notebooks.refetch(); }
+                                >
+                                    "Retry"
+                                </Button>
+                            </div>
                         }.into_any(),
                     }
                 })}
@@ -115,5 +126,18 @@ fn NotebookCard(summary: NotebookSummary) -> impl IntoView {
                 </div>
             </Card>
         </a>
+    }
+}
+
+// ── Notebook card skeleton ──────────────────────────────────────────────────
+
+/// A skeleton placeholder shown while notebook cards are loading.
+#[component]
+fn NotebookCardSkeleton() -> impl IntoView {
+    view! {
+        <Skeleton class="ironpad-notebook-card-skeleton">
+            <SkeletonItem class="ironpad-skeleton-title" />
+            <SkeletonItem class="ironpad-skeleton-meta" />
+        </Skeleton>
     }
 }

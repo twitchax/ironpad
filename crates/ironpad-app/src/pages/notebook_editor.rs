@@ -6,7 +6,10 @@ use ironpad_common::{
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
-use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner, Tab, TabList, Tag, TagSize};
+use thaw::{
+    Button, ButtonAppearance, Card, CardHeader, Skeleton, SkeletonItem, Spinner, Tab, TabList, Tag,
+    TagSize, Toast, ToastBody, ToastTitle, ToasterInjection,
+};
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::error_panel::ErrorPanel;
@@ -166,8 +169,11 @@ pub fn NotebookEditorPage() -> impl IntoView {
     #[cfg(feature = "hydrate")]
     {
         use crate::components::app_layout::SaveStatus;
+        use std::time::Duration;
+        use thaw::{ToastIntent, ToastOptions};
         use wasm_bindgen::prelude::*;
 
+        let toaster = ToasterInjection::expect_context();
         let prev_gen = RwSignal::new(layout.save_generation.get_untracked());
 
         Effect::new(move || {
@@ -185,14 +191,46 @@ pub fn NotebookEditorPage() -> impl IntoView {
             let nb_id = state.notebook_id.get_untracked();
             let title = layout.notebook_title.get_untracked().unwrap_or_default();
 
+            let toaster = toaster;
             leptos::task::spawn_local(async move {
                 // Bump notebook updated_at (and persist title).
-                let _ = update_notebook(nb_id, title).await;
+                let save_result = update_notebook(nb_id, title).await;
 
-                layout.save_status.set(SaveStatus::Saved);
+                match save_result {
+                    Ok(_) => {
+                        layout.save_status.set(SaveStatus::Saved);
+                        layout.last_save_time.set(Some(js_sys::Date::now()));
 
-                // Update last-saved timestamp (epoch ms for relative display).
-                layout.last_save_time.set(Some(js_sys::Date::now()));
+                        toaster.dispatch_toast(
+                            move || {
+                                view! {
+                                    <Toast>
+                                        <ToastTitle>"Notebook saved"</ToastTitle>
+                                        <ToastBody>"All changes have been saved."</ToastBody>
+                                    </Toast>
+                                }
+                            },
+                            ToastOptions::default()
+                                .with_intent(ToastIntent::Success)
+                                .with_timeout(Duration::from_secs(3)),
+                        );
+                    }
+                    Err(_) => {
+                        toaster.dispatch_toast(
+                            move || {
+                                view! {
+                                    <Toast>
+                                        <ToastTitle>"Save failed"</ToastTitle>
+                                        <ToastBody>"Could not save notebook. Please try again."</ToastBody>
+                                    </Toast>
+                                }
+                            },
+                            ToastOptions::default()
+                                .with_intent(ToastIntent::Error)
+                                .with_timeout(Duration::from_secs(5)),
+                        );
+                    }
+                }
 
                 // Reset to Idle after 2 seconds.
                 let reset_closure = Closure::<dyn Fn()>::new(move || {
@@ -212,9 +250,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
     view! {
         <div class="ironpad-editor">
             <Suspense fallback=move || view! {
-                <div class="ironpad-editor-loading">
-                    <Spinner label="Loading notebook..." />
-                </div>
+                <NotebookEditorSkeleton />
             }>
                 {move || Suspend::new(async move {
                     match notebook_resource.await {
@@ -223,9 +259,12 @@ pub fn NotebookEditorPage() -> impl IntoView {
                         }.into_any(),
 
                         Err(e) => view! {
-                            <p class="ironpad-error">
-                                {format!("Failed to load notebook: {e}")}
-                            </p>
+                            <div class="ironpad-error-boundary">
+                                <div class="ironpad-error-boundary-icon">"⚠"</div>
+                                <p class="ironpad-error-boundary-message">
+                                    {format!("Failed to load notebook: {e}")}
+                                </p>
+                            </div>
                         }.into_any(),
                     }
                 })}
@@ -1499,5 +1538,33 @@ fn AddCellButton(
                 "+ Add Cell"
             </button>
         </div>
+    }
+}
+
+// ── Notebook editor skeleton ────────────────────────────────────────────────
+
+/// Skeleton placeholder shown while the notebook is loading.
+#[component]
+fn NotebookEditorSkeleton() -> impl IntoView {
+    view! {
+        <div class="ironpad-cell-list">
+            <CellSkeleton />
+            <CellSkeleton />
+        </div>
+    }
+}
+
+/// Skeleton placeholder for a single cell card.
+#[component]
+fn CellSkeleton() -> impl IntoView {
+    view! {
+        <Skeleton class="ironpad-cell-skeleton">
+            <div class="ironpad-cell-skeleton-header">
+                <SkeletonItem class="ironpad-skeleton-badge" />
+                <SkeletonItem class="ironpad-skeleton-label" />
+                <SkeletonItem class="ironpad-skeleton-status" />
+            </div>
+            <SkeletonItem class="ironpad-skeleton-editor" />
+        </Skeleton>
     }
 }

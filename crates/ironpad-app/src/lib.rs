@@ -17,7 +17,7 @@ use leptos_router::{
     ParamSegment, StaticSegment,
 };
 use pages::{HomePage, NotebookEditorPage};
-use thaw::{ConfigProvider, Theme};
+use thaw::{ConfigProvider, Theme, ToastPosition, ToasterProvider};
 
 /// Server-side shell rendered around the app.
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -64,14 +64,16 @@ pub fn App() -> impl IntoView {
         <Title text="ironpad"/>
 
         <ConfigProvider theme>
-            <Router>
-                <AppLayout>
-                    <Routes fallback=|| "Page not found.".into_view()>
-                        <Route path=StaticSegment("") view=HomePage/>
-                        <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=NotebookEditorPage/>
-                    </Routes>
-                </AppLayout>
-            </Router>
+            <ToasterProvider position=ToastPosition::BottomEnd>
+                <Router>
+                    <AppLayout>
+                        <Routes fallback=|| "Page not found.".into_view()>
+                            <Route path=StaticSegment("") view=HomePage/>
+                            <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=NotebookEditorPage/>
+                        </Routes>
+                    </AppLayout>
+                </Router>
+            </ToasterProvider>
         </ConfigProvider>
     }
 }

@@ -1063,3 +1063,133 @@ code, pre, kbd, samp,
         font-size: 1.25rem;
     }
 }
+
+/* ── Skeleton loading placeholders ──────────────────────────────────────── */
+
+.ironpad-notebook-card-skeleton {
+    background: var(--ip-bg-surface);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-lg);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 100px;
+}
+
+.ironpad-skeleton-title {
+    height: 20px;
+    width: 60%;
+    border-radius: var(--ip-radius-sm);
+}
+
+.ironpad-skeleton-meta {
+    height: 14px;
+    width: 40%;
+    border-radius: var(--ip-radius-sm);
+}
+
+.ironpad-cell-skeleton {
+    background: var(--ip-bg-surface);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-lg);
+    padding: 16px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.ironpad-cell-skeleton-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.ironpad-skeleton-badge {
+    height: 20px;
+    width: 32px;
+    border-radius: var(--ip-radius-sm);
+}
+
+.ironpad-skeleton-label {
+    height: 18px;
+    width: 100px;
+    border-radius: var(--ip-radius-sm);
+}
+
+.ironpad-skeleton-status {
+    height: 18px;
+    width: 60px;
+    border-radius: 10px;
+}
+
+.ironpad-skeleton-editor {
+    height: 180px;
+    width: 100%;
+    border-radius: var(--ip-radius-md);
+}
+
+/* ── Error boundaries ───────────────────────────────────────────────────── */
+
+.ironpad-error-boundary {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 48px 24px;
+    text-align: center;
+    min-height: 200px;
+}
+
+.ironpad-error-boundary-icon {
+    font-size: 2.5rem;
+    color: var(--ip-warning);
+}
+
+.ironpad-error-boundary-message {
+    color: var(--ip-text-secondary);
+    font-size: 0.95rem;
+    max-width: 400px;
+    line-height: 1.5;
+}
+
+/* ── Toast overrides ────────────────────────────────────────────────────── */
+
+.thaw-toaster {
+    z-index: 10000;
+}
+
+.thaw-toast {
+    background: var(--ip-bg-elevated);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md);
+    color: var(--ip-text-primary);
+}
+
+.thaw-toast-title {
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+
+.thaw-toast-body {
+    font-size: 0.8rem;
+    color: var(--ip-text-secondary);
+}
+
+.thaw-toast-title__success {
+    color: var(--ip-success);
+}
+
+.thaw-toast-title__error {
+    color: var(--ip-error);
+}
+
+.thaw-toast-title__warning {
+    color: var(--ip-warning);
+}
+
+.thaw-toast-title__info {
+    color: var(--ip-info);
+}

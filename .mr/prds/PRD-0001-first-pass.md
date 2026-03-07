@@ -676,7 +676,7 @@ tasks:
   - id: T-055
     title: "Loading states and final polish"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Add loading spinners/skeletons for: notebook list loading,
       notebook loading, cell compilation in progress.
@@ -1745,3 +1745,16 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Opportunistically verified uat-008 ("Docker container builds and serves the app") — marked as verified.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 6 Playwright tests ✅)
 - **Constitution Compliance**: No violations. Single file changed (docker/Dockerfile) with minimal version pin (Rule 3 — Minimal Changes). Follows existing Dockerfile patterns (Rule 4 — Consistency). No public API changes (Rule 5).
+
+## 2026-03-07 — T-055 Completed
+- **Task**: Loading states and final polish
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `ToasterProvider` (Thaw) at the app root (`lib.rs`) to enable toast notifications throughout the app.
+  - Replaced bare `Spinner` fallback on home page with skeleton card placeholders (`NotebookCardSkeleton` using Thaw `Skeleton`/`SkeletonItem`).
+  - Replaced bare `Spinner` fallback on notebook editor page with `NotebookEditorSkeleton` showing placeholder cell cards with header and editor skeleton items.
+  - Added toast notifications on save: success toast ("Notebook saved") and error toast ("Save failed") using `ToasterInjection::dispatch_toast`.
+  - Added styled error boundary UI (`ironpad-error-boundary`) with icon, message, and retry button for server fn failures on home page and notebook editor.
+  - Added CSS for skeleton loaders, error boundaries, and toast overrides matching the dark theme in `style/main.scss`.
+  - `cargo make uat` ✅ passes — fmt-check ✅, clippy ✅, all tests ✅, 6 Playwright tests ✅
+- **Constitution Compliance**: No violations. Changes are minimal and focused (Rule 3). Follows existing patterns — Thaw components, CSS custom properties, Suspense fallbacks (Rule 4). No public API changes (Rule 5).
