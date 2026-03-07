@@ -335,6 +335,8 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             #[cfg(feature = "hydrate")]
             let start = js_sys::Date::now();
 
+            let cell_id_for_exec = cid.clone();
+
             let request = CompileRequest {
                 cell_id: cid,
                 source: current_source,
@@ -356,14 +358,57 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         .any(|d| d.severity == Severity::Error);
 
                     if !response.wasm_blob.is_empty() && !has_errors {
-                        // Compilation succeeded.
-                        // TODO(T-036/T-037): Execute WASM blob via executor.
-                        cell_status.set(CellStatus::Success);
+                        // Compilation succeeded — load and execute the WASM blob.
+                        #[cfg(feature = "hydrate")]
+                        {
+                            use crate::components::executor;
+
+                            let blob = response.wasm_blob.clone();
+                            last_compile.set(Some(response));
+
+                            let hash = executor::hash_wasm_blob(&blob);
+
+                            let exec_err =
+                                match executor::load_blob(&cell_id_for_exec, &hash, &blob).await {
+                                    Ok(()) => {
+                                        let exec_start = js_sys::Date::now();
+                                        // Cell input is empty for now; data flow wired by T-038.
+                                        match executor::execute_cell(&cell_id_for_exec, &[]) {
+                                            Ok((output_bytes, display_text)) => {
+                                                execution_result.set(Some(ExecutionResult {
+                                                    display_text,
+                                                    output_bytes,
+                                                    execution_time_ms: js_sys::Date::now()
+                                                        - exec_start,
+                                                }));
+                                                cell_status.set(CellStatus::Success);
+                                                None
+                                            }
+                                            Err(e) => Some(format!("Execution error: {e}")),
+                                        }
+                                    }
+                                    Err(e) => Some(format!("WASM load error: {e}")),
+                                };
+
+                            if let Some(err_msg) = exec_err {
+                                execution_result.set(Some(ExecutionResult {
+                                    display_text: Some(err_msg),
+                                    output_bytes: vec![],
+                                    execution_time_ms: 0.0,
+                                }));
+                                cell_status.set(CellStatus::Error);
+                            }
+                        }
+
+                        #[cfg(not(feature = "hydrate"))]
+                        {
+                            cell_status.set(CellStatus::Success);
+                            last_compile.set(Some(response));
+                        }
                     } else {
                         cell_status.set(CellStatus::Error);
+                        last_compile.set(Some(response));
                     }
-
-                    last_compile.set(Some(response));
                 }
                 Err(e) => {
                     cell_status.set(CellStatus::Error);

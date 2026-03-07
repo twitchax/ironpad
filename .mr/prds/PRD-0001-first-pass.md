@@ -491,12 +491,7 @@ tasks:
   - id: T-037
     title: "wasm-bindgen bindings for the WASM executor"
     priority: 2
-    status: todo
-    notes: >
-      Rust-side wasm-bindgen bindings to call the CellExecutor JS module
-      from Leptos components. Functions: init_executor(), load_blob(cell_id, hash, bytes),
-      execute_cell(cell_id, input_bytes) -> (output_bytes, display_text).
-      These are called from the cell run flow (T-028).
+    status: done
 
   - id: T-038
     title: "Cell I/O pipeline (output → next cell input)"
@@ -1435,6 +1430,29 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Graceful error handling: validates all required exports (memory, ironpad_alloc, ironpad_dealloc, cell_main), catches WASM traps with cleanup, reports OOM from alloc failures.
   - Added `unload(cellId)` for removing cached modules and `isLoaded(cellId, hash)` for cache queries.
   - Updated `crates/ironpad-app/src/lib.rs` — added `<script src="/executor.js">` to the shell `<head>` section, making the executor available on page load.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+) and a running server.
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-037 Completed
+- **Task**: wasm-bindgen bindings for the WASM executor
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `wasm-bindgen-futures` to workspace dependencies (`Cargo.toml`) and to `ironpad-app` hydrate feature.
+  - Created `crates/ironpad-app/src/components/executor.rs` — Rust-side wasm-bindgen bindings for `window.IronpadExecutor`:
+    - `mod js`: raw extern bindings with `js_namespace = IronpadExecutor` for `loadBlob` (async/Promise), `execute` (sync), `unload`, and `isLoaded`. Both `loadBlob` and `execute` use `catch` attribute for safe error handling.
+    - `hash_wasm_blob(bytes)`: FNV-1a 64-bit hash for blob caching (avoids heavy deps on WASM client).
+    - `init_executor()`: diagnostic check that `window.IronpadExecutor` is available.
+    - `load_blob(cell_id, hash, bytes)`: async wrapper using `wasm_bindgen_futures::JsFuture` to await the Promise from JS `loadBlob`.
+    - `execute_cell(cell_id, input_bytes)`: sync wrapper that calls JS `execute`, extracts `outputBytes` (Uint8Array→Vec<u8>) and `displayText` (string|null→Option<String>) via `js_sys::Reflect`.
+  - Registered module in `crates/ironpad-app/src/components/mod.rs`.
+  - Wired executor into compile flow in `crates/ironpad-app/src/pages/notebook_editor.rs`:
+    - Replaced `TODO(T-036/T-037)` placeholder with actual executor calls.
+    - After successful compile: clones wasm blob, computes hash, calls `load_blob` (async), then `execute_cell` with empty input (data flow deferred to T-038).
+    - On success: populates `execution_result` signal with `ExecutionResult { display_text, output_bytes, execution_time_ms }`, sets `CellStatus::Success`.
+    - On executor error: sets `execution_result` with error message in `display_text`, sets `CellStatus::Error`.
+    - SSR branch: simple `CellStatus::Success` (no executor on server).
+  - All functions gated with `#[cfg(feature = "hydrate")]` — SSR build unaffected.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+) and a running server.
 - **Constitution Compliance**: No violations.
