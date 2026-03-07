@@ -227,4 +227,83 @@ test.describe("Notebook", () => {
     // Verify no JS errors occurred.
     expect(jsErrors).toEqual([]);
   });
+
+  test("save and reload notebook preserves cell source", async ({ page }) => {
+    // No compilation needed — just save/navigate; generous timeout for safety.
+    test.setTimeout(60_000);
+
+    // Collect JS errors (filter known WASM hydration noise).
+    const jsErrors: string[] = [];
+    page.on("pageerror", (error) => {
+      if (!error.message.includes("unreachable")) {
+        jsErrors.push(error.message);
+      }
+    });
+
+    // ── Create a new notebook ───────────────────────────────────────────
+    await page.goto("/");
+    await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.locator("button", { hasText: "+ New Notebook" }).click();
+    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page.locator(".ironpad-editor")).toBeVisible();
+
+    // ── Add a cell ──────────────────────────────────────────────────────
+    await page.locator(".ironpad-add-cell-btn").first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell).toBeVisible();
+
+    // Wait for Monaco editor to mount and show content.
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    const monacoContent = cell.locator(".monaco-editor .view-lines").first();
+    await expect(monacoContent).toContainText("hello from ironpad", {
+      timeout: 10_000,
+    });
+
+    // ── Save the notebook via Ctrl+S ────────────────────────────────────
+    // Wait for any debounced saves to settle first.
+    await page.waitForTimeout(2_000);
+    await page.keyboard.press("Control+s");
+
+    // Wait for save to complete (button shows "Saved ✓").
+    await expect(page.locator(".ironpad-header-right")).toContainText(
+      /Saved/,
+      { timeout: 5_000 }
+    );
+
+    // ── Navigate to home page ───────────────────────────────────────────
+    await page.locator("a.ironpad-brand").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible();
+
+    // ── Navigate back to the notebook ───────────────────────────────────
+    // The notebook should appear in the list grid. Click on the first one.
+    const notebookLink = page.locator(".ironpad-notebook-card-link").first();
+    await expect(notebookLink).toBeVisible({ timeout: 5_000 });
+    await notebookLink.click();
+
+    // Verify we're back on the notebook editor page.
+    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page.locator(".ironpad-editor")).toBeVisible();
+
+    // ── Verify cell source is preserved ─────────────────────────────────
+    const reloadedCell = page.locator(".ironpad-cell-card").first();
+    await expect(reloadedCell).toBeVisible({ timeout: 10_000 });
+
+    // Wait for Monaco editor to mount.
+    await expect(
+      reloadedCell.locator(".monaco-editor").first()
+    ).toBeVisible({ timeout: 15_000 });
+
+    // Verify the editor still contains the default cell source.
+    const reloadedContent = reloadedCell.locator(
+      ".monaco-editor .view-lines"
+    ).first();
+    await expect(reloadedContent).toContainText("hello from ironpad", {
+      timeout: 10_000,
+    });
+
+    // Verify no JS errors occurred.
+    expect(jsErrors).toEqual([]);
+  });
 });

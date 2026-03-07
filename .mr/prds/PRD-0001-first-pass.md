@@ -57,7 +57,7 @@ acceptance_tests:
   - id: uat-007
     name: "Notebook persists after save and page reload"
     command: cargo make uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-008
     name: "Docker container builds and serves the app"
     command: cargo make docker-uat
@@ -619,7 +619,7 @@ tasks:
   - id: T-050
     title: "Playwright smoke test — save and reload notebook"
     priority: 3
-    status: todo
+    status: done
     notes: >
       Test: create notebook, add a cell with code, save (Ctrl+S or button),
       navigate away to home, navigate back to the notebook,
@@ -1706,4 +1706,14 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Cell 1 deserializes via `CellInput::deserialize()`, sums to 15, outputs via `CellOutput::text()`
   - Verifies Cell 0 output contains "Sent: [1, 2, 3, 4, 5]" and Cell 1 output contains "Sum: 15"
   - `cargo make uat` ✅ passes (5 Playwright tests ✅)
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-050 Completed
+- **Task**: Playwright smoke test — save and reload notebook
+- **Status**: ✅ Done
+- **Changes**:
+  - Added "save and reload notebook preserves cell source" Playwright test in `tests/e2e/notebook.spec.ts`
+  - Test creates a notebook, adds a cell (default source with "hello from ironpad"), waits for debounce, saves via Ctrl+S, navigates to home via brand link, clicks notebook in the list to navigate back, and verifies the cell's Monaco editor still contains the expected source code
+  - Used `.first()` on `.view-lines` locator to handle multiple Monaco editor instances per cell (Code + Cargo.toml tabs)
+  - `cargo make uat` ✅ passes (6 Playwright tests ✅)
 - **Constitution Compliance**: No violations.
