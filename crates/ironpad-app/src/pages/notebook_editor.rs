@@ -22,6 +22,7 @@ use crate::server_fns::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CellStatus {
     Idle,
+    Queued,
     Compiling,
     Running,
     Success,
@@ -48,6 +49,9 @@ struct NotebookState {
     cell_outputs: RwSignal<HashMap<String, Vec<u8>>>,
     /// Triggers all cells to immediately flush their content to the server.
     save_generation: RwSignal<u64>,
+    /// Ordered queue of cell IDs for "Run All Below" sequential execution.
+    /// The cell at position [0] is the one currently being executed.
+    run_all_queue: RwSignal<Vec<String>>,
 }
 
 // ── Notebook editor page ────────────────────────────────────────────────────
@@ -71,6 +75,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         pending_focus_cell: RwSignal::new(None),
         cell_outputs: RwSignal::new(HashMap::new()),
         save_generation: RwSignal::new(0),
+        run_all_queue: RwSignal::new(Vec::new()),
     };
     provide_context(state);
 
@@ -109,6 +114,20 @@ pub fn NotebookEditorPage() -> impl IntoView {
                 if (e.ctrl_key() || e.meta_key()) && e.key() == "s" {
                     e.prevent_default();
                     layout.save_generation.update(|g| *g += 1);
+                }
+
+                // Ctrl+Shift+Enter — run all cells from top.
+                if (e.ctrl_key() || e.meta_key()) && e.shift_key() && e.key() == "Enter" {
+                    e.prevent_default();
+                    let cell_ids: Vec<String> = state
+                        .cells
+                        .get_untracked()
+                        .iter()
+                        .map(|c| c.id.clone())
+                        .collect();
+                    if !cell_ids.is_empty() {
+                        state.run_all_queue.set(cell_ids);
+                    }
                 }
             });
 
@@ -520,6 +539,62 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let run_trigger = RwSignal::new(0u64);
     let cell_id_for_run = StoredValue::new(cell.id.clone());
 
+    // ── Run-all queue watcher ───────────────────────────────────────────
+    //
+    // When this cell appears at the front of the run-all queue, trigger
+    // its compile flow.  Non-front cells show a "Queued" status badge.
+
+    let cell_id_for_queue = StoredValue::new(cell.id.clone());
+
+    Effect::new(move || {
+        let queue = state.run_all_queue.get();
+        let cid = cell_id_for_queue.get_value();
+
+        let my_pos = queue.iter().position(|id| id == &cid);
+
+        match my_pos {
+            Some(0) => {
+                // At the front — trigger compile if not already in progress.
+                if !matches!(
+                    cell_status.get_untracked(),
+                    CellStatus::Compiling | CellStatus::Running
+                ) {
+                    run_trigger.update(|g| *g += 1);
+                }
+            }
+            Some(_) => {
+                // Waiting in queue — show queued indicator.
+                if !matches!(
+                    cell_status.get_untracked(),
+                    CellStatus::Compiling | CellStatus::Running | CellStatus::Queued
+                ) {
+                    cell_status.set(CellStatus::Queued);
+                }
+            }
+            None => {
+                // Not in queue — reset from Queued back to Idle.
+                if cell_status.get_untracked() == CellStatus::Queued {
+                    cell_status.set(CellStatus::Idle);
+                }
+            }
+        }
+    });
+
+    // ── Run All Below trigger ───────────────────────────────────────────
+
+    let cell_id_for_run_all = StoredValue::new(cell.id.clone());
+    let on_run_all_below = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        menu_open.set(false);
+        let cid = cell_id_for_run_all.get_value();
+        let cells = state.cells.get_untracked();
+        let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+        let queue: Vec<String> = cells[my_idx..].iter().map(|c| c.id.clone()).collect();
+        if !queue.is_empty() {
+            state.run_all_queue.set(queue);
+        }
+    };
+
     // The actual compile flow, driven by `run_trigger`.
     Effect::new(move || {
         let gen = run_trigger.get();
@@ -646,6 +721,17 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                                         - exec_start,
                                                 }));
                                                 cell_status.set(CellStatus::Success);
+
+                                                // Advance run-all queue on success.
+                                                state.run_all_queue.update(|q| {
+                                                    if q.first()
+                                                        .map(|id| id == &cell_id_for_exec)
+                                                        .unwrap_or(false)
+                                                    {
+                                                        q.remove(0);
+                                                    }
+                                                });
+
                                                 None
                                             }
                                             Err(e) => Some(format!("Execution error: {e}")),
@@ -661,6 +747,9 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                     execution_time_ms: 0.0,
                                 }));
                                 cell_status.set(CellStatus::Error);
+
+                                // Stop run-all on execution error.
+                                state.run_all_queue.set(vec![]);
                             }
                         }
 
@@ -668,10 +757,20 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         {
                             cell_status.set(CellStatus::Success);
                             last_compile.set(Some(response));
+
+                            // Advance run-all queue (SSR path).
+                            state.run_all_queue.update(|q| {
+                                if q.first().map(|id| id == &cell_id_for_exec).unwrap_or(false) {
+                                    q.remove(0);
+                                }
+                            });
                         }
                     } else {
                         cell_status.set(CellStatus::Error);
                         last_compile.set(Some(response));
+
+                        // Stop run-all on compile error.
+                        state.run_all_queue.set(vec![]);
                     }
                 }
                 Err(e) => {
@@ -686,6 +785,9 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         }],
                         cached: false,
                     }));
+
+                    // Stop run-all on server error.
+                    state.run_all_queue.set(vec![]);
                 }
             }
         });
@@ -1035,6 +1137,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         class=Signal::derive(move || {
                             let suffix = match cell_status.get() {
                                 CellStatus::Idle => "idle",
+                                CellStatus::Queued => "queued",
                                 CellStatus::Compiling => "compiling",
                                 CellStatus::Running => "running",
                                 CellStatus::Success => "success",
@@ -1046,6 +1149,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         {move || {
                             match cell_status.get() {
                                 CellStatus::Idle => "● idle".to_string(),
+                                CellStatus::Queued => "◎ queued".to_string(),
                                 CellStatus::Compiling => "◐ compiling…".to_string(),
                                 CellStatus::Running => "◐ running…".to_string(),
                                 CellStatus::Success => {
@@ -1120,6 +1224,12 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                             on:click=on_duplicate
                                         >
                                             "⧉ Duplicate"
+                                        </button>
+                                        <button
+                                            class="ironpad-cell-menu-item"
+                                            on:click=on_run_all_below
+                                        >
+                                            "▶▶ Run All Below"
                                         </button>
                                         <div class="ironpad-cell-menu-divider" />
                                         <button
@@ -1221,8 +1331,8 @@ fn CompileResultPanel(
         {move || {
             let status = cell_status.get();
 
-            // Hide panel when idle or compiling (spinner is shown in the header).
-            if matches!(status, CellStatus::Idle | CellStatus::Compiling | CellStatus::Running) {
+            // Hide panel when idle, queued, or compiling (spinner is shown in the header).
+            if matches!(status, CellStatus::Idle | CellStatus::Queued | CellStatus::Compiling | CellStatus::Running) {
                 return view! { <div /> }.into_any();
             }
 

@@ -501,7 +501,7 @@ tasks:
   - id: T-039
     title: "Run All Below (sequential cell execution)"
     priority: 3
-    status: todo
+    status: done
     notes: >
       From a given cell, execute it and then sequentially execute all cells
       below it, piping outputs forward. Stop on first compile/execution error.
@@ -1625,3 +1625,17 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Added cell menu CSS in `style/main.scss`: dropdown positioning, backdrop overlay for click-outside-to-close, hover states, disabled styling, danger styling for delete, divider between actions.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
 - **Constitution Compliance**: No violations. Added new `duplicate_cell` public function and server fn — this is new functionality (Rule 5 satisfied, no breaking changes). Extracted `add_cell_to_manifest` avoids duplicating manifest logic (Rule 1 — DRY). Menu UI is self-contained in the CellItem component (Rule 2 — SOC).
+
+## 2026-03-07 — T-039 Completed
+- **Task**: Run All Below (sequential cell execution)
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `CellStatus::Queued` variant to the cell status enum in `notebook_editor.rs` for visual progress feedback during sequential execution.
+  - Added `run_all_queue: RwSignal<Vec<String>>` to `NotebookState` — an ordered queue of cell IDs for sequential execution.
+  - Added queue-watching `Effect` in each `CellItem`: when the cell is at the front of the queue it triggers compilation; non-front cells show "◎ queued" status; cleared from Queued back to Idle when removed from the queue.
+  - Modified the compile flow's `spawn_local` completion: on success, pops the cell from the queue front (triggering the next cell); on any error (compile, execution, server), clears the entire queue to stop the run.
+  - Added "▶▶ Run All Below" menu item in the cell dropdown menu (after Duplicate, before the divider).
+  - Added Ctrl+Shift+Enter keyboard shortcut in `NotebookEditorPage` to run all cells from the top.
+  - Added `.ironpad-cell-status--queued` CSS class in `style/main.scss` with purple color scheme and pulse animation.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
+- **Constitution Compliance**: No violations. Reactive queue approach reuses existing per-cell compile flow (Rule 1 — DRY). Queue management is self-contained in NotebookState signals (Rule 2 — SOC). Only notebook_editor.rs and main.scss modified (Rule 3 — Minimal Changes). No public API changes (Rule 5).

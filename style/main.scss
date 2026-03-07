@@ -403,6 +403,12 @@ body {
     background: rgba(136, 136, 170, 0.15);
 }
 
+.ironpad-cell-status--queued {
+    color: #b080f0;
+    background: rgba(176, 128, 240, 0.15);
+    animation: ironpad-status-pulse 1.2s ease-in-out infinite;
+}
+
 .ironpad-cell-status--compiling {
     color: #f0c040;
     background: rgba(240, 192, 64, 0.15);
