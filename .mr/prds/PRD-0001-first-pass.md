@@ -284,7 +284,7 @@ tasks:
   - id: T-018
     title: "Leptos app root component with routing"
     priority: 2
-    status: todo
+    status: done
     notes: >
       In ironpad-app: root App component with Router.
       Routes: "/" (home/notebook list), "/notebook/{id}" (editor).
@@ -1171,4 +1171,19 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - All server functions follow the existing `compile_cell` pattern: `expect_context::<AppConfig>()`, `map_err` to `ServerFnError::new()`.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — all depend on UI components (T-018+) and Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-018 Completed
+- **Task**: Leptos app root component with routing
+- **Status**: ✅ Done
+- **Changes**:
+  - Updated `crates/ironpad-app/src/lib.rs`:
+    - Wrapped entire app in Thaw `ConfigProvider` with `Theme::dark()` default
+    - Added `/notebook/{id}` route using `(StaticSegment("notebook"), ParamSegment("id"))`
+    - Added placeholder `NotebookEditorPage` component (to be replaced by T-021)
+    - Added `ParamSegment` import from `leptos_router`
+    - Added `ConfigProvider` and `Theme` imports from `thaw`
+  - Existing `HomePage` placeholder and `shell()` function unchanged
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped)
+- **Opportunistic UAT**: No UATs can be verified yet — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.
