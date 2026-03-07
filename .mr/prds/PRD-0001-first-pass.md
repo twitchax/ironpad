@@ -421,7 +421,7 @@ tasks:
   - id: T-031
     title: "Cell error panel with formatted compiler diagnostics"
     priority: 2
-    status: todo
+    status: done
     notes: >
       When compilation fails, render diagnostics below the editor.
       Show error messages with severity (error/warning/note) color-coded.
@@ -1356,3 +1356,24 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-031 Completed
+- **Task**: Cell error panel with formatted compiler diagnostics
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `code: Option<String>` field to `Diagnostic` in `crates/ironpad-common/src/types.rs` for structured error code access (with `serde` skip_serializing_if).
+  - Updated diagnostic parser in `crates/ironpad-app/src/compiler/diagnostics.rs` to populate the `code` field instead of appending error codes to the message string.
+  - Updated all `Diagnostic` construction sites (`server_fns.rs`, `notebook_editor.rs`) with `code: None`.
+  - Created `crates/ironpad-app/src/components/error_panel.rs` — a dedicated `ErrorPanel` component with:
+    - Collapsible header showing error/warning/note counts.
+    - `ErrorDiagnosticItem` sub-component with color-coded severity badges (error=red, warning=yellow, note=blue).
+    - Clickable links to the Rust error index for E-codes (e.g., `E0308` → `https://doc.rust-lang.org/error_codes/E0308.html`).
+    - Non-linkable codes (e.g., lint names) displayed as plain text.
+    - `SpanItem` sub-component showing line/column locations with optional labels.
+  - Updated `CompileResultPanel` to use `ErrorPanel` for both error state and success-with-warnings state, replacing the old inline `DiagnosticItem`.
+  - Removed the now-unused `DiagnosticItem` component from `notebook_editor.rs`.
+  - Added comprehensive CSS styling for the error panel in `style/main.scss`.
+  - Updated diagnostic parser tests to verify `code` field instead of bracket-appended message.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
+- **Constitution Compliance**: Added `code` field to public `Diagnostic` struct — this is a necessary API change required by T-031's error code linking requirement. Backward-compatible due to `serde(default)`.

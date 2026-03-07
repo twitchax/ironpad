@@ -113,6 +113,7 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
                     message: format!("Compilation failed:\n{raw}"),
                     severity: ironpad_common::Severity::Error,
                     spans: vec![],
+                    code: None,
                 }]
             } else {
                 diagnostics

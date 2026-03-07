@@ -83,11 +83,10 @@ fn parse_single_line(line: &str) -> Option<Diagnostic> {
         _ => return None,
     };
 
-    // Build the display message, appending the error code when available.
-    let message = match &rustc_msg.code {
-        Some(code) => format!("{} [{}]", rustc_msg.message, code.code),
-        None => rustc_msg.message,
-    };
+    // Extract the error code if present.
+    let code = rustc_msg.code.as_ref().map(|c| c.code.clone());
+
+    let message = rustc_msg.message;
 
     // Only include primary spans from src/lib.rs (the wrapped user code file).
     let spans: Vec<Span> = rustc_msg
@@ -101,6 +100,7 @@ fn parse_single_line(line: &str) -> Option<Diagnostic> {
         message,
         severity,
         spans,
+        code,
     })
 }
 
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
         assert!(diags[0].message.contains("mismatched types"));
-        assert!(diags[0].message.contains("[E0308]"));
+        assert_eq!(diags[0].code.as_deref(), Some("E0308"));
         assert_eq!(diags[0].spans.len(), 1);
 
         let span = &diags[0].spans[0];
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Warning);
         assert!(diags[0].message.contains("unused variable"));
-        assert!(diags[0].message.contains("[unused_variables]"));
+        assert_eq!(diags[0].code.as_deref(), Some("unused_variables"));
         assert_eq!(diags[0].spans.len(), 1);
 
         let span = &diags[0].spans[0];

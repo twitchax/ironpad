@@ -7,6 +7,7 @@ use leptos_router::hooks::use_params_map;
 use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner, Tab, TabList};
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::error_panel::ErrorPanel;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::{
     add_cell, compile_cell, delete_cell, get_cell_content, get_notebook, rename_cell,
@@ -359,6 +360,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                             message: format!("Server error: {e}"),
                             severity: Severity::Error,
                             spans: vec![],
+                            code: None,
                         }],
                         cached: false,
                     }));
@@ -679,8 +681,8 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
 /// Displays compilation results below a cell: success info or error diagnostics.
 ///
 /// Hidden when the cell has not been compiled yet (Idle state).
-/// Rich output and error panels are provided by T-030 and T-031; this gives
-/// basic inline feedback for the compile flow.
+/// On success, shows a summary line with optional warnings.
+/// On error, delegates to the dedicated [`ErrorPanel`] component (T-031).
 #[component]
 fn CompileResultPanel(
     cell_status: RwSignal<CellStatus>,
@@ -722,15 +724,7 @@ fn CompileResultPanel(
                             </div>
                             {if !warnings.is_empty() {
                                 view! {
-                                    <div class="ironpad-compile-warnings">
-                                        <For
-                                            each=move || warnings.clone()
-                                            key=|d| d.message.clone()
-                                            let:diag
-                                        >
-                                            <DiagnosticItem diagnostic=diag />
-                                        </For>
-                                    </div>
+                                    <ErrorPanel diagnostics=warnings />
                                 }.into_any()
                             } else {
                                 view! { <div /> }.into_any()
@@ -743,15 +737,7 @@ fn CompileResultPanel(
                     let diagnostics = response.diagnostics.clone();
 
                     view! {
-                        <div class="ironpad-compile-result ironpad-compile-result--error">
-                            <For
-                                each=move || diagnostics.clone()
-                                key=|d| d.message.clone()
-                                let:diag
-                            >
-                                <DiagnosticItem diagnostic=diag />
-                            </For>
-                        </div>
+                        <ErrorPanel diagnostics=diagnostics />
                     }.into_any()
                 }
 
@@ -880,54 +866,6 @@ fn format_hex_dump(data: &[u8]) -> String {
     }
 
     lines.join("\n")
-}
-
-// ── Diagnostic item ─────────────────────────────────────────────────────────
-
-/// Renders a single compiler diagnostic with severity and span info.
-#[component]
-fn DiagnosticItem(diagnostic: Diagnostic) -> impl IntoView {
-    let severity_class = match diagnostic.severity {
-        Severity::Error => "ironpad-diag--error",
-        Severity::Warning => "ironpad-diag--warning",
-        Severity::Note => "ironpad-diag--note",
-    };
-
-    let severity_label = match diagnostic.severity {
-        Severity::Error => "error",
-        Severity::Warning => "warning",
-        Severity::Note => "note",
-    };
-
-    let spans_text = diagnostic
-        .spans
-        .iter()
-        .map(|s| {
-            let loc = format!("L{}:{}", s.line_start, s.col_start);
-            match &s.label {
-                Some(label) => format!("{loc} — {label}"),
-                None => loc,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    view! {
-        <div class=format!("ironpad-diag {severity_class}")>
-            <span class="ironpad-diag-severity">{severity_label}</span>
-            <span class="ironpad-diag-message">{diagnostic.message.clone()}</span>
-            {if !spans_text.is_empty() {
-                view! {
-                    <div class="ironpad-diag-spans">
-                        {spans_text.into_iter().map(|s| view! {
-                            <span class="ironpad-diag-span">{s}</span>
-                        }).collect_view()}
-                    </div>
-                }.into_any()
-            } else {
-                view! { <div /> }.into_any()
-            }}
-        </div>
-    }
 }
 
 // ── Add cell button ─────────────────────────────────────────────────────────

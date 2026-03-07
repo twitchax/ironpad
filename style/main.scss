@@ -503,6 +503,147 @@ body {
     font-size: 0.75rem;
 }
 
+/* ── Error panel (T-031) ────────────────────────────────────────────── */
+
+.ironpad-error-panel {
+    font-size: 0.8rem;
+    font-family: 'Fira Code', 'Consolas', monospace;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ironpad-error-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    user-select: none;
+    color: #8888aa;
+    transition: color 0.15s;
+}
+
+.ironpad-error-panel-header:hover {
+    color: #eaeaea;
+}
+
+.ironpad-error-panel-toggle {
+    font-size: 0.75rem;
+    width: 1em;
+    text-align: center;
+}
+
+.ironpad-error-panel-title {
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #e94560;
+}
+
+.ironpad-error-panel-summary {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: #8888aa;
+}
+
+.ironpad-error-panel-body {
+    padding: 4px 12px 8px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* ── Error diagnostic items ─────────────────────────────────────────── */
+
+.ironpad-error-diag {
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.ironpad-error-diag:last-child {
+    border-bottom: none;
+}
+
+.ironpad-error-diag-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 2px;
+}
+
+.ironpad-error-diag-severity {
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+.ironpad-error-diag--error .ironpad-error-diag-severity {
+    color: #e94560;
+    background: rgba(233, 69, 96, 0.12);
+}
+
+.ironpad-error-diag--warning .ironpad-error-diag-severity {
+    color: #f0c040;
+    background: rgba(240, 192, 64, 0.12);
+}
+
+.ironpad-error-diag--note .ironpad-error-diag-severity {
+    color: #40a0f0;
+    background: rgba(64, 160, 240, 0.12);
+}
+
+.ironpad-error-diag-code {
+    font-size: 0.7rem;
+    color: #8888aa;
+}
+
+.ironpad-error-diag-code--link {
+    color: #40a0f0;
+    text-decoration: none;
+    transition: color 0.15s;
+}
+
+.ironpad-error-diag-code--link:hover {
+    color: #70c0ff;
+    text-decoration: underline;
+}
+
+.ironpad-error-diag-message {
+    color: #e8e0d0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.4;
+    padding-left: 2px;
+}
+
+.ironpad-error-diag-spans {
+    margin-top: 4px;
+    padding-left: 8px;
+    border-left: 2px solid rgba(255, 255, 255, 0.06);
+}
+
+.ironpad-error-span {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+    font-size: 0.75rem;
+}
+
+.ironpad-error-span-location {
+    color: #8888aa;
+    font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.ironpad-error-span-label {
+    color: #b0a090;
+    font-style: italic;
+}
+
 /* ── Cell output panel ───────────────────────────────────────────────── */
 
 .ironpad-output-panel {

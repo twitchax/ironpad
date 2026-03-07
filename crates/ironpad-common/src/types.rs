@@ -31,6 +31,10 @@ pub struct Diagnostic {
     pub message: String,
     pub severity: Severity,
     pub spans: Vec<Span>,
+    /// Optional Rust error code (e.g. `"E0308"`), used for linking to the
+    /// [Rust error index](https://doc.rust-lang.org/error_codes/).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// Severity level for a compiler diagnostic.
