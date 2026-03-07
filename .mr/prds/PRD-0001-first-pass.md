@@ -246,7 +246,7 @@ tasks:
   - id: T-015
     title: "Cell filesystem CRUD"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Under {notebook_dir}/cells/{cell_id}/:
       Add cell: create dir with default source.rs and Cargo.toml.
@@ -1128,4 +1128,25 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Updated `crates/ironpad-app/src/lib.rs` — added `#[cfg(feature = "ssr")] pub mod notebook;`.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 71 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs can be verified at this stage — uat-007 (notebook persistence after save/reload) and uat-009 (sample notebook pre-loaded) depend on UI and server function tasks (T-016+, T-017+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-015 Completed
+- **Task**: Cell filesystem CRUD
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/notebook/cells.rs` — full cell filesystem CRUD:
+    - Path helpers: `cells_dir()`, `cell_dir()`, `source_path()`, `cargo_toml_path()`.
+    - `add_cell(data_dir, notebook_id, cell_id, label, after_cell_id)` — creates `cells/{cell_id}/` directory with default `source.rs` and `Cargo.toml` (per MegaPrd §8.3), appends `CellManifest` to notebook manifest with optional insertion position.
+    - `get_cell_source()` / `get_cell_cargo_toml()` — reads cell files from disk.
+    - `update_cell_source()` / `update_cell_cargo_toml()` — overwrites cell files, bumps notebook `updated_at`.
+    - `delete_cell()` — removes cell from manifest first (for consistency), then removes directory (tolerates missing dir).
+    - `reorder_cells(data_dir, notebook_id, cell_ids)` — validates all IDs exist and count matches, rebuilds cells array in new order with sequential numbering.
+    - `rename_cell()` — updates cell label in manifest.
+    - `renumber_cells()` internal helper for sequential order assignment.
+    - Default `Cargo.toml` template per MegaPrd §8.3: `cdylib` crate-type, `ironpad-cell = "0.1"` dependency, cell ID as package name.
+    - Default `source.rs`: minimal `CellOutput::text("hello from ironpad").into()`.
+    - 26 unit tests covering all CRUD operations, edge cases, and helper functions.
+  - Updated `crates/ironpad-app/src/notebook/mod.rs` — registered `cells` module.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs can be verified at this stage — all depend on UI, server functions (T-016+), and Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.
