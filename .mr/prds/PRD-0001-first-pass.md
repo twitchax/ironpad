@@ -454,7 +454,7 @@ tasks:
   - id: T-034
     title: "Error span mapping (wrapper offset adjustment)"
     priority: 2
-    status: todo
+    status: done
     notes: >
       The server wraps user code in a cell_main function (see MegaPrd §5.2).
       When rustc reports error spans, line numbers are relative to the wrapped
@@ -1390,5 +1390,21 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Added scroll-to-and-focus `Effect` in `CellItem` that triggers when `pending_focus_cell` matches, using `scrollIntoView()` and a 300ms delayed `focus()` call to allow Monaco async initialization.
   - Wrapped cell `Card` in a `<div node_ref=cell_wrapper_ref>` for scroll targeting.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-034 Completed
+- **Task**: Error span mapping (wrapper offset adjustment)
+- **Status**: ✅ Done
+- **Changes**:
+  - Added 12 focused tests to `crates/ironpad-app/src/compiler/diagnostics.rs` covering error types not previously tested:
+    - **Syntax errors**: missing semicolon, unexpected closing brace, unclosed delimiter (multiline span)
+    - **Borrow checker errors**: E0382 (use after move), E0505 (move while borrowed)
+    - **Lifetime errors**: E0106 (missing lifetime specifier)
+    - **Column offset edge cases**: column 1 (start of line), high column offsets (deeply indented code)
+    - **Integration test**: mixed error types in a single compilation output
+    - **adjust_span edge cases**: closing brace line, single-char column range, span crossing preamble into user code
+  - The core `adjust_span` logic (subtracting `WRAPPER_PREAMBLE_LINES` from line numbers, passing columns through unchanged) was already correct from T-011; this task validates it thoroughly.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.

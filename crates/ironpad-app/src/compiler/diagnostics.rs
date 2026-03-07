@@ -327,4 +327,291 @@ mod tests {
         assert_eq!(adjusted.line_start, 1);
         assert_eq!(adjusted.line_end, 1);
     }
+
+    // ── T-034: Focused error-type tests ─────────────────────────────────
+
+    // ── Syntax error payloads ───────────────────────────────────────────
+
+    /// Syntax error: missing semicolon.
+    const SYNTAX_MISSING_SEMI_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0 (path+file:///tmp/cell)","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error: expected `;`\n","children":[],"code":null,"level":"error","message":"expected `;`","spans":[{"byte_end":180,"byte_start":179,"column_end":18,"column_start":17,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected `;`","line_end":7,"line_start":7,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":18,"highlight_start":17,"text":"    let x = 42"}]}]}}"#;
+
+    /// Syntax error: unexpected closing brace (reported on the wrapper's closing `}`).
+    /// In this scenario the error span falls on the closing brace of `cell_main`,
+    /// which is one line past the end of the user code. For a 3-line user snippet
+    /// the closing brace is at wrapper line 4 + 3 + 1 = 8.
+    const SYNTAX_UNEXPECTED_BRACE_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error: unexpected closing delimiter: `}`\n","children":[],"code":null,"level":"error","message":"unexpected closing delimiter: `}`","spans":[{"byte_end":250,"byte_start":249,"column_end":2,"column_start":1,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"unexpected closing delimiter","line_end":8,"line_start":8,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":2,"highlight_start":1,"text":"}"}]}]}}"#;
+
+    /// Syntax error: unmatched opening delimiter with a span crossing lines.
+    /// Simulates `{` opened on user line 1 (wrapper line 5) never closed,
+    /// error reported spanning lines 5–9 in the wrapper.
+    const SYNTAX_UNCLOSED_DELIMITER_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error: unclosed delimiter\n","children":[],"code":null,"level":"error","message":"unclosed delimiter","spans":[{"byte_end":300,"byte_start":160,"column_end":1,"column_start":5,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"unclosed delimiter","line_end":9,"line_start":5,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+
+    // ── Borrow checker error payloads ───────────────────────────────────
+
+    /// E0382: use of moved value.
+    const BORROW_USE_AFTER_MOVE_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0382]: use of moved value: `s`\n","children":[],"code":{"code":"E0382","explanation":null},"level":"error","message":"use of moved value: `s`","spans":[{"byte_end":220,"byte_start":215,"column_end":10,"column_start":5,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"value used here after move","line_end":9,"line_start":9,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":10,"highlight_start":5,"text":"    println!(\"{}\", s);"}]},{"byte_end":190,"byte_start":180,"column_end":20,"column_start":10,"expansion":null,"file_name":"src/lib.rs","is_primary":false,"label":"value moved here","line_end":7,"line_start":7,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+
+    /// E0505: cannot move out of borrowed content.
+    const BORROW_MOVE_WHILE_BORROWED_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0505]: cannot move out of `v` because it is borrowed\n","children":[],"code":{"code":"E0505","explanation":null},"level":"error","message":"cannot move out of `v` because it is borrowed","spans":[{"byte_end":250,"byte_start":240,"column_end":15,"column_start":5,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"move out of `v` occurs here","line_end":10,"line_start":10,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":15,"highlight_start":5,"text":"    drop(v);"}]}]}}"#;
+
+    // ── Lifetime error payloads ─────────────────────────────────────────
+
+    /// E0106: missing lifetime specifier.
+    const LIFETIME_ERROR_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0106]: missing lifetime specifier\n","children":[],"code":{"code":"E0106","explanation":null},"level":"error","message":"missing lifetime specifier","spans":[{"byte_end":200,"byte_start":190,"column_end":25,"column_start":15,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected named lifetime parameter","line_end":6,"line_start":6,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":25,"highlight_start":15,"text":"    fn foo(x: &str) -> &str {"}]}]}}"#;
+
+    // ── Column offset edge-case payloads ────────────────────────────────
+
+    /// Error at column 1 — first character of user code line.
+    const COLUMN_ONE_ERROR_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error: expected item\n","children":[],"code":null,"level":"error","message":"expected item, found `42`","spans":[{"byte_end":161,"byte_start":160,"column_end":2,"column_start":1,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected item","line_end":5,"line_start":5,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":2,"highlight_start":1,"text":"42"}]}]}}"#;
+
+    /// Error at a high column offset (deeply indented code).
+    const HIGH_COLUMN_ERROR_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0308]: mismatched types\n","children":[],"code":{"code":"E0308","explanation":null},"level":"error","message":"mismatched types","spans":[{"byte_end":400,"byte_start":370,"column_end":60,"column_start":30,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected `u64`, found `&str`","line_end":12,"line_start":12,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":60,"highlight_start":30,"text":"                              \"this is deeply indented\""}]}]}}"#;
+
+    // ── Syntax error tests ──────────────────────────────────────────────
+
+    #[test]
+    fn parses_syntax_error_missing_semicolon() {
+        let diags = parse_diagnostics(SYNTAX_MISSING_SEMI_JSON);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(diags[0].message.contains("expected `;`"));
+        // Syntax errors typically have no error code.
+        assert!(diags[0].code.is_none());
+        assert_eq!(diags[0].spans.len(), 1);
+
+        let span = &diags[0].spans[0];
+        // Wrapper line 7 - 4 = user line 3.
+        assert_eq!(span.line_start, 3);
+        assert_eq!(span.line_end, 3);
+        assert_eq!(span.col_start, 17);
+        assert_eq!(span.col_end, 18);
+        assert_eq!(span.label.as_deref(), Some("expected `;`"));
+    }
+
+    #[test]
+    fn parses_syntax_error_unexpected_closing_brace() {
+        let diags = parse_diagnostics(SYNTAX_UNEXPECTED_BRACE_JSON);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(diags[0].message.contains("unexpected closing delimiter"));
+        assert_eq!(diags[0].spans.len(), 1);
+
+        let span = &diags[0].spans[0];
+        // Wrapper line 8 - 4 = user line 4 (past end of 3-line user code).
+        // This is expected: errors on the wrapper closing brace map to
+        // one line past the user code.
+        assert_eq!(span.line_start, 4);
+        assert_eq!(span.line_end, 4);
+        assert_eq!(span.col_start, 1);
+        assert_eq!(span.col_end, 2);
+    }
+
+    #[test]
+    fn parses_syntax_error_unclosed_delimiter_multiline() {
+        let diags = parse_diagnostics(SYNTAX_UNCLOSED_DELIMITER_JSON);
+
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unclosed delimiter"));
+        assert_eq!(diags[0].spans.len(), 1);
+
+        let span = &diags[0].spans[0];
+        // Wrapper lines 5–9 map to user lines 1–5.
+        assert_eq!(span.line_start, 1);
+        assert_eq!(span.line_end, 5);
+        assert_eq!(span.col_start, 5);
+        assert_eq!(span.col_end, 1);
+    }
+
+    // ── Borrow checker error tests ──────────────────────────────────────
+
+    #[test]
+    fn parses_use_after_move_error() {
+        let diags = parse_diagnostics(BORROW_USE_AFTER_MOVE_JSON);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(diags[0].message.contains("use of moved value"));
+        assert_eq!(diags[0].code.as_deref(), Some("E0382"));
+
+        // Only the primary span (line 9, "value used here after move") is kept.
+        // The secondary span (line 7, "value moved here") is filtered out.
+        assert_eq!(diags[0].spans.len(), 1);
+
+        let span = &diags[0].spans[0];
+        // Wrapper line 9 - 4 = user line 5.
+        assert_eq!(span.line_start, 5);
+        assert_eq!(span.line_end, 5);
+        assert_eq!(span.col_start, 5);
+        assert_eq!(span.col_end, 10);
+        assert_eq!(span.label.as_deref(), Some("value used here after move"));
+    }
+
+    #[test]
+    fn parses_move_while_borrowed_error() {
+        let diags = parse_diagnostics(BORROW_MOVE_WHILE_BORROWED_JSON);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code.as_deref(), Some("E0505"));
+
+        assert_eq!(diags[0].spans.len(), 1);
+
+        let span = &diags[0].spans[0];
+        // Wrapper line 10 - 4 = user line 6.
+        assert_eq!(span.line_start, 6);
+        assert_eq!(span.line_end, 6);
+        assert_eq!(span.col_start, 5);
+        assert_eq!(span.col_end, 15);
+        assert_eq!(span.label.as_deref(), Some("move out of `v` occurs here"));
+    }
+
+    // ── Lifetime error tests ────────────────────────────────────────────
+
+    #[test]
+    fn parses_lifetime_error() {
+        let diags = parse_diagnostics(LIFETIME_ERROR_JSON);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code.as_deref(), Some("E0106"));
+        assert!(diags[0].message.contains("missing lifetime specifier"));
+
+        assert_eq!(diags[0].spans.len(), 1);
+
+        let span = &diags[0].spans[0];
+        // Wrapper line 6 - 4 = user line 2.
+        assert_eq!(span.line_start, 2);
+        assert_eq!(span.line_end, 2);
+        assert_eq!(span.col_start, 15);
+        assert_eq!(span.col_end, 25);
+        assert_eq!(
+            span.label.as_deref(),
+            Some("expected named lifetime parameter")
+        );
+    }
+
+    // ── Column offset tests ─────────────────────────────────────────────
+
+    #[test]
+    fn column_offsets_preserved_at_column_one() {
+        let diags = parse_diagnostics(COLUMN_ONE_ERROR_JSON);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].spans.len(), 1);
+
+        let span = &diags[0].spans[0];
+        // Wrapper line 5 - 4 = user line 1.
+        assert_eq!(span.line_start, 1);
+        assert_eq!(span.line_end, 1);
+        // Columns must pass through unchanged since user code is not indented
+        // inside the wrapper.
+        assert_eq!(span.col_start, 1);
+        assert_eq!(span.col_end, 2);
+    }
+
+    #[test]
+    fn column_offsets_preserved_at_high_column() {
+        let diags = parse_diagnostics(HIGH_COLUMN_ERROR_JSON);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].spans.len(), 1);
+
+        let span = &diags[0].spans[0];
+        // Wrapper line 12 - 4 = user line 8.
+        assert_eq!(span.line_start, 8);
+        assert_eq!(span.line_end, 8);
+        // High column values must survive adjustment untouched.
+        assert_eq!(span.col_start, 30);
+        assert_eq!(span.col_end, 60);
+    }
+
+    // ── Mixed-output integration test ───────────────────────────────────
+
+    #[test]
+    fn mixed_error_types_in_single_compilation() {
+        // Simulates a realistic compilation that produces multiple diagnostics:
+        // a syntax error, a type error, a warning, and a note.
+        let combined = format!(
+            "{}\n{}\n{}\n{}\n{}",
+            ARTIFACT_JSON, SYNTAX_MISSING_SEMI_JSON, TYPE_ERROR_JSON, WARNING_JSON, NOTE_JSON,
+        );
+        let diags = parse_diagnostics(&combined);
+
+        // Artifact skipped. Remaining 4 are: syntax error, type error, warning, note-error.
+        assert_eq!(diags.len(), 4);
+        assert_eq!(diags[0].severity, Severity::Error); // syntax
+        assert_eq!(diags[1].severity, Severity::Error); // type
+        assert_eq!(diags[2].severity, Severity::Warning); // warning
+        assert_eq!(diags[3].severity, Severity::Error); // note (level=error)
+
+        // Verify span mapping is correct for each.
+        assert_eq!(diags[0].spans[0].line_start, 3); // syntax: line 7-4=3
+        assert_eq!(diags[1].spans[0].line_start, 2); // type: line 6-4=2
+        assert_eq!(diags[2].spans[0].line_start, 3); // warning: line 7-4=3
+        assert!(diags[3].spans.is_empty()); // note has no spans
+    }
+
+    // ── adjust_span unit tests for T-034 edge cases ─────────────────────
+
+    #[test]
+    fn adjust_span_closing_brace_line() {
+        // The wrapper's closing `}` is one line past the user code.
+        // For a 5-line user snippet, closing brace is at wrapper line 10.
+        let span = RustcSpan {
+            file_name: "src/lib.rs".to_string(),
+            line_start: 10,
+            line_end: 10,
+            column_start: 1,
+            column_end: 2,
+            is_primary: true,
+            label: Some("closing brace".to_string()),
+        };
+
+        let adjusted = adjust_span(span).unwrap();
+        // 10 - 4 = 6, which is one past the 5-line user code. This is expected.
+        assert_eq!(adjusted.line_start, 6);
+        assert_eq!(adjusted.line_end, 6);
+        assert_eq!(adjusted.col_start, 1);
+        assert_eq!(adjusted.col_end, 2);
+    }
+
+    #[test]
+    fn adjust_span_single_char_column_range() {
+        // Error on a single character (e.g., a stray `@` on user line 1).
+        let span = RustcSpan {
+            file_name: "src/lib.rs".to_string(),
+            line_start: 5,
+            line_end: 5,
+            column_start: 10,
+            column_end: 11,
+            is_primary: true,
+            label: Some("unexpected character".to_string()),
+        };
+
+        let adjusted = adjust_span(span).unwrap();
+        assert_eq!(adjusted.line_start, 1);
+        assert_eq!(adjusted.line_end, 1);
+        assert_eq!(adjusted.col_start, 10);
+        assert_eq!(adjusted.col_end, 11);
+    }
+
+    #[test]
+    fn adjust_span_spanning_from_preamble_into_user_code_is_rejected() {
+        // A span that starts in the preamble (line 3) and ends in user code (line 6).
+        // This should be rejected because adjusted_start = 3 - 4 = underflow → None.
+        let span = RustcSpan {
+            file_name: "src/lib.rs".to_string(),
+            line_start: 3,
+            line_end: 6,
+            column_start: 1,
+            column_end: 10,
+            is_primary: true,
+            label: Some("crosses preamble boundary".to_string()),
+        };
+
+        // checked_sub(4) on line_start=3 returns None, so span is rejected.
+        assert!(adjust_span(span).is_none());
+    }
 }
