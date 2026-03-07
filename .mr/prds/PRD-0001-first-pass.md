@@ -372,7 +372,7 @@ tasks:
   - id: T-026
     title: "Cell code editor (Monaco for source.rs)"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Monaco instance in the "Code" tab with language="rust".
       On change, debounce and call update_cell_source server fn.
@@ -1290,6 +1290,24 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
     - Status indicator styles for all states (idle, compiling, running, success, error).
     - Tab bar styles (`.ironpad-cell-tabs`).
     - Editor pane and loading spinner styles.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-026 Completed
+- **Task**: Cell code editor (Monaco for source.rs)
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `Window` feature to `web-sys` in `crates/ironpad-app/Cargo.toml` for `setTimeout`/`clearTimeout` access.
+  - Added `source_dirty: RwSignal<bool>` to track unsaved source editor changes.
+  - Implemented debounced auto-save in `on_source_change` callback (hydrate build only):
+    - Uses a reusable `Closure<dyn Fn()>` created once per cell (bounded one-time leak via `forget`).
+    - `clearTimeout`/`setTimeout` pattern with 1 s debounce window.
+    - Save reads current source from signal, calls `update_cell_source` server fn.
+    - Race-safe: only clears dirty flag if source hasn't changed during save flight.
+  - SSR build retains simple signal-update callback (no debounce plumbing).
+  - Updated "Code" tab label to show `"Code ●"` when `source_dirty` is true.
+  - Added `update_cell_source` to imports in `notebook_editor.rs`.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.

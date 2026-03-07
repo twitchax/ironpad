@@ -6,7 +6,8 @@ use thaw::{Button, ButtonAppearance, Card, CardHeader, Spinner, Tab, TabList};
 use crate::components::app_layout::LayoutContext;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::{
-    add_cell, delete_cell, get_cell_content, get_notebook, rename_cell, update_notebook,
+    add_cell, delete_cell, get_cell_content, get_notebook, rename_cell, update_cell_source,
+    update_notebook,
 };
 
 // ── Notebook-level reactive state ───────────────────────────────────────────
@@ -210,6 +211,10 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let source = RwSignal::new(String::new());
     let cargo_toml = RwSignal::new(String::new());
 
+    // ── Dirty state (unsaved changes indicator) ─────────────────────────
+
+    let source_dirty = RwSignal::new(false);
+
     // ── Load cell content ───────────────────────────────────────────────
 
     let nb_id = state.notebook_id.get_untracked();
@@ -265,7 +270,59 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     };
 
     // ── On-change callbacks for Monaco editors ──────────────────────────
+    //
+    // Source editor: debounce saves via setTimeout / clearTimeout so that
+    // rapid keystrokes are batched into a single server call after 1 s of
+    // inactivity.  The debounce plumbing only exists in the `hydrate`
+    // (client-side) build; SSR simply updates the reactive signal.
 
+    #[cfg(feature = "hydrate")]
+    let on_source_change = {
+        use wasm_bindgen::prelude::*;
+
+        let nb_id_save = state.notebook_id.get_untracked();
+        let cid_save = cell.id.clone();
+        let debounce_handle: RwSignal<i32> = RwSignal::new(0);
+
+        // Build a reusable JS function that reads the *current* source from
+        // the signal and persists it.  Created once per cell (the `forget`
+        // is a one-time, bounded leak).
+        let closure = Closure::<dyn Fn()>::new(move || {
+            let val = source.get_untracked();
+            let nb_id = nb_id_save.clone();
+            let cid = cid_save.clone();
+            leptos::task::spawn_local(async move {
+                if update_cell_source(nb_id, cid, val.clone()).await.is_ok() {
+                    // Only clear dirty if the source hasn't changed while the
+                    // save was in flight (avoids swallowing new edits).
+                    if source.get_untracked() == val {
+                        source_dirty.set(false);
+                    }
+                }
+            });
+        });
+        let save_fn: js_sys::Function =
+            closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        closure.forget();
+
+        Callback::new(move |val: String| {
+            source.set(val);
+            source_dirty.set(true);
+
+            // Clear the previous debounce timer and start a fresh 1 s window.
+            let win = web_sys::window().unwrap();
+            let prev = debounce_handle.get_untracked();
+            if prev != 0 {
+                win.clear_timeout_with_handle(prev);
+            }
+            let handle = win
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&save_fn, 1_000)
+                .unwrap();
+            debounce_handle.set(handle);
+        })
+    };
+
+    #[cfg(not(feature = "hydrate"))]
     let on_source_change = Callback::new(move |val: String| {
         source.set(val);
     });
@@ -361,7 +418,9 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             <div class=body_class>
                 <div class="ironpad-cell-tabs">
                     <TabList selected_value=selected_tab>
-                        <Tab value="code">"Code"</Tab>
+                        <Tab value="code">
+                            {move || if source_dirty.get() { "Code ●" } else { "Code" }}
+                        </Tab>
                         <Tab value="cargo-toml">"Cargo.toml"</Tab>
                     </TabList>
                 </div>

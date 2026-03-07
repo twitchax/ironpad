@@ -15,7 +15,7 @@ ironpad-common = { workspace = true }
 
 wasm-bindgen = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement"] }
+web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement", "Window"] }
 
 http.workspace = true
 thiserror.workspace = true
