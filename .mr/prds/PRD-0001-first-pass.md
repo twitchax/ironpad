@@ -410,7 +410,7 @@ tasks:
   - id: T-030
     title: "Cell output panel"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Below the editor area, show cell execution output.
       For MVP: display text (from CellResult display field),
@@ -1337,6 +1337,22 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Added CSS for compile result panel and diagnostic rendering in `style/main.scss`.
   - Uses trigger signal pattern (`RwSignal<u64>`) for the run flow, avoiding closure cloning issues.
   - WASM execution (T-036/T-037) is deferred — compile succeeds but execution is a TODO placeholder.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-030 Completed
+- **Task**: Cell output panel
+- **Status**: ✅ Done
+- **Changes**:
+  - Added `ExecutionResult` type to `crates/ironpad-common/src/types.rs` with `display_text`, `output_bytes`, and `execution_time_ms` fields.
+  - Added `CellOutputPanel` component to `crates/ironpad-app/src/pages/notebook_editor.rs` — renders below `CompileResultPanel` in each cell.
+  - Panel is hidden when no execution result is available; collapsible via toggle when visible.
+  - Shows human-readable display text (pre-formatted) and raw output bytes as a hex dump with offset, hex, and ASCII columns (16 bytes per row).
+  - Shows byte count and execution timing in the panel header.
+  - Added `format_hex_dump()` helper function for hex dump formatting.
+  - Added `execution_result: RwSignal<Option<ExecutionResult>>` to `CellItem` component state, ready to be populated by the WASM executor (T-036/T-037).
+  - Added CSS styling for output panel in `style/main.scss` (`.ironpad-output-panel`, `.ironpad-output-header`, `.ironpad-output-body`, `.ironpad-output-display`, `.ironpad-output-hex-dump`, etc.).
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 97 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
 - **Constitution Compliance**: No violations.

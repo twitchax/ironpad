@@ -502,3 +502,95 @@ body {
     color: #8888aa;
     font-size: 0.75rem;
 }
+
+/* ── Cell output panel ───────────────────────────────────────────────── */
+
+.ironpad-output-panel {
+    font-size: 0.8rem;
+    font-family: 'Fira Code', 'Consolas', monospace;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ironpad-output-panel--collapsed .ironpad-output-body {
+    display: none;
+}
+
+.ironpad-output-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    user-select: none;
+    color: #8888aa;
+    transition: color 0.15s;
+}
+
+.ironpad-output-header:hover {
+    color: #eaeaea;
+}
+
+.ironpad-output-toggle {
+    font-size: 0.75rem;
+    width: 1em;
+    text-align: center;
+}
+
+.ironpad-output-title {
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #40c080;
+}
+
+.ironpad-output-meta {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: #8888aa;
+}
+
+.ironpad-output-body {
+    padding: 4px 12px 8px;
+}
+
+.ironpad-output-display {
+    margin-bottom: 8px;
+}
+
+.ironpad-output-display-text {
+    margin: 0;
+    padding: 6px 8px;
+    background: rgba(64, 192, 128, 0.06);
+    border-radius: 4px;
+    color: #eaeaea;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+.ironpad-output-bytes {
+    margin-top: 4px;
+}
+
+.ironpad-output-bytes-header {
+    font-size: 0.7rem;
+    color: #8888aa;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.ironpad-output-hex-dump {
+    margin: 0;
+    padding: 6px 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 4px;
+    color: #b0b0cc;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    max-height: 200px;
+    overflow-y: auto;
+}

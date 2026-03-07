@@ -51,6 +51,23 @@ pub struct Span {
     pub label: Option<String>,
 }
 
+// ── Execution Result Types ───────────────────────────────────────────────────
+
+/// Result of executing a compiled WASM cell.
+///
+/// Populated after the WASM executor runs `cell_main`.  Until execution is
+/// wired up (T-036/T-037), the UI can still render this type when it becomes
+/// available via the `CellOutputPanel`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExecutionResult {
+    /// Human-readable display text produced by the cell (from `CellOutput::display`).
+    pub display_text: Option<String>,
+    /// Raw output bytes (bincode-serialized payload for the next cell).
+    pub output_bytes: Vec<u8>,
+    /// Wall-clock execution time in milliseconds.
+    pub execution_time_ms: f64,
+}
+
 // ── Notebook Persistence Types ───────────────────────────────────────────────
 
 /// Full notebook manifest, serialized as `ironpad.json` on disk.
