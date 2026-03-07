@@ -274,7 +274,7 @@ tasks:
   - id: T-017
     title: "Sample notebook pre-loaded on first run"
     priority: 3
-    status: todo
+    status: done
     notes: >
       On startup, if {data_dir}/notebooks/ is empty, create a sample notebook
       titled "Welcome to ironpad" with two cells demonstrating the Fibonacci
@@ -1577,3 +1577,17 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
 - **Note**: PRD specified "Tests in ironpad-server" but the persistence code lives in `ironpad-app` (under the `ssr` feature). Tests were co-located with their modules following Rust convention, consistent with T-051's approach.
 - **Constitution Compliance**: No violations. No code changes needed — all tests already existed (Rule 3 — Minimal Changes). Consistent with project patterns (Rule 4).
+
+## 2026-03-07 — T-017 Completed
+- **Task**: Sample notebook pre-loaded on first run
+- **Status**: ✅ Done
+- **Changes**:
+  - Created `crates/ironpad-app/src/notebook/seed.rs` — new module with `seed_sample_notebook(data_dir)` that checks if the notebooks directory is empty and, if so, creates a "Welcome to ironpad" notebook with two cells:
+    - Cell 0 ("Fibonacci Generator"): generates the first 20 Fibonacci numbers and outputs them as bincode via `CellOutput::new(&fibs)`
+    - Cell 1 ("Fibonacci Consumer"): deserializes the Fibonacci numbers from the previous cell's output and displays their sum
+  - Registered `pub mod seed;` in `crates/ironpad-app/src/notebook/mod.rs`
+  - Added seed call in `crates/ironpad-server/src/main.rs` — invoked after config setup, before server start; failures are logged as warnings (non-fatal)
+  - Added 5 unit tests: seeds when empty, skips when notebooks exist, verifies cell sources, verifies Cargo.tomls, idempotency
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 122 tests ✅, 4 Playwright tests ✅)
+- **Opportunistic UAT**: uat-009 ("Sample notebook is pre-loaded on first run") is functionally implemented but cannot be fully verified via Playwright without a dedicated test that starts with a clean data directory. The seeding logic is covered by 5 unit tests.
+- **Constitution Compliance**: No violations. New module follows existing patterns (Rule 4), minimal changes to existing files (Rule 3), seed logic in notebook module respects SOC (Rule 2).
