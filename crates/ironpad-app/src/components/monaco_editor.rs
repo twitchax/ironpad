@@ -114,22 +114,15 @@ impl MonacoEditorHandle {
     ///
     /// `keybindings` uses Monaco's numeric keybinding constants
     /// (e.g. `KeyMod.Shift | KeyCode.Enter` = 1027).
-    /// No-op during SSR or before mount.
+    /// Only available in the `hydrate` (client-side) build.
+    #[cfg(feature = "hydrate")]
     pub fn add_action(&self, action_id: &str, keybindings: &[i32], callback: &js_sys::Function) {
-        #[cfg(feature = "hydrate")]
-        {
-            if let Some(id) = self.editor_id.get_untracked() {
-                let kb_array = js_sys::Array::new();
-                for &kb in keybindings {
-                    kb_array.push(&wasm_bindgen::JsValue::from(kb));
-                }
-                js::add_action(id, action_id, &kb_array, callback);
+        if let Some(id) = self.editor_id.get_untracked() {
+            let kb_array = js_sys::Array::new();
+            for &kb in keybindings {
+                kb_array.push(&wasm_bindgen::JsValue::from(kb));
             }
-        }
-
-        #[cfg(not(feature = "hydrate"))]
-        {
-            let _ = (action_id, keybindings, callback);
+            js::add_action(id, action_id, &kb_array, callback);
         }
     }
 
@@ -138,17 +131,12 @@ impl MonacoEditorHandle {
     /// `markers` is a JS array of marker objects with fields:
     /// `startLineNumber`, `startColumn`, `endLineNumber`, `endColumn`,
     /// `message`, `severity` (1=Hint, 2=Info, 4=Warning, 8=Error).
-    /// No-op during SSR or before mount.
+    /// Only available in the `hydrate` (client-side) build.
+    #[cfg(feature = "hydrate")]
     pub fn set_markers(&self, markers: &js_sys::Array) {
-        #[cfg(feature = "hydrate")]
-        {
-            if let Some(id) = self.editor_id.get_untracked() {
-                js::set_markers(id, markers);
-            }
+        if let Some(id) = self.editor_id.get_untracked() {
+            js::set_markers(id, markers);
         }
-
-        #[cfg(not(feature = "hydrate"))]
-        let _ = markers;
     }
 
     /// Clear all inline markers from the editor model.

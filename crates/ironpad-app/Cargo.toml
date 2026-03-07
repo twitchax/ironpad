@@ -34,11 +34,12 @@ tempfile = "3"
 
 [features]
 default = []
-hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
+hydrate = ["leptos/hydrate", "thaw/hydrate", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 ssr = [
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",
+    "thaw/ssr",
     "dep:leptos_axum",
     "dep:anyhow",
     "dep:uuid",

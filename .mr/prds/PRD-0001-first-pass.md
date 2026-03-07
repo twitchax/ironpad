@@ -576,7 +576,7 @@ tasks:
   - id: T-045
     title: "Playwright setup and configuration"
     priority: 2
-    status: todo
+    status: done
     notes: >
       Initialize Playwright in the repo (npx playwright init or manual setup).
       Configure: base URL http://localhost:3000, browsers (chromium only for CI speed).
@@ -1484,3 +1484,17 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: uat-007 ("Notebook persists after save and page reload") is functionally implemented but cannot be verified without Playwright (T-045+).
 - **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-045 Completed
+- **Task**: Playwright setup and configuration
+- **Status**: ✅ Done
+- **Changes**:
+  - Installed `@playwright/test` as a devDependency in `package.json`.
+  - Created `playwright.config.ts` with: baseURL `http://localhost:3000`, chromium-only project, webServer running `cargo leptos serve --release` with 5-min timeout, testDir `tests/e2e`.
+  - Created `tests/e2e/sanity.spec.ts` — a minimal smoke test that verifies the server is reachable and responds with a non-500 status.
+  - Fixed wasm-bindgen CLI version mismatch (installed 0.2.114 to match lockfile's dep version).
+  - Fixed pre-existing WASM build errors: feature-gated `web_sys::Element` usage in `notebook_editor.rs` and `js_sys::Function`/`js_sys::Array` method signatures in `monaco_editor.rs` behind `#[cfg(feature = "hydrate")]`.
+  - Fixed Thaw SSR panic ("cannot access imported statics on non-wasm targets"): enabled `thaw/ssr` and `thaw/hydrate` features in `ironpad-app`'s feature gates in `Cargo.toml`.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests ✅, 1 Playwright test passes ✅).
+- **Opportunistic UAT**: uat-001 ("Server starts and home page loads in browser") is now functionally verified by the sanity Playwright test — server starts and responds to `/` with a non-error status. Formal verification deferred to T-046 which will add proper title/branding checks.
+- **Constitution Compliance**: Fixed pre-existing build issues (wasm-bindgen version, feature gates, Thaw SSR) that were tightly coupled to making Playwright work. These are root cause fixes (Rule 6) with minimal scope (Rule 3).

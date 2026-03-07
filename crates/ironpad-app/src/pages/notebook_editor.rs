@@ -839,6 +839,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         state.pending_focus_cell.set(None);
 
         // Scroll the cell card into view.
+        #[cfg(feature = "hydrate")]
         if let Some(el) = cell_wrapper_ref.get_untracked() {
             let html_el: &web_sys::Element = &el;
             html_el.scroll_into_view();

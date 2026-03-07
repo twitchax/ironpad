@@ -2797,6 +2797,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "leptos",
+ "leptos_meta",
  "reactive_stores 0.2.5",
  "send_wrapper",
  "wasm-bindgen",
