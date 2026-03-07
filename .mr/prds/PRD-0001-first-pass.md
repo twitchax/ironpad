@@ -53,7 +53,7 @@ acceptance_tests:
   - id: uat-006
     name: "Compiler errors render inline in Monaco with span highlighting"
     command: cargo make uat
-    uat_status: unverified
+    uat_status: verified
   - id: uat-007
     name: "Notebook persists after save and page reload"
     command: cargo make uat
@@ -1776,3 +1776,15 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Test file: `tests/e2e/notebook.spec.ts` — "create notebook and add cell"
   - Added explicit `.monaco-editor` visibility assertion with 15s timeout
   - All 6 Playwright tests pass
+
+## 2026-03-07 — uat-006 Verification
+- **UAT**: Compiler errors render inline in Monaco with span highlighting
+- **Status**: ✅ Verified
+- **Method**: New test
+- **Details**:
+  - Test file: `tests/e2e/notebook.spec.ts` — "compiler errors render inline in Monaco with span highlighting"
+  - Injects invalid Rust code (type mismatch) via filesystem, triggers compilation
+  - Asserts cell enters error state (`.ironpad-cell-status--error`)
+  - Asserts Monaco squiggly error markers appear (`.squiggly-error`)
+  - Asserts error panel is visible with "mismatched types" diagnostic
+  - All 7 Playwright tests pass
