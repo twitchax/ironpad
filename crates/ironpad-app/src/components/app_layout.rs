@@ -1,6 +1,8 @@
 use leptos::prelude::*;
 use thaw::{Button, ButtonAppearance, Layout, LayoutHeader, LayoutPosition};
 
+use crate::server_fns::update_notebook;
+
 // ── Save status ─────────────────────────────────────────────────────────────
 
 /// Visual state of the save button.
@@ -21,6 +23,8 @@ pub enum SaveStatus {
 pub struct LayoutContext {
     /// Notebook title shown in the header center. `None` when on the home page.
     pub notebook_title: RwSignal<Option<String>>,
+    /// Notebook UUID string, needed for title‐save calls from the header.
+    pub notebook_id: RwSignal<Option<String>>,
     /// Whether to show the save button in the header.
     pub show_save_button: RwSignal<bool>,
     /// Fires when the user clicks the save button. Child pages watch this.
@@ -39,6 +43,7 @@ impl LayoutContext {
     fn new() -> Self {
         Self {
             notebook_title: RwSignal::new(None),
+            notebook_id: RwSignal::new(None),
             show_save_button: RwSignal::new(false),
             save_generation: RwSignal::new(0),
             cell_count: RwSignal::new(0),
@@ -90,15 +95,90 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
 
     let save_disabled = Signal::derive(move || ctx.save_status.get() == SaveStatus::Saving);
 
+    // ── Inline-editable title state ─────────────────────────────────────
+
+    let editing = RwSignal::new(false);
+
+    let save_title = Action::new(move |new_title: &String| {
+        let nb_id = ctx.notebook_id.get_untracked();
+        let new_title = new_title.clone();
+        async move {
+            if let Some(id) = nb_id {
+                let _ = update_notebook(id, new_title).await;
+            }
+        }
+    });
+
+    let commit_edit = move || {
+        editing.set(false);
+        if let Some(current) = ctx.notebook_title.get_untracked() {
+            save_title.dispatch(current);
+        }
+    };
+
+    let on_title_blur = move |_| {
+        commit_edit();
+    };
+
+    let on_title_keydown = move |ev: leptos::ev::KeyboardEvent| {
+        if ev.key() == "Enter" {
+            ev.prevent_default();
+            commit_edit();
+        } else if ev.key() == "Escape" {
+            editing.set(false);
+        }
+    };
+
     view! {
         <div class="ironpad-header-left">
             <a href="/" class="ironpad-brand">"ironpad"</a>
         </div>
 
         <div class="ironpad-header-center">
-            {move || ctx.notebook_title.get().map(|title| {
-                view! { <span class="ironpad-notebook-title">{title}</span> }
-            })}
+            {move || {
+                match (ctx.notebook_title.get(), editing.get()) {
+                    (Some(_title), true) => {
+                        view! {
+                            <input
+                                class="ironpad-header-title-input"
+                                type="text"
+                                prop:value=move || ctx.notebook_title.get().unwrap_or_default()
+                                on:input=move |ev| {
+                                    let val = event_target_value(&ev);
+                                    ctx.notebook_title.set(Some(val));
+                                }
+                                on:blur=on_title_blur
+                                on:keydown=on_title_keydown
+                                autofocus=true
+                                node_ref={
+                                    let input_ref = NodeRef::<leptos::html::Input>::new();
+                                    // Focus the input after it renders.
+                                    Effect::new(move || {
+                                        if let Some(el) = input_ref.get() {
+                                            let _ = el.focus();
+                                            el.select();
+                                        }
+                                    });
+                                    input_ref
+                                }
+                            />
+                        }.into_any()
+                    }
+                    (Some(title), false) => {
+                        view! {
+                            <span
+                                class="ironpad-notebook-title ironpad-notebook-title--editable"
+                                on:click=move |_| editing.set(true)
+                            >
+                                {title}
+                            </span>
+                        }.into_any()
+                    }
+                    _ => {
+                        view! { <span /> }.into_any()
+                    }
+                }
+            }}
         </div>
 
         <div class="ironpad-header-right">

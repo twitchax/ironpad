@@ -94,6 +94,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
     Effect::new(move || {
         if let Some(Ok(manifest)) = notebook_resource.get() {
             layout.notebook_title.set(Some(manifest.title.clone()));
+            layout.notebook_id.set(Some(manifest.id.to_string()));
             layout.cell_count.set(manifest.cells.len());
             layout
                 .compiler_version
@@ -226,34 +227,11 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
 // ── Notebook content ────────────────────────────────────────────────────────
 
-/// Renders the notebook title and ordered cell list with add-cell buttons.
+/// Renders the ordered cell list with add-cell buttons.
 #[component]
 fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
     let state = expect_context::<NotebookState>();
     let notebook_id_str = manifest.id.to_string();
-
-    // ── Editable title ──────────────────────────────────────────────────
-
-    let title = RwSignal::new(manifest.title.clone());
-    let title_saving = RwSignal::new(false);
-
-    let nb_id_for_title = notebook_id_str.clone();
-    let save_title = Action::new(move |new_title: &String| {
-        let nb_id = nb_id_for_title.clone();
-        let new_title = new_title.clone();
-        async move {
-            let _ = update_notebook(nb_id, new_title).await;
-        }
-    });
-
-    let on_title_blur = move |_| {
-        let current = title.get_untracked();
-        let layout = expect_context::<LayoutContext>();
-        layout.notebook_title.set(Some(current.clone()));
-        title_saving.set(true);
-        save_title.dispatch(current);
-        title_saving.set(false);
-    };
 
     // ── Add cell action ─────────────────────────────────────────────────
 
@@ -275,19 +253,6 @@ fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
     // ── Render ──────────────────────────────────────────────────────────
 
     view! {
-        <div class="ironpad-editor-title-row">
-            <input
-                class="ironpad-editor-title-input"
-                type="text"
-                prop:value=move || title.get()
-                on:input=move |ev| {
-                    let val = event_target_value(&ev);
-                    title.set(val);
-                }
-                on:blur=on_title_blur
-            />
-        </div>
-
         <div class="ironpad-cell-list">
             <AddCellButton after_cell_id=None add_action=add_cell_action />
 

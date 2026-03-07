@@ -524,7 +524,7 @@ tasks:
   - id: T-041
     title: "Notebook title editing"
     priority: 3
-    status: todo
+    status: done
     notes: >
       In the notebook editor header, notebook title is displayed and
       click-to-edit (inline editable text). On blur or Enter, calls
@@ -1639,3 +1639,17 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - Added `.ironpad-cell-status--queued` CSS class in `style/main.scss` with purple color scheme and pulse animation.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
 - **Constitution Compliance**: No violations. Reactive queue approach reuses existing per-cell compile flow (Rule 1 — DRY). Queue management is self-contained in NotebookState signals (Rule 2 — SOC). Only notebook_editor.rs and main.scss modified (Rule 3 — Minimal Changes). No public API changes (Rule 5).
+
+## 2026-03-07 — T-041 Completed
+- **Task**: Notebook title editing
+- **Status**: ✅ Done
+- **Changes**:
+  - Converted the header notebook title from a read-only `<span>` to a click-to-edit inline component in `app_layout.rs`. Click shows an `<input>`, blur or Enter saves via `update_notebook` server fn and reverts to text display. Escape cancels without saving.
+  - Added `notebook_id: RwSignal<Option<String>>` to `LayoutContext` so the header can call the `update_notebook` server fn directly.
+  - Set `layout.notebook_id` from the notebook editor page alongside the existing `notebook_title` signal.
+  - Removed the redundant title `<input>` row from `NotebookContent` in `notebook_editor.rs` (DRY — single source of title editing is now the header).
+  - Added CSS classes in `style/main.scss`: `.ironpad-notebook-title--editable` (hover state, dashed underline hint), `.ironpad-header-title-input` (edit-mode input styling matching header aesthetics).
+  - Removed unused `.ironpad-editor-title-row` and `.ironpad-editor-title-input` CSS rules.
+  - Input auto-focuses and selects all text when entering edit mode for quick replacement.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, all tests ✅, 4 Playwright tests ✅)
+- **Constitution Compliance**: No violations. Consolidated title editing from two places (header span + content input) to one (header click-to-edit), satisfying Rule 1 (DRY). No public API changes (Rule 5). Minimal files changed (Rule 3).
