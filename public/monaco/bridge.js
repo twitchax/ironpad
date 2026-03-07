@@ -67,6 +67,15 @@
           record.pendingActions = null;
         }
 
+        // Apply any markers that were set before the editor was ready.
+        if (record.pendingMarkers) {
+          var model = editor.getModel();
+          if (model) {
+            window.monaco.editor.setModelMarkers(model, "ironpad", record.pendingMarkers);
+          }
+          record.pendingMarkers = null;
+        }
+
         if (onChange) {
           editor.onDidChangeModelContent(function () {
             onChange(editor.getValue());
@@ -122,6 +131,38 @@
       if (record.editor) {
         record.editor.focus();
       }
+    },
+
+    /// Set model markers (inline error/warning decorations) on the editor.
+    /// `markers` is an array of objects with:
+    ///   { startLineNumber, startColumn, endLineNumber, endColumn, message, severity }
+    /// Severity values: 1 = Hint, 2 = Info, 4 = Warning, 8 = Error
+    setMarkers: function (id, markers) {
+      var record = editors[id];
+      if (!record) return;
+      if (record.editor) {
+        var model = record.editor.getModel();
+        if (model) {
+          window.monaco.editor.setModelMarkers(model, "ironpad", markers);
+        }
+      } else {
+        // Queue markers until editor is ready.
+        record.pendingMarkers = markers;
+      }
+    },
+
+    /// Clear all ironpad markers from the editor.
+    clearMarkers: function (id) {
+      var record = editors[id];
+      if (!record) return;
+      if (record.editor) {
+        var model = record.editor.getModel();
+        if (model) {
+          window.monaco.editor.setModelMarkers(model, "ironpad", []);
+        }
+      }
+      // Also clear any pending markers.
+      record.pendingMarkers = null;
     },
 
     dispose: function (id) {

@@ -48,6 +48,15 @@ mod js {
         #[wasm_bindgen(js_namespace = IronpadMonaco)]
         pub fn focus(id: f64);
 
+        /// Set model markers (inline error/warning decorations) on the editor.
+        /// `markers` is a JS array of marker objects.
+        #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "setMarkers")]
+        pub fn set_markers(id: f64, markers: &js_sys::Array);
+
+        /// Clear all ironpad markers from the editor.
+        #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "clearMarkers")]
+        pub fn clear_markers(id: f64);
+
         /// Dispose the editor identified by `id`, freeing resources.
         #[wasm_bindgen(js_namespace = IronpadMonaco)]
         pub fn dispose(id: f64);
@@ -121,6 +130,35 @@ impl MonacoEditorHandle {
         #[cfg(not(feature = "hydrate"))]
         {
             let _ = (action_id, keybindings, callback);
+        }
+    }
+
+    /// Set inline markers (errors/warnings) on the editor model.
+    ///
+    /// `markers` is a JS array of marker objects with fields:
+    /// `startLineNumber`, `startColumn`, `endLineNumber`, `endColumn`,
+    /// `message`, `severity` (1=Hint, 2=Info, 4=Warning, 8=Error).
+    /// No-op during SSR or before mount.
+    pub fn set_markers(&self, markers: &js_sys::Array) {
+        #[cfg(feature = "hydrate")]
+        {
+            if let Some(id) = self.editor_id.get_untracked() {
+                js::set_markers(id, markers);
+            }
+        }
+
+        #[cfg(not(feature = "hydrate"))]
+        let _ = markers;
+    }
+
+    /// Clear all inline markers from the editor model.
+    /// No-op during SSR or before mount.
+    pub fn clear_markers(&self) {
+        #[cfg(feature = "hydrate")]
+        {
+            if let Some(id) = self.editor_id.get_untracked() {
+                js::clear_markers(id);
+            }
         }
     }
 }

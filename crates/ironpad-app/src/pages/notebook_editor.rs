@@ -323,6 +323,14 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         last_compile.set(None);
         compile_time_ms.set(None);
 
+        // Clear inline markers before each compile.
+        #[cfg(feature = "hydrate")]
+        {
+            if let Some(handle) = source_handle.get_untracked() {
+                handle.clear_markers();
+            }
+        }
+
         leptos::task::spawn_local(async move {
             #[cfg(feature = "hydrate")]
             let start = js_sys::Date::now();
@@ -396,6 +404,72 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
 
             // Monaco KeyMod.Shift (1024) | KeyCode.Enter (3) = 1027
             handle.add_action("ironpad.runCell", &[1027], &cb);
+        });
+    }
+
+    // ── Inline error markers ────────────────────────────────────────────
+    //
+    // When `last_compile` changes, convert diagnostics with spans into
+    // Monaco model markers so errors/warnings appear inline in the editor.
+
+    #[cfg(feature = "hydrate")]
+    {
+        Effect::new(move || {
+            let compile = last_compile.get();
+            let Some(handle) = source_handle.get_untracked() else {
+                return;
+            };
+
+            let Some(response) = compile else {
+                // Compile was cleared (e.g. new compile started); markers
+                // already cleared by the compile-start code above.
+                return;
+            };
+
+            let markers = js_sys::Array::new();
+
+            for diag in &response.diagnostics {
+                let severity: u32 = match diag.severity {
+                    Severity::Error => 8,
+                    Severity::Warning => 4,
+                    Severity::Note => 2,
+                };
+
+                // If spans are available, create a marker per span.
+                if diag.spans.is_empty() {
+                    continue;
+                }
+
+                for span in &diag.spans {
+                    let marker = js_sys::Object::new();
+                    let _ = js_sys::Reflect::set(
+                        &marker,
+                        &"startLineNumber".into(),
+                        &(span.line_start).into(),
+                    );
+                    let _ = js_sys::Reflect::set(
+                        &marker,
+                        &"startColumn".into(),
+                        &(span.col_start).into(),
+                    );
+                    let _ = js_sys::Reflect::set(
+                        &marker,
+                        &"endLineNumber".into(),
+                        &(span.line_end).into(),
+                    );
+                    let _ =
+                        js_sys::Reflect::set(&marker, &"endColumn".into(), &(span.col_end).into());
+
+                    // Use span label if available, else fall back to diagnostic message.
+                    let msg = span.label.as_deref().unwrap_or(&diag.message);
+                    let _ = js_sys::Reflect::set(&marker, &"message".into(), &msg.into());
+                    let _ = js_sys::Reflect::set(&marker, &"severity".into(), &severity.into());
+
+                    markers.push(&marker);
+                }
+            }
+
+            handle.set_markers(&markers);
         });
     }
 

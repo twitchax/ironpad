@@ -466,7 +466,7 @@ tasks:
   - id: T-035
     title: "Monaco inline error markers via setModelMarkers"
     priority: 2
-    status: todo
+    status: done
     notes: >
       After compilation, if there are diagnostics with spans, call
       monaco.editor.setModelMarkers on the cell's Monaco model.
@@ -1407,4 +1407,19 @@ This is a greenfield project — no existing code. See MegaPrd.md for all archit
   - The core `adjust_span` logic (subtracting `WRAPPER_PREAMBLE_LINES` from line numbers, passing columns through unchanged) was already correct from T-011; this task validates it thoroughly.
   - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
 - **Opportunistic UAT**: No UATs verified — all depend on Playwright infrastructure (T-045+).
+- **Constitution Compliance**: No violations.
+
+## 2026-03-07 — T-035 Completed
+- **Task**: Monaco inline error markers via setModelMarkers
+- **Status**: ✅ Done
+- **Changes**:
+  - Extended `public/monaco/bridge.js` with `setMarkers(id, markers)` and `clearMarkers(id)` methods on the `IronpadMonaco` bridge, including pending-marker queuing for editors still loading.
+  - Added `set_markers` and `clear_markers` wasm-bindgen extern declarations in `crates/ironpad-app/src/components/monaco_editor.rs`, and corresponding methods on `MonacoEditorHandle`.
+  - In `crates/ironpad-app/src/pages/notebook_editor.rs`:
+    - Clear markers at compile start (before dispatching the server call).
+    - Added a reactive `Effect` that watches `last_compile` and converts `Diagnostic` spans to Monaco marker objects (`startLineNumber`, `startColumn`, `endLineNumber`, `endColumn`, `message`, `severity`).
+    - Severity mapping: `Severity::Error` → 8, `Severity::Warning` → 4, `Severity::Note` → 2 (matching Monaco `MarkerSeverity` constants).
+    - Uses span label when available, falls back to diagnostic message.
+  - `cargo make uat` ✅ passes (fmt-check ✅, clippy ✅, 109 tests pass ✅, playwright skipped).
+- **Opportunistic UAT**: uat-006 ("Compiler errors render inline in Monaco with span highlighting") is functionally implemented but cannot be verified without Playwright (T-045+).
 - **Constitution Compliance**: No violations.
