@@ -65,7 +65,9 @@ pub async fn build_micro_crate(
     let target_dir = std::fs::canonicalize(&target_dir)?;
 
     tracing::info!(
+        cell_id = %cell_id,
         crate_dir = %crate_dir.display(),
+        cargo_home = %cargo_home.display(),
         target_dir = %target_dir.display(),
         "starting WASM build",
     );
@@ -84,16 +86,24 @@ pub async fn build_micro_crate(
     })
     .await
     .map_err(|_| {
-        tracing::error!("cargo build timed out after {}s", BUILD_TIMEOUT.as_secs());
+        tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", BUILD_TIMEOUT.as_secs());
         anyhow::anyhow!("compilation timed out after {}s", BUILD_TIMEOUT.as_secs())
     })?
-    .map_err(|e| anyhow::anyhow!("failed to spawn cargo: {e}"))?;
+    .map_err(|e| {
+        tracing::error!(cell_id = %cell_id, error = %e, "failed to spawn cargo");
+        anyhow::anyhow!("failed to spawn cargo: {e}")
+    })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !output.status.success() {
-        tracing::warn!(exit_code = ?output.status.code(), "cargo build failed");
+        tracing::warn!(
+            cell_id = %cell_id,
+            exit_code = ?output.status.code(),
+            stderr = %stderr,
+            "cargo build failed",
+        );
         return Ok(BuildResult::Failure { stdout, stderr });
     }
 

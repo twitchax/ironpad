@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use thaw::{Button, ButtonAppearance, Layout, LayoutHeader, LayoutPosition};
+use thaw::{Button, ButtonAppearance};
 
 use crate::server_fns::update_notebook;
 
@@ -63,10 +63,10 @@ pub fn AppLayout(children: Children) -> impl IntoView {
     provide_context(ctx);
 
     view! {
-        <Layout position=LayoutPosition::Absolute class="ironpad-root-layout">
-            <LayoutHeader class="ironpad-header">
+        <div class="ironpad-root-layout">
+            <header class="ironpad-header">
                 <HeaderContent ctx />
-            </LayoutHeader>
+            </header>
 
             <div class="ironpad-content">
                 {children()}
@@ -75,7 +75,7 @@ pub fn AppLayout(children: Children) -> impl IntoView {
             <footer class="ironpad-status-bar">
                 <StatusBar ctx />
             </footer>
-        </Layout>
+        </div>
     }
 }
 

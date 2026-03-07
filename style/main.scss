@@ -165,11 +165,13 @@ a:focus-visible {
     height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
 
 .ironpad-header {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -260,6 +262,7 @@ a:focus-visible {
 /* ── Status bar ──────────────────────────────────────────────────────────── */
 
 .ironpad-status-bar {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     padding: 0 16px;

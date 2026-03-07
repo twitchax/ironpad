@@ -99,23 +99,88 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
         BuildResult::Failure { stdout, stderr } => {
             let diagnostics = parse_diagnostics(&stdout);
 
-            tracing::info!(
+            tracing::warn!(
                 cell_id = %request.cell_id,
                 diagnostic_count = diagnostics.len(),
+                stderr_len = stderr.len(),
                 "compilation failed"
             );
 
+            // Log the full stderr at debug level — this is where linker errors
+            // (e.g. rust-lld failures) and other non-JSON diagnostics appear.
+            if !stderr.is_empty() {
+                tracing::debug!(
+                    cell_id = %request.cell_id,
+                    stderr = %stderr,
+                    "compilation stderr",
+                );
+            }
+
             // On failure, if we parsed structured diagnostics, return them.
             // Otherwise, synthesize a single error from the raw output.
+            //
+            // Linker errors (e.g. rust-lld failures) appear in stderr and are
+            // not captured by rustc's JSON diagnostic format, so we combine
+            // both streams when building the fallback message.
             let diagnostics = if diagnostics.is_empty() {
                 let raw = if stderr.is_empty() { &stdout } else { &stderr };
+
+                // Extract a concise summary for common linker failures.
+                let message = if raw.contains("rust-lld") || raw.contains("lld:") {
+                    let linker_lines: Vec<&str> = raw
+                        .lines()
+                        .filter(|l| {
+                            l.contains("error") || l.contains("rust-lld") || l.contains("lld:")
+                        })
+                        .take(10)
+                        .collect();
+
+                    if linker_lines.is_empty() {
+                        format!("Linker (rust-lld) failed:\n{raw}")
+                    } else {
+                        format!(
+                            "Linker (rust-lld) failed:\n{}\n\n(full output in server logs at RUST_LOG=debug)",
+                            linker_lines.join("\n")
+                        )
+                    }
+                } else {
+                    format!("Compilation failed:\n{raw}")
+                };
+
                 vec![ironpad_common::Diagnostic {
-                    message: format!("Compilation failed:\n{raw}"),
+                    message,
                     severity: ironpad_common::Severity::Error,
                     spans: vec![],
                     code: None,
                 }]
             } else {
+                // If we have structured diagnostics but also a linker error in
+                // stderr, append the linker error as an additional diagnostic
+                // so it isn't silently lost.
+                let mut diagnostics = diagnostics;
+
+                if !stderr.is_empty() && (stderr.contains("rust-lld") || stderr.contains("lld:")) {
+                    let linker_lines: Vec<&str> = stderr
+                        .lines()
+                        .filter(|l| {
+                            l.contains("error") || l.contains("rust-lld") || l.contains("lld:")
+                        })
+                        .take(10)
+                        .collect();
+
+                    if !linker_lines.is_empty() {
+                        diagnostics.push(ironpad_common::Diagnostic {
+                            message: format!(
+                                "Linker (rust-lld) failed:\n{}",
+                                linker_lines.join("\n")
+                            ),
+                            severity: ironpad_common::Severity::Error,
+                            spans: vec![],
+                            code: None,
+                        });
+                    }
+                }
+
                 diagnostics
             };
 
