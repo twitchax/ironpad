@@ -32,6 +32,9 @@ cargo binstall cargo-leptos --no-confirm --force 2>/dev/null || cargo install ca
 echo "==> Installing cargo-make..."
 cargo binstall cargo-make --no-confirm --force 2>/dev/null || cargo install cargo-make
 
+echo "==> Installing wasm-bindgen-cli..."
+cargo binstall wasm-bindgen-cli --no-confirm --force 2>/dev/null || cargo install wasm-bindgen-cli
+
 echo "==> Installing Playwright browsers..."
 if command -v npx >/dev/null 2>&1 && [ -f package.json ]; then
     npx playwright install --with-deps chromium

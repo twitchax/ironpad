@@ -3,6 +3,10 @@
 // Rust/WASM side can call via wasm-bindgen to load compiled cell blobs and
 // execute them with input/output piping.
 //
+// Supports two loading modes:
+//   1. **wasm-bindgen** (preferred): JS glue module + transformed WASM.
+//   2. **raw** (legacy fallback): direct WebAssembly.instantiate.
+//
 // See MegaPrd §7.5 for architecture and ironpad-cell for the FFI contract.
 
 (function () {
@@ -10,66 +14,159 @@
 
   // ── CellResult layout ──────────────────────────────────────────────────────
   //
-  // The cell_main function returns a CellResult (#[repr(C)] on wasm32):
-  //   offset  0: output_ptr   (u32) — pointer to output bytes
-  //   offset  4: output_len   (u32) — length of output bytes
-  //   offset  8: display_ptr  (u32) — pointer to UTF-8 display string
-  //   offset 12: display_len  (u32) — length of display string
+  // The cell_main function returns a pointer to a CellResult (#[repr(C)]):
+  //   offset  0: output_ptr    (u32) — pointer to output bytes
+  //   offset  4: output_len    (u32) — length of output bytes
+  //   offset  8: display_ptr   (u32) — pointer to UTF-8 display string
+  //   offset 12: display_len   (u32) — length of display string
+  //   offset 16: type_tag_ptr  (u32) — pointer to UTF-8 type tag string
+  //   offset 20: type_tag_len  (u32) — length of type tag string
   //
-  // Total size: 16 bytes.
+  // Total size: 24 bytes.
 
-  var CELL_RESULT_SIZE = 16;
+  var CELL_RESULT_SIZE = 24;
 
   // ── CellExecutor ───────────────────────────────────────────────────────────
 
   function CellExecutor() {
-    this.modules = new Map(); // cell_id -> { hash, instance }
+    this.modules = new Map(); // cell_id -> { hash, type, ... }
   }
 
   /// Load a compiled WASM blob for a cell.
   ///
+  /// If `jsGlue` is provided, uses the wasm-bindgen path: dynamic-imports the
+  /// JS glue module and initialises the WASM through it.  Otherwise falls back
+  /// to raw `WebAssembly.instantiate`.
+  ///
   /// If the cell already has a module loaded with the same hash, this is a
   /// no-op (cache hit).  Otherwise the previous module is replaced.
-  CellExecutor.prototype.loadBlob = async function (cellId, hash, wasmBytes) {
+  CellExecutor.prototype.loadBlob = async function (cellId, hash, wasmBytes, jsGlue) {
     var existing = this.modules.get(cellId);
     if (existing && existing.hash === hash) {
       return; // Already loaded, same version.
     }
 
-    // Cell WASM modules are compiled for wasm32-unknown-unknown and are
-    // self-contained.  Provide an empty env import namespace to satisfy
-    // any linker expectations.
-    //
-    // Exported by the module:
-    //   memory, ironpad_alloc, ironpad_dealloc, cell_main
-    var imports = { env: {} };
+    if (jsGlue) {
+      // ── wasm-bindgen path ────────────────────────────────────────────
+      var jsBlob = new Blob([jsGlue], { type: "application/javascript" });
+      var jsUrl = URL.createObjectURL(jsBlob);
 
-    var result = await WebAssembly.instantiate(wasmBytes, imports);
-    this.modules.set(cellId, { hash: hash, instance: result.instance });
+      try {
+        var mod = await import(/* webpackIgnore: true */ jsUrl);
+
+        // wasm-bindgen's default export is the init function.
+        // It returns the raw WASM exports object.
+        var wasm = await mod.default(wasmBytes);
+
+        this.modules.set(cellId, {
+          hash: hash,
+          type: "bindgen",
+          module: mod, // JS glue (wrapped cell_main, handles async)
+          wasm: wasm, // Raw WASM exports (memory, ironpad_alloc, ironpad_dealloc)
+        });
+      } finally {
+        URL.revokeObjectURL(jsUrl);
+      }
+    } else {
+      // ── Legacy raw WASM path ─────────────────────────────────────────
+      var imports = { env: {} };
+      var result = await WebAssembly.instantiate(wasmBytes, imports);
+      this.modules.set(cellId, {
+        hash: hash,
+        type: "raw",
+        instance: result.instance,
+      });
+    }
   };
 
   /// Execute a loaded cell with the given input bytes.
   ///
-  /// Returns { outputBytes: Uint8Array, displayText: string | null }.
+  /// Returns Promise<{ outputBytes, displayText, typeTag }>.
   ///
-  /// Throws on: cell not loaded, missing exports, WASM trap, OOM.
-  CellExecutor.prototype.execute = function (cellId, inputBytes) {
-    var mod = this.modules.get(cellId);
-    if (!mod) {
+  /// Always async: wasm-bindgen cells may have async cell_main (via
+  /// wasm-bindgen-futures), and the raw path is wrapped transparently.
+  CellExecutor.prototype.execute = async function (cellId, inputBytes) {
+    var entry = this.modules.get(cellId);
+    if (!entry) {
       throw new Error("Cell " + cellId + " not loaded");
     }
 
-    var instance = mod.instance;
+    if (entry.type === "bindgen") {
+      return this._executeBindgen(entry, inputBytes);
+    } else {
+      return this._executeRaw(entry, inputBytes);
+    }
+  };
+
+  // ── wasm-bindgen execution path ──────────────────────────────────────────
+  //
+  // Uses the JS glue module's wrapped `cell_main` (which handles async
+  // transparently) and the raw WASM exports for memory management.
+
+  CellExecutor.prototype._executeBindgen = async function (entry, inputBytes) {
+    var mod = entry.module;
+    var wasm = entry.wasm;
+    var memory = wasm.memory;
+    var alloc = wasm.ironpad_alloc;
+    var dealloc = wasm.ironpad_dealloc;
+
+    if (!memory) throw new Error("wasm-bindgen module: missing 'memory' export");
+    if (!alloc) throw new Error("wasm-bindgen module: missing 'ironpad_alloc' export");
+    if (!dealloc) throw new Error("wasm-bindgen module: missing 'ironpad_dealloc' export");
+
+    // ── Write input bytes into WASM linear memory ────────────────────────
+
+    var inputPtr = 0;
+    var inputLen = inputBytes ? inputBytes.length : 0;
+
+    if (inputLen > 0) {
+      inputPtr = alloc(inputLen);
+      if (inputPtr === 0) {
+        throw new Error("ironpad_alloc failed for input (" + inputLen + " bytes)");
+      }
+      new Uint8Array(memory.buffer, inputPtr, inputLen).set(inputBytes);
+    }
+
+    // ── Call cell_main via wasm-bindgen wrapper ──────────────────────────
+    //
+    // The wrapper handles both sync and async cells: for sync cells it
+    // returns a u32 directly; for async cells it returns a Promise<u32>.
+    // Awaiting a non-Promise value is a no-op, so this is safe either way.
+
+    var resultPtr;
+    try {
+      resultPtr = await mod.cell_main(inputPtr, inputLen);
+    } catch (e) {
+      if (inputPtr !== 0) dealloc(inputPtr, inputLen);
+      throw new Error("WASM execution trapped: " + e.message);
+    }
+
+    if (!resultPtr) {
+      if (inputPtr !== 0) dealloc(inputPtr, inputLen);
+      throw new Error("cell_main returned null");
+    }
+
+    // ── Read CellResult from WASM memory ─────────────────────────────────
+
+    return this._readCellResult(memory, alloc, dealloc, resultPtr, inputPtr, inputLen, false);
+  };
+
+  // ── Legacy raw WASM execution path ───────────────────────────────────────
+  //
+  // Direct WebAssembly instance access with sret calling convention detection.
+
+  CellExecutor.prototype._executeRaw = function (entry, inputBytes) {
+    var instance = entry.instance;
     var memory = instance.exports.memory;
     var alloc = instance.exports.ironpad_alloc;
     var dealloc = instance.exports.ironpad_dealloc;
     var cellMain = instance.exports.cell_main;
 
     // Validate required exports.
-    if (!memory) throw new Error("Cell " + cellId + ": missing 'memory' export");
-    if (!alloc) throw new Error("Cell " + cellId + ": missing 'ironpad_alloc' export");
-    if (!dealloc) throw new Error("Cell " + cellId + ": missing 'ironpad_dealloc' export");
-    if (!cellMain) throw new Error("Cell " + cellId + ": missing 'cell_main' export");
+    if (!memory) throw new Error("raw module: missing 'memory' export");
+    if (!alloc) throw new Error("raw module: missing 'ironpad_alloc' export");
+    if (!dealloc) throw new Error("raw module: missing 'ironpad_dealloc' export");
+    if (!cellMain) throw new Error("raw module: missing 'cell_main' export");
 
     // ── Write input bytes into WASM linear memory ────────────────────────
 
@@ -86,11 +183,9 @@
 
     // ── Call cell_main ───────────────────────────────────────────────────
     //
-    // The Rust-compiled cell_main has signature:
-    //   extern "C" fn cell_main(input_ptr: *const u8, input_len: usize) -> CellResult
-    //
-    // On wasm32, CellResult (16 bytes) exceeds the single-return-value
-    // limit, so the compiler uses the "sret" (structural return) convention:
+    // On wasm32, CellResult (24 bytes) exceeds the single-return-value
+    // limit, so the compiler may use the "sret" (structural return)
+    // convention:
     //   cell_main(retptr: i32, input_ptr: i32, input_len: i32) -> void
     //
     // We detect the convention by inspecting the exported function's arity:
@@ -125,14 +220,26 @@
     }
 
     // ── Read CellResult from WASM memory ─────────────────────────────────
-    //
-    // memory.buffer may have grown during execution, so always re-read it.
 
+    return this._readCellResult(memory, alloc, dealloc, retptr, inputPtr, inputLen, useSret);
+  };
+
+  // ── Shared CellResult reader ─────────────────────────────────────────────
+  //
+  // Reads the 24-byte CellResult struct, copies data out, and frees all WASM
+  // allocations.  memory.buffer may have grown during execution, so it is
+  // always re-read here.
+
+  CellExecutor.prototype._readCellResult = function (
+    memory, alloc, dealloc, retptr, inputPtr, inputLen, useSret
+  ) {
     var view = new DataView(memory.buffer);
     var outputPtr = view.getUint32(retptr, true);
     var outputLen = view.getUint32(retptr + 4, true);
     var displayPtr = view.getUint32(retptr + 8, true);
     var displayLen = view.getUint32(retptr + 12, true);
+    var typeTagPtr = view.getUint32(retptr + 16, true);
+    var typeTagLen = view.getUint32(retptr + 20, true);
 
     // Copy output bytes out of WASM memory before freeing.
     var outputBytes = outputLen > 0
@@ -144,14 +251,22 @@
       ? new TextDecoder().decode(new Uint8Array(memory.buffer, displayPtr, displayLen))
       : null;
 
+    // Decode type tag from UTF-8.
+    var typeTag = typeTagLen > 0
+      ? new TextDecoder().decode(new Uint8Array(memory.buffer, typeTagPtr, typeTagLen))
+      : null;
+
     // ── Clean up all WASM allocations ────────────────────────────────────
 
     if (inputPtr !== 0) dealloc(inputPtr, inputLen);
     if (outputLen > 0) dealloc(outputPtr, outputLen);
     if (displayLen > 0) dealloc(displayPtr, displayLen);
-    if (useSret) dealloc(retptr, CELL_RESULT_SIZE);
+    if (typeTagLen > 0) dealloc(typeTagPtr, typeTagLen);
+    // For sret, we allocated retptr ourselves; for bindgen, the cell leaked
+    // a Box<CellResult> that we must free.
+    if (useSret || retptr) dealloc(retptr, CELL_RESULT_SIZE);
 
-    return { outputBytes: outputBytes, displayText: displayText };
+    return { outputBytes: outputBytes, displayText: displayText, typeTag: typeTag };
   };
 
   /// Remove a loaded cell module, freeing browser-side resources.

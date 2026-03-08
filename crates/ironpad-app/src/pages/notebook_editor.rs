@@ -13,6 +13,7 @@ use thaw::{
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::error_panel::ErrorPanel;
+use crate::components::markdown_cell::MarkdownCell;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::{
     add_cell, compile_cell, delete_cell, duplicate_cell, get_cell_content, get_notebook,
@@ -318,10 +319,10 @@ fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
     // ── Add cell action ─────────────────────────────────────────────────
 
     let nb_id_for_add = notebook_id_str.clone();
-    let add_cell_action = Action::new(move |after_id: &Option<String>| {
+    let add_cell_action = Action::new(move |input: &(Option<String>, CellType)| {
         let nb_id = nb_id_for_add.clone();
-        let after = after_id.clone();
-        async move { add_cell(nb_id, after, CellType::Code).await }
+        let (after, cell_type) = input.clone();
+        async move { add_cell(nb_id, after, cell_type).await }
     });
 
     // Refresh notebook when a cell is added, and mark the new cell for focus.
@@ -511,6 +512,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_stale_src = cell.id.clone();
     let cell_id_for_stale_toml = cell.id.clone();
     let cell_id_for_stale_header = cell.id.clone();
+    let cell_id_for_markdown = StoredValue::new(cell.id.clone());
 
     let is_markdown = cell.cell_type == CellType::Markdown;
 
@@ -971,7 +973,9 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                         match executor::execute_cell(
                                             &cell_id_for_exec,
                                             &input_bytes,
-                                        ) {
+                                        )
+                                        .await
+                                        {
                                             Ok((output_bytes, display_text, type_tag)) => {
                                                 // Store output for downstream cells.
                                                 state.cell_outputs.update(|map| {
@@ -1124,7 +1128,13 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
 
             let variables = js_sys::Array::new();
 
-            for (i, c) in cells[..my_idx].iter().enumerate() {
+            // Only Code cells produce output — skip markdown cells and use
+            // sequential indices so variable names match CellInputs indices.
+            for (i, c) in cells[..my_idx]
+                .iter()
+                .filter(|c| c.cell_type == CellType::Code)
+                .enumerate()
+            {
                 let type_str = outputs
                     .get(&c.id)
                     .and_then(|d| d.type_tag.as_deref())
@@ -1152,12 +1162,16 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                 variables.push(&var);
             }
 
-            // Add `last` alias pointing to the most recent typed cell.
-            if my_idx > 0 {
-                // Walk backwards to find the most recent cell with a type_tag.
+            // Add `last` alias pointing to the most recent typed Code cell.
+            let has_prev_code = cells[..my_idx]
+                .iter()
+                .any(|c| c.cell_type == CellType::Code);
+            if has_prev_code {
+                // Walk backwards to find the most recent Code cell with a type_tag.
                 let last_type = cells[..my_idx]
                     .iter()
                     .rev()
+                    .filter(|c| c.cell_type == CellType::Code)
                     .find_map(|c| {
                         outputs
                             .get(&c.id)
@@ -1301,15 +1315,20 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             source.set(val);
             source_dirty.set(true);
 
-            // Mark this cell and all subsequent cells as stale.
-            let cid = cell_id_for_stale_src.clone();
-            state.cell_stale.update(|stale| {
-                let cells = state.cells.get_untracked();
-                let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-                for cell in &cells[my_idx..] {
-                    stale.insert(cell.id.clone(), true);
-                }
-            });
+            // Mark this cell and all subsequent Code cells as stale.
+            // Markdown cells don't affect the data pipeline, so skip stale marking.
+            if !is_markdown {
+                let cid = cell_id_for_stale_src.clone();
+                state.cell_stale.update(|stale| {
+                    let cells = state.cells.get_untracked();
+                    let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+                    for cell in &cells[my_idx..] {
+                        if cell.cell_type == CellType::Code {
+                            stale.insert(cell.id.clone(), true);
+                        }
+                    }
+                });
+            }
 
             // Clear the previous debounce timer and start a fresh 1 s window.
             let win = web_sys::window().unwrap();
@@ -1359,15 +1378,20 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             cargo_toml.set(val);
             cargo_toml_dirty.set(true);
 
-            // Mark this cell and all subsequent cells as stale.
-            let cid = cell_id_for_stale_toml.clone();
-            state.cell_stale.update(|stale| {
-                let cells = state.cells.get_untracked();
-                let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-                for cell in &cells[my_idx..] {
-                    stale.insert(cell.id.clone(), true);
-                }
-            });
+            // Mark this cell and all subsequent Code cells as stale.
+            // Markdown cells don't affect the data pipeline, so skip stale marking.
+            if !is_markdown {
+                let cid = cell_id_for_stale_toml.clone();
+                state.cell_stale.update(|stale| {
+                    let cells = state.cells.get_untracked();
+                    let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+                    for cell in &cells[my_idx..] {
+                        if cell.cell_type == CellType::Code {
+                            stale.insert(cell.id.clone(), true);
+                        }
+                    }
+                });
+            }
 
             let win = web_sys::window().unwrap();
             let prev = debounce_handle.get_untracked();
@@ -1432,11 +1456,14 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── CSS classes ─────────────────────────────────────────────────────
 
     let cell_class = Signal::derive(move || {
-        if is_active() {
-            "ironpad-cell-card ironpad-cell-card--active".to_string()
-        } else {
-            "ironpad-cell-card".to_string()
+        let mut class = "ironpad-cell-card".to_string();
+        if is_markdown {
+            class.push_str(" ironpad-cell-card--markdown");
         }
+        if is_active() {
+            class.push_str(" ironpad-cell-card--active");
+        }
+        class
     });
 
     let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
@@ -1530,6 +1557,9 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                     />
 
                     {move || {
+                        if is_markdown {
+                            return view! { <span /> }.into_any();
+                        }
                         let is_stale = state.cell_stale.get()
                             .get(&cell_id_for_stale_header)
                             .copied()
@@ -1541,53 +1571,69 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         }
                     }}
 
-                    <Tag
-                        size=TagSize::ExtraSmall
-                        class=Signal::derive(move || {
-                            let suffix = match cell_status.get() {
-                                CellStatus::Idle => "idle",
-                                CellStatus::Queued => "queued",
-                                CellStatus::Compiling => "compiling",
-                                CellStatus::Running => "running",
-                                CellStatus::Success => "success",
-                                CellStatus::Error => "error",
-                            };
-                            format!("ironpad-cell-status ironpad-cell-status--{suffix}")
-                        })
-                    >
-                        {move || {
-                            match cell_status.get() {
-                                CellStatus::Idle => "● idle".to_string(),
-                                CellStatus::Queued => "◎ queued".to_string(),
-                                CellStatus::Compiling => "◐ compiling…".to_string(),
-                                CellStatus::Running => "◐ running…".to_string(),
-                                CellStatus::Success => {
-                                    match compile_time_ms.get() {
-                                        Some(ms) => format!("✓ {ms:.0}ms"),
-                                        None => "✓ done".to_string(),
+                    {if !is_markdown {
+                        view! {
+                            <Tag
+                                size=TagSize::ExtraSmall
+                                class=Signal::derive(move || {
+                                    let suffix = match cell_status.get() {
+                                        CellStatus::Idle => "idle",
+                                        CellStatus::Queued => "queued",
+                                        CellStatus::Compiling => "compiling",
+                                        CellStatus::Running => "running",
+                                        CellStatus::Success => "success",
+                                        CellStatus::Error => "error",
+                                    };
+                                    format!("ironpad-cell-status ironpad-cell-status--{suffix}")
+                                })
+                            >
+                                {move || {
+                                    match cell_status.get() {
+                                        CellStatus::Idle => "● idle".to_string(),
+                                        CellStatus::Queued => "◎ queued".to_string(),
+                                        CellStatus::Compiling => "◐ compiling…".to_string(),
+                                        CellStatus::Running => "◐ running…".to_string(),
+                                        CellStatus::Success => {
+                                            match compile_time_ms.get() {
+                                                Some(ms) => format!("✓ {ms:.0}ms"),
+                                                None => "✓ done".to_string(),
+                                            }
+                                        }
+                                        CellStatus::Error => "✕ error".to_string(),
                                     }
-                                }
-                                CellStatus::Error => "✕ error".to_string(),
-                            }
-                        }}
-                    </Tag>
+                                }}
+                            </Tag>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <Tag size=TagSize::ExtraSmall class="ironpad-cell-type-badge ironpad-cell-type-badge--markdown">
+                                "📝 markdown"
+                            </Tag>
+                        }.into_any()
+                    }}
 
                     <div class="ironpad-cell-actions">
-                        <Button
-                            appearance=ButtonAppearance::Subtle
-                            on_click=move |ev: leptos::ev::MouseEvent| {
-                                ev.stop_propagation();
-                                run_trigger.update(|g| *g += 1);
-                            }
-                        >
-                            {move || {
-                                if matches!(cell_status.get(), CellStatus::Compiling | CellStatus::Running) {
-                                    "⏳"
-                                } else {
-                                    "▶"
-                                }
-                            }}
-                        </Button>
+                        {if !is_markdown {
+                            view! {
+                                <Button
+                                    appearance=ButtonAppearance::Subtle
+                                    on_click=move |ev: leptos::ev::MouseEvent| {
+                                        ev.stop_propagation();
+                                        run_trigger.update(|g| *g += 1);
+                                    }
+                                >
+                                    {move || {
+                                        if matches!(cell_status.get(), CellStatus::Compiling | CellStatus::Running) {
+                                            "⏳"
+                                        } else {
+                                            "▶"
+                                        }
+                                    }}
+                                </Button>
+                            }.into_any()
+                        } else {
+                            view! { <span /> }.into_any()
+                        }}
 
                         <div class="ironpad-cell-menu-wrapper">
                             <Button
@@ -1634,12 +1680,18 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                         >
                                             "⧉ Duplicate"
                                         </button>
-                                        <button
-                                            class="ironpad-cell-menu-item"
-                                            on:click=on_run_all_below
-                                        >
-                                            "▶▶ Run All Below"
-                                        </button>
+                                        {if !is_markdown {
+                                            view! {
+                                                <button
+                                                    class="ironpad-cell-menu-item"
+                                                    on:click=on_run_all_below
+                                                >
+                                                    "▶▶ Run All Below"
+                                                </button>
+                                            }.into_any()
+                                        } else {
+                                            view! { <span /> }.into_any()
+                                        }}
                                         <div class="ironpad-cell-menu-divider" />
                                         <button
                                             class="ironpad-cell-menu-item ironpad-cell-menu-item--danger"
@@ -1655,69 +1707,98 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                 </div>
             </CardHeader>
 
-            <div class=body_class>
-                <div class="ironpad-cell-tabs">
-                    <TabList selected_value=selected_tab>
-                        <Tab value="code">
-                            {move || if source_dirty.get() { "Code ●" } else { "Code" }}
-                        </Tab>
-                        <Tab value="cargo-toml">
-                            {move || if cargo_toml_dirty.get() { "Cargo.toml ●" } else { "Cargo.toml" }}
-                        </Tab>
-                    </TabList>
-                </div>
+            {if is_markdown {
+                // ── Markdown cell body ──────────────────────────────────
+                view! {
+                    <div class=body_class>
+                        <Suspense fallback=move || view! {
+                            <div class="ironpad-cell-loading">
+                                <Spinner />
+                            </div>
+                        }>
+                            {move || Suspend::new(async move {
+                                let _ = content_resource.await;
+                                let md_cell_id = cell_id_for_markdown.get_value();
 
-                <Suspense fallback=move || view! {
-                    <div class="ironpad-cell-loading">
-                        <Spinner />
+                                view! {
+                                    <MarkdownCell
+                                        source=source.get_untracked()
+                                        on_change=on_source_change
+                                        cell_id=md_cell_id
+                                    />
+                                }
+                            })}
+                        </Suspense>
                     </div>
-                }>
-                    {move || Suspend::new(async move {
-                        let _ = content_resource.await;
+                }.into_any()
+            } else {
+                // ── Code cell body + panels ─────────────────────────────
+                view! {
+                    <div class=body_class>
+                        <div class="ironpad-cell-tabs">
+                            <TabList selected_value=selected_tab>
+                                <Tab value="code">
+                                    {move || if source_dirty.get() { "Code ●" } else { "Code" }}
+                                </Tab>
+                                <Tab value="cargo-toml">
+                                    {move || if cargo_toml_dirty.get() { "Cargo.toml ●" } else { "Cargo.toml" }}
+                                </Tab>
+                            </TabList>
+                        </div>
 
-                        view! {
-                            <div
-                                class="ironpad-cell-editor-pane"
-                                style:display=move || {
-                                    if selected_tab.get() == "code" { "block" } else { "none" }
-                                }
-                            >
-                                <MonacoEditor
-                                    initial_value=source.get_untracked()
-                                    language="rust"
-                                    on_change=on_source_change
-                                    handle=source_handle
-                                />
+                        <Suspense fallback=move || view! {
+                            <div class="ironpad-cell-loading">
+                                <Spinner />
                             </div>
-                            <div
-                                class="ironpad-cell-editor-pane"
-                                style:display=move || {
-                                    if selected_tab.get() == "cargo-toml" { "block" } else { "none" }
+                        }>
+                            {move || Suspend::new(async move {
+                                let _ = content_resource.await;
+
+                                view! {
+                                    <div
+                                        class="ironpad-cell-editor-pane"
+                                        style:display=move || {
+                                            if selected_tab.get() == "code" { "block" } else { "none" }
+                                        }
+                                    >
+                                        <MonacoEditor
+                                            initial_value=source.get_untracked()
+                                            language="rust"
+                                            on_change=on_source_change
+                                            handle=source_handle
+                                        />
+                                    </div>
+                                    <div
+                                        class="ironpad-cell-editor-pane"
+                                        style:display=move || {
+                                            if selected_tab.get() == "cargo-toml" { "block" } else { "none" }
+                                        }
+                                    >
+                                        <MonacoEditor
+                                            initial_value=cargo_toml.get_untracked()
+                                            language="toml"
+                                            on_change=on_cargo_toml_change
+                                            handle=cargo_toml_handle
+                                        />
+                                    </div>
                                 }
-                            >
-                                <MonacoEditor
-                                    initial_value=cargo_toml.get_untracked()
-                                    language="toml"
-                                    on_change=on_cargo_toml_change
-                                    handle=cargo_toml_handle
-                                />
-                            </div>
-                        }
-                    })}
-                </Suspense>
-            </div>
+                            })}
+                        </Suspense>
+                    </div>
 
-            // ── Compile result panel ────────────────────────────────────
-            <CompileResultPanel
-                cell_status=cell_status
-                last_compile=last_compile
-                compile_time_ms=compile_time_ms
-            />
+                    // ── Compile result panel ────────────────────────────────────
+                    <CompileResultPanel
+                        cell_status=cell_status
+                        last_compile=last_compile
+                        compile_time_ms=compile_time_ms
+                    />
 
-            // ── Execution output panel ──────────────────────────────────
-            <CellOutputPanel
-                execution_result=execution_result
-            />
+                    // ── Execution output panel ──────────────────────────────────
+                    <CellOutputPanel
+                        execution_result=execution_result
+                    />
+                }.into_any()
+            }}
         </Card>
         </div>
     }
@@ -1933,21 +2014,29 @@ fn format_hex_dump(data: &[u8]) -> String {
 
 // ── Add cell button ─────────────────────────────────────────────────────────
 
-/// "Add Cell" button, rendered between cells and at the end of the list.
+/// "Add Cell" buttons (Code / Markdown), rendered between cells and at the end
+/// of the list.
 #[component]
 fn AddCellButton(
     after_cell_id: Option<String>,
-    add_action: Action<Option<String>, Result<CellManifest, ServerFnError>>,
+    add_action: Action<(Option<String>, CellType), Result<CellManifest, ServerFnError>>,
 ) -> impl IntoView {
-    let after = after_cell_id.clone();
-    let on_add = move |_| {
-        add_action.dispatch(after.clone());
+    let after_code = after_cell_id.clone();
+    let after_md = after_cell_id.clone();
+    let on_add_code = move |_| {
+        add_action.dispatch((after_code.clone(), CellType::Code));
+    };
+    let on_add_markdown = move |_| {
+        add_action.dispatch((after_md.clone(), CellType::Markdown));
     };
 
     view! {
         <div class="ironpad-add-cell-row">
-            <button class="ironpad-add-cell-btn" on:click=on_add>
-                "+ Add Cell"
+            <button class="ironpad-add-cell-btn" on:click=on_add_code>
+                "+ Code"
+            </button>
+            <button class="ironpad-add-cell-btn ironpad-add-cell-btn--markdown" on:click=on_add_markdown>
+                "+ Markdown"
             </button>
         </div>
     }

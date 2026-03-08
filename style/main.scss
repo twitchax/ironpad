@@ -384,6 +384,49 @@ a:focus-visible {
     padding: 48px 0;
 }
 
+/* ── Notebook toolbar ────────────────────────────────────────────────── */
+
+.ironpad-notebook-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 0;
+    gap: 8px;
+}
+
+/* ── Shared dependencies panel ───────────────────────────────────────── */
+
+.ironpad-shared-deps {
+    margin-bottom: 16px;
+    background: var(--ip-bg-elevated);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md);
+}
+
+.ironpad-shared-deps-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+}
+
+.ironpad-shared-deps-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--ip-text-secondary);
+}
+
+.ironpad-shared-deps-editor-wrapper {
+    width: 100%;
+    height: 250px;
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-sm);
+    overflow: hidden;
+}
+
+.ironpad-shared-deps-editor-wrapper .ironpad-monaco-container {
+    height: 100%;
+}
+
 /* ── Cell list ───────────────────────────────────────────────────────── */
 
 .ironpad-cell-list {
@@ -409,6 +452,20 @@ a:focus-visible {
 
 .ironpad-cell-card--active {
     border-color: #e94560;
+}
+
+.ironpad-cell-card--markdown {
+    border-left: 3px solid #40a0f0;
+}
+
+.ironpad-cell-card--markdown.ironpad-cell-card--active {
+    border-color: #e94560;
+    border-left: 3px solid #40a0f0;
+}
+
+.ironpad-cell-type-badge--markdown {
+    color: #40a0f0;
+    font-size: 0.75rem;
 }
 
 .ironpad-cell-header {
@@ -533,7 +590,8 @@ a:focus-visible {
 .ironpad-cell-menu-divider {
     height: 1px;
     margin: 4px 0;
-    background: #0f3460;
+    background: rgba(15, 52, 96, 0.8);
+    opacity: 0.9;
 }
 
 /* ── Cell status indicator ──────────────────────────────────────────── */
@@ -639,6 +697,7 @@ a:focus-visible {
 .ironpad-add-cell-row {
     display: flex;
     justify-content: center;
+    gap: 8px;
     padding: 6px 0;
     opacity: 0.4;
     transition: opacity 0.2s;
@@ -662,6 +721,10 @@ a:focus-visible {
 .ironpad-add-cell-btn:hover {
     border-color: #e94560;
     color: #eaeaea;
+}
+
+.ironpad-add-cell-btn--markdown:hover {
+    border-color: #40a0f0;
 }
 
 /* ── Compile result panel ────────────────────────────────────────────── */
@@ -922,6 +985,9 @@ a:focus-visible {
     margin-left: auto;
     font-size: 0.7rem;
     color: #8888aa;
+    background: rgba(64, 192, 128, 0.15);
+    padding: 2px 8px;
+    border-radius: 10px;
 }
 
 .ironpad-output-body {
@@ -942,6 +1008,17 @@ a:focus-visible {
     word-break: break-word;
     font-size: 0.8rem;
     line-height: 1.5;
+}
+
+.ironpad-output-svg {
+    svg {
+        max-width: 100%;
+        height: auto;
+    }
+}
+
+.ironpad-output-html {
+    padding: 0.5rem;
 }
 
 .ironpad-output-bytes {
@@ -977,6 +1054,7 @@ select:focus-visible,
 textarea:focus-visible {
     outline: 2px solid var(--ip-accent);
     outline-offset: 2px;
+    box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.3);
 }
 
 /* ── Monospace elements ──────────────────────────────────────────────────── */
@@ -1195,4 +1273,56 @@ code, pre, kbd, samp,
 
 .thaw-toast-title__info {
     color: var(--ip-info);
+}
+
+/* ── Markdown cell ──────────────────────────────────────────────────────── */
+
+.ironpad-markdown-cell {
+    &-preview {
+        padding: 1rem 1.5rem;
+        color: #eaeaea;
+        line-height: 1.6;
+        cursor: pointer;
+
+        h1 { font-size: 1.8em; margin: 0.5em 0; color: #fff; border-bottom: 1px solid #0f3460; padding-bottom: 0.3em; }
+        h2 { font-size: 1.5em; margin: 0.5em 0; color: #fff; }
+        h3 { font-size: 1.25em; margin: 0.5em 0; color: #fff; }
+        p { margin: 0.5em 0; }
+        code { background: #1a1a2e; padding: 2px 6px; border-radius: 3px; font-family: var(--ip-font-mono); font-size: 0.9em; }
+        pre { background: #1a1a2e; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+        pre code { background: none; padding: 0; }
+        a { color: #e94560; text-decoration: none; &:hover { text-decoration: underline; } }
+        ul, ol { padding-left: 1.5em; }
+        li { margin: 0.25em 0; }
+        blockquote { border-left: 3px solid #e94560; padding-left: 1em; color: #8888aa; margin: 0.5em 0; }
+        table { border-collapse: collapse; margin: 0.5em 0; }
+        th, td { border: 1px solid #0f3460; padding: 0.5em 1em; }
+        th { background: #1a1a2e; }
+        img { max-width: 100%; }
+
+        &:hover {
+            outline: 1px dashed #4a4a6a;
+            outline-offset: -1px;
+        }
+    }
+
+    &-editor {
+        min-height: 150px;
+    }
+
+    &-hint {
+        font-size: 0.75em;
+        color: #4a4a6a;
+        padding: 0.25rem 1.5rem;
+        font-style: italic;
+    }
+}
+
+.ironpad-stale-indicator {
+    color: #f0ad4e;
+    margin-left: 0.5rem;
+    font-size: 0.85em;
+    cursor: help;
+    vertical-align: middle;
+    line-height: inherit;
 }

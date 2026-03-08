@@ -5,12 +5,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// Number of lines in the auto-generated wrapper *before* user code begins.
-///
-/// Used by the diagnostic parser (T-011) to map compiler spans back to user
-/// source line numbers.
-pub const WRAPPER_PREAMBLE_LINES: u32 = 4;
-
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Scaffold a micro-crate for a single cell compilation.
@@ -24,7 +18,11 @@ pub const WRAPPER_PREAMBLE_LINES: u32 = 4;
 ///     lib.rs
 /// ```
 ///
-/// Returns the path to the micro-crate root directory.
+/// Returns `(crate_dir, preamble_lines, is_async)`:
+/// - `crate_dir`: path to the micro-crate root directory
+/// - `preamble_lines`: number of lines before user code (for diagnostic mapping)
+/// - `is_async`: whether the cell wrapper is async (source contains `.await`)
+#[allow(clippy::too_many_arguments)]
 pub fn scaffold_micro_crate(
     cache_dir: &Path,
     ironpad_cell_path: &Path,
@@ -32,7 +30,9 @@ pub fn scaffold_micro_crate(
     cell_id: &str,
     source: &str,
     cargo_toml: &str,
-) -> anyhow::Result<PathBuf> {
+    previous_cell_types: &[Option<String>],
+    shared_cargo_toml: Option<&str>,
+) -> anyhow::Result<(PathBuf, u32, bool)> {
     let crate_dir = cache_dir.join("workspaces").join(session_id).join(cell_id);
 
     let src_dir = crate_dir.join("src");
@@ -45,13 +45,14 @@ pub fn scaffold_micro_crate(
         ironpad_cell_path.to_path_buf()
     });
 
-    let generated_cargo_toml = generate_cargo_toml(cell_id, cargo_toml, &absolute_cell_path);
+    let generated_cargo_toml =
+        generate_cargo_toml(cell_id, cargo_toml, &absolute_cell_path, shared_cargo_toml);
     std::fs::write(crate_dir.join("Cargo.toml"), generated_cargo_toml)?;
 
-    let lib_rs = generate_lib_rs(source);
+    let (lib_rs, preamble_lines, is_async) = generate_lib_rs(source, previous_cell_types);
     std::fs::write(src_dir.join("lib.rs"), lib_rs)?;
 
-    Ok(crate_dir)
+    Ok((crate_dir, preamble_lines, is_async))
 }
 
 // ── Cargo.toml Generation ────────────────────────────────────────────────────
@@ -60,8 +61,15 @@ pub fn scaffold_micro_crate(
 ///
 /// Merges the user-provided dependency lines with the required scaffolding
 /// (package metadata, `cdylib` crate type, `ironpad-cell` path dependency).
-fn generate_cargo_toml(cell_id: &str, user_cargo_toml: &str, ironpad_cell_path: &Path) -> String {
-    let user_deps = extract_user_dependencies(user_cargo_toml);
+/// When `shared_cargo_toml` is provided, its dependencies are merged first,
+/// then cell-level deps override any shared dep with the same crate name.
+fn generate_cargo_toml(
+    cell_id: &str,
+    user_cargo_toml: &str,
+    ironpad_cell_path: &Path,
+    shared_cargo_toml: Option<&str>,
+) -> String {
+    let merged_deps = merge_dependencies(shared_cargo_toml, user_cargo_toml);
 
     // Escape backslashes for Windows path compatibility in TOML strings.
     let cell_path_str = ironpad_cell_path.display().to_string().replace('\\', "/");
@@ -82,9 +90,9 @@ ironpad-cell = {{ path = "{cell_path_str}" }}
 "#
     );
 
-    if !user_deps.is_empty() {
-        toml.push_str(&user_deps);
-        if !user_deps.ends_with('\n') {
+    if !merged_deps.is_empty() {
+        toml.push_str(&merged_deps);
+        if !merged_deps.ends_with('\n') {
             toml.push('\n');
         }
     }
@@ -122,25 +130,158 @@ fn extract_user_dependencies(cargo_toml: &str) -> String {
     deps.join("\n")
 }
 
+/// Merge shared (notebook-level) and cell-level dependencies.
+///
+/// Cell deps take precedence: if both shared and cell declare the same crate
+/// name, the cell's line wins. The merge is at the dependency-line level.
+fn merge_dependencies(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> String {
+    let shared_deps = shared_cargo_toml.map_or_else(String::new, extract_user_dependencies);
+    let cell_deps = extract_user_dependencies(cell_cargo_toml);
+
+    if shared_deps.is_empty() {
+        return cell_deps;
+    }
+    if cell_deps.is_empty() {
+        return shared_deps;
+    }
+
+    // Build a map of crate_name → dep_line, shared first, then cell overrides.
+    let mut dep_map: Vec<(String, String)> = Vec::new();
+
+    for line in shared_deps.lines() {
+        if let Some(name) = crate_name_from_dep_line(line) {
+            dep_map.push((name, line.to_string()));
+        }
+    }
+
+    for line in cell_deps.lines() {
+        if let Some(name) = crate_name_from_dep_line(line) {
+            if let Some(entry) = dep_map.iter_mut().find(|(n, _)| *n == name) {
+                entry.1 = line.to_string();
+            } else {
+                dep_map.push((name, line.to_string()));
+            }
+        }
+    }
+
+    dep_map
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Extract the crate name from a TOML dependency line.
+///
+/// Handles both `crate = "version"` and `crate = { ... }` forms.
+/// Normalizes hyphens to underscores for comparison.
+fn crate_name_from_dep_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let name = trimmed.split('=').next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.replace('-', "_"))
+}
+
 // ── lib.rs Generation ────────────────────────────────────────────────────────
 
-/// Wrap user source code in the `cell_main` FFI function.
+/// Simple heuristic: if user source contains `.await` it needs an async wrapper.
+fn needs_async(source: &str) -> bool {
+    source.contains(".await")
+}
+
+/// Wrap user source code in the `cell_main` wasm-bindgen entry point.
 ///
 /// Produces a `lib.rs` that:
-/// 1. Imports the `ironpad_cell` prelude.
-/// 2. Defines the `#[no_mangle]` `cell_main` entry point.
-/// 3. Embeds the user's code verbatim inside the function body.
-fn generate_lib_rs(source: &str) -> String {
-    format!(
+/// 1. Imports the `ironpad_cell` prelude (which re-exports `wasm_bindgen`).
+/// 2. Defines the `#[wasm_bindgen]` `cell_main` entry point.
+/// 3. Optionally deserializes previous cell outputs into typed local variables.
+/// 4. Assigns the user's code (as a block expression) to a `CellOutput` binding
+///    via `.into()`, so any `From<T> for CellOutput` type works.
+/// 5. Converts the `CellOutput` into a heap-allocated `CellResult` and returns
+///    a raw pointer as `u32` for wasm-bindgen compatibility.
+///
+/// If the source contains `.await`, generates an async wrapper that wraps the
+/// user code in an `async` block.
+///
+/// Returns `(generated_code, preamble_lines, is_async)` where `preamble_lines`
+/// is the number of lines before user code begins (for diagnostic line mapping)
+/// and `is_async` indicates whether the cell wrapper is async.
+pub fn generate_lib_rs(
+    source: &str,
+    previous_cell_types: &[Option<String>],
+) -> (String, u32, bool) {
+    let is_async = needs_async(source);
+    let has_any_prev = !previous_cell_types.is_empty();
+    let typed_cells: Vec<(usize, &str)> = previous_cell_types
+        .iter()
+        .enumerate()
+        .filter_map(|(i, opt)| opt.as_deref().map(|tag| (i, tag)))
+        .collect();
+    let typed_count = typed_cells.len() as u32;
+
+    let async_kw = if is_async { "async " } else { "" };
+    let (ptr_param, len_param) = if has_any_prev {
+        ("input_ptr", "input_len")
+    } else {
+        ("_input_ptr", "_input_len")
+    };
+
+    let mut code = format!(
         "\
 use ironpad_cell::prelude::*;
 
-#[no_mangle]
-pub extern \"C\" fn cell_main(input_ptr: *const u8, input_len: usize) -> CellResult {{
+#[wasm_bindgen]
+pub {async_kw}fn cell_main({ptr_param}: u32, {len_param}: u32) -> u32 {{\n",
+    );
+
+    if has_any_prev {
+        code.push_str("let input_ptr = input_ptr as *const u8;\n");
+        code.push_str("let input_len = input_len as usize;\n");
+        code.push_str("let __ironpad_inputs__ = CellInputs::from_raw(unsafe { std::slice::from_raw_parts(input_ptr, input_len) });\n");
+
+        for &(i, tag) in &typed_cells {
+            code.push_str(&format!(
+                "let cell{i}: {tag} = __ironpad_inputs__.get({i}).deserialize().expect(\"failed to deserialize cell{i}\");\n"
+            ));
+        }
+
+        // `last` references the last cell with a type tag.
+        if let Some(&(last_idx, _)) = typed_cells.last() {
+            code.push_str(&format!("let last = &cell{last_idx};\n"));
+        }
+    }
+
+    if is_async {
+        code.push_str(&format!(
+            "\
+let __ironpad_output__: CellOutput = (async {{
 {source}
+}}).await.into();
+let result: CellResult = __ironpad_output__.into();
+Box::into_raw(Box::new(result)) as u32
 }}
 "
-    )
+        ));
+    } else {
+        code.push_str(&format!(
+            "\
+let __ironpad_output__: CellOutput = ({{
+{source}
+}}).into();
+let result: CellResult = __ironpad_output__.into();
+Box::into_raw(Box::new(result)) as u32
+}}
+"
+        ));
+    }
+
+    // Preamble: 5 base + optional (2 ptr reconstruction + 1 inputs) + cell decls + last.
+    let preamble_lines =
+        5 + if has_any_prev { 3 } else { 0 } + typed_count + if typed_count > 0 { 1 } else { 0 };
+
+    (code, preamble_lines, is_async)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -237,7 +378,7 @@ serde = "1"
 serde = { version = "1", features = ["derive"] }
 "#;
 
-        let result = generate_cargo_toml("abc123", user_toml, &cell_path);
+        let result = generate_cargo_toml("abc123", user_toml, &cell_path, None);
 
         assert!(result.contains(r#"name = "cell-abc123""#));
         assert!(result.contains(r#"crate-type = ["cdylib"]"#));
@@ -248,7 +389,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn cargo_toml_with_no_user_deps() {
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let result = generate_cargo_toml("cell0", "", &cell_path);
+        let result = generate_cargo_toml("cell0", "", &cell_path, None);
 
         assert!(result.contains(r#"name = "cell-cell0""#));
         assert!(result.contains(r#"crate-type = ["cdylib"]"#));
@@ -259,29 +400,87 @@ serde = { version = "1", features = ["derive"] }
 
     #[test]
     fn wraps_user_code_in_cell_main() {
-        let source = r#"    let input = CellInput::new(unsafe { std::slice::from_raw_parts(input_ptr, input_len) });
-    CellOutput::text("hello").into()"#;
+        let source = r#"    CellOutput::text("hello")"#;
 
-        let lib_rs = generate_lib_rs(source);
+        let (lib_rs, _, is_async) = generate_lib_rs(source, &[]);
 
+        assert!(!is_async);
         assert!(lib_rs.contains("use ironpad_cell::prelude::*;"));
-        assert!(lib_rs.contains("pub extern \"C\" fn cell_main("));
+        assert!(lib_rs.contains("#[wasm_bindgen]"));
+        assert!(lib_rs.contains("pub fn cell_main("));
+        assert!(lib_rs.contains("-> u32 {"));
         assert!(lib_rs.contains("CellOutput::text(\"hello\")"));
-        assert!(lib_rs.contains("-> CellResult {"));
+        assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
+        assert!(lib_rs.contains("}).into();"));
+        assert!(lib_rs.contains("let result: CellResult = __ironpad_output__.into();"));
+        assert!(lib_rs.contains("Box::into_raw(Box::new(result)) as u32"));
     }
 
     #[test]
-    fn wrapper_preamble_line_count_is_correct() {
-        let lib_rs = generate_lib_rs("    // user code here");
-        let lines: Vec<&str> = lib_rs.lines().collect();
+    fn generate_lib_rs_no_previous_cells() {
+        let (lib_rs, preamble, is_async) = generate_lib_rs("    // user code here", &[]);
 
-        // The user code should appear at line index WRAPPER_PREAMBLE_LINES.
-        assert_eq!(
-            lines[WRAPPER_PREAMBLE_LINES as usize].trim(),
-            "// user code here",
-            "user code should start at line {}",
-            WRAPPER_PREAMBLE_LINES + 1
-        );
+        assert_eq!(preamble, 5);
+        assert!(!is_async);
+        assert!(!lib_rs.contains("__ironpad_inputs__"));
+        assert!(!lib_rs.contains("let cell"));
+        assert!(!lib_rs.contains("let last"));
+        assert!(lib_rs.contains("_input_ptr: u32"));
+        assert!(lib_rs.contains("_input_len: u32"));
+
+        // Verify user code starts at expected line.
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+    }
+
+    #[test]
+    fn generate_lib_rs_with_typed_cells() {
+        let types: Vec<Option<String>> = vec![Some("u32".into()), Some("String".into())];
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types);
+
+        // 5 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 11
+        assert_eq!(preamble, 11);
+        assert!(lib_rs.contains("let input_ptr = input_ptr as *const u8;"));
+        assert!(lib_rs.contains("let input_len = input_len as usize;"));
+        assert!(lib_rs.contains("let __ironpad_inputs__ = CellInputs::from_raw("));
+        assert!(lib_rs.contains("let cell0: u32 = __ironpad_inputs__.get(0).deserialize()"));
+        assert!(lib_rs.contains("let cell1: String = __ironpad_inputs__.get(1).deserialize()"));
+        assert!(lib_rs.contains("let last = &cell1;"));
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+    }
+
+    #[test]
+    fn generate_lib_rs_with_mixed_types() {
+        let types: Vec<Option<String>> = vec![Some("u32".into()), None, Some("bool".into())];
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types);
+
+        // 5 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 11
+        assert_eq!(preamble, 11);
+        assert!(lib_rs.contains("let cell0: u32 = __ironpad_inputs__.get(0).deserialize()"));
+        assert!(!lib_rs.contains("let cell1:"));
+        assert!(lib_rs.contains("let cell2: bool = __ironpad_inputs__.get(2).deserialize()"));
+        assert!(lib_rs.contains("let last = &cell2;"));
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+    }
+
+    #[test]
+    fn generate_lib_rs_all_none_types() {
+        let types: Vec<Option<String>> = vec![None, None];
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types);
+
+        // 5 base + 3 (ptr reconstruction + inputs) + 0 typed + 0 last = 8
+        assert_eq!(preamble, 8);
+        assert!(lib_rs.contains("let __ironpad_inputs__ = CellInputs::from_raw("));
+        assert!(!lib_rs.contains("let cell0"));
+        assert!(!lib_rs.contains("let cell1"));
+        assert!(!lib_rs.contains("let last"));
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "// user code here");
     }
 
     // ── scaffold_micro_crate (integration) ──────────────────────────────
@@ -290,21 +489,26 @@ serde = { version = "1", features = ["derive"] }
     fn scaffolds_complete_micro_crate() {
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let user_source = "    CellOutput::empty().into()";
+        let user_source = "    CellOutput::empty()";
         let user_cargo = r#"
 [dependencies]
 serde = "1"
 "#;
 
-        let crate_dir = scaffold_micro_crate(
+        let (crate_dir, preamble_lines, is_async) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
             "cell-0",
             user_source,
             user_cargo,
+            &[],
+            None,
         )
         .expect("scaffold should succeed");
+
+        assert_eq!(preamble_lines, 5);
+        assert!(!is_async);
 
         // Verify directory structure.
         assert!(crate_dir.join("Cargo.toml").is_file());
@@ -321,7 +525,7 @@ serde = "1"
         let lib_content = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
         assert!(lib_content.contains("use ironpad_cell::prelude::*;"));
         assert!(lib_content.contains("cell_main"));
-        assert!(lib_content.contains("CellOutput::empty().into()"));
+        assert!(lib_content.contains("CellOutput::empty()"));
     }
 
     #[test]
@@ -330,11 +534,11 @@ serde = "1"
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
         // First scaffold.
-        scaffold_micro_crate(&tmp, &cell_path, "s1", "c1", "    // v1", "")
+        scaffold_micro_crate(&tmp, &cell_path, "s1", "c1", "    // v1", "", &[], None)
             .expect("first scaffold");
 
         // Second scaffold with different source.
-        scaffold_micro_crate(&tmp, &cell_path, "s1", "c1", "    // v2", "")
+        scaffold_micro_crate(&tmp, &cell_path, "s1", "c1", "    // v2", "", &[], None)
             .expect("second scaffold");
 
         let lib_content = std::fs::read_to_string(tmp.join("workspaces/s1/c1/src/lib.rs")).unwrap();
@@ -349,5 +553,175 @@ serde = "1"
         let dir = std::env::temp_dir().join(format!("ironpad-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // ── merge_dependencies / shared Cargo.toml ──────────────────────────
+
+    #[test]
+    fn merge_no_shared_returns_cell_deps() {
+        let cell_toml = "[dependencies]\nrand = \"0.8\"";
+        let result = merge_dependencies(None, cell_toml);
+        assert!(result.contains("rand"));
+    }
+
+    #[test]
+    fn merge_shared_only() {
+        let shared = "[dependencies]\nserde = \"1\"";
+        let result = merge_dependencies(Some(shared), "");
+        assert!(result.contains("serde"));
+    }
+
+    #[test]
+    fn merge_cell_overrides_shared() {
+        let shared = "[dependencies]\nserde = \"1.0.0\"";
+        let cell = "[dependencies]\nserde = { version = \"1.0.200\", features = [\"derive\"] }";
+        let result = merge_dependencies(Some(shared), cell);
+        // Cell version should win.
+        assert!(result.contains("1.0.200"));
+        assert!(!result.contains("1.0.0"));
+    }
+
+    #[test]
+    fn merge_shared_and_cell_different_crates() {
+        let shared = "[dependencies]\nserde = \"1\"";
+        let cell = "[dependencies]\nrand = \"0.8\"";
+        let result = merge_dependencies(Some(shared), cell);
+        assert!(result.contains("serde"));
+        assert!(result.contains("rand"));
+    }
+
+    #[test]
+    fn merge_normalizes_hyphens_for_override() {
+        let shared = "[dependencies]\nmy-crate = \"1.0\"";
+        let cell = "[dependencies]\nmy_crate = \"2.0\"";
+        let result = merge_dependencies(Some(shared), cell);
+        // Cell's version should override shared (same crate, different spelling).
+        assert!(result.contains("2.0"));
+        // Only one entry for the crate.
+        let count = result.lines().filter(|l| l.contains("my")).count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn merge_both_empty() {
+        let result = merge_dependencies(Some(""), "");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn scaffold_with_shared_cargo_toml() {
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let shared = "[dependencies]\nserde = \"1\"";
+        let cell = "[dependencies]\nrand = \"0.8\"";
+
+        let (crate_dir, ..) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "s1",
+            "c1",
+            "    CellOutput::empty()",
+            cell,
+            &[],
+            Some(shared),
+        )
+        .unwrap();
+
+        let cargo = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("serde"), "shared dep should be present");
+        assert!(cargo.contains("rand"), "cell dep should be present");
+    }
+
+    #[test]
+    fn crate_name_extraction() {
+        assert_eq!(
+            crate_name_from_dep_line("serde = \"1\""),
+            Some("serde".into())
+        );
+        assert_eq!(
+            crate_name_from_dep_line("my-crate = { version = \"1\" }"),
+            Some("my_crate".into())
+        );
+        assert_eq!(crate_name_from_dep_line(""), None);
+    }
+
+    // ── needs_async ─────────────────────────────────────────────────────
+
+    #[test]
+    fn needs_async_detects_await() {
+        assert!(needs_async("    let x = foo().await;"));
+        assert!(needs_async("    foo.await.bar()"));
+    }
+
+    #[test]
+    fn needs_async_false_for_sync_code() {
+        assert!(!needs_async("    let x = 42;"));
+        assert!(!needs_async("    CellOutput::empty()"));
+    }
+
+    // ── async wrapper generation ────────────────────────────────────────
+
+    #[test]
+    fn generate_lib_rs_async_no_previous_cells() {
+        let (lib_rs, preamble, is_async) = generate_lib_rs("    something.await", &[]);
+
+        assert!(is_async);
+        assert_eq!(preamble, 5);
+        assert!(lib_rs.contains("#[wasm_bindgen]"));
+        assert!(lib_rs.contains("pub async fn cell_main("));
+        assert!(lib_rs.contains("(async {"));
+        assert!(lib_rs.contains("}).await.into();"));
+        assert!(lib_rs.contains("Box::into_raw(Box::new(result)) as u32"));
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "something.await");
+    }
+
+    #[test]
+    fn generate_lib_rs_async_with_typed_cells() {
+        let types: Vec<Option<String>> = vec![Some("u32".into())];
+        let (lib_rs, preamble, is_async) = generate_lib_rs("    cell0.await", &types);
+
+        assert!(is_async);
+        // 5 base + 3 (ptr reconstruction + inputs) + 1 typed + 1 last = 10
+        assert_eq!(preamble, 10);
+        assert!(lib_rs.contains("pub async fn cell_main(input_ptr: u32, input_len: u32)"));
+        assert!(lib_rs.contains("let cell0: u32"));
+        assert!(lib_rs.contains("(async {"));
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "cell0.await");
+    }
+
+    #[test]
+    fn scaffold_micro_crate_returns_is_async() {
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+
+        let (_, _, is_async) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "s1",
+            "c1",
+            "    CellOutput::empty()",
+            "",
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(!is_async);
+
+        let (_, _, is_async) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "s1",
+            "c2",
+            "    foo().await",
+            "",
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(is_async);
     }
 }

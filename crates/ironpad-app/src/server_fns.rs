@@ -1,5 +1,6 @@
 use ironpad_common::{
-    CellContent, CellManifest, CompileRequest, CompileResponse, NotebookManifest, NotebookSummary,
+    CellContent, CellManifest, CellType, CompileRequest, CompileResponse, NotebookManifest,
+    NotebookSummary,
 };
 use leptos::prelude::*;
 
@@ -24,17 +25,24 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
     let config = expect_context::<AppConfig>();
     let session_id = "default";
 
-    let hash = content_hash(&request.source, &request.cargo_toml);
+    let hash = content_hash(
+        &request.source,
+        &request.cargo_toml,
+        &request.previous_cell_types,
+        request.shared_cargo_toml.as_deref(),
+    );
     tracing::info!(cell_id = %request.cell_id, hash = %hash, "compile_cell started");
 
     // Cache check.
 
-    if let Some(wasm_blob) = try_cache_hit(&config.cache_dir, &hash) {
-        tracing::info!(cell_id = %request.cell_id, blob_size = wasm_blob.len(), "cache hit");
+    if let Some(cache_hit) = try_cache_hit(&config.cache_dir, &hash) {
+        tracing::info!(cell_id = %request.cell_id, blob_size = cache_hit.wasm_bytes.len(), "cache hit");
         return Ok(CompileResponse {
-            wasm_blob,
+            wasm_blob: cache_hit.wasm_bytes,
             diagnostics: vec![],
             cached: true,
+            preamble_lines: 0,
+            js_glue: cache_hit.js_glue,
         });
     }
 
@@ -42,13 +50,15 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 
     // Scaffold micro-crate.
 
-    let crate_dir = scaffold_micro_crate(
+    let (crate_dir, preamble_lines, _is_async) = scaffold_micro_crate(
         &config.cache_dir,
         &config.ironpad_cell_path,
         session_id,
         &request.cell_id,
         &request.source,
         &request.cargo_toml,
+        &request.previous_cell_types,
+        request.shared_cargo_toml.as_deref(),
     )
     .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
 
@@ -64,21 +74,22 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
             wasm_path,
             stdout,
             stderr: _,
+            js_glue,
         } => {
-            let diagnostics = parse_diagnostics(&stdout);
+            let diagnostics = parse_diagnostics(&stdout, preamble_lines);
 
             let wasm_bytes = tokio::fs::read(&wasm_path)
                 .await
                 .map_err(|e| ServerFnError::new(format!("failed to read wasm blob: {e}")))?;
 
-            // Best-effort optimization.
+            // Best-effort optimization (runs on the wasm-bindgen _bg.wasm).
 
             let wasm_blob =
                 optimize_wasm(&wasm_bytes, crate_dir.parent().unwrap_or(&crate_dir)).await;
 
-            // Cache the result.
+            // Cache the result (WASM blob + JS glue).
 
-            if let Err(e) = store_blob(&config.cache_dir, &hash, &wasm_blob) {
+            if let Err(e) = store_blob(&config.cache_dir, &hash, &wasm_blob, Some(&js_glue)) {
                 tracing::warn!(error = %e, "failed to cache compiled blob");
             }
 
@@ -93,11 +104,13 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
                 wasm_blob,
                 diagnostics,
                 cached: false,
+                preamble_lines,
+                js_glue: Some(js_glue),
             })
         }
 
         BuildResult::Failure { stdout, stderr } => {
-            let diagnostics = parse_diagnostics(&stdout);
+            let diagnostics = parse_diagnostics(&stdout, preamble_lines);
 
             tracing::warn!(
                 cell_id = %request.cell_id,
@@ -188,6 +201,8 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
                 wasm_blob: vec![],
                 diagnostics,
                 cached: false,
+                preamble_lines,
+                js_glue: None,
             })
         }
     }
@@ -264,6 +279,39 @@ pub async fn delete_notebook(id: String) -> Result<(), ServerFnError> {
     Ok(())
 }
 
+// ── Shared Cargo.toml ────────────────────────────────────────────────────────
+
+/// Retrieves the notebook-level shared `Cargo.toml` content, if any.
+#[server]
+pub async fn get_shared_cargo_toml(notebook_id: String) -> Result<Option<String>, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let uuid = parse_uuid(&notebook_id)?;
+
+    let content = crate::notebook::storage::get_shared_cargo_toml(&config.data_dir, &uuid)
+        .map_err(|e| ServerFnError::new(format!("failed to read shared Cargo.toml: {e}")))?;
+
+    Ok(content)
+}
+
+/// Creates or updates the notebook-level shared `Cargo.toml`.
+#[server]
+pub async fn update_shared_cargo_toml(
+    notebook_id: String,
+    cargo_toml: String,
+) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let uuid = parse_uuid(&notebook_id)?;
+
+    crate::notebook::storage::update_shared_cargo_toml(&config.data_dir, &uuid, &cargo_toml)
+        .map_err(|e| ServerFnError::new(format!("failed to update shared Cargo.toml: {e}")))?;
+
+    Ok(())
+}
+
 // ── Cell Content ─────────────────────────────────────────────────────────────
 
 /// Retrieves the source code and Cargo.toml content of a cell.
@@ -297,6 +345,7 @@ pub async fn get_cell_content(
 pub async fn add_cell(
     notebook_id: String,
     after_cell_id: Option<String>,
+    cell_type: CellType,
 ) -> Result<CellManifest, ServerFnError> {
     use ironpad_common::AppConfig;
 
@@ -316,6 +365,7 @@ pub async fn add_cell(
         &cell_id,
         &label,
         after_cell_id.as_deref(),
+        cell_type,
     )
     .map_err(|e| ServerFnError::new(format!("failed to add cell: {e}")))?;
 

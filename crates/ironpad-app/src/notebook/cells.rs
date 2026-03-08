@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ironpad_common::CellManifest;
+use ironpad_common::{CellManifest, CellType};
 use uuid::Uuid;
 
 use super::storage;
@@ -39,8 +39,11 @@ pub fn cargo_toml_path(data_dir: &Path, notebook_id: &Uuid, cell_id: &str) -> Pa
 
 // ── Default content ──────────────────────────────────────────────────────────
 
-/// Default source code for a new cell.
+/// Default source code for a new code cell.
 const DEFAULT_SOURCE: &str = "    CellOutput::text(\"hello from ironpad\").into()\n";
+
+/// Default source for a new markdown cell.
+const DEFAULT_MARKDOWN_SOURCE: &str = "# New Section\n\nWrite your notes here...\n";
 
 /// Generates the default `Cargo.toml` for a cell (per MegaPrd §8.3).
 fn default_cargo_toml(cell_id: &str) -> String {
@@ -76,21 +79,33 @@ pub fn add_cell(
     cell_id: &str,
     label: &str,
     after_cell_id: Option<&str>,
+    cell_type: CellType,
 ) -> Result<CellManifest> {
     let dir = cell_dir(data_dir, notebook_id, cell_id);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create cell directory: {}", dir.display()))?;
 
     // Write default files.
+    let default_source = match cell_type {
+        CellType::Markdown => DEFAULT_MARKDOWN_SOURCE,
+        CellType::Code => DEFAULT_SOURCE,
+    };
     let src = source_path(data_dir, notebook_id, cell_id);
-    std::fs::write(&src, DEFAULT_SOURCE)
+    std::fs::write(&src, default_source)
         .with_context(|| format!("Failed to write default source: {}", src.display()))?;
 
     let toml = cargo_toml_path(data_dir, notebook_id, cell_id);
     std::fs::write(&toml, default_cargo_toml(cell_id))
         .with_context(|| format!("Failed to write default Cargo.toml: {}", toml.display()))?;
 
-    let cell = add_cell_to_manifest(data_dir, notebook_id, cell_id, label, after_cell_id)?;
+    let cell = add_cell_to_manifest(
+        data_dir,
+        notebook_id,
+        cell_id,
+        label,
+        after_cell_id,
+        cell_type,
+    )?;
 
     tracing::info!(notebook_id = %notebook_id, cell_id = %cell_id, "added cell");
     Ok(cell)
@@ -208,6 +223,7 @@ pub fn reorder_cells(data_dir: &Path, notebook_id: &Uuid, cell_ids: &[String]) -
             id: existing.id.clone(),
             order: order as u32,
             label: existing.label.clone(),
+            cell_type: existing.cell_type.clone(),
         });
     }
 
@@ -239,6 +255,7 @@ pub fn duplicate_cell(
         .find(|c| c.id == source_cell_id)
         .with_context(|| format!("Cell not found: {source_cell_id}"))?;
     let new_label = format!("{} (copy)", source_cell.label);
+    let cell_type = source_cell.cell_type.clone();
 
     // Create the new cell directory with copied content.
     let dir = cell_dir(data_dir, notebook_id, new_cell_id);
@@ -270,6 +287,7 @@ pub fn duplicate_cell(
         new_cell_id,
         &new_label,
         Some(source_cell_id),
+        cell_type,
     )?;
 
     tracing::info!(
@@ -316,6 +334,7 @@ fn add_cell_to_manifest(
     cell_id: &str,
     label: &str,
     after_cell_id: Option<&str>,
+    cell_type: CellType,
 ) -> Result<CellManifest> {
     let mut manifest = storage::get_notebook(data_dir, notebook_id)?;
 
@@ -333,6 +352,7 @@ fn add_cell_to_manifest(
         id: cell_id.to_string(),
         order: 0, // renumbered below
         label: label.to_string(),
+        cell_type: cell_type.clone(),
     };
 
     manifest.cells.insert(insert_idx, new_cell);
@@ -344,6 +364,7 @@ fn add_cell_to_manifest(
         id: cell_id.to_string(),
         order: insert_idx as u32,
         label: label.to_string(),
+        cell_type,
     })
 }
 
@@ -373,7 +394,15 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        let cell = add_cell(data_dir, &nb.id, "cell_0", "First Cell", None).unwrap();
+        let cell = add_cell(
+            data_dir,
+            &nb.id,
+            "cell_0",
+            "First Cell",
+            None,
+            CellType::Code,
+        )
+        .unwrap();
 
         assert_eq!(cell.id, "cell_0");
         assert_eq!(cell.label, "First Cell");
@@ -390,7 +419,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Cell", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Cell", None, CellType::Code).unwrap();
 
         let src = get_cell_source(data_dir, &nb.id, "cell_0").unwrap();
         assert!(src.contains("CellOutput"));
@@ -402,7 +431,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Cell", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Cell", None, CellType::Code).unwrap();
 
         let toml = get_cell_cargo_toml(data_dir, &nb.id, "cell_0").unwrap();
         assert!(toml.contains(r#"name = "cell_0""#));
@@ -416,8 +445,8 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "First", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_1", "Second", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "First", None, CellType::Code).unwrap();
+        add_cell(data_dir, &nb.id, "cell_1", "Second", None, CellType::Code).unwrap();
 
         let manifest = storage::get_notebook(data_dir, &nb.id).unwrap();
         assert_eq!(manifest.cells.len(), 2);
@@ -433,9 +462,17 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "First", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_2", "Third", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_1", "Middle", Some("cell_0")).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "First", None, CellType::Code).unwrap();
+        add_cell(data_dir, &nb.id, "cell_2", "Third", None, CellType::Code).unwrap();
+        add_cell(
+            data_dir,
+            &nb.id,
+            "cell_1",
+            "Middle",
+            Some("cell_0"),
+            CellType::Code,
+        )
+        .unwrap();
 
         let manifest = storage::get_notebook(data_dir, &nb.id).unwrap();
         assert_eq!(manifest.cells.len(), 3);
@@ -450,8 +487,16 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "First", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_1", "Second", Some("nonexistent")).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "First", None, CellType::Code).unwrap();
+        add_cell(
+            data_dir,
+            &nb.id,
+            "cell_1",
+            "Second",
+            Some("nonexistent"),
+            CellType::Code,
+        )
+        .unwrap();
 
         let manifest = storage::get_notebook(data_dir, &nb.id).unwrap();
         assert_eq!(manifest.cells.len(), 2);
@@ -466,7 +511,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Cell", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Cell", None, CellType::Code).unwrap();
 
         let source = get_cell_source(data_dir, &nb.id, "cell_0").unwrap();
         assert!(!source.is_empty());
@@ -487,7 +532,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Cell", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Cell", None, CellType::Code).unwrap();
 
         let toml = get_cell_cargo_toml(data_dir, &nb.id, "cell_0").unwrap();
         assert!(toml.contains("[package]"));
@@ -501,7 +546,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Cell", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Cell", None, CellType::Code).unwrap();
 
         update_cell_source(data_dir, &nb.id, "cell_0", "let x = 42;\n").unwrap();
 
@@ -515,7 +560,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Cell", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Cell", None, CellType::Code).unwrap();
         let before = storage::get_notebook(data_dir, &nb.id).unwrap().updated_at;
 
         update_cell_source(data_dir, &nb.id, "cell_0", "new code\n").unwrap();
@@ -541,7 +586,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Cell", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Cell", None, CellType::Code).unwrap();
 
         let new_toml = "[package]\nname = \"custom\"\n";
         update_cell_cargo_toml(data_dir, &nb.id, "cell_0", new_toml).unwrap();
@@ -567,7 +612,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Doomed", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Doomed", None, CellType::Code).unwrap();
         assert!(cell_dir(data_dir, &nb.id, "cell_0").exists());
 
         delete_cell(data_dir, &nb.id, "cell_0").unwrap();
@@ -580,8 +625,8 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "First", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_1", "Second", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "First", None, CellType::Code).unwrap();
+        add_cell(data_dir, &nb.id, "cell_1", "Second", None, CellType::Code).unwrap();
 
         delete_cell(data_dir, &nb.id, "cell_0").unwrap();
 
@@ -597,7 +642,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Ghost", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_0", "Ghost", None, CellType::Code).unwrap();
 
         // Manually remove the directory.
         std::fs::remove_dir_all(cell_dir(data_dir, &nb.id, "cell_0")).unwrap();
@@ -617,9 +662,9 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_a", "A", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_b", "B", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_c", "C", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_a", "A", None, CellType::Code).unwrap();
+        add_cell(data_dir, &nb.id, "cell_b", "B", None, CellType::Code).unwrap();
+        add_cell(data_dir, &nb.id, "cell_c", "C", None, CellType::Code).unwrap();
 
         reorder_cells(
             data_dir,
@@ -643,8 +688,8 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_a", "Alpha", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_b", "Beta", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_a", "Alpha", None, CellType::Code).unwrap();
+        add_cell(data_dir, &nb.id, "cell_b", "Beta", None, CellType::Code).unwrap();
 
         reorder_cells(data_dir, &nb.id, &["cell_b".into(), "cell_a".into()]).unwrap();
 
@@ -659,8 +704,8 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_a", "A", None).unwrap();
-        add_cell(data_dir, &nb.id, "cell_b", "B", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_a", "A", None, CellType::Code).unwrap();
+        add_cell(data_dir, &nb.id, "cell_b", "B", None, CellType::Code).unwrap();
 
         // Too few IDs.
         assert!(reorder_cells(data_dir, &nb.id, &["cell_a".into()]).is_err());
@@ -672,7 +717,7 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_a", "A", None).unwrap();
+        add_cell(data_dir, &nb.id, "cell_a", "A", None, CellType::Code).unwrap();
 
         assert!(reorder_cells(data_dir, &nb.id, &["unknown".into()]).is_err());
     }
@@ -685,7 +730,15 @@ mod tests {
         let data_dir = tmp.path();
         let nb = create_notebook(data_dir, "Test").unwrap();
 
-        add_cell(data_dir, &nb.id, "cell_0", "Old Label", None).unwrap();
+        add_cell(
+            data_dir,
+            &nb.id,
+            "cell_0",
+            "Old Label",
+            None,
+            CellType::Code,
+        )
+        .unwrap();
 
         rename_cell(data_dir, &nb.id, "cell_0", "New Label").unwrap();
 
@@ -728,16 +781,19 @@ mod tests {
                 id: "a".into(),
                 order: 99,
                 label: "A".into(),
+                cell_type: CellType::default(),
             },
             CellManifest {
                 id: "b".into(),
                 order: 50,
                 label: "B".into(),
+                cell_type: CellType::default(),
             },
             CellManifest {
                 id: "c".into(),
                 order: 7,
                 label: "C".into(),
+                cell_type: CellType::default(),
             },
         ];
 

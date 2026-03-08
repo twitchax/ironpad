@@ -57,6 +57,10 @@ mod js {
         #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "clearMarkers")]
         pub fn clear_markers(id: f64);
 
+        /// Set per-editor cell context for the completion provider.
+        #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "setCellContext")]
+        pub fn set_cell_context(id: f64, context: &wasm_bindgen::JsValue);
+
         /// Dispose the editor identified by `id`, freeing resources.
         #[wasm_bindgen(js_namespace = IronpadMonaco)]
         pub fn dispose(id: f64);
@@ -147,6 +151,16 @@ impl MonacoEditorHandle {
             if let Some(id) = self.editor_id.get_untracked() {
                 js::clear_markers(id);
             }
+        }
+    }
+
+    /// Set per-editor cell context for the autocomplete provider.
+    /// `context` is a JS object with `{ variables: [{name, type, doc}] }`.
+    /// No-op during SSR or before mount.
+    #[cfg(feature = "hydrate")]
+    pub fn set_cell_context(&self, context: &wasm_bindgen::JsValue) {
+        if let Some(id) = self.editor_id.get_untracked() {
+            js::set_cell_context(id, context);
         }
     }
 }

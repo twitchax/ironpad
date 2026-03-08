@@ -81,6 +81,14 @@ cargo make uat
 
 ---
 
+## Constitutional Rules
+
+These are inviolable project principles. Agents **must** follow these at all times.
+
+1. **Clippy cleanliness**: All code must pass `cargo make clippy` (which runs with `-D warnings`). Clippy is enforced in both `ci` and `uat`. When making changes, fix any clippy warnings you introduce — and fix pre-existing warnings in files you touch when reasonable.
+
+---
+
 ## Code Conventions
 
 ### Style & Patterns

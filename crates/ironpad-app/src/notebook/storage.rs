@@ -48,6 +48,7 @@ pub fn create_notebook(data_dir: &Path, title: &str) -> Result<NotebookManifest>
         updated_at: now,
         compiler_version: "stable".to_string(),
         cells: vec![],
+        shared_cargo_toml: None,
     };
 
     let nb_dir = notebook_dir(data_dir, &id);
@@ -155,6 +156,33 @@ pub fn list_notebooks(data_dir: &Path) -> Result<Vec<NotebookSummary>> {
     Ok(summaries)
 }
 
+// ── Shared Cargo.toml ────────────────────────────────────────────────────────
+
+/// Returns the path to a notebook's shared `Cargo.toml` file.
+pub fn shared_cargo_toml_path(data_dir: &Path, id: &Uuid) -> PathBuf {
+    notebook_dir(data_dir, id).join("Cargo.toml")
+}
+
+/// Reads the notebook-level shared `Cargo.toml`, if it exists.
+pub fn get_shared_cargo_toml(data_dir: &Path, id: &Uuid) -> Result<Option<String>> {
+    let path = shared_cargo_toml_path(data_dir, id);
+    if path.exists() {
+        Ok(Some(std::fs::read_to_string(&path).with_context(|| {
+            format!("Failed to read shared Cargo.toml: {}", path.display())
+        })?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Writes or overwrites the notebook-level shared `Cargo.toml`.
+pub fn update_shared_cargo_toml(data_dir: &Path, id: &Uuid, content: &str) -> Result<()> {
+    let path = shared_cargo_toml_path(data_dir, id);
+    std::fs::write(&path, content)
+        .with_context(|| format!("Failed to write shared Cargo.toml: {}", path.display()))?;
+    Ok(())
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 /// Writes a manifest to disk as pretty-printed JSON.
@@ -183,6 +211,7 @@ fn read_manifest(path: &Path) -> Result<NotebookManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironpad_common::CellType;
 
     fn temp_data_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("failed to create temp dir")
@@ -254,11 +283,13 @@ mod tests {
                 id: "cell_0".to_string(),
                 order: 0,
                 label: "First".to_string(),
+                cell_type: CellType::default(),
             },
             CellManifest {
                 id: "cell_1".to_string(),
                 order: 1,
                 label: "Second".to_string(),
+                cell_type: CellType::default(),
             },
         ];
 
@@ -389,6 +420,7 @@ mod tests {
             id: "c1".to_string(),
             order: 0,
             label: "Label".to_string(),
+            cell_type: CellType::default(),
         }];
         let updated =
             update_notebook(data_dir, &created.id, Some("Updated Title"), Some(cells)).unwrap();
@@ -414,21 +446,73 @@ mod tests {
                 id: "c0".to_string(),
                 order: 0,
                 label: "A".to_string(),
+                cell_type: CellType::default(),
             },
             CellManifest {
                 id: "c1".to_string(),
                 order: 1,
                 label: "B".to_string(),
+                cell_type: CellType::default(),
             },
             CellManifest {
                 id: "c2".to_string(),
                 order: 2,
                 label: "C".to_string(),
+                cell_type: CellType::default(),
             },
         ];
         update_notebook(data_dir, &nb.id, None, Some(cells)).unwrap();
 
         let summaries = list_notebooks(data_dir).unwrap();
         assert_eq!(summaries[0].cell_count, 3);
+    }
+
+    // ── Shared Cargo.toml ───────────────────────────────────────────────
+
+    #[test]
+    fn shared_cargo_toml_initially_none() {
+        let tmp = temp_data_dir();
+        let data_dir = tmp.path();
+
+        let nb = create_notebook(data_dir, "Test").unwrap();
+        let result = get_shared_cargo_toml(data_dir, &nb.id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn shared_cargo_toml_write_and_read() {
+        let tmp = temp_data_dir();
+        let data_dir = tmp.path();
+
+        let nb = create_notebook(data_dir, "Deps Test").unwrap();
+        let content = "[dependencies]\nserde = \"1\"";
+
+        update_shared_cargo_toml(data_dir, &nb.id, content).unwrap();
+
+        let read = get_shared_cargo_toml(data_dir, &nb.id).unwrap();
+        assert_eq!(read, Some(content.to_string()));
+    }
+
+    #[test]
+    fn shared_cargo_toml_overwrite() {
+        let tmp = temp_data_dir();
+        let data_dir = tmp.path();
+
+        let nb = create_notebook(data_dir, "Overwrite").unwrap();
+
+        update_shared_cargo_toml(data_dir, &nb.id, "v1").unwrap();
+        update_shared_cargo_toml(data_dir, &nb.id, "v2").unwrap();
+
+        let read = get_shared_cargo_toml(data_dir, &nb.id).unwrap();
+        assert_eq!(read, Some("v2".to_string()));
+    }
+
+    #[test]
+    fn shared_cargo_toml_path_is_in_notebook_dir() {
+        let data_dir = std::path::Path::new("/data");
+        let id = Uuid::new_v4();
+        let path = shared_cargo_toml_path(data_dir, &id);
+        assert!(path.ends_with("Cargo.toml"));
+        assert!(path.to_string_lossy().contains(&id.to_string()));
     }
 }

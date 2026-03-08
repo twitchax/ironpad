@@ -21,11 +21,15 @@ mod js {
             js_glue: Option<String>,
         ) -> Result<js_sys::Promise, JsValue>;
 
-        /// Execute a loaded cell with input bytes.
-        /// Returns `{ outputBytes: Uint8Array, displayText: string | null, typeTag: string | null }`.
+        /// Execute a loaded cell with input bytes.  Returns a
+        /// `Promise<{ outputBytes, displayText, typeTag }>`.
+        ///
+        /// Always async: wasm-bindgen cells may have async `cell_main`.
         #[wasm_bindgen(js_namespace = IronpadExecutor, catch)]
-        pub fn execute(cell_id: &str, input_bytes: &js_sys::Uint8Array)
-            -> Result<JsValue, JsValue>;
+        pub fn execute(
+            cell_id: &str,
+            input_bytes: &js_sys::Uint8Array,
+        ) -> Result<js_sys::Promise, JsValue>;
 
         /// Remove a loaded cell module, freeing browser-side resources.
         #[wasm_bindgen(js_namespace = IronpadExecutor)]
@@ -100,10 +104,17 @@ pub type CellExecResult = (Vec<u8>, Option<String>, Option<String>);
 ///
 /// Returns `(output_bytes, display_text, type_tag)`.  The cell must have been
 /// loaded via [`load_blob`] first; otherwise the executor throws.
+///
+/// Async because the JS executor always returns a Promise (wasm-bindgen cells
+/// may have an async `cell_main`).
 #[cfg(feature = "hydrate")]
-pub fn execute_cell(cell_id: &str, input_bytes: &[u8]) -> Result<CellExecResult, String> {
+pub async fn execute_cell(cell_id: &str, input_bytes: &[u8]) -> Result<CellExecResult, String> {
     let input = js_sys::Uint8Array::from(input_bytes);
-    let result = js::execute(cell_id, &input).map_err(|e| format!("{e:?}"))?;
+    let promise = js::execute(cell_id, &input).map_err(|e| format!("{e:?}"))?;
+
+    let result = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
 
     // Extract `outputBytes` (Uint8Array) from the result object.
     let output_val =
