@@ -27,9 +27,9 @@ async fn main() {
     tracing::info!(cache_dir = %config.cache_dir.display(), "cache directory");
     tracing::info!(ironpad_cell_path = %config.ironpad_cell_path.display(), "ironpad-cell crate path");
 
-    // Seed a sample notebook on first run (empty data directory).
-    if let Err(e) = ironpad_app::notebook::seed::seed_sample_notebook(&config.data_dir) {
-        tracing::warn!(error = %e, "failed to seed sample notebook");
+    // Seed sample notebooks on first run (empty data directory).
+    if let Err(e) = ironpad_app::notebook::seed::seed_sample_notebooks(&config.data_dir) {
+        tracing::warn!(error = %e, "failed to seed sample notebooks");
     }
 
     let conf = get_configuration(None).unwrap();
