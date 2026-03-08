@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use ironpad_common::{
-    CellManifest, CompileRequest, CompileResponse, Diagnostic, ExecutionResult, NotebookManifest,
-    Severity,
+    CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult,
+    NotebookManifest, Severity,
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -17,7 +17,18 @@ use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::{
     add_cell, compile_cell, delete_cell, duplicate_cell, get_cell_content, get_notebook,
     rename_cell, reorder_cells, update_cell_cargo_toml, update_cell_source, update_notebook,
+    update_shared_cargo_toml,
 };
+
+// ── Display panels ──────────────────────────────────────────────────────────
+
+/// Display panel types matching ironpad-cell's DisplayPanel enum.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+enum DisplayPanel {
+    Text(String),
+    Html(String),
+    Svg(String),
+}
 
 // ── Cell status ─────────────────────────────────────────────────────────────
 
@@ -30,6 +41,15 @@ enum CellStatus {
     Running,
     Success,
     Error,
+}
+
+// ── Per-cell output data ────────────────────────────────────────────────────
+
+/// Stores the output bytes and optional type tag from a cell execution.
+#[derive(Clone, Default, Debug)]
+struct CellOutputData {
+    bytes: Vec<u8>,
+    type_tag: Option<String>,
 }
 
 // ── Notebook-level reactive state ───────────────────────────────────────────
@@ -47,14 +67,18 @@ struct NotebookState {
     refresh_generation: RwSignal<u64>,
     /// Cell ID that should be scrolled to and focused after creation.
     pending_focus_cell: RwSignal<Option<String>>,
-    /// Per-cell output bytes from the last execution, keyed by cell ID.
+    /// Per-cell output data from the last execution, keyed by cell ID.
     /// Used to pipe cell N's output as cell N+1's input.
-    cell_outputs: RwSignal<HashMap<String, Vec<u8>>>,
+    cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     /// Triggers all cells to immediately flush their content to the server.
     save_generation: RwSignal<u64>,
     /// Ordered queue of cell IDs for "Run All Below" sequential execution.
     /// The cell at position [0] is the one currently being executed.
     run_all_queue: RwSignal<Vec<String>>,
+    /// Notebook-level shared Cargo.toml content.
+    shared_cargo_toml: RwSignal<Option<String>>,
+    /// Tracks which cells have stale (outdated) execution results.
+    cell_stale: RwSignal<HashMap<String, bool>>,
 }
 
 // ── Notebook editor page ────────────────────────────────────────────────────
@@ -79,6 +103,8 @@ pub fn NotebookEditorPage() -> impl IntoView {
         cell_outputs: RwSignal::new(HashMap::new()),
         save_generation: RwSignal::new(0),
         run_all_queue: RwSignal::new(Vec::new()),
+        shared_cargo_toml: RwSignal::new(None),
+        cell_stale: RwSignal::new(HashMap::new()),
     };
     provide_context(state);
 
@@ -104,6 +130,9 @@ pub fn NotebookEditorPage() -> impl IntoView {
                 .set(manifest.compiler_version.clone());
             state.notebook_id.set(manifest.id.to_string());
             state.cells.set(manifest.cells.clone());
+            state
+                .shared_cargo_toml
+                .set(manifest.shared_cargo_toml.clone());
         }
     });
 
@@ -127,6 +156,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
                         .cells
                         .get_untracked()
                         .iter()
+                        .filter(|c| c.cell_type == CellType::Code)
                         .map(|c| c.id.clone())
                         .collect();
                     if !cell_ids.is_empty() {
@@ -143,7 +173,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
                     let nb_id = state.notebook_id.get_untracked();
                     let after_cell_id = state.active_cell.get_untracked();
                     leptos::task::spawn_local(async move {
-                        if let Ok(new_cell) = add_cell(nb_id, after_cell_id).await {
+                        if let Ok(new_cell) = add_cell(nb_id, after_cell_id, CellType::Code).await {
                             state.pending_focus_cell.set(Some(new_cell.id.clone()));
                             state.refresh_generation.update(|g| *g += 1);
                         }
@@ -281,13 +311,17 @@ fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
     let state = expect_context::<NotebookState>();
     let notebook_id_str = manifest.id.to_string();
 
+    // ── Shared deps panel toggle ────────────────────────────────────────
+
+    let shared_deps_open = RwSignal::new(false);
+
     // ── Add cell action ─────────────────────────────────────────────────
 
     let nb_id_for_add = notebook_id_str.clone();
     let add_cell_action = Action::new(move |after_id: &Option<String>| {
         let nb_id = nb_id_for_add.clone();
         let after = after_id.clone();
-        async move { add_cell(nb_id, after).await }
+        async move { add_cell(nb_id, after, CellType::Code).await }
     });
 
     // Refresh notebook when a cell is added, and mark the new cell for focus.
@@ -301,6 +335,39 @@ fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
     // ── Render ──────────────────────────────────────────────────────────
 
     view! {
+        <div class="ironpad-notebook-toolbar">
+            <Button
+                appearance=ButtonAppearance::Subtle
+                on_click=move |_| shared_deps_open.update(|v| *v = !*v)
+            >
+                {move || if shared_deps_open.get() { "📦 Hide Shared Deps" } else { "📦 Shared Deps" }}
+            </Button>
+            <Button
+                appearance=ButtonAppearance::Subtle
+                on_click=move |_| {
+                    let cells = state.cells.get_untracked();
+                    let stale = state.cell_stale.get_untracked();
+                    let stale_cells: Vec<String> = cells.iter()
+                        .filter(|c| c.cell_type == CellType::Code && stale.get(&c.id).copied().unwrap_or(false))
+                        .map(|c| c.id.clone())
+                        .collect();
+                    if !stale_cells.is_empty() {
+                        state.run_all_queue.set(stale_cells);
+                    }
+                }
+            >
+                "⟳ Run Stale"
+            </Button>
+        </div>
+
+        {move || {
+            if shared_deps_open.get() {
+                view! { <SharedDepsPanel /> }.into_any()
+            } else {
+                view! { <div /> }.into_any()
+            }
+        }}
+
         <div class="ironpad-cell-list">
             <AddCellButton after_cell_id=None add_action=add_cell_action />
 
@@ -313,6 +380,115 @@ fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
                 <AddCellButton after_cell_id=Some(cell.id.clone()) add_action=add_cell_action />
             </For>
         </div>
+    }
+}
+
+// ── Shared dependencies panel ───────────────────────────────────────────────
+
+const SHARED_DEPS_DEFAULT: &str = "\
+[dependencies]
+# Add shared dependencies here.
+# These will be available in all cells.
+# Cell-level dependencies override shared ones.
+";
+
+/// Panel for editing the notebook-level shared Cargo.toml.
+#[component]
+fn SharedDepsPanel() -> impl IntoView {
+    let state = expect_context::<NotebookState>();
+    let toaster = ToasterInjection::expect_context();
+
+    let editor_text = RwSignal::new(
+        state
+            .shared_cargo_toml
+            .get_untracked()
+            .unwrap_or_else(|| SHARED_DEPS_DEFAULT.to_string()),
+    );
+    let saving = RwSignal::new(false);
+
+    let on_save = move |_| {
+        let nb_id = state.notebook_id.get_untracked();
+        let content = editor_text.get_untracked();
+        saving.set(true);
+
+        let toaster = toaster;
+        leptos::task::spawn_local(async move {
+            let result = update_shared_cargo_toml(nb_id, content.clone()).await;
+            saving.set(false);
+
+            match result {
+                Ok(()) => {
+                    state.shared_cargo_toml.set(Some(content));
+
+                    // Mark all code cells as stale when shared deps change.
+                    state.cell_stale.update(|stale| {
+                        let cells = state.cells.get_untracked();
+                        for cell in &cells {
+                            if cell.cell_type == CellType::Code {
+                                stale.insert(cell.id.clone(), true);
+                            }
+                        }
+                    });
+
+                    toaster.dispatch_toast(
+                        move || {
+                            view! {
+                                <Toast>
+                                    <ToastTitle>"Shared dependencies saved"</ToastTitle>
+                                    <ToastBody>"Changes will apply on next cell compile."</ToastBody>
+                                </Toast>
+                            }
+                        },
+                        thaw::ToastOptions::default()
+                            .with_intent(thaw::ToastIntent::Success)
+                            .with_timeout(std::time::Duration::from_secs(3)),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("failed to save shared deps: {e}");
+
+                    toaster.dispatch_toast(
+                        move || {
+                            view! {
+                                <Toast>
+                                    <ToastTitle>"Save failed"</ToastTitle>
+                                    <ToastBody>"Could not save shared dependencies."</ToastBody>
+                                </Toast>
+                            }
+                        },
+                        thaw::ToastOptions::default()
+                            .with_intent(thaw::ToastIntent::Error)
+                            .with_timeout(std::time::Duration::from_secs(5)),
+                    );
+                }
+            }
+        });
+    };
+
+    view! {
+        <Card class="ironpad-shared-deps">
+            <CardHeader>
+                <div class="ironpad-shared-deps-header">
+                    <span class="ironpad-shared-deps-title">"📦 Shared Dependencies (Cargo.toml)"</span>
+                    <Button
+                        appearance=ButtonAppearance::Primary
+                        on_click=on_save
+                        disabled=Signal::derive(move || saving.get())
+                    >
+                        {move || if saving.get() { "Saving…" } else { "Save" }}
+                    </Button>
+                </div>
+            </CardHeader>
+            <div class="ironpad-shared-deps-editor-wrapper">
+                <MonacoEditor
+                    initial_value=editor_text.get_untracked()
+                    language="toml"
+                    on_change=Callback::new(move |val: String| {
+                        editor_text.set(val);
+                    })
+                />
+            </div>
+        </Card>
     }
 }
 
@@ -332,6 +508,11 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_delete_cleanup = cell.id.clone();
     let cell_id_for_focus = cell.id.clone();
     let cell_id_for_flush = cell.id.clone();
+    let cell_id_for_stale_src = cell.id.clone();
+    let cell_id_for_stale_toml = cell.id.clone();
+    let cell_id_for_stale_header = cell.id.clone();
+
+    let is_markdown = cell.cell_type == CellType::Markdown;
 
     let is_active = move || state.active_cell.get().as_deref() == Some(cell_id.as_str());
 
@@ -567,6 +748,16 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
 
         match my_pos {
             Some(0) => {
+                // Markdown cells skip compilation — advance the queue immediately.
+                if is_markdown {
+                    state.run_all_queue.update(|q| {
+                        if q.first().map(|id| id == &cid).unwrap_or(false) {
+                            q.remove(0);
+                        }
+                    });
+                    return;
+                }
+
                 // At the front — trigger compile if not already in progress.
                 if !matches!(
                     cell_status.get_untracked(),
@@ -577,10 +768,12 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             }
             Some(_) => {
                 // Waiting in queue — show queued indicator.
-                if !matches!(
-                    cell_status.get_untracked(),
-                    CellStatus::Compiling | CellStatus::Running | CellStatus::Queued
-                ) {
+                if !is_markdown
+                    && !matches!(
+                        cell_status.get_untracked(),
+                        CellStatus::Compiling | CellStatus::Running | CellStatus::Queued
+                    )
+                {
                     cell_status.set(CellStatus::Queued);
                 }
             }
@@ -602,7 +795,11 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         let cid = cell_id_for_run_all.get_value();
         let cells = state.cells.get_untracked();
         let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-        let queue: Vec<String> = cells[my_idx..].iter().map(|c| c.id.clone()).collect();
+        let queue: Vec<String> = cells[my_idx..]
+            .iter()
+            .filter(|c| c.cell_type == CellType::Code)
+            .map(|c| c.id.clone())
+            .collect();
         if !queue.is_empty() {
             state.run_all_queue.set(queue);
         }
@@ -612,6 +809,11 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     Effect::new(move || {
         let gen = run_trigger.get();
         if gen == 0 {
+            return;
+        }
+
+        // Markdown cells skip compilation entirely.
+        if is_markdown {
             return;
         }
 
@@ -627,31 +829,77 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         let current_source = source.get_untracked();
         let current_cargo_toml = cargo_toml.get_untracked();
 
-        // Resolve the previous cell's output bytes for the I/O pipeline.
-        // Cell 0 receives empty input; all others receive the prior cell's output.
-        let input_bytes = {
-            let cells = state.cells.get_untracked();
-            let my_idx = cells.iter().position(|c| c.id == cid);
-            match my_idx {
-                Some(idx) if idx > 0 => {
-                    let prev_id = &cells[idx - 1].id;
-                    state
-                        .cell_outputs
-                        .get_untracked()
-                        .get(prev_id)
-                        .cloned()
-                        .unwrap_or_default()
-                }
-                _ => vec![],
-            }
-        };
-
-        // Invalidate downstream cells' cached outputs (this cell and all after it).
+        // ── Cascading execution ─────────────────────────────────────────
+        // If any predecessor Code cells have not been executed yet, auto-queue
+        // them (plus this cell) so they run in order first.
+        // Markdown cells are skipped — they don't need execution.
         {
             let cells = state.cells.get_untracked();
             let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-            let downstream_ids: Vec<String> =
-                cells[my_idx..].iter().map(|c| c.id.clone()).collect();
+            let outputs = state.cell_outputs.get_untracked();
+            let unexecuted: Vec<String> = cells[..my_idx]
+                .iter()
+                .filter(|c| c.cell_type == CellType::Code && !outputs.contains_key(&c.id))
+                .map(|c| c.id.clone())
+                .collect();
+
+            if !unexecuted.is_empty() {
+                let mut queue = unexecuted;
+                queue.push(cid.clone());
+                state.run_all_queue.set(queue);
+                return;
+            }
+        }
+
+        // Collect previous Code cell outputs for the I/O pipeline.
+        // Markdown cells are skipped — they produce no output.
+        let (input_bytes, previous_cell_types) = {
+            let cells = state.cells.get_untracked();
+            let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+            let outputs = state.cell_outputs.get_untracked();
+
+            if my_idx == 0 {
+                (vec![], vec![])
+            } else {
+                let prev_code_cells: Vec<&CellManifest> = cells[..my_idx]
+                    .iter()
+                    .filter(|c| c.cell_type == CellType::Code)
+                    .collect();
+                let mut all_outputs: Vec<&[u8]> = Vec::new();
+                let mut types: Vec<Option<String>> = Vec::new();
+
+                for c in &prev_code_cells {
+                    if let Some(data) = outputs.get(&c.id) {
+                        all_outputs.push(&data.bytes);
+                        types.push(data.type_tag.clone());
+                    } else {
+                        all_outputs.push(&[]);
+                        types.push(None);
+                    }
+                }
+
+                // Serialize using CellInputs wire format (length-prefixed):
+                // [u32 LE: count][u32 LE: len0][bytes0...][u32 LE: len1][bytes1...]...
+                let mut buf = Vec::new();
+                buf.extend_from_slice(&(all_outputs.len() as u32).to_le_bytes());
+                for output in &all_outputs {
+                    buf.extend_from_slice(&(output.len() as u32).to_le_bytes());
+                    buf.extend_from_slice(output);
+                }
+
+                (buf, types)
+            }
+        };
+
+        // Invalidate downstream Code cells' cached outputs (this cell and all after it).
+        {
+            let cells = state.cells.get_untracked();
+            let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+            let downstream_ids: Vec<String> = cells[my_idx..]
+                .iter()
+                .filter(|c| c.cell_type == CellType::Code)
+                .map(|c| c.id.clone())
+                .collect();
             state.cell_outputs.update(|map| {
                 for id in &downstream_ids {
                     map.remove(id);
@@ -678,9 +926,12 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             let cell_id_for_exec = cid.clone();
 
             let request = CompileRequest {
+                notebook_id: state.notebook_id.get_untracked(),
                 cell_id: cid,
                 source: current_source,
                 cargo_toml: current_cargo_toml,
+                previous_cell_types,
+                shared_cargo_toml: state.shared_cargo_toml.get_untracked(),
             };
 
             let result = compile_cell(request).await;
@@ -706,24 +957,30 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                             cell_status.set(CellStatus::Running);
 
                             let blob = response.wasm_blob.clone();
+                            let js_glue = response.js_glue.clone();
                             last_compile.set(Some(response));
 
                             let hash = executor::hash_wasm_blob(&blob);
 
                             let exec_err =
-                                match executor::load_blob(&cell_id_for_exec, &hash, &blob).await {
+                                match executor::load_blob(&cell_id_for_exec, &hash, &blob, js_glue)
+                                    .await
+                                {
                                     Ok(()) => {
                                         let exec_start = js_sys::Date::now();
                                         match executor::execute_cell(
                                             &cell_id_for_exec,
                                             &input_bytes,
                                         ) {
-                                            Ok((output_bytes, display_text)) => {
+                                            Ok((output_bytes, display_text, type_tag)) => {
                                                 // Store output for downstream cells.
                                                 state.cell_outputs.update(|map| {
                                                     map.insert(
                                                         cell_id_for_exec.clone(),
-                                                        output_bytes.clone(),
+                                                        CellOutputData {
+                                                            bytes: output_bytes.clone(),
+                                                            type_tag: type_tag.clone(),
+                                                        },
                                                     );
                                                 });
 
@@ -732,8 +989,14 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                                     output_bytes,
                                                     execution_time_ms: js_sys::Date::now()
                                                         - exec_start,
+                                                    type_tag,
                                                 }));
                                                 cell_status.set(CellStatus::Success);
+
+                                                // Clear stale flag on successful execution.
+                                                state.cell_stale.update(|stale| {
+                                                    stale.remove(&cell_id_for_exec);
+                                                });
 
                                                 // Advance run-all queue on success.
                                                 state.run_all_queue.update(|q| {
@@ -758,6 +1021,7 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                     display_text: Some(err_msg),
                                     output_bytes: vec![],
                                     execution_time_ms: 0.0,
+                                    type_tag: None,
                                 }));
                                 cell_status.set(CellStatus::Error);
 
@@ -770,6 +1034,11 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                         {
                             cell_status.set(CellStatus::Success);
                             last_compile.set(Some(response));
+
+                            // Clear stale flag on successful execution (SSR path).
+                            state.cell_stale.update(|stale| {
+                                stale.remove(&cell_id_for_exec);
+                            });
 
                             // Advance run-all queue (SSR path).
                             state.run_all_queue.update(|q| {
@@ -797,6 +1066,8 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                             code: None,
                         }],
                         cached: false,
+                        preamble_lines: 0,
+                        js_glue: None,
                     }));
 
                     // Stop run-all on server error.
@@ -828,6 +1099,99 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
 
             // Monaco KeyMod.Shift (1024) | KeyCode.Enter (3) = 1027
             handle.add_action("ironpad.runCell", &[1027], &cb);
+        });
+    }
+
+    // ── Autocomplete context ────────────────────────────────────────────
+    //
+    // Push cell variable context to the Monaco completion provider whenever
+    // the editor handle appears or cell outputs change (types may update).
+
+    #[cfg(feature = "hydrate")]
+    {
+        let cell_id_for_ctx = StoredValue::new(cell.id.clone());
+
+        Effect::new(move || {
+            let Some(handle) = source_handle.get() else {
+                return;
+            };
+
+            // Re-run when cell_outputs change (new type_tags after execution).
+            let outputs = state.cell_outputs.get();
+            let cells = state.cells.get_untracked();
+            let cid = cell_id_for_ctx.get_value();
+            let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+
+            let variables = js_sys::Array::new();
+
+            for (i, c) in cells[..my_idx].iter().enumerate() {
+                let type_str = outputs
+                    .get(&c.id)
+                    .and_then(|d| d.type_tag.as_deref())
+                    .unwrap_or("unknown");
+
+                let var = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(
+                    &var,
+                    &wasm_bindgen::JsValue::from_str("name"),
+                    &wasm_bindgen::JsValue::from_str(&format!("cell{i}")),
+                );
+                let _ = js_sys::Reflect::set(
+                    &var,
+                    &wasm_bindgen::JsValue::from_str("type"),
+                    &wasm_bindgen::JsValue::from_str(type_str),
+                );
+                let _ = js_sys::Reflect::set(
+                    &var,
+                    &wasm_bindgen::JsValue::from_str("doc"),
+                    &wasm_bindgen::JsValue::from_str(&format!(
+                        "Output of cell {} ({})",
+                        c.label, type_str
+                    )),
+                );
+                variables.push(&var);
+            }
+
+            // Add `last` alias pointing to the most recent typed cell.
+            if my_idx > 0 {
+                // Walk backwards to find the most recent cell with a type_tag.
+                let last_type = cells[..my_idx]
+                    .iter()
+                    .rev()
+                    .find_map(|c| {
+                        outputs
+                            .get(&c.id)
+                            .and_then(|d| d.type_tag.as_deref())
+                            .map(|t| t.to_string())
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                let var = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(
+                    &var,
+                    &wasm_bindgen::JsValue::from_str("name"),
+                    &wasm_bindgen::JsValue::from_str("last"),
+                );
+                let _ = js_sys::Reflect::set(
+                    &var,
+                    &wasm_bindgen::JsValue::from_str("type"),
+                    &wasm_bindgen::JsValue::from_str(&last_type),
+                );
+                let _ = js_sys::Reflect::set(
+                    &var,
+                    &wasm_bindgen::JsValue::from_str("doc"),
+                    &wasm_bindgen::JsValue::from_str("Output of the most recent cell"),
+                );
+                variables.push(&var);
+            }
+
+            let context = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(
+                &context,
+                &wasm_bindgen::JsValue::from_str("variables"),
+                &variables,
+            );
+            handle.set_cell_context(&wasm_bindgen::JsValue::from(context));
         });
     }
 
@@ -937,6 +1301,16 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             source.set(val);
             source_dirty.set(true);
 
+            // Mark this cell and all subsequent cells as stale.
+            let cid = cell_id_for_stale_src.clone();
+            state.cell_stale.update(|stale| {
+                let cells = state.cells.get_untracked();
+                let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+                for cell in &cells[my_idx..] {
+                    stale.insert(cell.id.clone(), true);
+                }
+            });
+
             // Clear the previous debounce timer and start a fresh 1 s window.
             let win = web_sys::window().unwrap();
             let prev = debounce_handle.get_untracked();
@@ -984,6 +1358,16 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         Callback::new(move |val: String| {
             cargo_toml.set(val);
             cargo_toml_dirty.set(true);
+
+            // Mark this cell and all subsequent cells as stale.
+            let cid = cell_id_for_stale_toml.clone();
+            state.cell_stale.update(|stale| {
+                let cells = state.cells.get_untracked();
+                let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+                for cell in &cells[my_idx..] {
+                    stale.insert(cell.id.clone(), true);
+                }
+            });
 
             let win = web_sys::window().unwrap();
             let prev = debounce_handle.get_untracked();
@@ -1144,6 +1528,18 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                             ev.stop_propagation();
                         }
                     />
+
+                    {move || {
+                        let is_stale = state.cell_stale.get()
+                            .get(&cell_id_for_stale_header)
+                            .copied()
+                            .unwrap_or(false);
+                        if is_stale {
+                            view! { <span class="ironpad-stale-indicator" title="Cell output is stale">"⟳"</span> }.into_any()
+                        } else {
+                            view! { <span /> }.into_any()
+                        }
+                    }}
 
                     <Tag
                         size=TagSize::ExtraSmall
@@ -1425,8 +1821,15 @@ fn CellOutputPanel(execution_result: RwSignal<Option<ExecutionResult>>) -> impl 
 
             let time_ms = result.execution_time_ms;
             let byte_count = result.output_bytes.len();
-            let display_text = result.display_text.clone();
             let output_bytes = result.output_bytes.clone();
+
+            // Parse display panels from JSON, with backward-compat fallback.
+            let panels: Vec<DisplayPanel> = match &result.display_text {
+                Some(json) => serde_json::from_str(json).unwrap_or_else(|_| {
+                    vec![DisplayPanel::Text(json.clone())]
+                }),
+                None => vec![],
+            };
 
             view! {
                 <div class=panel_class>
@@ -1442,21 +1845,30 @@ fn CellOutputPanel(execution_result: RwSignal<Option<ExecutionResult>>) -> impl 
                     </div>
 
                     {if !output_collapsed.get_untracked() {
-                        let display_text = display_text.clone();
                         let output_bytes = output_bytes.clone();
 
                         view! {
                             <div class="ironpad-output-body">
-                                // Display text section.
-                                {if let Some(ref text) = display_text {
-                                    view! {
-                                        <div class="ironpad-output-display">
-                                            <pre class="ironpad-output-display-text">{text.clone()}</pre>
-                                        </div>
-                                    }.into_any()
-                                } else {
-                                    view! { <div /> }.into_any()
-                                }}
+                                // Display panels section.
+                                {panels.into_iter().map(|panel| {
+                                    match panel {
+                                        DisplayPanel::Text(text) => view! {
+                                            <div class="ironpad-output-display">
+                                                <pre class="ironpad-output-display-text">{text}</pre>
+                                            </div>
+                                        }.into_any(),
+                                        DisplayPanel::Html(html) => view! {
+                                            <div class="ironpad-output-display ironpad-output-html"
+                                                 inner_html=html>
+                                            </div>
+                                        }.into_any(),
+                                        DisplayPanel::Svg(svg) => view! {
+                                            <div class="ironpad-output-display ironpad-output-svg"
+                                                 inner_html=svg>
+                                            </div>
+                                        }.into_any(),
+                                    }
+                                }).collect::<Vec<_>>()}
 
                                 // Raw bytes hex dump section.
                                 {if !output_bytes.is_empty() {

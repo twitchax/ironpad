@@ -18,10 +18,11 @@ mod js {
             cell_id: &str,
             hash: &str,
             wasm_bytes: &js_sys::Uint8Array,
+            js_glue: Option<String>,
         ) -> Result<js_sys::Promise, JsValue>;
 
         /// Execute a loaded cell with input bytes.
-        /// Returns `{ outputBytes: Uint8Array, displayText: string | null }`.
+        /// Returns `{ outputBytes: Uint8Array, displayText: string | null, typeTag: string | null }`.
         #[wasm_bindgen(js_namespace = IronpadExecutor, catch)]
         pub fn execute(cell_id: &str, input_bytes: &js_sys::Uint8Array)
             -> Result<JsValue, JsValue>;
@@ -75,9 +76,14 @@ pub fn init_executor() -> Result<(), String> {
 /// no-op (cache hit).  The function is async because `WebAssembly.instantiate`
 /// is async on the browser.
 #[cfg(feature = "hydrate")]
-pub async fn load_blob(cell_id: &str, hash: &str, bytes: &[u8]) -> Result<(), String> {
+pub async fn load_blob(
+    cell_id: &str,
+    hash: &str,
+    bytes: &[u8],
+    js_glue: Option<String>,
+) -> Result<(), String> {
     let uint8 = js_sys::Uint8Array::from(bytes);
-    let promise = js::load_blob(cell_id, hash, &uint8).map_err(|e| format!("{e:?}"))?;
+    let promise = js::load_blob(cell_id, hash, &uint8, js_glue).map_err(|e| format!("{e:?}"))?;
 
     wasm_bindgen_futures::JsFuture::from(promise)
         .await
@@ -86,15 +92,16 @@ pub async fn load_blob(cell_id: &str, hash: &str, bytes: &[u8]) -> Result<(), St
     Ok(())
 }
 
+/// Execution result from running a cell: (output_bytes, display_text, type_tag).
+#[cfg(feature = "hydrate")]
+pub type CellExecResult = (Vec<u8>, Option<String>, Option<String>);
+
 /// Execute a previously-loaded cell with the given input bytes.
 ///
-/// Returns `(output_bytes, display_text)`.  The cell must have been loaded via
-/// [`load_blob`] first; otherwise the executor throws.
+/// Returns `(output_bytes, display_text, type_tag)`.  The cell must have been
+/// loaded via [`load_blob`] first; otherwise the executor throws.
 #[cfg(feature = "hydrate")]
-pub fn execute_cell(
-    cell_id: &str,
-    input_bytes: &[u8],
-) -> Result<(Vec<u8>, Option<String>), String> {
+pub fn execute_cell(cell_id: &str, input_bytes: &[u8]) -> Result<CellExecResult, String> {
     let input = js_sys::Uint8Array::from(input_bytes);
     let result = js::execute(cell_id, &input).map_err(|e| format!("{e:?}"))?;
 
@@ -118,5 +125,15 @@ pub fn execute_cell(
         display_val.as_string()
     };
 
-    Ok((output_bytes, display_text))
+    // Extract `typeTag` (string | null).
+    let type_tag_val =
+        js_sys::Reflect::get(&result, &"typeTag".into()).map_err(|e| format!("{e:?}"))?;
+
+    let type_tag = if type_tag_val.is_null() || type_tag_val.is_undefined() {
+        None
+    } else {
+        type_tag_val.as_string()
+    };
+
+    Ok((output_bytes, display_text, type_tag))
 }
