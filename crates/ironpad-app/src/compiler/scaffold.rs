@@ -87,6 +87,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ironpad-cell = {{ path = "{cell_path_str}" }}
+wasm-bindgen = "0.2"
 "#
     );
 

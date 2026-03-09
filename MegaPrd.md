@@ -694,7 +694,7 @@ COPY . /app
 WORKDIR /app
 RUN cargo build --release --bin ironpad-server
 
-EXPOSE 3000
+EXPOSE 3111
 
 VOLUME /data/notebooks
 VOLUME /cache
@@ -710,7 +710,7 @@ services:
   ironpad:
     build: .
     ports:
-      - "3000:3000"
+      - "3111:3111"
     volumes:
       - notebooks:/data/notebooks
       - cache:/cache
@@ -728,7 +728,7 @@ volumes:
 
 ```bash
 docker compose up -d
-# Open http://localhost:3000
+# Open http://localhost:3111
 # Greeted with a "Welcome to ironpad" page with:
 #   - "New Notebook" button
 #   - List of existing notebooks (empty on first run)
@@ -847,7 +847,7 @@ Target: **< 5s cold compile for a trivial cell** (p95, end-to-end including netw
 
 ## Appendix A: Example User Session
 
-1. User runs `docker compose up -d` and opens `http://localhost:3000`.
+1. User runs `docker compose up -d` and opens `http://localhost:3111`.
 2. Clicks "New Notebook," names it "Fibonacci Explorer."
 3. In Cell 0, writes:
 

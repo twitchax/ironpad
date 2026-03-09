@@ -446,7 +446,7 @@ fn SharedDepsPanel() -> impl IntoView {
                     );
                 }
                 Err(e) => {
-                    tracing::warn!("failed to save shared deps: {e}");
+                    leptos::logging::warn!("failed to save shared deps: {e}");
 
                     toaster.dispatch_toast(
                         move || {

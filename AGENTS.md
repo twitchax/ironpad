@@ -49,7 +49,7 @@ cargo make install-tools
 
 # Development server (with hot reload)
 cargo make dev
-# Opens http://localhost:3000
+# Opens http://localhost:3111
 
 # Run all tests
 cargo make test

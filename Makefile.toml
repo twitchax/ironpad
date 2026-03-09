@@ -242,7 +242,7 @@ cargo make docker-up
 
 echo "==> Waiting for server to be ready..."
 for i in $(seq 1 30); do
-    if curl -s http://localhost:3000 > /dev/null 2>&1; then
+    if curl -s http://localhost:3111 > /dev/null 2>&1; then
         echo "    Server is ready."
         break
     fi

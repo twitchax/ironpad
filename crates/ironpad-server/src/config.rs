@@ -16,7 +16,7 @@ pub struct CliArgs {
     pub cache_dir: PathBuf,
 
     /// Port to serve the application on.
-    #[arg(long, default_value_t = 3000, env = "IRONPAD_PORT")]
+    #[arg(long, default_value_t = 3111, env = "IRONPAD_PORT")]
     pub port: u16,
 
     /// Path to the ironpad-cell crate (injected into user cells as a path dependency).
@@ -49,7 +49,7 @@ mod tests {
 
         assert_eq!(args.data_dir, PathBuf::from("./data"));
         assert_eq!(args.cache_dir, PathBuf::from("./cache"));
-        assert_eq!(args.port, 3000);
+        assert_eq!(args.port, 3111);
         assert_eq!(
             args.ironpad_cell_path,
             PathBuf::from("./crates/ironpad-cell")

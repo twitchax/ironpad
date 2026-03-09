@@ -19,7 +19,7 @@ This guide covers everything you need to contribute to ironpad. For a detailed t
 # Install dev tools (cargo-leptos, cargo-nextest, cargo-make, Playwright)
 cargo make install-tools
 
-# Start development server with hot reload (http://localhost:3000)
+# Start development server with hot reload (http://localhost:3111)
 cargo make dev
 
 # Run CI locally (formatting + clippy + tests)

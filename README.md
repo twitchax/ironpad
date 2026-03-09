@@ -50,7 +50,7 @@ Minimal binary that starts the Axum + Leptos SSR server.
 ```
 --data-dir <PATH>           Data directory for notebooks (default: ./data)
 --cache-dir <PATH>          Cache directory for compiled blobs (default: ./cache)
---port <PORT>               HTTP port (default: 3000)
+--port <PORT>               HTTP port (default: 3111)
 --ironpad-cell-path <PATH>  Path to ironpad-cell crate (default: ./crates/ironpad-cell)
 ```
 
@@ -397,21 +397,21 @@ They run on the server and are automatically serialized/called from the client.
    - Binaryen (`wasm-opt`)
    - Pre-warm cargo registry with ironpad-cell dependencies
    - Copy built server binary + site assets
-   - Expose port 3000
+   - Expose port 3111
 
 **docker-compose.yml**:
 ```yaml
 services:
   ironpad:
     build: .
-    ports: ["3000:3000"]
+    ports: ["3111:3111"]
     volumes:
       - notebooks:/data
       - cache:/cache
     environment:
       - IRONPAD_DATA_DIR=/data
       - IRONPAD_CACHE_DIR=/cache
-      - IRONPAD_PORT=3000
+      - IRONPAD_PORT=3111
       - IRONPAD_CELL_PATH=/app/crates/ironpad-cell
 ```
 
@@ -427,7 +427,7 @@ cargo make install-tools
 
 # Development server (hot reload)
 cargo make dev
-# Serves at http://localhost:3000
+# Serves at http://localhost:3111
 # Recompiles on code changes
 
 # Build for release
@@ -604,7 +604,7 @@ ironpad/
 ```
 --data-dir <PATH>           (env: IRONPAD_DATA_DIR, default: ./data)
 --cache-dir <PATH>          (env: IRONPAD_CACHE_DIR, default: ./cache)
---port <PORT>               (env: IRONPAD_PORT, default: 3000)
+--port <PORT>               (env: IRONPAD_PORT, default: 3111)
 --ironpad-cell-path <PATH>  (env: IRONPAD_CELL_PATH, default: ./crates/ironpad-cell)
 ```
 

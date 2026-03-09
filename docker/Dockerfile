@@ -60,12 +60,12 @@ COPY Cargo.toml /app/Cargo.toml
 
 ENV IRONPAD_DATA_DIR=/data
 ENV IRONPAD_CACHE_DIR=/cache
-ENV IRONPAD_PORT=3000
+ENV IRONPAD_PORT=3111
 ENV IRONPAD_CELL_PATH=/app/crates/ironpad-cell
 ENV RUST_LOG=info
 ENV LEPTOS_SITE_ROOT=/app/target/site
 
-EXPOSE 3000
+EXPOSE 3111
 
 VOLUME ["/data", "/cache"]
 
