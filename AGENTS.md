@@ -19,17 +19,17 @@ This document provides guidance for AI coding agents working in the ironpad repo
 
 ```
 crates/
-  ironpad-app/          # Core: 7.6k LoC (compiler, UI, storage)
+  ironpad-app/          # Core: compiler, UI, storage, pages
   ironpad-server/       # HTTP server entry (minimal)
   ironpad-frontend/     # WASM hydration (minimal)
-  ironpad-common/       # Shared types
+  ironpad-common/       # Shared types (IronpadNotebook, CompileRequest, etc.)
   ironpad-cell/         # Cell runtime (injected into every cell)
 
 docker/                 # Multi-stage build + docker-compose
 tests/e2e/              # Playwright e2e tests
-public/                 # executor.js + Monaco editor
+public/                 # executor.js, storage.js, Monaco editor, public notebooks
 style/                  # SCSS styles
-data/                   # Runtime notebook storage
+data/                   # Server-side shares + public notebook index
 ```
 
 ---
@@ -147,36 +147,50 @@ The core of ironpad is a 5-stage WASM compiler:
 
 **Important**: All stages are tested with unit tests; full pipeline tested with integration tests in `compiler/mod.rs`.
 
-### Notebook & Cell Storage
+### Notebook Storage & Sharing
 
-Structure:
-```
-{data_dir}/notebooks/{id}/
-  ironpad.json          # NotebookManifest (JSON)
-  cells/
-    {cell_id}/
-      source.rs         # User source
-      Cargo.toml        # Dependencies
-```
+**Private notebooks** are stored client-side in **IndexedDB** (browser-local):
+- `storage/client.rs` — wasm-bindgen bindings to `window.IronpadStorage` (from `public/storage.js`)
+- No server-side notebook CRUD — the server is stateless for private notebooks
+- Canonical format: `IronpadNotebook` (defined in `ironpad-common/src/types.rs`)
 
-Cell I/O uses **bincode 2.0** serialization for piping output to next cell.
+**Public notebooks** are static `.ironpad` JSON files served from `public/notebooks/`:
+- Index at `{data_dir}/public_notebooks/index.json`
+- Server functions: `list_public_notebooks()`, `get_public_notebook(filename)`
+
+**Shared notebooks** use content-addressed storage:
+- Upload notebook JSON → blake3 hash (16 hex chars) → stored at `{data_dir}/shares/{hash}.json`
+- Server functions: `share_notebook(notebook_json)`, `get_shared_notebook(hash)`
+- Share URL: `/shared/{hash}`
+
+**Routes**:
+- `/` — HomePage (lists private IndexedDB notebooks + public notebooks)
+- `/notebook/{id}` — NotebookEditorPage (private, IndexedDB-backed)
+- `/notebook/public/{filename}` — PublicNotebookPage (read-only, static `.ironpad` file)
+- `/shared/{hash}` — SharedNotebookPage (read-only, shared via hash)
+
+Cell I/O uses **bincode 2.0** serialization for piping output between cells.
 
 ### Frontend Architecture
 
 **Leptos** with SSR + hydration:
 - Server renders HTML; client hydrates into WASM SPA
 - `ironpad-app` split by feature flags: `ssr` (server), `hydrate` (client)
-- Components: Monaco editor, executor bindings, error panel, layout
+- Components: Monaco editor, executor bindings, error panel, layout, view-only notebook
+- Pages: home, notebook editor, public notebook viewer, shared notebook viewer
 
 **Key client-side APIs**:
 - `window.IronpadMonaco.*` — Monaco editor JS bridge
 - `window.IronpadExecutor.*` — WASM executor (cell loading/execution)
+- `window.IronpadStorage.*` — IndexedDB storage (notebook CRUD, from `public/storage.js`)
 
 ---
 
 ## Common Tasks
 
 ### Adding a New Server Function
+
+Current server functions: `compile_cell`, `list_public_notebooks`, `get_public_notebook`, `share_notebook`, `get_shared_notebook`.
 
 1. Add to `server_fns.rs` with `#[server]` attribute:
    ```rust
@@ -266,10 +280,12 @@ Files you'll frequently modify:
 
 - **Compiler logic**: `crates/ironpad-app/src/compiler/*.rs`
 - **UI components**: `crates/ironpad-app/src/components/*.rs`
-- **Storage**: `crates/ironpad-app/src/notebook/*.rs`
+- **Client storage**: `crates/ironpad-app/src/storage/*.rs` (IndexedDB bindings)
 - **Server functions**: `crates/ironpad-app/src/server_fns.rs`
 - **Pages**: `crates/ironpad-app/src/pages/*.rs`
 - **Styles**: `style/main.scss`
+- **IndexedDB JS**: `public/storage.js`
+- **Public notebooks**: `public/notebooks/*.ironpad`
 
 ### Configuration Files
 
@@ -291,7 +307,6 @@ Files you'll frequently modify:
 ### Unit Tests
 Most modules have in-crate `#[test]` functions:
 - Compiler scaffolding, caching, diagnostics
-- Storage CRUD
 - FFI memory management
 - Input/output serialization
 
@@ -308,9 +323,8 @@ Marked `#[ignore]` (slow). Run with: `cargo make test-integration`
 ### E2E Tests
 Playwright tests in `tests/e2e/`:
 - Page loads (sanity)
-- Notebook CRUD
+- Notebook editing
 - Cell compilation + execution
-- Seeding sample notebook
 
 Run with: `cargo make playwright`
 

@@ -15,7 +15,7 @@ use crate::components::app_layout::LayoutContext;
 use crate::components::error_panel::ErrorPanel;
 use crate::components::markdown_cell::MarkdownCell;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
-use crate::server_fns::compile_cell;
+use crate::server_fns::{compile_cell, share_notebook};
 
 // ── Display panels ──────────────────────────────────────────────────────────
 
@@ -413,6 +413,80 @@ fn NotebookContent() -> impl IntoView {
                 }
             >
                 "⟳ Run Stale"
+            </Button>
+            <Button
+                appearance=ButtonAppearance::Subtle
+                on_click=move |_| {
+                    let notebook = state.notebook.get_untracked();
+                    if let Some(nb) = notebook {
+                        let toaster = expect_context::<ToasterInjection>();
+                        leptos::task::spawn_local(async move {
+                            let json = match serde_json::to_string(&nb) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    toaster.dispatch_toast(
+                                        move || {
+                                            view! {
+                                                <Toast>
+                                                    <ToastTitle>"Share Failed"</ToastTitle>
+                                                    <ToastBody>{format!("Failed to serialize: {e}")}</ToastBody>
+                                                </Toast>
+                                            }
+                                        },
+                                        Default::default(),
+                                    );
+                                    return;
+                                }
+                            };
+
+                            match share_notebook(json).await {
+                                Ok(hash) => {
+                                    let origin = web_sys::window()
+                                        .and_then(|w| w.location().origin().ok())
+                                        .unwrap_or_default();
+                                    let url = format!("{origin}/shared/{hash}");
+
+                                    // Copy to clipboard.
+                                    if let Some(window) = web_sys::window() {
+                                        let clipboard = window.navigator().clipboard();
+                                        let _ =
+                                            wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&url)).await;
+                                    }
+
+                                    let url_clone = url.clone();
+                                    toaster.dispatch_toast(
+                                        move || {
+                                            view! {
+                                                <Toast>
+                                                    <ToastTitle>"Link Copied!"</ToastTitle>
+                                                    <ToastBody>{url_clone.clone()}</ToastBody>
+                                                </Toast>
+                                            }
+                                        },
+                                        thaw::ToastOptions::default()
+                                            .with_intent(thaw::ToastIntent::Success)
+                                            .with_timeout(std::time::Duration::from_secs(5)),
+                                    );
+                                }
+                                Err(e) => {
+                                    toaster.dispatch_toast(
+                                        move || {
+                                            view! {
+                                                <Toast>
+                                                    <ToastTitle>"Share Failed"</ToastTitle>
+                                                    <ToastBody>{format!("{e}")}</ToastBody>
+                                                </Toast>
+                                            }
+                                        },
+                                        Default::default(),
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+            >
+                "🔗 Share"
             </Button>
         </div>
 

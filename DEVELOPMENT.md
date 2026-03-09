@@ -57,15 +57,15 @@ ironpad is a Cargo workspace with 5 crates:
 
 | Crate                | Role                                                                                                             |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **ironpad-app**      | Core crate (~7.6k LoC) — compiler pipeline, Leptos UI components, notebook storage, server functions             |
+| **ironpad-app**      | Core crate — compiler pipeline, Leptos UI components, client-side storage (IndexedDB), server functions            |
 | **ironpad-server**   | Axum HTTP server entry point (minimal — `main.rs` + `config.rs`)                                                 |
 | **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos)                                                |
-| **ironpad-common**   | Shared types: `CompileRequest`, `CompileResponse`, `NotebookManifest`, `CellManifest`, `Diagnostic`, `AppConfig` |
+| **ironpad-common**   | Shared types: `CompileRequest`, `CompileResponse`, `IronpadNotebook`, `PublicNotebookSummary`, `Diagnostic`, `AppConfig` |
 | **ironpad-cell**     | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports         |
 
 ```
 crates/
-  ironpad-app/          # Core: compiler, UI, storage
+  ironpad-app/          # Core: compiler, UI, storage, pages
   ironpad-server/       # HTTP server entry
   ironpad-frontend/     # WASM hydration entry
   ironpad-common/       # Shared types
@@ -110,10 +110,11 @@ scaffold → cache check → cargo build → diagnostics → wasm-opt
 
 ### Client-Side APIs
 
-| Namespace                  | Purpose                                                         |
-| -------------------------- | --------------------------------------------------------------- |
-| `window.IronpadMonaco.*`   | Monaco editor JS bridge (create, get/set content, set markers)  |
-| `window.IronpadExecutor.*` | WASM executor (load module, execute `cell_main`, manage memory) |
+| Namespace                    | Purpose                                                         |
+| ---------------------------- | --------------------------------------------------------------- |
+| `window.IronpadMonaco.*`     | Monaco editor JS bridge (create, get/set content, set markers)  |
+| `window.IronpadExecutor.*`   | WASM executor (load module, execute `cell_main`, manage memory) |
+| `window.IronpadStorage.*`    | IndexedDB storage (notebook CRUD, from `public/storage.js`)     |
 
 Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) code paths.
 
@@ -121,7 +122,6 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 
 ## TODO / Future Ideas
 
-- **Notebook export/import**: Download as `.ironpad` JSON bundle, upload to import, shareable links
 - **Cell drag-and-drop reordering**: Visual reordering via drag handles
 - **Light mode toggle**: Alternative light theme for Monaco + UI
 - **Notebook tagging/filtering**: Tags on notebooks for organization, search/filter on home page

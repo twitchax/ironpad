@@ -23,7 +23,7 @@ ironpad follows a **full-stack Rust + WASM** architecture:
 - **Server**: Axum web framework with Leptos SSR integration
 - **Compilation**: Multi-stage pipeline: scaffolding → `cargo build` (to WASM) → diagnostics → optimization
 - **Execution**: Client-side WASM execution with FFI-based I/O piping between cells
-- **Storage**: Notebook manifests as JSON; cell sources as `.rs` files; compiled blobs cached by blake3 hash
+- **Storage**: Private notebooks in IndexedDB (browser); public notebooks as static `.ironpad` files; shared notebooks via content-addressed hash
 
 ## Workspace Structure
 
@@ -34,16 +34,16 @@ The heart of the application, split between SSR server code and hydrate (client)
 
 **Key modules**:
 - `compiler/` — Full WASM compilation pipeline (scaffold → build → optimize → cache)
-- `components/` — Leptos UI components (Monaco editor, executor, error panel, layout)
-- `notebook/` — Notebook/cell CRUD, storage, and seeding
-- `pages/` — Home page and notebook editor page routes
-- `server_fns.rs` — Leptos server functions for compilation, notebook operations
+- `components/` — Leptos UI components (Monaco editor, executor, error panel, layout, view-only notebook)
+- `storage/` — Client-side IndexedDB bindings (wasm-bindgen to `window.IronpadStorage`)
+- `pages/` — Route pages: home, notebook editor, public notebook viewer, shared notebook viewer
+- `server_fns.rs` — Leptos server functions for compilation, public notebooks, and sharing
 
 ### 2. **ironpad-server** (HTTP server entry point)
 Minimal binary that starts the Axum + Leptos SSR server.
 
 **Files**:
-- `main.rs` — Tokio runtime, route generation, notebook seeding
+- `main.rs` — Tokio runtime, route generation, public notebook index setup
 - `config.rs` — CLI argument parsing (data_dir, cache_dir, port, ironpad_cell_path)
 
 **CLI Flags**:
@@ -63,12 +63,13 @@ Minimal crate that hydrates the Leptos app into the browser.
 - `lib.rs` — Hydration entry point with panic hook setup
 
 ### 4. **ironpad-common** (Shared types)
-Types used by both server and client (compile requests/responses, notebook/cell manifests, etc.).
+Types used by both server and client (compile requests/responses, notebook format, diagnostics, etc.).
 
 **Key types**:
 - `CompileRequest` / `CompileResponse` — RPC contract
 - `Diagnostic` / `Severity` / `Span` — Compiler diagnostics with source mapping
-- `NotebookManifest` / `CellManifest` — Persisted notebook structure
+- `IronpadNotebook` / `IronpadCell` / `IronpadMarkdownCell` — Canonical notebook JSON format
+- `PublicNotebookSummary` — Public notebook index entry
 - `ExecutionResult` — Execution output with timing
 - `AppConfig` — Server configuration
 
@@ -137,43 +138,43 @@ compile_cell() {
 }
 ```
 
-### Notebook & Cell Storage (`crates/ironpad-app/src/notebook/`)
+### Notebook Storage & Sharing
 
-#### **Storage Layout**
-```
-{data_dir}/
-  notebooks/
-    {notebook_id}/
-      ironpad.json          # Notebook manifest (NotebookManifest)
-      cells/
-        {cell_id}/
-          source.rs         # User source code
-          Cargo.toml        # Cell-level dependencies
-        {cell_id}/
-          ...
-```
+#### **Client-Side Storage (IndexedDB)**
 
-#### **Notebook Manifest** (`ironpad.json`)
+Private notebooks are stored in the browser's IndexedDB via `public/storage.js` (an IIFE that exposes `window.IronpadStorage`). The Rust `storage/client.rs` module provides wasm-bindgen bindings.
+
+The server is **stateless** for private notebooks — no server-side CRUD.
+
+#### **Canonical Notebook Format** (`IronpadNotebook`)
+
+Defined in `ironpad-common/src/types.rs`, the `IronpadNotebook` JSON format is used for IndexedDB storage, public `.ironpad` files, and shared notebook uploads:
+
 ```json
 {
   "id": "uuid",
-  "title": "Welcome to ironpad",
-  "created_at": "2026-03-07T11:41:10.456681660Z",
-  "updated_at": "2026-03-07T11:41:10.457646589Z",
-  "compiler_version": "stable",
+  "title": "My Notebook",
+  "created_at": "2026-03-07T...",
+  "updated_at": "2026-03-07T...",
   "cells": [
-    { "id": "cell_0", "order": 0, "label": "Fibonacci Generator" },
-    { "id": "cell_1", "order": 1, "label": "Fibonacci Consumer" }
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Cell Label",
+      "source": "let x = 42;\nCellOutput::new(&x)?.with_display(\"42\").into()",
+      "cargo_toml": "[dependencies]\nserde = \"1\""
+    }
   ]
 }
 ```
 
-#### **Key Operations** (`storage.rs` + `cells.rs` + `seed.rs`)
-- `create_notebook()` — New notebook with UUID
-- `get_notebook()` / `update_notebook()` — CRUD on manifest
-- `add_cell()` — Add cell to notebook with default source/Cargo.toml
-- `get_cell_source()` / `update_cell_source()` — Cell source I/O
-- `seed_sample_notebook()` — Auto-create "Welcome" notebook with Fibonacci example on first run
+#### **Public Notebooks**
+
+Static `.ironpad` JSON files in `public/notebooks/` (e.g., `welcome.ironpad`, `tutorial.ironpad`). An index at `{data_dir}/public_notebooks/index.json` is read by `list_public_notebooks()`.
+
+#### **Shared Notebooks**
+
+Upload notebook JSON via `share_notebook()` → blake3 content hash (first 16 hex chars) → stored at `{data_dir}/shares/{hash}.json`. Retrieve via `get_shared_notebook(hash)` at URL `/shared/{hash}`.
 
 ---
 
@@ -287,8 +288,10 @@ let decoded: T = bincode::serde::decode_from_slice(&bytes, bincode::config::stan
 ### Page Routes
 
 ```
-/                           → HomePage (notebook list)
-/notebook/{id}              → NotebookEditorPage (editor + cells)
+/                              → HomePage (private + public notebook list)
+/notebook/{id}                 → NotebookEditorPage (private, IndexedDB-backed)
+/notebook/public/{filename}    → PublicNotebookPage (read-only, static .ironpad file)
+/shared/{hash}                 → SharedNotebookPage (read-only, shared via hash)
 ```
 
 ### Key Components
@@ -336,13 +339,16 @@ Renders compiler diagnostics inline in the editor:
 Top-level layout with header, content area, and status bar.
 
 #### **Pages**
-- **HomePage** (`pages/home_page.rs` - 143 LoC): List of notebooks + "New Notebook" button
-- **NotebookEditorPage** (`pages/notebook_editor.rs` - 1,570 LoC): Full notebook editor
+- **HomePage** (`pages/home_page.rs`): List of private (IndexedDB) + public notebooks, search/filter
+- **NotebookEditorPage** (`pages/notebook_editor.rs`): Full notebook editor
   - Cell list (draggable ordering via T-015)
   - Monaco editors (one per cell)
   - Compile/execute buttons
   - Output display
   - Status indicators (compiling, success, error)
+
+- **PublicNotebookPage** (`pages/public_notebook.rs`): Read-only viewer for public `.ironpad` notebooks
+- **SharedNotebookPage** (`pages/shared_notebook.rs`): Read-only viewer for shared notebooks
 
 ### Styling
 
@@ -372,12 +378,16 @@ CSS (SCSS) at `style/main.scss` with dark theme:
 pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, ServerFnError>
 
 #[server]
-pub async fn list_notebooks() -> Result<Vec<NotebookSummary>, ServerFnError>
+pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, ServerFnError>
 
 #[server]
-pub async fn create_notebook(title: String) -> Result<NotebookManifest, ServerFnError>
+pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, ServerFnError>
 
-// ... etc.
+#[server]
+pub async fn share_notebook(notebook_json: String) -> Result<String, ServerFnError>
+
+#[server]
+pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, ServerFnError>
 ```
 
 They run on the server and are automatically serialized/called from the client.
@@ -458,7 +468,7 @@ cargo make uat
 
 ### Testing
 
-**Unit tests**: In-crate `#[test]` (compiler logic, storage, etc.)
+**Unit tests**: In-crate `#[test]` (compiler logic, etc.)
 
 **Integration tests**: Slow tests in `#[test]` marked `#[ignore]` (full compilation pipeline)
 ```bash
@@ -467,7 +477,7 @@ cargo make test-integration
 
 **E2E tests**: Playwright in `tests/e2e/*.spec.ts`
 - Sanity checks (page loads)
-- Notebook CRUD
+- Notebook editing
 - Cell compilation + execution
 ```bash
 cargo make playwright
@@ -485,7 +495,7 @@ ironpad/
 ├── package.json                    # npm: monaco-editor + @playwright/test
 │
 ├── crates/
-│   ├── ironpad-app/                # Core (7.6k LoC)
+│   ├── ironpad-app/                # Core application crate
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs              # App root (shell + routes)
@@ -501,14 +511,16 @@ ironpad/
 │   │       │   ├── monaco_editor.rs
 │   │       │   ├── executor.rs     # WASM executor bindings
 │   │       │   ├── error_panel.rs
+│   │       │   ├── markdown_cell.rs
+│   │       │   ├── view_only_notebook.rs  # Read-only notebook viewer
 │   │       │   └── app_layout.rs
-│   │       ├── notebook/           # Storage + CRUD
-│   │       │   ├── storage.rs      # Notebook manifest I/O
-│   │       │   ├── cells.rs        # Cell I/O
-│   │       │   └── seed.rs         # Sample notebook
+│   │       ├── storage/            # Client-side storage
+│   │       │   └── client.rs       # IndexedDB bindings (wasm-bindgen)
 │   │       └── pages/              # Routes
 │   │           ├── home_page.rs
-│   │           └── notebook_editor.rs
+│   │           ├── notebook_editor.rs
+│   │           ├── public_notebook.rs
+│   │           └── shared_notebook.rs
 │   │
 │   ├── ironpad-server/             # HTTP server entry
 │   │   ├── Cargo.toml
@@ -523,7 +535,7 @@ ironpad/
 │   ├── ironpad-common/             # Shared types
 │   │   ├── Cargo.toml
 │   │   ├── src/lib.rs
-│   │   ├── types.rs                # CompileRequest/Response, Diagnostic, etc.
+│   │   ├── types.rs                # IronpadNotebook, CompileRequest/Response, etc.
 │   │   └── config.rs               # AppConfig
 │   │
 │   └── ironpad-cell/               # Cell runtime (injected as dep)
@@ -537,6 +549,12 @@ ironpad/
 │
 ├── public/
 │   ├── executor.js                 # WASM executor (client-side)
+│   ├── storage.js                  # IndexedDB storage API (IIFE)
+│   ├── notebooks/                  # Static public .ironpad files
+│   │   ├── index.json
+│   │   ├── welcome.ironpad
+│   │   ├── tutorial.ironpad
+│   │   └── async-http.ironpad
 │   └── monaco/
 │       ├── vs/                     # Monaco dist (copied from npm)
 │       ├── init.js                 # AMD loader config
@@ -547,17 +565,16 @@ ironpad/
 │   └── main.scss                   # Dark theme styles
 │
 ├── data/
-│   └── notebooks/                  # Runtime notebook storage
-│       └── {notebook_id}/
-│           ├── ironpad.json
-│           └── cells/
+│   ├── public_notebooks/           # Public notebook index
+│   │   └── index.json
+│   └── shares/                     # Shared notebook blobs
+│       └── {hash}.json
 │
 ├── tests/
 │   └── e2e/
 │       ├── home.spec.ts
 │       ├── notebook.spec.ts
-│       ├── sanity.spec.ts
-│       └── seed.spec.ts
+│       └── sanity.spec.ts
 │
 ├── .mr/                            # microralph (agent guidance)
 │   ├── prds/
@@ -565,7 +582,7 @@ ironpad/
 │   ├── prompts/
 │   └── PRDS.md
 │
-├── AGENTS.md                       # This file
+├── AGENTS.md                       # Agent guidance
 └── MegaPrd.md                      # Full product requirements
 ```
 
