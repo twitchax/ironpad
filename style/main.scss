@@ -596,8 +596,15 @@ a:focus-visible {
 /* ── Cell status indicator ──────────────────────────────────────────── */
 
 @keyframes ironpad-status-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
 }
 
 .ironpad-cell-status {
@@ -1058,7 +1065,10 @@ textarea:focus-visible {
 
 /* ── Monospace elements ──────────────────────────────────────────────────── */
 
-code, pre, kbd, samp,
+code,
+pre,
+kbd,
+samp,
 .ironpad-compile-result,
 .ironpad-error-panel,
 .ironpad-output-panel,
@@ -1070,6 +1080,7 @@ code, pre, kbd, samp,
 /* ── Responsive — desktop-first ──────────────────────────────────────────── */
 
 @media (max-width: 1024px) {
+
     .ironpad-editor,
     .ironpad-home {
         max-width: 100%;
@@ -1283,21 +1294,93 @@ code, pre, kbd, samp,
         line-height: 1.6;
         cursor: pointer;
 
-        h1 { font-size: 1.8em; margin: 0.5em 0; color: #fff; border-bottom: 1px solid #0f3460; padding-bottom: 0.3em; }
-        h2 { font-size: 1.5em; margin: 0.5em 0; color: #fff; }
-        h3 { font-size: 1.25em; margin: 0.5em 0; color: #fff; }
-        p { margin: 0.5em 0; }
-        code { background: #1a1a2e; padding: 2px 6px; border-radius: 3px; font-family: var(--ip-font-mono); font-size: 0.9em; }
-        pre { background: #1a1a2e; padding: 1rem; border-radius: 6px; overflow-x: auto; }
-        pre code { background: none; padding: 0; }
-        a { color: #e94560; text-decoration: none; &:hover { text-decoration: underline; } }
-        ul, ol { padding-left: 1.5em; }
-        li { margin: 0.25em 0; }
-        blockquote { border-left: 3px solid #e94560; padding-left: 1em; color: #8888aa; margin: 0.5em 0; }
-        table { border-collapse: collapse; margin: 0.5em 0; }
-        th, td { border: 1px solid #0f3460; padding: 0.5em 1em; }
-        th { background: #1a1a2e; }
-        img { max-width: 100%; }
+        h1 {
+            font-size: 1.8em;
+            margin: 0.5em 0;
+            color: #fff;
+            border-bottom: 1px solid #0f3460;
+            padding-bottom: 0.3em;
+        }
+
+        h2 {
+            font-size: 1.5em;
+            margin: 0.5em 0;
+            color: #fff;
+        }
+
+        h3 {
+            font-size: 1.25em;
+            margin: 0.5em 0;
+            color: #fff;
+        }
+
+        p {
+            margin: 0.5em 0;
+        }
+
+        code {
+            background: #1a1a2e;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: var(--ip-font-mono);
+            font-size: 0.9em;
+        }
+
+        pre {
+            background: #1a1a2e;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+        }
+
+        a {
+            color: #e94560;
+            text-decoration: none;
+
+            &:hover {
+                text-decoration: underline;
+            }
+        }
+
+        ul,
+        ol {
+            padding-left: 1.5em;
+        }
+
+        li {
+            margin: 0.25em 0;
+        }
+
+        blockquote {
+            border-left: 3px solid #e94560;
+            padding-left: 1em;
+            color: #8888aa;
+            margin: 0.5em 0;
+        }
+
+        table {
+            border-collapse: collapse;
+            margin: 0.5em 0;
+        }
+
+        th,
+        td {
+            border: 1px solid #0f3460;
+            padding: 0.5em 1em;
+        }
+
+        th {
+            background: #1a1a2e;
+        }
+
+        img {
+            max-width: 100%;
+        }
 
         &:hover {
             outline: 1px dashed #4a4a6a;
