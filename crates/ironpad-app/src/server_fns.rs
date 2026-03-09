@@ -1,7 +1,4 @@
-use ironpad_common::{
-    CellContent, CellManifest, CellType, CompileRequest, CompileResponse, IronpadNotebook,
-    NotebookManifest, NotebookSummary, PublicNotebookSummary,
-};
+use ironpad_common::{CompileRequest, CompileResponse, IronpadNotebook, PublicNotebookSummary};
 use leptos::prelude::*;
 
 // ── Compilation ──────────────────────────────────────────────────────────────
@@ -177,20 +174,7 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
     }
 }
 
-// ── Notebook CRUD ────────────────────────────────────────────────────────────
-
-/// Lists all notebooks, sorted by most recently updated.
-#[server]
-pub async fn list_notebooks() -> Result<Vec<NotebookSummary>, ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-
-    let summaries = crate::notebook::storage::list_notebooks(&config.data_dir)
-        .map_err(|e| ServerFnError::new(format!("failed to list notebooks: {e}")))?;
-
-    Ok(summaries)
-}
+// ── Public notebooks ─────────────────────────────────────────────────────────
 
 /// Lists all available public notebooks from the static index.
 #[server]
@@ -210,271 +194,6 @@ pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, Serve
 
     Ok(index.notebooks)
 }
-
-/// Creates a new notebook with the given title.
-#[server]
-pub async fn create_notebook(title: String) -> Result<NotebookManifest, ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-
-    let manifest = crate::notebook::storage::create_notebook(&config.data_dir, &title)
-        .map_err(|e| ServerFnError::new(format!("failed to create notebook: {e}")))?;
-
-    Ok(manifest)
-}
-
-/// Retrieves a notebook manifest by ID.
-#[server]
-pub async fn get_notebook(id: String) -> Result<NotebookManifest, ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let uuid = parse_uuid(&id)?;
-
-    let manifest = crate::notebook::storage::get_notebook(&config.data_dir, &uuid)
-        .map_err(|e| ServerFnError::new(format!("failed to get notebook: {e}")))?;
-
-    Ok(manifest)
-}
-
-/// Updates a notebook's title.
-#[server]
-pub async fn update_notebook(id: String, title: String) -> Result<NotebookManifest, ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let uuid = parse_uuid(&id)?;
-
-    let manifest =
-        crate::notebook::storage::update_notebook(&config.data_dir, &uuid, Some(&title), None)
-            .map_err(|e| ServerFnError::new(format!("failed to update notebook: {e}")))?;
-
-    Ok(manifest)
-}
-
-/// Deletes a notebook by ID.
-#[server]
-pub async fn delete_notebook(id: String) -> Result<(), ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let uuid = parse_uuid(&id)?;
-
-    crate::notebook::storage::delete_notebook(&config.data_dir, &uuid)
-        .map_err(|e| ServerFnError::new(format!("failed to delete notebook: {e}")))?;
-
-    Ok(())
-}
-
-// ── Shared Cargo.toml ────────────────────────────────────────────────────────
-
-/// Retrieves the notebook-level shared `Cargo.toml` content, if any.
-#[server]
-pub async fn get_shared_cargo_toml(notebook_id: String) -> Result<Option<String>, ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let uuid = parse_uuid(&notebook_id)?;
-
-    let content = crate::notebook::storage::get_shared_cargo_toml(&config.data_dir, &uuid)
-        .map_err(|e| ServerFnError::new(format!("failed to read shared Cargo.toml: {e}")))?;
-
-    Ok(content)
-}
-
-/// Creates or updates the notebook-level shared `Cargo.toml`.
-#[server]
-pub async fn update_shared_cargo_toml(
-    notebook_id: String,
-    cargo_toml: String,
-) -> Result<(), ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let uuid = parse_uuid(&notebook_id)?;
-
-    crate::notebook::storage::update_shared_cargo_toml(&config.data_dir, &uuid, &cargo_toml)
-        .map_err(|e| ServerFnError::new(format!("failed to update shared Cargo.toml: {e}")))?;
-
-    Ok(())
-}
-
-// ── Cell Content ─────────────────────────────────────────────────────────────
-
-/// Retrieves the source code and Cargo.toml content of a cell.
-#[server]
-pub async fn get_cell_content(
-    notebook_id: String,
-    cell_id: String,
-) -> Result<CellContent, ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let nb_uuid = parse_uuid(&notebook_id)?;
-
-    let source = crate::notebook::cells::get_cell_source(&config.data_dir, &nb_uuid, &cell_id)
-        .map_err(|e| ServerFnError::new(format!("failed to read cell source: {e}")))?;
-
-    let cargo_toml =
-        crate::notebook::cells::get_cell_cargo_toml(&config.data_dir, &nb_uuid, &cell_id)
-            .map_err(|e| ServerFnError::new(format!("failed to read cell Cargo.toml: {e}")))?;
-
-    Ok(CellContent { source, cargo_toml })
-}
-
-// ── Cell CRUD ────────────────────────────────────────────────────────────────
-
-/// Adds a new cell to a notebook.
-///
-/// If `after_cell_id` is provided, the cell is inserted after that cell;
-/// otherwise it is appended at the end. Returns the new cell manifest.
-#[server]
-pub async fn add_cell(
-    notebook_id: String,
-    after_cell_id: Option<String>,
-    cell_type: CellType,
-) -> Result<CellManifest, ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let nb_uuid = parse_uuid(&notebook_id)?;
-
-    // Determine the next label by counting existing cells.
-    let manifest = crate::notebook::storage::get_notebook(&config.data_dir, &nb_uuid)
-        .map_err(|e| ServerFnError::new(format!("failed to read notebook: {e}")))?;
-    let label = format!("Cell {}", manifest.cells.len());
-
-    let cell_id = uuid::Uuid::new_v4().to_string();
-
-    let cell = crate::notebook::cells::add_cell(
-        &config.data_dir,
-        &nb_uuid,
-        &cell_id,
-        &label,
-        after_cell_id.as_deref(),
-        cell_type,
-    )
-    .map_err(|e| ServerFnError::new(format!("failed to add cell: {e}")))?;
-
-    Ok(cell)
-}
-
-/// Updates a cell's source code.
-#[server]
-pub async fn update_cell_source(
-    notebook_id: String,
-    cell_id: String,
-    source: String,
-) -> Result<(), ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let nb_uuid = parse_uuid(&notebook_id)?;
-
-    crate::notebook::cells::update_cell_source(&config.data_dir, &nb_uuid, &cell_id, &source)
-        .map_err(|e| ServerFnError::new(format!("failed to update cell source: {e}")))?;
-
-    Ok(())
-}
-
-/// Updates a cell's Cargo.toml.
-#[server]
-pub async fn update_cell_cargo_toml(
-    notebook_id: String,
-    cell_id: String,
-    cargo_toml: String,
-) -> Result<(), ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let nb_uuid = parse_uuid(&notebook_id)?;
-
-    crate::notebook::cells::update_cell_cargo_toml(
-        &config.data_dir,
-        &nb_uuid,
-        &cell_id,
-        &cargo_toml,
-    )
-    .map_err(|e| ServerFnError::new(format!("failed to update cell Cargo.toml: {e}")))?;
-
-    Ok(())
-}
-
-/// Deletes a cell from a notebook.
-#[server]
-pub async fn delete_cell(notebook_id: String, cell_id: String) -> Result<(), ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let nb_uuid = parse_uuid(&notebook_id)?;
-
-    crate::notebook::cells::delete_cell(&config.data_dir, &nb_uuid, &cell_id)
-        .map_err(|e| ServerFnError::new(format!("failed to delete cell: {e}")))?;
-
-    Ok(())
-}
-
-/// Reorders cells in a notebook.
-///
-/// `cell_ids` must contain the IDs of all existing cells in the desired order.
-#[server]
-pub async fn reorder_cells(
-    notebook_id: String,
-    cell_ids: Vec<String>,
-) -> Result<(), ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let nb_uuid = parse_uuid(&notebook_id)?;
-
-    crate::notebook::cells::reorder_cells(&config.data_dir, &nb_uuid, &cell_ids)
-        .map_err(|e| ServerFnError::new(format!("failed to reorder cells: {e}")))?;
-
-    Ok(())
-}
-
-/// Renames a cell's label.
-#[server]
-pub async fn rename_cell(
-    notebook_id: String,
-    cell_id: String,
-    label: String,
-) -> Result<(), ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let nb_uuid = parse_uuid(&notebook_id)?;
-
-    crate::notebook::cells::rename_cell(&config.data_dir, &nb_uuid, &cell_id, &label)
-        .map_err(|e| ServerFnError::new(format!("failed to rename cell: {e}")))?;
-
-    Ok(())
-}
-
-/// Duplicates a cell, creating a new cell with copied source and Cargo.toml.
-///
-/// Returns the new cell's manifest entry.
-#[server]
-pub async fn duplicate_cell(
-    notebook_id: String,
-    cell_id: String,
-) -> Result<CellManifest, ServerFnError> {
-    use ironpad_common::AppConfig;
-
-    let config = expect_context::<AppConfig>();
-    let nb_uuid = parse_uuid(&notebook_id)?;
-
-    let new_cell_id = uuid::Uuid::new_v4().to_string();
-
-    let cell =
-        crate::notebook::cells::duplicate_cell(&config.data_dir, &nb_uuid, &cell_id, &new_cell_id)
-            .map_err(|e| ServerFnError::new(format!("failed to duplicate cell: {e}")))?;
-
-    Ok(cell)
-}
-
-// ── Public notebooks ─────────────────────────────────────────────────────────
 
 /// Loads a public `.ironpad` notebook from the server's static files directory.
 ///
@@ -504,6 +223,38 @@ pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, Se
 
 // ── Shared notebooks ─────────────────────────────────────────────────────────
 
+/// Uploads a notebook for sharing. Returns the blake3 content hash (16 hex chars).
+///
+/// The notebook JSON is stored at `{data_dir}/shares/{hash}.json`.
+#[server]
+pub async fn share_notebook(notebook_json: String) -> Result<String, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    // Validate the JSON is a valid IronpadNotebook.
+    let _: IronpadNotebook = serde_json::from_str(&notebook_json)
+        .map_err(|e| ServerFnError::new(format!("invalid notebook JSON: {e}")))?;
+
+    let config = expect_context::<AppConfig>();
+
+    // Compute blake3 hash (first 16 hex chars).
+    let hash = blake3::hash(notebook_json.as_bytes());
+    let hash_hex = &hash.to_hex()[..16];
+
+    let shares_dir = config.data_dir.join("shares");
+    tokio::fs::create_dir_all(&shares_dir)
+        .await
+        .map_err(|e| ServerFnError::new(format!("failed to create shares dir: {e}")))?;
+
+    let path = shares_dir.join(format!("{hash_hex}.json"));
+    tokio::fs::write(&path, notebook_json.as_bytes())
+        .await
+        .map_err(|e| ServerFnError::new(format!("failed to write shared notebook: {e}")))?;
+
+    tracing::info!(hash = %hash_hex, "notebook shared");
+
+    Ok(hash_hex.to_string())
+}
+
 /// Retrieves a shared notebook by its blake3 content hash.
 ///
 /// Shared notebooks are stored as JSON blobs in `{data_dir}/shares/{hash}.json`.
@@ -527,13 +278,4 @@ pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, Server
         .map_err(|e| ServerFnError::new(format!("invalid shared notebook: {e}")))?;
 
     Ok(notebook)
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Parses a UUID string, returning a `ServerFnError` on failure.
-#[cfg(feature = "ssr")]
-fn parse_uuid(id: &str) -> Result<uuid::Uuid, ServerFnError> {
-    id.parse::<uuid::Uuid>()
-        .map_err(|e| ServerFnError::new(format!("invalid notebook ID '{id}': {e}")))
 }

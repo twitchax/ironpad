@@ -100,21 +100,7 @@ pub enum CellType {
     Markdown,
 }
 
-// ── Notebook Persistence Types ───────────────────────────────────────────────
-
-/// Full notebook manifest, serialized as `ironpad.json` on disk.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NotebookManifest {
-    pub id: Uuid,
-    pub title: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub compiler_version: String,
-    pub cells: Vec<CellManifest>,
-    /// Notebook-level shared Cargo.toml content (merged with per-cell deps at scaffold time).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shared_cargo_toml: Option<String>,
-}
+// ── Cell Manifest ────────────────────────────────────────────────────────────
 
 /// A single cell entry within a notebook manifest.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,28 +114,11 @@ pub struct CellManifest {
     pub cell_type: CellType,
 }
 
-/// The source code and Cargo.toml content of a cell.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CellContent {
-    pub source: String,
-    pub cargo_toml: String,
-}
-
-/// Lightweight summary used for the notebook list view.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NotebookSummary {
-    pub id: Uuid,
-    pub title: String,
-    pub updated_at: DateTime<Utc>,
-    pub cell_count: usize,
-}
-
 // ── Self-contained Notebook Types ───────────────────────────────────────────
 
 /// A complete, self-contained notebook with embedded cell content.
 ///
-/// Unlike [`NotebookManifest`] + [`CellContent`] (which separate metadata from
-/// source), this type carries everything needed to render or fork a notebook
+/// Carries everything needed to render or fork a notebook
 /// in a single value. Used for IndexedDB storage and view-only/shared pages.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IronpadNotebook {

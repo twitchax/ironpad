@@ -3,9 +3,6 @@ pub mod compiler;
 
 pub mod components;
 
-#[cfg(feature = "ssr")]
-pub mod notebook;
-
 pub mod pages;
 pub mod server_fns;
 pub mod storage;

@@ -1,8 +1,6 @@
 use leptos::prelude::*;
 use thaw::{Button, ButtonAppearance};
 
-use crate::server_fns::update_notebook;
-
 // ── Save status ─────────────────────────────────────────────────────────────
 
 /// Visual state of the save button.
@@ -99,13 +97,9 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
 
     let editing = RwSignal::new(false);
 
-    let save_title = Action::new(move |new_title: &String| {
-        let nb_id = ctx.notebook_id.get_untracked();
-        let new_title = new_title.clone();
+    let save_title = Action::new(move |_new_title: &String| {
         async move {
-            if let Some(id) = nb_id {
-                let _ = update_notebook(id, new_title).await;
-            }
+            // Title is persisted client-side via IndexedDB; no server call needed.
         }
     });
 
