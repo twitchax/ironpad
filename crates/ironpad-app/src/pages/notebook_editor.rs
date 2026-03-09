@@ -91,12 +91,12 @@ struct NotebookState {
 #[component]
 pub fn NotebookEditorPage() -> impl IntoView {
     let params = use_params_map();
-    let notebook_id = move || params.read().get("id").unwrap_or_default();
+    let notebook_id = params.read_untracked().get("id").unwrap_or_default();
 
     // Set up notebook-level reactive state.
 
     let state = NotebookState {
-        notebook_id: RwSignal::new(notebook_id()),
+        notebook_id: RwSignal::new(notebook_id),
         cells: RwSignal::new(Vec::new()),
         active_cell: RwSignal::new(None),
         refresh_generation: RwSignal::new(0),
@@ -112,7 +112,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
     // Fetch notebook data, re-running when refresh_generation changes.
 
     let notebook_resource = Resource::new(
-        move || (notebook_id(), state.refresh_generation.get()),
+        move || (state.notebook_id.get(), state.refresh_generation.get()),
         |(id, _gen)| get_notebook(id),
     );
 
@@ -391,6 +391,12 @@ const SHARED_DEPS_DEFAULT: &str = "\
 # Add shared dependencies here.
 # These will be available in all cells.
 # Cell-level dependencies override shared ones.
+
+[profile.release]
+# Optimized for fast compilation (interactive notebook use).
+opt-level = 1
+lto = false
+codegen-units = 16
 ";
 
 /// Panel for editing the notebook-level shared Cargo.toml.

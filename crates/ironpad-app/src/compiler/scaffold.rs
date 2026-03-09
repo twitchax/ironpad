@@ -63,6 +63,10 @@ pub fn scaffold_micro_crate(
 /// (package metadata, `cdylib` crate type, `ironpad-cell` path dependency).
 /// When `shared_cargo_toml` is provided, its dependencies are merged first,
 /// then cell-level deps override any shared dep with the same crate name.
+///
+/// Extra sections (e.g. `[profile.release]`) from the shared Cargo.toml are
+/// also forwarded into the generated Cargo.toml, giving users control over
+/// compilation profiles.
 fn generate_cargo_toml(
     cell_id: &str,
     user_cargo_toml: &str,
@@ -70,6 +74,7 @@ fn generate_cargo_toml(
     shared_cargo_toml: Option<&str>,
 ) -> String {
     let merged_deps = merge_dependencies(shared_cargo_toml, user_cargo_toml);
+    let extra_sections = extract_extra_sections(shared_cargo_toml, user_cargo_toml);
 
     // Escape backslashes for Windows path compatibility in TOML strings.
     let cell_path_str = ironpad_cell_path.display().to_string().replace('\\', "/");
@@ -94,6 +99,14 @@ wasm-bindgen = "0.2"
     if !merged_deps.is_empty() {
         toml.push_str(&merged_deps);
         if !merged_deps.ends_with('\n') {
+            toml.push('\n');
+        }
+    }
+
+    if !extra_sections.is_empty() {
+        toml.push('\n');
+        toml.push_str(&extra_sections);
+        if !extra_sections.ends_with('\n') {
             toml.push('\n');
         }
     }
@@ -170,6 +183,84 @@ fn merge_dependencies(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) ->
         .map(|(_, line)| line)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Extract non-`[dependencies]` sections from the shared and cell Cargo.toml
+/// content (e.g. `[profile.release]`, `[features]`).
+///
+/// The shared sections are emitted first; if the cell Cargo.toml contains a
+/// section with the same header, the cell's version replaces the shared one.
+fn extract_extra_sections(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> String {
+    let shared = shared_cargo_toml.map_or_else(Vec::new, collect_extra_sections);
+    let cell = collect_extra_sections(cell_cargo_toml);
+
+    if shared.is_empty() && cell.is_empty() {
+        return String::new();
+    }
+
+    // Merge: shared first, cell overrides by section header.
+    let mut sections: Vec<(String, String)> = shared;
+
+    for (header, body) in cell {
+        if let Some(entry) = sections.iter_mut().find(|(h, _)| *h == header) {
+            entry.1 = body;
+        } else {
+            sections.push((header, body));
+        }
+    }
+
+    sections
+        .into_iter()
+        .map(|(header, body)| format!("{header}\n{body}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Collect all non-`[dependencies]` sections from a Cargo.toml string.
+///
+/// Returns a list of `(header, body)` pairs where `header` is the full section
+/// line (e.g. `[profile.release]`) and `body` is the content below it.
+fn collect_extra_sections(cargo_toml: &str) -> Vec<(String, String)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current_header: Option<String> = None;
+    let mut current_body = Vec::new();
+
+    let ignored_sections = ["[dependencies]", "[package]", "[lib]", "[workspace]"];
+
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') {
+            // Flush previous section if it was an extra.
+            if let Some(header) = current_header.take() {
+                let body = current_body.join("\n");
+                if !body.trim().is_empty() {
+                    sections.push((header, body));
+                }
+            }
+            current_body.clear();
+
+            let is_ignored = ignored_sections.contains(&trimmed);
+            if !is_ignored {
+                current_header = Some(trimmed.to_string());
+            }
+            continue;
+        }
+
+        if current_header.is_some() {
+            current_body.push(line.to_string());
+        }
+    }
+
+    // Flush final section.
+    if let Some(header) = current_header {
+        let body = current_body.join("\n");
+        if !body.trim().is_empty() {
+            sections.push((header, body));
+        }
+    }
+
+    sections
 }
 
 /// Extract the crate name from a TOML dependency line.
@@ -724,5 +815,99 @@ serde = "1"
         )
         .unwrap();
         assert!(is_async);
+    }
+
+    // ── extract_extra_sections ──────────────────────────────────────────
+
+    #[test]
+    fn extra_sections_from_shared_profile() {
+        let shared = "\
+[dependencies]
+serde = \"1\"
+
+[profile.release]
+opt-level = 1
+lto = false
+";
+        let result = extract_extra_sections(Some(shared), "");
+        assert!(result.contains("[profile.release]"));
+        assert!(result.contains("opt-level = 1"));
+        assert!(result.contains("lto = false"));
+        // Dependencies should NOT appear in extra sections.
+        assert!(!result.contains("serde"));
+    }
+
+    #[test]
+    fn extra_sections_cell_overrides_shared() {
+        let shared = "\
+[profile.release]
+opt-level = 1
+";
+        let cell = "\
+[profile.release]
+opt-level = 3
+";
+        let result = extract_extra_sections(Some(shared), cell);
+        assert!(result.contains("opt-level = 3"));
+        assert!(!result.contains("opt-level = 1"));
+    }
+
+    #[test]
+    fn extra_sections_ignores_known_headers() {
+        let shared = "\
+[package]
+name = \"should-be-ignored\"
+
+[dependencies]
+serde = \"1\"
+
+[lib]
+crate-type = [\"cdylib\"]
+
+[workspace]
+";
+        let result = extract_extra_sections(Some(shared), "");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn extra_sections_multiple_sections() {
+        let shared = "\
+[profile.release]
+opt-level = 1
+
+[features]
+my-feature = []
+";
+        let result = extract_extra_sections(Some(shared), "");
+        assert!(result.contains("[profile.release]"));
+        assert!(result.contains("opt-level = 1"));
+        assert!(result.contains("[features]"));
+        assert!(result.contains("my-feature"));
+    }
+
+    #[test]
+    fn extra_sections_empty_when_none() {
+        let result = extract_extra_sections(None, "");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn generate_cargo_toml_includes_profile() {
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let shared = "\
+[dependencies]
+serde = \"1\"
+
+[profile.release]
+opt-level = 1
+lto = false
+codegen-units = 16
+";
+        let result = generate_cargo_toml("abc", "", &cell_path, Some(shared));
+        assert!(result.contains("[profile.release]"));
+        assert!(result.contains("opt-level = 1"));
+        assert!(result.contains("serde"));
+        assert!(result.contains("ironpad-cell"));
     }
 }

@@ -130,3 +130,5 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 - **LSP integration**: Full rust-analyzer completions in Monaco (per-cell analysis)
 - **Collaboration**: Real-time multi-user editing via WebSocket
 - **Cell templates/snippets**: Quick-start templates for common patterns
+- **"Copy" Buttons**: Copy cell output to clipboard with one click
+- **Make code cells expandable**: code snippet is small right now.
