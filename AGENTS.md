@@ -63,21 +63,21 @@ cargo make uat
 
 ### All cargo-make Tasks
 
-| Task | Purpose |
-|------|---------|
-| `dev` | Start cargo-leptos watch (dev server, live reload) |
-| `build` | Release build via cargo-leptos |
-| `fmt` | Auto-format all Rust code |
-| `fmt-check` | Check formatting (no changes) |
-| `clippy` | Run clippy lints |
-| `test` | Unit/integration tests via cargo-nextest |
-| `test-integration` | Slow tests (requires wasm32 target) |
-| `ci` | fmt-check + clippy + test |
-| `playwright` | Run Playwright e2e tests |
-| `uat` | ci + test-integration + playwright |
-| `docker-build` | Build Docker image |
-| `docker-up` | Start container via docker-compose |
-| `docker-down` | Stop container |
+| Task               | Purpose                                            |
+| ------------------ | -------------------------------------------------- |
+| `dev`              | Start cargo-leptos watch (dev server, live reload) |
+| `build`            | Release build via cargo-leptos                     |
+| `fmt`              | Auto-format all Rust code                          |
+| `fmt-check`        | Check formatting (no changes)                      |
+| `clippy`           | Run clippy lints                                   |
+| `test`             | Unit/integration tests via cargo-nextest           |
+| `test-integration` | Slow tests (requires wasm32 target)                |
+| `ci`               | fmt-check + clippy + test                          |
+| `playwright`       | Run Playwright e2e tests                           |
+| `uat`              | ci + test-integration + playwright                 |
+| `docker-build`     | Build Docker image                                 |
+| `docker-up`        | Start container via docker-compose                 |
+| `docker-down`      | Stop container                                     |
 
 ---
 

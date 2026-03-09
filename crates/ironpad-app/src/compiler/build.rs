@@ -85,6 +85,11 @@ pub async fn build_micro_crate(
             .current_dir(crate_dir)
             .env("CARGO_HOME", &cargo_home)
             .env("CARGO_TARGET_DIR", &target_dir)
+            // Clear host-target flags that may leak from the parent process
+            // (e.g. cargo-leptos setting RUSTFLAGS with `-fuse-ld=mold`).
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("CARGO_BUILD_RUSTFLAGS")
             .output()
     })
     .await
@@ -104,6 +109,7 @@ pub async fn build_micro_crate(
         tracing::warn!(
             cell_id = %cell_id,
             exit_code = ?output.status.code(),
+            stdout = %stdout,
             stderr = %stderr,
             "cargo build failed",
         );

@@ -14,7 +14,7 @@ FROM rust:1.93.0 AS builder
 RUN rustup target add wasm32-unknown-unknown
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        binaryen \
+    binaryen \
     && rm -rf /var/lib/apt/lists/*
 
 RUN cargo install cargo-leptos
@@ -32,7 +32,7 @@ FROM rust:1.93.0 AS runtime
 RUN rustup target add wasm32-unknown-unknown
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        binaryen \
+    binaryen \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-warm the cargo registry cache with ironpad-cell dependencies so that

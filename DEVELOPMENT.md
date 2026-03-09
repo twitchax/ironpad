@@ -31,23 +31,23 @@ cargo make uat
 
 ### All cargo-make Tasks
 
-| Task | Purpose |
-|------|---------|
-| `install-tools` | Install all required dev tools |
-| `dev` | Start cargo-leptos watch (dev server, live reload) |
-| `build` | Release build via cargo-leptos |
-| `fmt` | Auto-format all Rust code |
-| `fmt-check` | Check formatting (no changes) |
-| `clippy` | Run clippy lints (`-D warnings`) |
-| `test` | Unit/integration tests via cargo-nextest |
-| `test-integration` | Slow tests (requires wasm32 target) |
-| `ci` | fmt-check + clippy + test |
-| `playwright` | Run Playwright e2e tests |
-| `uat` | ci + test-integration + playwright |
-| `docker-build` | Build Docker image |
-| `docker-up` | Start container via docker-compose |
-| `docker-down` | Stop container |
-| `docker-uat` | Build, start, run Playwright, tear down |
+| Task               | Purpose                                            |
+| ------------------ | -------------------------------------------------- |
+| `install-tools`    | Install all required dev tools                     |
+| `dev`              | Start cargo-leptos watch (dev server, live reload) |
+| `build`            | Release build via cargo-leptos                     |
+| `fmt`              | Auto-format all Rust code                          |
+| `fmt-check`        | Check formatting (no changes)                      |
+| `clippy`           | Run clippy lints (`-D warnings`)                   |
+| `test`             | Unit/integration tests via cargo-nextest           |
+| `test-integration` | Slow tests (requires wasm32 target)                |
+| `ci`               | fmt-check + clippy + test                          |
+| `playwright`       | Run Playwright e2e tests                           |
+| `uat`              | ci + test-integration + playwright                 |
+| `docker-build`     | Build Docker image                                 |
+| `docker-up`        | Start container via docker-compose                 |
+| `docker-down`      | Stop container                                     |
+| `docker-uat`       | Build, start, run Playwright, tear down            |
 
 ---
 
@@ -55,13 +55,13 @@ cargo make uat
 
 ironpad is a Cargo workspace with 5 crates:
 
-| Crate | Role |
-|-------|------|
-| **ironpad-app** | Core crate (~7.6k LoC) — compiler pipeline, Leptos UI components, notebook storage, server functions |
-| **ironpad-server** | Axum HTTP server entry point (minimal — `main.rs` + `config.rs`) |
-| **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos) |
-| **ironpad-common** | Shared types: `CompileRequest`, `CompileResponse`, `NotebookManifest`, `CellManifest`, `Diagnostic`, `AppConfig` |
-| **ironpad-cell** | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports |
+| Crate                | Role                                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **ironpad-app**      | Core crate (~7.6k LoC) — compiler pipeline, Leptos UI components, notebook storage, server functions             |
+| **ironpad-server**   | Axum HTTP server entry point (minimal — `main.rs` + `config.rs`)                                                 |
+| **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos)                                                |
+| **ironpad-common**   | Shared types: `CompileRequest`, `CompileResponse`, `NotebookManifest`, `CellManifest`, `Diagnostic`, `AppConfig` |
+| **ironpad-cell**     | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports         |
 
 ```
 crates/
@@ -110,9 +110,9 @@ scaffold → cache check → cargo build → diagnostics → wasm-opt
 
 ### Client-Side APIs
 
-| Namespace | Purpose |
-|-----------|---------|
-| `window.IronpadMonaco.*` | Monaco editor JS bridge (create, get/set content, set markers) |
+| Namespace                  | Purpose                                                         |
+| -------------------------- | --------------------------------------------------------------- |
+| `window.IronpadMonaco.*`   | Monaco editor JS bridge (create, get/set content, set markers)  |
 | `window.IronpadExecutor.*` | WASM executor (load module, execute `cell_main`, manage memory) |
 
 Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) code paths.

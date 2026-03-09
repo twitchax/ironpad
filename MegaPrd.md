@@ -55,27 +55,27 @@ Long-term, ironpad becomes the default "try Rust interactively" tool for the Rus
 
 ### 4.1 MVP Goals
 
-| # | Goal | Success Metric |
-|---|------|---------------|
-| G1 | Cold compile turnaround < 5s for a trivial cell | p95 < 5s, measured client-side end-to-end |
-| G2 | Polished, approachable UI | Qualitative: "looks like a real product" from 3+ external testers |
-| G3 | Per-cell dependency isolation via editable Cargo.toml | Each cell compiles independently with its own deps |
-| G4 | Client-side WASM execution with bincode cell boundary | Cells execute in-browser; output passed to next cell as bytes |
-| G5 | Notebook persistence to filesystem | Save/load notebooks as a directory or single file |
-| G6 | Compiler error rendering that helps learners | Errors rendered inline with span highlighting, not raw `rustc` stderr dumps |
-| G7 | Single-user self-hosted container deployment | `docker run` and go |
+| #   | Goal                                                  | Success Metric                                                              |
+| --- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| G1  | Cold compile turnaround < 5s for a trivial cell       | p95 < 5s, measured client-side end-to-end                                   |
+| G2  | Polished, approachable UI                             | Qualitative: "looks like a real product" from 3+ external testers           |
+| G3  | Per-cell dependency isolation via editable Cargo.toml | Each cell compiles independently with its own deps                          |
+| G4  | Client-side WASM execution with bincode cell boundary | Cells execute in-browser; output passed to next cell as bytes               |
+| G5  | Notebook persistence to filesystem                    | Save/load notebooks as a directory or single file                           |
+| G6  | Compiler error rendering that helps learners          | Errors rendered inline with span highlighting, not raw `rustc` stderr dumps |
+| G7  | Single-user self-hosted container deployment          | `docker run` and go                                                         |
 
 ### 4.2 Non-Goals (MVP)
 
-| # | Non-Goal | Rationale |
-|---|----------|-----------|
-| NG1 | Server-side execution toggle | Defer until post-MVP; client-side WASM covers most learning use cases |
-| NG2 | Multi-user / collaboration | Single-user container for MVP; no auth, no sharing infra |
-| NG3 | DAG-based cell ordering | Linear cell order only; DAG adds complexity with minimal learner benefit |
-| NG4 | Multiple compiler versions | Ship with stable; version selector is a post-MVP feature |
-| NG5 | `ironpad-std` charting/visualization library | MVP uses raw bincode `Vec<u8>` boundary; standard lib is a fast-follow |
-| NG6 | Custom system dependencies (`apt-get`) | Pure-Rust / `wasm32-unknown-unknown`-compatible crates only for MVP |
-| NG7 | Multi-tenant SaaS deployment | Out of scope; single-user container only |
+| #   | Non-Goal                                     | Rationale                                                                |
+| --- | -------------------------------------------- | ------------------------------------------------------------------------ |
+| NG1 | Server-side execution toggle                 | Defer until post-MVP; client-side WASM covers most learning use cases    |
+| NG2 | Multi-user / collaboration                   | Single-user container for MVP; no auth, no sharing infra                 |
+| NG3 | DAG-based cell ordering                      | Linear cell order only; DAG adds complexity with minimal learner benefit |
+| NG4 | Multiple compiler versions                   | Ship with stable; version selector is a post-MVP feature                 |
+| NG5 | `ironpad-std` charting/visualization library | MVP uses raw bincode `Vec<u8>` boundary; standard lib is a fast-follow   |
+| NG6 | Custom system dependencies (`apt-get`)       | Pure-Rust / `wasm32-unknown-unknown`-compatible crates only for MVP      |
+| NG7 | Multi-tenant SaaS deployment                 | Out of scope; single-user container only                                 |
 
 ---
 
@@ -345,18 +345,18 @@ Compiler errors are the #1 pain point for learners. ironpad must render them wel
 
 ### 7.1 Tech Stack
 
-| Layer | Technology | Rationale |
-|-------|-----------|-----------|
-| Framework | Leptos | Rust-native, SSR + hydration, `#[server]` fns for compile RPC |
-| UI Components | Thaw UI | Leptos-native component library; tabs, cards, buttons, modals |
-| Code Editor | Monaco | Industry standard; JS-based, integrated via `wasm-bindgen` / JS interop |
-| Serialization (cell boundary) | bincode | Fast, compact, Rust-native; zero-copy deserialization possible |
-| Compilation | `cargo` + `rustc` (wasm32-unknown-unknown) | Standard Rust toolchain |
-| WASM execution | `WebAssembly.instantiate` (browser native) | No additional runtime needed |
-| Content hashing | blake3 | Fast, Rust-native |
-| Notebook storage | Filesystem (JSON + source files) | Simple, portable, git-friendly |
-| Container runtime | Docker | Standard; single `Dockerfile` |
-| CSS | Tailwind (via Thaw defaults or custom) | Utility-first, works well with Leptos |
+| Layer                         | Technology                                 | Rationale                                                               |
+| ----------------------------- | ------------------------------------------ | ----------------------------------------------------------------------- |
+| Framework                     | Leptos                                     | Rust-native, SSR + hydration, `#[server]` fns for compile RPC           |
+| UI Components                 | Thaw UI                                    | Leptos-native component library; tabs, cards, buttons, modals           |
+| Code Editor                   | Monaco                                     | Industry standard; JS-based, integrated via `wasm-bindgen` / JS interop |
+| Serialization (cell boundary) | bincode                                    | Fast, compact, Rust-native; zero-copy deserialization possible          |
+| Compilation                   | `cargo` + `rustc` (wasm32-unknown-unknown) | Standard Rust toolchain                                                 |
+| WASM execution                | `WebAssembly.instantiate` (browser native) | No additional runtime needed                                            |
+| Content hashing               | blake3                                     | Fast, Rust-native                                                       |
+| Notebook storage              | Filesystem (JSON + source files)           | Simple, portable, git-friendly                                          |
+| Container runtime             | Docker                                     | Standard; single `Dockerfile`                                           |
+| CSS                           | Tailwind (via Thaw defaults or custom)     | Utility-first, works well with Leptos                                   |
 
 ### 7.2 Crate Structure
 
@@ -741,19 +741,19 @@ docker compose up -d
 
 Target: **< 5s cold compile for a trivial cell** (p95, end-to-end including network).
 
-| Phase | Budget | Notes |
-|-------|--------|-------|
-| Client → Server RPC | 50ms | Leptos server fn, local container |
-| Content hash + cache check | 5ms | blake3 is ~6GB/s; filesystem stat |
-| Write micro-crate to disk | 10ms | Small files |
-| `cargo build` (cold, trivial cell) | 3-4s | Dominated by linking; `wasm32` link is fast |
-| `cargo build` (warm, same deps) | 0.5-1s | Incremental; only cell source changed |
-| `wasm-opt` | 200ms | `-Oz` on small blobs |
-| Cache write | 10ms | Small blob |
-| Server → Client transfer | 50ms | Small blob, local |
-| WASM instantiation | 10ms | Browser-native, fast for small modules |
-| **Total (cold)** | **~4s** | |
-| **Total (warm/cached)** | **~100ms** | Hash hit → return blob → instantiate |
+| Phase                              | Budget     | Notes                                       |
+| ---------------------------------- | ---------- | ------------------------------------------- |
+| Client → Server RPC                | 50ms       | Leptos server fn, local container           |
+| Content hash + cache check         | 5ms        | blake3 is ~6GB/s; filesystem stat           |
+| Write micro-crate to disk          | 10ms       | Small files                                 |
+| `cargo build` (cold, trivial cell) | 3-4s       | Dominated by linking; `wasm32` link is fast |
+| `cargo build` (warm, same deps)    | 0.5-1s     | Incremental; only cell source changed       |
+| `wasm-opt`                         | 200ms      | `-Oz` on small blobs                        |
+| Cache write                        | 10ms       | Small blob                                  |
+| Server → Client transfer           | 50ms       | Small blob, local                           |
+| WASM instantiation                 | 10ms       | Browser-native, fast for small modules      |
+| **Total (cold)**                   | **~4s**    |                                             |
+| **Total (warm/cached)**            | **~100ms** | Hash hit → return blob → instantiate        |
 
 ### 10.1 Performance Levers
 
@@ -807,41 +807,41 @@ Target: **< 5s cold compile for a trivial cell** (p95, end-to-end including netw
 
 ## 12. Open Questions
 
-| # | Question | Options | Decision |
-|---|----------|---------|----------|
-| OQ1 | Should the user see the auto-generated wrapper, or just write the cell body? | (a) Hide it, magic; (b) Show it, educational; (c) Toggle | Leaning (c): hide by default, "Show wrapper" toggle for learners |
-| OQ2 | How to handle `println!` / stdout in WASM? | (a) Custom `print` macro that writes to a display buffer; (b) WASI stdout capture | Leaning (a) for MVP — simpler, no WASI dep |
-| OQ3 | Should cells have explicit names/types for their output? | (a) Untyped `Vec<u8>`; (b) Declared output type in cell metadata | (a) for MVP; evolve toward (b) with `ironpad-std` |
-| OQ4 | Notebook format: directory vs single file? | (a) Directory (git-friendly); (b) Single file (portable) | (a) for MVP; add (b) export in Phase 4 |
-| OQ5 | Monaco loading strategy? | (a) CDN; (b) Bundled in container; (c) Lazy-load from server | Leaning (b) — no external CDN dep for self-hosted |
-| OQ6 | How to manage `ironpad-cell` versioning? | (a) Path dep (from container FS); (b) Published to crates.io; (c) Git dep | Leaning (a) for MVP — simplest, no external publishing |
+| #   | Question                                                                     | Options                                                                           | Decision                                                         |
+| --- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| OQ1 | Should the user see the auto-generated wrapper, or just write the cell body? | (a) Hide it, magic; (b) Show it, educational; (c) Toggle                          | Leaning (c): hide by default, "Show wrapper" toggle for learners |
+| OQ2 | How to handle `println!` / stdout in WASM?                                   | (a) Custom `print` macro that writes to a display buffer; (b) WASI stdout capture | Leaning (a) for MVP — simpler, no WASI dep                       |
+| OQ3 | Should cells have explicit names/types for their output?                     | (a) Untyped `Vec<u8>`; (b) Declared output type in cell metadata                  | (a) for MVP; evolve toward (b) with `ironpad-std`                |
+| OQ4 | Notebook format: directory vs single file?                                   | (a) Directory (git-friendly); (b) Single file (portable)                          | (a) for MVP; add (b) export in Phase 4                           |
+| OQ5 | Monaco loading strategy?                                                     | (a) CDN; (b) Bundled in container; (c) Lazy-load from server                      | Leaning (b) — no external CDN dep for self-hosted                |
+| OQ6 | How to manage `ironpad-cell` versioning?                                     | (a) Path dep (from container FS); (b) Published to crates.io; (c) Git dep         | Leaning (a) for MVP — simplest, no external publishing           |
 
 ---
 
 ## 13. Success Criteria (MVP Launch)
 
-| # | Criterion | How to Measure |
-|---|-----------|---------------|
-| S1 | A user can `docker compose up`, open the browser, create a notebook, and run a cell within 2 minutes | Manual test with a fresh user |
-| S2 | Cold compile of a trivial cell completes in < 5s | Automated benchmark in CI |
-| S3 | Cells can pass data via bincode and the next cell can deserialize it | Integration test |
-| S4 | Compiler errors are rendered inline in Monaco with span highlighting | Manual test with intentional errors |
-| S5 | Notebooks persist across container restarts (via volume mount) | Restart container, verify notebooks load |
-| S6 | The UI looks polished and is usable by someone unfamiliar with the project | Qualitative feedback from 3+ testers |
-| S7 | Sample notebook is pre-loaded demonstrating basic multi-cell data flow | Verify on first launch |
+| #   | Criterion                                                                                            | How to Measure                           |
+| --- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| S1  | A user can `docker compose up`, open the browser, create a notebook, and run a cell within 2 minutes | Manual test with a fresh user            |
+| S2  | Cold compile of a trivial cell completes in < 5s                                                     | Automated benchmark in CI                |
+| S3  | Cells can pass data via bincode and the next cell can deserialize it                                 | Integration test                         |
+| S4  | Compiler errors are rendered inline in Monaco with span highlighting                                 | Manual test with intentional errors      |
+| S5  | Notebooks persist across container restarts (via volume mount)                                       | Restart container, verify notebooks load |
+| S6  | The UI looks polished and is usable by someone unfamiliar with the project                           | Qualitative feedback from 3+ testers     |
+| S7  | Sample notebook is pre-loaded demonstrating basic multi-cell data flow                               | Verify on first launch                   |
 
 ---
 
 ## 14. Risks
 
-| # | Risk | Likelihood | Impact | Mitigation |
-|---|------|-----------|--------|-----------|
-| R1 | `cargo build` cold compile > 5s for cells with non-trivial deps | High | High | sccache, pre-warmed target dirs, dep caching |
-| R2 | WASM memory management bugs (leaks, corruption) between cells | Medium | High | Thorough integration tests; consider fresh instance per execution |
-| R3 | Monaco integration with Leptos is janky (hydration issues, event conflicts) | Medium | Medium | Isolate Monaco in an iframe or web component if needed |
-| R4 | Thaw UI SSR hydration edge cases | Medium | Low | Pin version; fallback to custom components if needed |
-| R5 | `wasm32-unknown-unknown` crate compatibility is worse than expected | Medium | Medium | Document compatible crates; Phase 2 server-side execution as escape hatch |
-| R6 | Blob size bloat with per-cell allocators/panic handlers | Low | Medium | `wee_alloc`, `#[panic = "abort"]`, `wasm-opt -Oz` |
+| #   | Risk                                                                        | Likelihood | Impact | Mitigation                                                                |
+| --- | --------------------------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------- |
+| R1  | `cargo build` cold compile > 5s for cells with non-trivial deps             | High       | High   | sccache, pre-warmed target dirs, dep caching                              |
+| R2  | WASM memory management bugs (leaks, corruption) between cells               | Medium     | High   | Thorough integration tests; consider fresh instance per execution         |
+| R3  | Monaco integration with Leptos is janky (hydration issues, event conflicts) | Medium     | Medium | Isolate Monaco in an iframe or web component if needed                    |
+| R4  | Thaw UI SSR hydration edge cases                                            | Medium     | Low    | Pin version; fallback to custom components if needed                      |
+| R5  | `wasm32-unknown-unknown` crate compatibility is worse than expected         | Medium     | Medium | Document compatible crates; Phase 2 server-side execution as escape hatch |
+| R6  | Blob size bloat with per-cell allocators/panic handlers                     | Low        | Medium | `wee_alloc`, `#[panic = "abort"]`, `wasm-opt -Oz`                         |
 
 ---
 
@@ -882,13 +882,13 @@ CellOutput::text(format!("Sum of first {} Fibonacci numbers: {}", fibs.len(), su
 
 ## Appendix B: Reference Projects
 
-| Project | Relevance |
-|---------|-----------|
-| [Rust Playground](https://play.rust-lang.org/) | Single-file Rust compilation to WASM; no cell model |
-| [Jupyter + evcxr](https://github.com/evcxr/evcxr) | Rust kernel for Jupyter; inspiration for cell model, anti-pattern for perf |
-| [Observable](https://observablehq.com/) | JavaScript notebooks with reactive cells; UI/UX inspiration |
-| [Marimo](https://marimo.io/) | Python notebooks with reactive DAG; architecture inspiration |
-| [Leptos](https://leptos.dev/) | Framework |
-| [Thaw UI](https://thawui.vercel.app/) | Component library |
-| [Monaco Editor](https://microsoft.github.io/monaco-editor/) | Code editor |
+| Project                                                     | Relevance                                                                  |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [Rust Playground](https://play.rust-lang.org/)              | Single-file Rust compilation to WASM; no cell model                        |
+| [Jupyter + evcxr](https://github.com/evcxr/evcxr)           | Rust kernel for Jupyter; inspiration for cell model, anti-pattern for perf |
+| [Observable](https://observablehq.com/)                     | JavaScript notebooks with reactive cells; UI/UX inspiration                |
+| [Marimo](https://marimo.io/)                                | Python notebooks with reactive DAG; architecture inspiration               |
+| [Leptos](https://leptos.dev/)                               | Framework                                                                  |
+| [Thaw UI](https://thawui.vercel.app/)                       | Component library                                                          |
+| [Monaco Editor](https://microsoft.github.io/monaco-editor/) | Code editor                                                                |
 
