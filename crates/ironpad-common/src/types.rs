@@ -143,3 +143,72 @@ pub struct NotebookSummary {
     pub updated_at: DateTime<Utc>,
     pub cell_count: usize,
 }
+
+// ── Self-contained Notebook Types ───────────────────────────────────────────
+
+/// A complete, self-contained notebook with embedded cell content.
+///
+/// Unlike [`NotebookManifest`] + [`CellContent`] (which separate metadata from
+/// source), this type carries everything needed to render or fork a notebook
+/// in a single value. Used for IndexedDB storage and view-only/shared pages.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IronpadNotebook {
+    pub version: u32,
+    pub id: Uuid,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_cargo_toml: Option<String>,
+    pub cells: Vec<IronpadCell>,
+}
+
+impl IronpadNotebook {
+    /// Creates a new empty notebook with the given title.
+    pub fn new(title: &str) -> Self {
+        let now = Utc::now();
+        Self {
+            version: 1,
+            id: Uuid::new_v4(),
+            title: title.to_string(),
+            created_at: now,
+            updated_at: now,
+            shared_cargo_toml: None,
+            cells: Vec::new(),
+        }
+    }
+}
+
+/// A single cell within an [`IronpadNotebook`], including its source code.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IronpadCell {
+    pub id: String,
+    pub order: u32,
+    pub label: String,
+    #[serde(default)]
+    pub cell_type: CellType,
+    pub source: String,
+    /// Per-cell `Cargo.toml` content. `None` for Markdown cells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_toml: Option<String>,
+}
+
+// ── Public Notebook Types ───────────────────────────────────────────────────
+
+/// Lightweight summary of a public notebook for the home-page listing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PublicNotebookSummary {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub filename: String,
+    pub cell_count: usize,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Index of all available public notebooks, loaded from `index.json`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PublicNotebookIndex {
+    pub notebooks: Vec<PublicNotebookSummary>,
+}

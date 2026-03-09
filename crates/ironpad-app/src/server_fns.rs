@@ -1,6 +1,6 @@
 use ironpad_common::{
-    CellContent, CellManifest, CellType, CompileRequest, CompileResponse, NotebookManifest,
-    NotebookSummary,
+    CellContent, CellManifest, CellType, CompileRequest, CompileResponse, IronpadNotebook,
+    NotebookManifest, NotebookSummary, PublicNotebookSummary,
 };
 use leptos::prelude::*;
 
@@ -190,6 +190,25 @@ pub async fn list_notebooks() -> Result<Vec<NotebookSummary>, ServerFnError> {
         .map_err(|e| ServerFnError::new(format!("failed to list notebooks: {e}")))?;
 
     Ok(summaries)
+}
+
+/// Lists all available public notebooks from the static index.
+#[server]
+pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, ServerFnError> {
+    use ironpad_common::{AppConfig, PublicNotebookIndex};
+
+    let config = expect_context::<AppConfig>();
+    let index_path = config.data_dir.join("public_notebooks").join("index.json");
+
+    let json = match tokio::fs::read_to_string(&index_path).await {
+        Ok(json) => json,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let index: PublicNotebookIndex = serde_json::from_str(&json)
+        .map_err(|e| ServerFnError::new(format!("invalid public notebook index: {e}")))?;
+
+    Ok(index.notebooks)
 }
 
 /// Creates a new notebook with the given title.
@@ -453,6 +472,61 @@ pub async fn duplicate_cell(
             .map_err(|e| ServerFnError::new(format!("failed to duplicate cell: {e}")))?;
 
     Ok(cell)
+}
+
+// ── Public notebooks ─────────────────────────────────────────────────────────
+
+/// Loads a public `.ironpad` notebook from the server's static files directory.
+///
+/// The `filename` must end with `.ironpad` and may not contain path separators.
+#[server]
+pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, ServerFnError> {
+    // Reject path traversal attempts.
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return Err(ServerFnError::new("invalid filename"));
+    }
+
+    let leptos_options = expect_context::<LeptosOptions>();
+    let site_root: &str = &leptos_options.site_root;
+    let path = std::path::Path::new(site_root)
+        .join("notebooks")
+        .join(&filename);
+
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| ServerFnError::new(format!("notebook not found: {e}")))?;
+
+    let notebook: IronpadNotebook = serde_json::from_slice(&bytes)
+        .map_err(|e| ServerFnError::new(format!("invalid notebook file: {e}")))?;
+
+    Ok(notebook)
+}
+
+// ── Shared notebooks ─────────────────────────────────────────────────────────
+
+/// Retrieves a shared notebook by its blake3 content hash.
+///
+/// Shared notebooks are stored as JSON blobs in `{data_dir}/shares/{hash}.json`.
+#[server]
+pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    // Reject path traversal attempts.
+    if hash.contains('/') || hash.contains('\\') || hash.contains("..") {
+        return Err(ServerFnError::new("invalid share hash"));
+    }
+
+    let config = expect_context::<AppConfig>();
+    let path = config.data_dir.join("shares").join(format!("{hash}.json"));
+
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| ServerFnError::new(format!("shared notebook not found: {e}")))?;
+
+    let notebook: IronpadNotebook = serde_json::from_slice(&bytes)
+        .map_err(|e| ServerFnError::new(format!("invalid shared notebook: {e}")))?;
+
+    Ok(notebook)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
