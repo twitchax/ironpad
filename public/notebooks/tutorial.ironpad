@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000003",
+  "title": "Interactive Tutorial",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Welcome",
+      "cell_type": "Markdown",
+      "source": "# Welcome to ironpad! 🦀\n\n**ironpad** is an interactive Rust notebook that compiles each cell to WebAssembly and runs it in your browser.\n\n## Getting Started\n- Each **code cell** contains Rust code that gets compiled and executed\n- The last expression in a cell becomes its output\n- Outputs are automatically passed to later cells as typed variables",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Simple Expression",
+      "cell_type": "Code",
+      "source": "// Just type an expression — it becomes the cell's output!\n// This cell outputs a Vec<i32>.\nvec![1, 1, 2, 3, 5, 8, 13, 21]\n",
+      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Cell Variables",
+      "cell_type": "Markdown",
+      "source": "## Cell Variables\n\nEach code cell's output is available in later cells as a typed variable:\n- `cell0`, `cell1`, ... — by cell index (only counting code cells)\n- `last` — alias for the most recent code cell's output\n\nThe variables are strongly typed — the compiler knows their Rust types!",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Using Variables",
+      "cell_type": "Code",
+      "source": "// `cell0` is automatically available as Vec<i32>\nlet sum: i32 = cell0.iter().sum();\nlet count = cell0.len();\n\nformat!(\"The {} Fibonacci numbers sum to {}\", count, sum)\n",
+      "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_4",
+      "order": 4,
+      "label": "Rich Output",
+      "cell_type": "Markdown",
+      "source": "## Rich Output\n\nCells can output more than just text. Use `Html(...)` for HTML or `Svg(...)` for SVG graphics.\nYou can even combine multiple outputs using tuples!",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_5",
+      "order": 5,
+      "label": "HTML Output",
+      "cell_type": "Code",
+      "source": "Html(format!(\n    \"<div style='padding:1rem; background:linear-gradient(135deg, #1a1a2e, #16213e); border-radius:8px; text-align:center;'>\n        <h2 style='color:#e94560; margin:0;'>Hello from ironpad!</h2>\n        <p style='color:#eaeaea;'>This is <strong>rich HTML</strong> output 🎨</p>\n        <p style='color:#8888aa; font-size:0.9em;'>Sum from previous cell: <code style='color:#e94560;'>{}</code></p>\n    </div>\",\n    last\n))\n",
+      "cargo_toml": "[package]\nname = \"cell_5\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    }
+  ]
+}

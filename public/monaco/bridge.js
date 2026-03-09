@@ -244,6 +244,12 @@
           record.pendingMarkers = null;
         }
 
+        // Apply read-only mode if queued before the editor was ready.
+        if (record.pendingReadOnly !== undefined) {
+          editor.updateOptions({ readOnly: record.pendingReadOnly });
+          delete record.pendingReadOnly;
+        }
+
         if (onChange) {
           editor.onDidChangeModelContent(function () {
             onChange(editor.getValue());
@@ -331,6 +337,16 @@
       }
       // Also clear any pending markers.
       record.pendingMarkers = null;
+    },
+
+    setReadOnly: function (id, readOnly) {
+      var record = editors[id];
+      if (!record) return;
+      if (record.editor) {
+        record.editor.updateOptions({ readOnly: readOnly });
+      } else {
+        record.pendingReadOnly = readOnly;
+      }
     },
 
     dispose: function (id) {

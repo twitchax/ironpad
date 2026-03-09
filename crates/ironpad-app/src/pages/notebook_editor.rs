@@ -2,24 +2,20 @@ use std::collections::HashMap;
 
 use ironpad_common::{
     CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult,
-    NotebookManifest, Severity,
+    IronpadCell, IronpadNotebook, Severity,
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use thaw::{
-    Button, ButtonAppearance, Card, CardHeader, Skeleton, SkeletonItem, Spinner, Tab, TabList, Tag,
-    TagSize, Toast, ToastBody, ToastTitle, ToasterInjection,
+    Button, ButtonAppearance, Card, CardHeader, Skeleton, SkeletonItem, Tab, TabList, Tag, TagSize,
+    Toast, ToastBody, ToastTitle, ToasterInjection,
 };
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::error_panel::ErrorPanel;
 use crate::components::markdown_cell::MarkdownCell;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
-use crate::server_fns::{
-    add_cell, compile_cell, delete_cell, duplicate_cell, get_cell_content, get_notebook,
-    rename_cell, reorder_cells, update_cell_cargo_toml, update_cell_source, update_notebook,
-    update_shared_cargo_toml,
-};
+use crate::server_fns::compile_cell;
 
 // ── Display panels ──────────────────────────────────────────────────────────
 
@@ -58,13 +54,16 @@ struct CellOutputData {
 /// Reactive state for the notebook editor, shared among child components.
 #[derive(Clone, Copy)]
 struct NotebookState {
+    /// The full notebook loaded from IndexedDB.
+    notebook: RwSignal<Option<IronpadNotebook>>,
     /// The notebook UUID string (from the URL).
     notebook_id: RwSignal<String>,
     /// The ordered list of cells in this notebook.
     cells: RwSignal<Vec<CellManifest>>,
     /// The currently selected/active cell ID.
     active_cell: RwSignal<Option<String>>,
-    /// Triggers a notebook refetch when incremented.
+    /// Triggers a notebook refetch when incremented (retained for future use).
+    #[allow(dead_code)]
     refresh_generation: RwSignal<u64>,
     /// Cell ID that should be scrolled to and focused after creation.
     pending_focus_cell: RwSignal<Option<String>>,
@@ -82,6 +81,108 @@ struct NotebookState {
     cell_stale: RwSignal<HashMap<String, bool>>,
 }
 
+// ── Notebook state helpers ──────────────────────────────────────────────────
+
+/// Syncs the `cells` signal from the current notebook state.
+fn sync_cells_from_notebook(state: &NotebookState) {
+    if let Some(nb) = state.notebook.get_untracked() {
+        state.cells.set(
+            nb.cells
+                .iter()
+                .map(|c| CellManifest {
+                    id: c.id.clone(),
+                    order: c.order,
+                    label: c.label.clone(),
+                    cell_type: c.cell_type.clone(),
+                })
+                .collect(),
+        );
+    }
+}
+
+/// Persists the current notebook to IndexedDB (client-only).
+fn persist_notebook(state: &NotebookState) {
+    #[cfg(feature = "hydrate")]
+    {
+        if let Some(mut nb) = state.notebook.get_untracked() {
+            nb.updated_at = chrono::Utc::now();
+            state
+                .notebook
+                .update(|existing| *existing = Some(nb.clone()));
+            leptos::task::spawn_local(async move {
+                crate::storage::client::save_notebook(&nb).await;
+            });
+        }
+    }
+}
+
+/// Default Cargo.toml template for a new code cell.
+fn default_cell_cargo_toml(cell_id: &str) -> String {
+    format!(
+        "[package]\nname = \"{cell_id}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    )
+}
+
+/// Adds a new cell to the notebook in-memory, syncs signals, and persists.
+fn add_cell_to_notebook(state: &NotebookState, after_cell_id: Option<String>, cell_type: CellType) {
+    let new_id = {
+        #[cfg(feature = "hydrate")]
+        {
+            uuid::Uuid::new_v4().to_string()
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            format!("cell_{}", state.cells.get_untracked().len())
+        }
+    };
+
+    state.notebook.update(|nb_opt| {
+        let Some(nb) = nb_opt else { return };
+
+        let label = format!("Cell {}", nb.cells.len());
+
+        let cargo_toml = if cell_type == CellType::Code {
+            Some(default_cell_cargo_toml(&new_id))
+        } else {
+            None
+        };
+
+        let default_source = if cell_type == CellType::Markdown {
+            "# New Section\n\nAdd your notes here.".to_string()
+        } else {
+            "42".to_string()
+        };
+
+        let new_cell = IronpadCell {
+            id: new_id.clone(),
+            order: 0,
+            label,
+            cell_type,
+            source: default_source,
+            cargo_toml,
+        };
+
+        if let Some(after_id) = &after_cell_id {
+            if let Some(idx) = nb.cells.iter().position(|c| c.id == *after_id) {
+                nb.cells.insert(idx + 1, new_cell);
+            } else {
+                nb.cells.push(new_cell);
+            }
+        } else {
+            nb.cells.insert(0, new_cell);
+        }
+
+        // Re-number orders.
+        for (i, cell) in nb.cells.iter_mut().enumerate() {
+            cell.order = i as u32;
+        }
+    });
+
+    state.pending_focus_cell.set(Some(new_id));
+    sync_cells_from_notebook(state);
+    persist_notebook(state);
+}
+
 // ── Notebook editor page ────────────────────────────────────────────────────
 
 /// Route component for `/notebook/{id}`.
@@ -96,7 +197,8 @@ pub fn NotebookEditorPage() -> impl IntoView {
     // Set up notebook-level reactive state.
 
     let state = NotebookState {
-        notebook_id: RwSignal::new(notebook_id),
+        notebook: RwSignal::new(None),
+        notebook_id: RwSignal::new(notebook_id.clone()),
         cells: RwSignal::new(Vec::new()),
         active_cell: RwSignal::new(None),
         refresh_generation: RwSignal::new(0),
@@ -109,12 +211,18 @@ pub fn NotebookEditorPage() -> impl IntoView {
     };
     provide_context(state);
 
-    // Fetch notebook data, re-running when refresh_generation changes.
+    // Load notebook from IndexedDB on the client side.
 
-    let notebook_resource = Resource::new(
-        move || (state.notebook_id.get(), state.refresh_generation.get()),
-        |(id, _gen)| get_notebook(id),
-    );
+    #[cfg(feature = "hydrate")]
+    {
+        let nb_id = notebook_id;
+        leptos::task::spawn_local(async move {
+            if let Some(nb) = crate::storage::client::get_notebook(&nb_id).await {
+                state.notebook.set(Some(nb));
+                sync_cells_from_notebook(&state);
+            }
+        });
+    }
 
     // Wire up LayoutContext when notebook data arrives.
 
@@ -122,18 +230,12 @@ pub fn NotebookEditorPage() -> impl IntoView {
     layout.show_save_button.set(true);
 
     Effect::new(move || {
-        if let Some(Ok(manifest)) = notebook_resource.get() {
-            layout.notebook_title.set(Some(manifest.title.clone()));
-            layout.notebook_id.set(Some(manifest.id.to_string()));
-            layout.cell_count.set(manifest.cells.len());
-            layout
-                .compiler_version
-                .set(manifest.compiler_version.clone());
-            state.notebook_id.set(manifest.id.to_string());
-            state.cells.set(manifest.cells.clone());
-            state
-                .shared_cargo_toml
-                .set(manifest.shared_cargo_toml.clone());
+        if let Some(nb) = state.notebook.get() {
+            layout.notebook_title.set(Some(nb.title.clone()));
+            layout.notebook_id.set(Some(nb.id.to_string()));
+            layout.cell_count.set(nb.cells.len());
+            state.notebook_id.set(nb.id.to_string());
+            state.shared_cargo_toml.set(nb.shared_cargo_toml.clone());
         }
     });
 
@@ -171,14 +273,8 @@ pub fn NotebookEditorPage() -> impl IntoView {
                     && (e.key() == "N" || e.key() == "n")
                 {
                     e.prevent_default();
-                    let nb_id = state.notebook_id.get_untracked();
                     let after_cell_id = state.active_cell.get_untracked();
-                    leptos::task::spawn_local(async move {
-                        if let Ok(new_cell) = add_cell(nb_id, after_cell_id, CellType::Code).await {
-                            state.pending_focus_cell.set(Some(new_cell.id.clone()));
-                            state.refresh_generation.update(|g| *g += 1);
-                        }
-                    });
+                    add_cell_to_notebook(&state, after_cell_id, CellType::Code);
                 }
             });
 
@@ -195,7 +291,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
     // ── Save-generation watcher ─────────────────────────────────────────
     //
     // When the save button (or Ctrl+S) fires, propagate to cells,
-    // bump the notebook manifest timestamp, and show feedback.
+    // persist the notebook to IndexedDB, and show feedback.
 
     #[cfg(feature = "hydrate")]
     {
@@ -219,87 +315,58 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
             layout.save_status.set(SaveStatus::Saving);
 
-            let nb_id = state.notebook_id.get_untracked();
+            // Update title from layout into the notebook signal.
             let title = layout.notebook_title.get_untracked().unwrap_or_default();
+            state.notebook.update(|nb_opt| {
+                if let Some(nb) = nb_opt {
+                    nb.title = title;
+                }
+            });
+
+            // Persist to IndexedDB.
+            persist_notebook(&state);
+
+            layout.save_status.set(SaveStatus::Saved);
+            layout.last_save_time.set(Some(js_sys::Date::now()));
 
             let toaster = toaster;
-            leptos::task::spawn_local(async move {
-                // Bump notebook updated_at (and persist title).
-                let save_result = update_notebook(nb_id, title).await;
-
-                match save_result {
-                    Ok(_) => {
-                        layout.save_status.set(SaveStatus::Saved);
-                        layout.last_save_time.set(Some(js_sys::Date::now()));
-
-                        toaster.dispatch_toast(
-                            move || {
-                                view! {
-                                    <Toast>
-                                        <ToastTitle>"Notebook saved"</ToastTitle>
-                                        <ToastBody>"All changes have been saved."</ToastBody>
-                                    </Toast>
-                                }
-                            },
-                            ToastOptions::default()
-                                .with_intent(ToastIntent::Success)
-                                .with_timeout(Duration::from_secs(3)),
-                        );
+            toaster.dispatch_toast(
+                move || {
+                    view! {
+                        <Toast>
+                            <ToastTitle>"Notebook saved"</ToastTitle>
+                            <ToastBody>"All changes have been saved."</ToastBody>
+                        </Toast>
                     }
-                    Err(_) => {
-                        toaster.dispatch_toast(
-                            move || {
-                                view! {
-                                    <Toast>
-                                        <ToastTitle>"Save failed"</ToastTitle>
-                                        <ToastBody>"Could not save notebook. Please try again."</ToastBody>
-                                    </Toast>
-                                }
-                            },
-                            ToastOptions::default()
-                                .with_intent(ToastIntent::Error)
-                                .with_timeout(Duration::from_secs(5)),
-                        );
-                    }
-                }
+                },
+                ToastOptions::default()
+                    .with_intent(ToastIntent::Success)
+                    .with_timeout(Duration::from_secs(3)),
+            );
 
-                // Reset to Idle after 2 seconds.
-                let reset_closure = Closure::<dyn Fn()>::new(move || {
-                    layout.save_status.set(SaveStatus::Idle);
-                });
-                let _ = web_sys::window()
-                    .unwrap()
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(
-                        reset_closure.as_ref().unchecked_ref(),
-                        2_000,
-                    );
-                reset_closure.forget();
+            // Reset to Idle after 2 seconds.
+            let reset_closure = Closure::<dyn Fn()>::new(move || {
+                layout.save_status.set(SaveStatus::Idle);
             });
+            let _ = web_sys::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    reset_closure.as_ref().unchecked_ref(),
+                    2_000,
+                );
+            reset_closure.forget();
         });
     }
 
     view! {
         <div class="ironpad-editor">
-            <Suspense fallback=move || view! {
-                <NotebookEditorSkeleton />
-            }>
-                {move || Suspend::new(async move {
-                    match notebook_resource.await {
-                        Ok(manifest) => view! {
-                            <NotebookContent manifest />
-                        }.into_any(),
-
-                        Err(e) => view! {
-                            <div class="ironpad-error-boundary">
-                                <div class="ironpad-error-boundary-icon">"⚠"</div>
-                                <p class="ironpad-error-boundary-message">
-                                    {format!("Failed to load notebook: {e}")}
-                                </p>
-                            </div>
-                        }.into_any(),
-                    }
-                })}
-            </Suspense>
+            {move || {
+                if state.notebook.get().is_some() {
+                    view! { <NotebookContent /> }.into_any()
+                } else {
+                    view! { <NotebookEditorSkeleton /> }.into_any()
+                }
+            }}
         </div>
     }
 }
@@ -308,29 +375,17 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
 /// Renders the ordered cell list with add-cell buttons.
 #[component]
-fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
+fn NotebookContent() -> impl IntoView {
     let state = expect_context::<NotebookState>();
-    let notebook_id_str = manifest.id.to_string();
 
     // ── Shared deps panel toggle ────────────────────────────────────────
 
     let shared_deps_open = RwSignal::new(false);
 
-    // ── Add cell action ─────────────────────────────────────────────────
+    // ── Add cell callback ───────────────────────────────────────────────
 
-    let nb_id_for_add = notebook_id_str.clone();
-    let add_cell_action = Action::new(move |input: &(Option<String>, CellType)| {
-        let nb_id = nb_id_for_add.clone();
-        let (after, cell_type) = input.clone();
-        async move { add_cell(nb_id, after, cell_type).await }
-    });
-
-    // Refresh notebook when a cell is added, and mark the new cell for focus.
-    Effect::new(move || {
-        if let Some(Ok(new_cell)) = add_cell_action.value().get() {
-            state.pending_focus_cell.set(Some(new_cell.id.clone()));
-            state.refresh_generation.update(|g| *g += 1);
-        }
+    let add_cell_cb = Callback::new(move |(after, cell_type): (Option<String>, CellType)| {
+        add_cell_to_notebook(&state, after, cell_type);
     });
 
     // ── Render ──────────────────────────────────────────────────────────
@@ -370,7 +425,7 @@ fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
         }}
 
         <div class="ironpad-cell-list">
-            <AddCellButton after_cell_id=None add_action=add_cell_action />
+            <AddCellButton after_cell_id=None on_add=add_cell_cb />
 
             <For
                 each=move || state.cells.get()
@@ -378,7 +433,7 @@ fn NotebookContent(manifest: NotebookManifest) -> impl IntoView {
                 let:cell
             >
                 <CellItem cell=cell.clone() />
-                <AddCellButton after_cell_id=Some(cell.id.clone()) add_action=add_cell_action />
+                <AddCellButton after_cell_id=Some(cell.id.clone()) on_add=add_cell_cb />
             </For>
         </div>
     }
@@ -414,62 +469,43 @@ fn SharedDepsPanel() -> impl IntoView {
     let saving = RwSignal::new(false);
 
     let on_save = move |_| {
-        let nb_id = state.notebook_id.get_untracked();
         let content = editor_text.get_untracked();
-        saving.set(true);
 
-        let toaster = toaster;
-        leptos::task::spawn_local(async move {
-            let result = update_shared_cargo_toml(nb_id, content.clone()).await;
-            saving.set(false);
+        // Update notebook in-memory.
+        state.shared_cargo_toml.set(Some(content.clone()));
+        state.notebook.update(|nb_opt| {
+            if let Some(nb) = nb_opt {
+                nb.shared_cargo_toml = Some(content.clone());
+            }
+        });
 
-            match result {
-                Ok(()) => {
-                    state.shared_cargo_toml.set(Some(content));
-
-                    // Mark all code cells as stale when shared deps change.
-                    state.cell_stale.update(|stale| {
-                        let cells = state.cells.get_untracked();
-                        for cell in &cells {
-                            if cell.cell_type == CellType::Code {
-                                stale.insert(cell.id.clone(), true);
-                            }
-                        }
-                    });
-
-                    toaster.dispatch_toast(
-                        move || {
-                            view! {
-                                <Toast>
-                                    <ToastTitle>"Shared dependencies saved"</ToastTitle>
-                                    <ToastBody>"Changes will apply on next cell compile."</ToastBody>
-                                </Toast>
-                            }
-                        },
-                        thaw::ToastOptions::default()
-                            .with_intent(thaw::ToastIntent::Success)
-                            .with_timeout(std::time::Duration::from_secs(3)),
-                    );
-                }
-                Err(e) => {
-                    leptos::logging::warn!("failed to save shared deps: {e}");
-
-                    toaster.dispatch_toast(
-                        move || {
-                            view! {
-                                <Toast>
-                                    <ToastTitle>"Save failed"</ToastTitle>
-                                    <ToastBody>"Could not save shared dependencies."</ToastBody>
-                                </Toast>
-                            }
-                        },
-                        thaw::ToastOptions::default()
-                            .with_intent(thaw::ToastIntent::Error)
-                            .with_timeout(std::time::Duration::from_secs(5)),
-                    );
+        // Mark all code cells as stale when shared deps change.
+        state.cell_stale.update(|stale| {
+            let cells = state.cells.get_untracked();
+            for cell in &cells {
+                if cell.cell_type == CellType::Code {
+                    stale.insert(cell.id.clone(), true);
                 }
             }
         });
+
+        // Persist to IndexedDB.
+        persist_notebook(&state);
+
+        let toaster = toaster;
+        toaster.dispatch_toast(
+            move || {
+                view! {
+                    <Toast>
+                        <ToastTitle>"Shared dependencies saved"</ToastTitle>
+                        <ToastBody>"Changes will apply on next cell compile."</ToastBody>
+                    </Toast>
+                }
+            },
+            thaw::ToastOptions::default()
+                .with_intent(thaw::ToastIntent::Success)
+                .with_timeout(std::time::Duration::from_secs(3)),
+        );
     };
 
     view! {
@@ -550,70 +586,72 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── Reactive source / cargo_toml state ──────────────────────────────
 
-    let source = RwSignal::new(String::new());
-    let cargo_toml = RwSignal::new(String::new());
+    let initial_content = state.notebook.with_untracked(|nb_opt| {
+        nb_opt.as_ref().and_then(|nb| {
+            nb.cells
+                .iter()
+                .find(|c| c.id == cell.id)
+                .map(|c| (c.source.clone(), c.cargo_toml.clone().unwrap_or_default()))
+        })
+    });
+    let source = RwSignal::new(
+        initial_content
+            .as_ref()
+            .map(|c| c.0.clone())
+            .unwrap_or_default(),
+    );
+    let cargo_toml = RwSignal::new(
+        initial_content
+            .as_ref()
+            .map(|c| c.1.clone())
+            .unwrap_or_default(),
+    );
 
     // ── Dirty state (unsaved changes indicator) ─────────────────────────
 
     let source_dirty = RwSignal::new(false);
     let cargo_toml_dirty = RwSignal::new(false);
 
-    // ── Load cell content ───────────────────────────────────────────────
-
-    let nb_id = state.notebook_id.get_untracked();
-    let cid_for_resource = cell.id.clone();
-    let content_resource = Resource::new(move || (), {
-        let nb_id = nb_id.clone();
-        let cid = cid_for_resource.clone();
-        move |_| {
-            let nb_id = nb_id.clone();
-            let cid = cid.clone();
-            async move { get_cell_content(nb_id, cid).await }
-        }
-    });
-
-    // Populate reactive state once content loads.
-    Effect::new(move || {
-        if let Some(Ok(content)) = content_resource.get() {
-            source.set(content.source);
-            cargo_toml.set(content.cargo_toml);
-        }
-    });
-
     // ── Delete action ───────────────────────────────────────────────────
 
-    let nb_id = state.notebook_id.get_untracked();
-    let delete_action = Action::new(move |_: &()| {
-        let nb_id = nb_id.clone();
-        let cid = cell_id_for_delete.clone();
-        async move { delete_cell(nb_id, cid).await }
-    });
+    let cell_id_for_delete_sv = StoredValue::new(cell_id_for_delete);
+    let cell_id_for_delete_cleanup_sv = StoredValue::new(cell_id_for_delete_cleanup);
 
-    Effect::new(move || {
-        if let Some(Ok(())) = delete_action.value().get() {
-            // Remove deleted cell's cached output.
-            state.cell_outputs.update(|map| {
-                map.remove(&cell_id_for_delete_cleanup);
-            });
-            state.refresh_generation.update(|g| *g += 1);
-        }
-    });
+    let delete_cell_fn = move || {
+        let cid = cell_id_for_delete_sv.get_value();
+        let cid_cleanup = cell_id_for_delete_cleanup_sv.get_value();
+        state.notebook.update(|nb_opt| {
+            if let Some(nb) = nb_opt {
+                nb.cells.retain(|c| c.id != cid);
+                for (i, cell) in nb.cells.iter_mut().enumerate() {
+                    cell.order = i as u32;
+                }
+            }
+        });
+        state.cell_outputs.update(|map| {
+            map.remove(&cid_cleanup);
+        });
+        sync_cells_from_notebook(&state);
+        persist_notebook(&state);
+    };
 
     // ── Rename action ───────────────────────────────────────────────────
 
     let label = RwSignal::new(cell.label.clone());
     let cell_id_for_rename = cell.id.clone();
-    let nb_id_for_rename = state.notebook_id.get_untracked();
-    let rename_action = Action::new(move |new_label: &String| {
-        let nb_id = nb_id_for_rename.clone();
-        let cid = cell_id_for_rename.clone();
-        let lbl = new_label.clone();
-        async move { rename_cell(nb_id, cid, lbl).await }
-    });
 
     let on_label_blur = move |_| {
         let current = label.get_untracked();
-        rename_action.dispatch(current);
+        let cid = cell_id_for_rename.clone();
+        state.notebook.update(|nb_opt| {
+            if let Some(nb) = nb_opt {
+                if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
+                    cell.label = current;
+                }
+            }
+        });
+        sync_cells_from_notebook(&state);
+        persist_notebook(&state);
     };
 
     // ── Menu state ──────────────────────────────────────────────────────
@@ -623,19 +661,28 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── Move (reorder) action ───────────────────────────────────────────
 
     let cell_id_for_move = StoredValue::new(cell.id.clone());
-    let nb_id_for_move = state.notebook_id.get_untracked();
-    let move_action = Action::new(move |new_ids: &Vec<String>| {
-        let nb_id = nb_id_for_move.clone();
-        let ids = new_ids.clone();
-        async move { reorder_cells(nb_id, ids).await }
-    });
 
-    Effect::new(move || {
-        if let Some(Ok(())) = move_action.value().get() {
-            state.refresh_generation.update(|g| *g += 1);
-        }
-    });
+    let reorder_cells_fn = move |new_ids: Vec<String>| {
+        state.notebook.update(|nb_opt| {
+            let Some(nb) = nb_opt else { return };
+            let mut reordered = Vec::with_capacity(new_ids.len());
+            for id in &new_ids {
+                if let Some(pos) = nb.cells.iter().position(|c| &c.id == id) {
+                    reordered.push(nb.cells.remove(pos));
+                }
+            }
+            // Append any cells not in new_ids (shouldn't happen, but safe).
+            reordered.append(&mut nb.cells);
+            for (i, cell) in reordered.iter_mut().enumerate() {
+                cell.order = i as u32;
+            }
+            nb.cells = reordered;
+        });
+        sync_cells_from_notebook(&state);
+        persist_notebook(&state);
+    };
 
+    let reorder_for_up = reorder_cells_fn;
     let on_move_up = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         menu_open.set(false);
@@ -649,9 +696,10 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         }
         let mut ids: Vec<String> = cells.iter().map(|c| c.id.clone()).collect();
         ids.swap(my_idx, my_idx - 1);
-        move_action.dispatch(ids);
+        reorder_for_up(ids);
     };
 
+    let reorder_for_down = reorder_cells_fn;
     let on_move_down = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         menu_open.set(false);
@@ -665,30 +713,52 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         }
         let mut ids: Vec<String> = cells.iter().map(|c| c.id.clone()).collect();
         ids.swap(my_idx, my_idx + 1);
-        move_action.dispatch(ids);
+        reorder_for_down(ids);
     };
 
     // ── Duplicate action ────────────────────────────────────────────────
 
-    let cell_id_for_dup = cell.id.clone();
-    let nb_id_for_dup = state.notebook_id.get_untracked();
-    let dup_action = Action::new(move |_: &()| {
-        let nb_id = nb_id_for_dup.clone();
-        let cid = cell_id_for_dup.clone();
-        async move { duplicate_cell(nb_id, cid).await }
-    });
-
-    Effect::new(move || {
-        if let Some(Ok(new_cell)) = dup_action.value().get() {
-            state.pending_focus_cell.set(Some(new_cell.id.clone()));
-            state.refresh_generation.update(|g| *g += 1);
-        }
-    });
+    let cell_id_for_dup = StoredValue::new(cell.id.clone());
 
     let on_duplicate = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         menu_open.set(false);
-        dup_action.dispatch(());
+
+        let cid = cell_id_for_dup.get_value();
+        let new_id = {
+            #[cfg(feature = "hydrate")]
+            {
+                uuid::Uuid::new_v4().to_string()
+            }
+            #[cfg(not(feature = "hydrate"))]
+            {
+                format!("{cid}_dup")
+            }
+        };
+
+        state.notebook.update(|nb_opt| {
+            let Some(nb) = nb_opt else { return };
+            let Some(idx) = nb.cells.iter().position(|c| c.id == cid) else {
+                return;
+            };
+            let original = nb.cells[idx].clone();
+            let new_cell = IronpadCell {
+                id: new_id.clone(),
+                order: 0,
+                label: format!("{} (copy)", original.label),
+                cell_type: original.cell_type,
+                source: original.source,
+                cargo_toml: original.cargo_toml,
+            };
+            nb.cells.insert(idx + 1, new_cell);
+            for (i, cell) in nb.cells.iter_mut().enumerate() {
+                cell.order = i as u32;
+            }
+        });
+
+        state.pending_focus_cell.set(Some(new_id));
+        sync_cells_from_notebook(&state);
+        persist_notebook(&state);
     };
 
     // ── Delete with confirmation ────────────────────────────────────────
@@ -703,12 +773,12 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                 .confirm_with_message("Delete this cell? This cannot be undone.")
                 .unwrap_or(false);
             if confirmed {
-                delete_action.dispatch(());
+                delete_cell_fn();
             }
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            delete_action.dispatch(());
+            delete_cell_fn();
         }
     };
 
@@ -1292,26 +1362,23 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_source_change = {
         use wasm_bindgen::prelude::*;
 
-        let nb_id_save = state.notebook_id.get_untracked();
         let cid_save = cell.id.clone();
         let debounce_handle: RwSignal<i32> = RwSignal::new(0);
 
         // Build a reusable JS function that reads the *current* source from
-        // the signal and persists it.  Created once per cell (the `forget`
-        // is a one-time, bounded leak).
+        // the signal and persists it to IndexedDB via the notebook signal.
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = source.get_untracked();
-            let nb_id = nb_id_save.clone();
             let cid = cid_save.clone();
-            leptos::task::spawn_local(async move {
-                if update_cell_source(nb_id, cid, val.clone()).await.is_ok() {
-                    // Only clear dirty if the source hasn't changed while the
-                    // save was in flight (avoids swallowing new edits).
-                    if source.get_untracked() == val {
-                        source_dirty.set(false);
+            state.notebook.update(|nb_opt| {
+                if let Some(nb) = nb_opt {
+                    if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
+                        cell.source = val;
                     }
                 }
             });
+            persist_notebook(&state);
+            source_dirty.set(false);
         });
         let save_fn: js_sys::Function =
             closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
@@ -1322,7 +1389,6 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             source_dirty.set(true);
 
             // Mark this cell and all subsequent Code cells as stale.
-            // Markdown cells don't affect the data pipeline, so skip stale marking.
             if !is_markdown {
                 let cid = cell_id_for_stale_src.clone();
                 state.cell_stale.update(|stale| {
@@ -1358,23 +1424,21 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_cargo_toml_change = {
         use wasm_bindgen::prelude::*;
 
-        let nb_id_save = state.notebook_id.get_untracked();
         let cid_save = cell.id.clone();
         let debounce_handle: RwSignal<i32> = RwSignal::new(0);
 
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = cargo_toml.get_untracked();
-            let nb_id = nb_id_save.clone();
             let cid = cid_save.clone();
-            leptos::task::spawn_local(async move {
-                if update_cell_cargo_toml(nb_id, cid, val.clone())
-                    .await
-                    .is_ok()
-                    && cargo_toml.get_untracked() == val
-                {
-                    cargo_toml_dirty.set(false);
+            state.notebook.update(|nb_opt| {
+                if let Some(nb) = nb_opt {
+                    if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
+                        cell.cargo_toml = Some(val);
+                    }
                 }
             });
+            persist_notebook(&state);
+            cargo_toml_dirty.set(false);
         });
         let save_fn: js_sys::Function =
             closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
@@ -1385,7 +1449,6 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             cargo_toml_dirty.set(true);
 
             // Mark this cell and all subsequent Code cells as stale.
-            // Markdown cells don't affect the data pipeline, so skip stale marking.
             if !is_markdown {
                 let cid = cell_id_for_stale_toml.clone();
                 state.cell_stale.update(|stale| {
@@ -1419,11 +1482,11 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── Notebook-level save flush ───────────────────────────────────────
     //
     // When the user triggers a notebook save (Ctrl+S or save button),
-    // immediately persist this cell's current source and cargo_toml.
+    // immediately flush this cell's current source and cargo_toml
+    // into the notebook signal (the page-level handler persists to IndexedDB).
 
     #[cfg(feature = "hydrate")]
     {
-        let nb_id_flush = state.notebook_id.get_untracked();
         let cid_flush = cell_id_for_flush;
         let prev_save_gen = RwSignal::new(state.save_generation.get_untracked());
 
@@ -1436,26 +1499,19 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
 
             let src = source.get_untracked();
             let toml = cargo_toml.get_untracked();
-            let nb_id = nb_id_flush.clone();
             let cid = cid_flush.clone();
 
-            leptos::task::spawn_local(async move {
-                if update_cell_source(nb_id.clone(), cid.clone(), src.clone())
-                    .await
-                    .is_ok()
-                    && source.get_untracked() == src
-                {
-                    source_dirty.set(false);
-                }
-
-                if update_cell_cargo_toml(nb_id, cid, toml.clone())
-                    .await
-                    .is_ok()
-                    && cargo_toml.get_untracked() == toml
-                {
-                    cargo_toml_dirty.set(false);
+            state.notebook.update(|nb_opt| {
+                if let Some(nb) = nb_opt {
+                    if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
+                        cell.source = src;
+                        cell.cargo_toml = Some(toml);
+                    }
                 }
             });
+
+            source_dirty.set(false);
+            cargo_toml_dirty.set(false);
         });
     }
 
@@ -1717,24 +1773,11 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                 // ── Markdown cell body ──────────────────────────────────
                 view! {
                     <div class=body_class>
-                        <Suspense fallback=move || view! {
-                            <div class="ironpad-cell-loading">
-                                <Spinner />
-                            </div>
-                        }>
-                            {move || Suspend::new(async move {
-                                let _ = content_resource.await;
-                                let md_cell_id = cell_id_for_markdown.get_value();
-
-                                view! {
-                                    <MarkdownCell
-                                        source=source.get_untracked()
-                                        on_change=on_source_change
-                                        cell_id=md_cell_id
-                                    />
-                                }
-                            })}
-                        </Suspense>
+                        <MarkdownCell
+                            source=source.get_untracked()
+                            on_change=on_source_change
+                            cell_id=cell_id_for_markdown.get_value()
+                        />
                     </div>
                 }.into_any()
             } else {
@@ -1752,44 +1795,32 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                             </TabList>
                         </div>
 
-                        <Suspense fallback=move || view! {
-                            <div class="ironpad-cell-loading">
-                                <Spinner />
-                            </div>
-                        }>
-                            {move || Suspend::new(async move {
-                                let _ = content_resource.await;
-
-                                view! {
-                                    <div
-                                        class="ironpad-cell-editor-pane"
-                                        style:display=move || {
-                                            if selected_tab.get() == "code" { "block" } else { "none" }
-                                        }
-                                    >
-                                        <MonacoEditor
-                                            initial_value=source.get_untracked()
-                                            language="rust"
-                                            on_change=on_source_change
-                                            handle=source_handle
-                                        />
-                                    </div>
-                                    <div
-                                        class="ironpad-cell-editor-pane"
-                                        style:display=move || {
-                                            if selected_tab.get() == "cargo-toml" { "block" } else { "none" }
-                                        }
-                                    >
-                                        <MonacoEditor
-                                            initial_value=cargo_toml.get_untracked()
-                                            language="toml"
-                                            on_change=on_cargo_toml_change
-                                            handle=cargo_toml_handle
-                                        />
-                                    </div>
-                                }
-                            })}
-                        </Suspense>
+                        <div
+                            class="ironpad-cell-editor-pane"
+                            style:display=move || {
+                                if selected_tab.get() == "code" { "block" } else { "none" }
+                            }
+                        >
+                            <MonacoEditor
+                                initial_value=source.get_untracked()
+                                language="rust"
+                                on_change=on_source_change
+                                handle=source_handle
+                            />
+                        </div>
+                        <div
+                            class="ironpad-cell-editor-pane"
+                            style:display=move || {
+                                if selected_tab.get() == "cargo-toml" { "block" } else { "none" }
+                            }
+                        >
+                            <MonacoEditor
+                                initial_value=cargo_toml.get_untracked()
+                                language="toml"
+                                on_change=on_cargo_toml_change
+                                handle=cargo_toml_handle
+                            />
+                        </div>
                     </div>
 
                     // ── Compile result panel ────────────────────────────────────
@@ -2025,15 +2056,15 @@ fn format_hex_dump(data: &[u8]) -> String {
 #[component]
 fn AddCellButton(
     after_cell_id: Option<String>,
-    add_action: Action<(Option<String>, CellType), Result<CellManifest, ServerFnError>>,
+    on_add: Callback<(Option<String>, CellType)>,
 ) -> impl IntoView {
     let after_code = after_cell_id.clone();
     let after_md = after_cell_id.clone();
     let on_add_code = move |_| {
-        add_action.dispatch((after_code.clone(), CellType::Code));
+        on_add.run((after_code.clone(), CellType::Code));
     };
     let on_add_markdown = move |_| {
-        add_action.dispatch((after_md.clone(), CellType::Markdown));
+        on_add.run((after_md.clone(), CellType::Markdown));
     };
 
     view! {

@@ -1,0 +1,40 @@
+{
+  "notebooks": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "title": "Welcome to ironpad",
+      "description": "Learn the basics: data flow, typed variables, and SVG charts with plotters.",
+      "filename": "welcome.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "beginner",
+        "plotters",
+        "data-flow"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "title": "Async & HTTP",
+      "description": "Make HTTP requests from Rust cells using async/await.",
+      "filename": "async-http.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "async",
+        "http",
+        "reqwest"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "title": "Interactive Tutorial",
+      "description": "A step-by-step introduction to ironpad features.",
+      "filename": "tutorial.ironpad",
+      "cell_count": 6,
+      "tags": [
+        "beginner",
+        "tutorial",
+        "markdown"
+      ]
+    }
+  ]
+}

@@ -8,6 +8,7 @@ pub mod notebook;
 
 pub mod pages;
 pub mod server_fns;
+pub mod storage;
 
 use components::app_layout::AppLayout;
 use leptos::prelude::*;
@@ -16,7 +17,7 @@ use leptos_router::{
     components::{Route, Router, Routes},
     ParamSegment, StaticSegment,
 };
-use pages::{HomePage, NotebookEditorPage};
+use pages::{HomePage, NotebookEditorPage, PublicNotebookPage, SharedNotebookPage};
 use thaw::{ConfigProvider, Theme, ToastPosition, ToasterProvider};
 
 /// Server-side shell rendered around the app.
@@ -39,6 +40,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 
                 // WASM cell executor.
                 <script src="/executor.js"></script>
+
+                // IndexedDB notebook storage.
+                <script src="/storage.js"></script>
             </head>
             <body>
                 <App/>
@@ -69,6 +73,8 @@ pub fn App() -> impl IntoView {
                     <AppLayout>
                         <Routes fallback=|| "Page not found.".into_view()>
                             <Route path=StaticSegment("") view=HomePage/>
+                            <Route path=(StaticSegment("notebook"), StaticSegment("public"), ParamSegment("filename")) view=PublicNotebookPage/>
+                            <Route path=(StaticSegment("shared"), ParamSegment("hash")) view=SharedNotebookPage/>
                             <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=NotebookEditorPage/>
                         </Routes>
                     </AppLayout>

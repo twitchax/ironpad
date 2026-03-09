@@ -61,6 +61,10 @@ mod js {
         #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "setCellContext")]
         pub fn set_cell_context(id: f64, context: &wasm_bindgen::JsValue);
 
+        /// Set or unset read-only mode on the editor.
+        #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "setReadOnly")]
+        pub fn set_read_only(id: f64, read_only: bool);
+
         /// Dispose the editor identified by `id`, freeing resources.
         #[wasm_bindgen(js_namespace = IronpadMonaco)]
         pub fn dispose(id: f64);
@@ -154,6 +158,21 @@ impl MonacoEditorHandle {
         }
     }
 
+    /// Set or unset read-only mode on the editor.
+    /// No-op during SSR or before mount.
+    pub fn set_read_only(&self, read_only: bool) {
+        #[cfg(feature = "hydrate")]
+        {
+            if let Some(id) = self.editor_id.get_untracked() {
+                js::set_read_only(id, read_only);
+            }
+        }
+
+        // Suppress unused-variable warning during SSR build.
+        #[cfg(not(feature = "hydrate"))]
+        let _ = read_only;
+    }
+
     /// Set per-editor cell context for the autocomplete provider.
     /// `context` is a JS object with `{ variables: [{name, type, doc}] }`.
     /// No-op during SSR or before mount.
@@ -188,6 +207,9 @@ pub fn MonacoEditor(
     /// `get_value()` / `set_value()` imperatively.
     #[prop(optional)]
     handle: Option<RwSignal<Option<MonacoEditorHandle>>>,
+    /// If true, the editor is set to read-only mode after creation.
+    #[prop(optional)]
+    read_only: bool,
 ) -> impl IntoView {
     let container_ref = NodeRef::new();
     let editor_id: RwSignal<Option<f64>> = RwSignal::new(None);
@@ -236,6 +258,11 @@ pub fn MonacoEditor(
             let id = js::create(el, &iv, &lang, &on_change_fn);
             editor_id.set(Some(id));
 
+            // Apply read-only mode if requested.
+            if read_only {
+                js::set_read_only(id, true);
+            }
+
             // Publish the handle so the parent can call get_value/set_value.
             if let Some(h) = handle {
                 h.set(Some(MonacoEditorHandle { editor_id }));
@@ -259,6 +286,7 @@ pub fn MonacoEditor(
             &handle,
             &container_ref,
             &editor_id,
+            &read_only,
         );
     }
 

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000001",
+  "title": "Welcome to ironpad",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z",
+  "shared_cargo_toml": "[dependencies]\nplotters = \"0.3\"\n",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Fibonacci Generator",
+      "cell_type": "Code",
+      "source": "let fibs: Vec<u64> = {\n    let mut v = vec![0, 1];\n    for i in 2..20 {\n        let next = v[i - 1] + v[i - 2];\n        v.push(next);\n    }\n    v\n};\n\nfibs\n",
+      "cargo_toml": "[package]\nname = \"cell_0\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Even Fibonacci Filter",
+      "cell_type": "Code",
+      "source": "let evens: Vec<u64> = cell0\n    .iter()\n    .copied()\n    .filter(|n| n % 2 == 0)\n    .collect();\n\nevens\n",
+      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Summary",
+      "cell_type": "Code",
+      "source": "let total: u64 = cell0.iter().sum();\nlet even_total: u64 = cell1.iter().sum();\n\nCellOutput::text(format!(\n    \"All {count} fibs sum to {total}. The {even_count} even fibs sum to {even_total}.\",\n    count = cell0.len(),\n    even_count = cell1.len(),\n))\n",
+      "cargo_toml": "[package]\nname = \"cell_2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Fibonacci Chart",
+      "cell_type": "Code",
+      "source": "use plotters::prelude::*;\n\nlet mut svg_buf = String::new();\n{\n    let root = SVGBackend::with_string(&mut svg_buf, (600, 400))\n        .into_drawing_area();\n    root.fill(&WHITE).unwrap();\n\n    let max_val = *cell0.iter().max().unwrap_or(&1);\n\n    let mut chart = ChartBuilder::on(&root)\n        .caption(\"Fibonacci Sequence\", (\"sans-serif\", 20))\n        .margin(10)\n        .x_label_area_size(30)\n        .y_label_area_size(60)\n        .build_cartesian_2d(0usize..cell0.len(), 0u64..max_val)\n        .unwrap();\n\n    chart.configure_mesh().draw().unwrap();\n\n    chart\n        .draw_series(cell0.iter().enumerate().map(|(x, &y)| {\n            let color = if y % 2 == 0 { BLUE } else { RED };\n            Rectangle::new([(x, 0u64), (x + 1, y)], color.filled())\n        }))\n        .unwrap()\n        .label(\"Fibonacci values\")\n        .legend(|(x, y)| Rectangle::new([(x, y - 5), (x + 10, y + 5)], BLUE.filled()));\n\n    chart.configure_series_labels().draw().unwrap();\n\n    root.present().unwrap();\n}\n\nSvg(svg_buf)\n",
+      "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    }
+  ]
+}
