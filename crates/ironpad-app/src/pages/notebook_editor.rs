@@ -5,15 +5,17 @@ use ironpad_common::{
     IronpadCell, IronpadNotebook, Severity,
 };
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::NavigateOptions;
 use thaw::{
     Button, ButtonAppearance, Card, CardHeader, Skeleton, SkeletonItem, Tab, TabList, Tag, TagSize,
     Toast, ToastBody, ToastTitle, ToasterInjection,
 };
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::copy_button::CopyButton;
 use crate::components::error_panel::ErrorPanel;
-use crate::components::markdown_cell::MarkdownCell;
+use crate::components::markdown_cell::{render_markdown, MarkdownCell};
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::{compile_cell, share_notebook};
 
@@ -25,6 +27,11 @@ enum DisplayPanel {
     Text(String),
     Html(String),
     Svg(String),
+    Markdown(String),
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
 }
 
 // ── Cell status ─────────────────────────────────────────────────────────────
@@ -79,6 +86,12 @@ struct NotebookState {
     shared_cargo_toml: RwSignal<Option<String>>,
     /// Tracks which cells have stale (outdated) execution results.
     cell_stale: RwSignal<HashMap<String, bool>>,
+    /// Per-cell display text (JSON of `Vec<DisplayPanel>`) from the last execution.
+    /// Used by the export-to-HTML feature to include cell outputs.
+    cell_display_texts: RwSignal<HashMap<String, String>>,
+    /// Per-cell source editor handles, keyed by cell ID.
+    /// Used for cross-cell focus (e.g. Shift+Enter → advance to next cell).
+    editor_handles: RwSignal<HashMap<String, MonacoEditorHandle>>,
 }
 
 // ── Notebook state helpers ──────────────────────────────────────────────────
@@ -208,6 +221,8 @@ pub fn NotebookEditorPage() -> impl IntoView {
         run_all_queue: RwSignal::new(Vec::new()),
         shared_cargo_toml: RwSignal::new(None),
         cell_stale: RwSignal::new(HashMap::new()),
+        cell_display_texts: RwSignal::new(HashMap::new()),
+        editor_handles: RwSignal::new(HashMap::new()),
     };
     provide_context(state);
 
@@ -371,6 +386,286 @@ pub fn NotebookEditorPage() -> impl IntoView {
     }
 }
 
+// ── Export HTML helpers ─────────────────────────────────────────────────────
+
+const EXPORT_CSS: &str = r#"
+:root { color-scheme: dark; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #1a1a2e; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, sans-serif; line-height: 1.6; padding: 2rem; max-width: 960px; margin: 0 auto;
+}
+h1.notebook-title {
+    color: #fff; font-size: 1.8rem; margin-bottom: 1.5rem;
+    padding-bottom: 0.5rem; border-bottom: 1px solid #3a3a5c;
+}
+.cell { margin-bottom: 1.5rem; }
+.cell-label {
+    font-size: 0.75rem; color: #888; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 0.25rem;
+}
+pre.code-block {
+    background: #16213e; color: #e0e0e0; padding: 1rem; border-radius: 6px;
+    overflow-x: auto; font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.9rem; line-height: 1.5; border: 1px solid #2a2a4a;
+}
+.cell-output {
+    background: #0f1a2e; border: 1px solid #2a2a4a; border-top: none;
+    border-radius: 0 0 6px 6px; padding: 0.75rem 1rem; font-size: 0.85rem;
+}
+.cell-output pre { white-space: pre-wrap; word-wrap: break-word; color: #b0b0b0; }
+.cell-output .output-label {
+    font-size: 0.7rem; color: #666; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 0.25rem;
+}
+.markdown-content {
+    background: #16213e; padding: 1rem 1.25rem; border-radius: 6px; border: 1px solid #2a2a4a;
+}
+.markdown-content h1, .markdown-content h2, .markdown-content h3,
+.markdown-content h4, .markdown-content h5, .markdown-content h6 {
+    color: #fff; margin: 0.75em 0 0.5em;
+}
+.markdown-content h1 { font-size: 1.5rem; }
+.markdown-content h2 { font-size: 1.3rem; }
+.markdown-content h3 { font-size: 1.15rem; }
+.markdown-content p { margin: 0.5em 0; }
+.markdown-content a { color: #64b5f6; text-decoration: none; }
+.markdown-content a:hover { text-decoration: underline; }
+.markdown-content code {
+    background: #0f1a2e; padding: 0.15em 0.4em; border-radius: 3px;
+    font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace; font-size: 0.9em;
+}
+.markdown-content pre { background: #0f1a2e; padding: 0.75rem; border-radius: 4px; overflow-x: auto; }
+.markdown-content pre code { background: none; padding: 0; }
+.markdown-content ul, .markdown-content ol { padding-left: 1.5rem; margin: 0.5em 0; }
+.markdown-content li { margin: 0.25em 0; }
+.markdown-content blockquote {
+    border-left: 3px solid #3a3a5c; padding-left: 1rem;
+    color: #aaa; margin: 0.5em 0;
+}
+.markdown-content table {
+    border-collapse: collapse; width: 100%; margin: 0.75em 0;
+}
+.markdown-content th, .markdown-content td {
+    border: 1px solid #3a3a5c; padding: 0.4rem 0.75rem; text-align: left;
+}
+.markdown-content th { background: #1a1a3e; color: #fff; font-weight: 600; }
+.markdown-content tr:nth-child(even) { background: #12192e; }
+.markdown-content img { max-width: 100%; border-radius: 4px; }
+.output-html { padding: 0.75rem; }
+.output-svg { text-align: center; padding: 0.75rem; }
+.output-svg svg { max-width: 100%; height: auto; }
+.footer {
+    margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #3a3a5c;
+    font-size: 0.75rem; color: #666; text-align: center;
+}
+"#;
+
+/// Build a self-contained HTML document from a notebook and its cached display texts.
+fn build_export_html(nb: &IronpadNotebook, display_texts: &HashMap<String, String>) -> String {
+    let mut html = String::with_capacity(8192);
+
+    // Document header.
+    html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
+    html.push_str("<meta charset=\"UTF-8\">\n");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+    html.push_str(&format!("<title>{}</title>\n", html_escape(&nb.title)));
+    html.push_str("<style>\n");
+    html.push_str(EXPORT_CSS);
+    html.push_str("</style>\n</head>\n<body>\n");
+
+    // Title.
+    html.push_str(&format!(
+        "<h1 class=\"notebook-title\">{}</h1>\n",
+        html_escape(&nb.title)
+    ));
+
+    // Cells.
+    for cell in &nb.cells {
+        html.push_str("<div class=\"cell\">\n");
+        html.push_str(&format!(
+            "<div class=\"cell-label\">{}</div>\n",
+            html_escape(&cell.label)
+        ));
+
+        match cell.cell_type {
+            CellType::Code => {
+                html.push_str(&format!(
+                    "<pre class=\"code-block\"><code>{}</code></pre>\n",
+                    html_escape(&cell.source)
+                ));
+
+                // Include cached output if available.
+                if let Some(display_json) = display_texts.get(&cell.id) {
+                    if let Ok(panels) = serde_json::from_str::<Vec<DisplayPanel>>(display_json) {
+                        html.push_str("<div class=\"cell-output\">\n");
+                        html.push_str("<div class=\"output-label\">Output</div>\n");
+                        for panel in &panels {
+                            match panel {
+                                DisplayPanel::Text(text) => {
+                                    html.push_str(&format!("<pre>{}</pre>\n", html_escape(text)));
+                                }
+                                DisplayPanel::Html(h) => {
+                                    html.push_str(&format!(
+                                        "<div class=\"output-html\">{h}</div>\n"
+                                    ));
+                                }
+                                DisplayPanel::Svg(s) => {
+                                    html.push_str(&format!(
+                                        "<div class=\"output-svg\">{s}</div>\n"
+                                    ));
+                                }
+                                DisplayPanel::Markdown(md) => {
+                                    let rendered = render_markdown(md);
+                                    html.push_str(&format!(
+                                        "<div class=\"ironpad-markdown-cell-preview\">{rendered}</div>\n"
+                                    ));
+                                }
+                                DisplayPanel::Table { headers, rows } => {
+                                    html.push_str(
+                                        "<table class=\"ironpad-output-table\"><thead><tr>",
+                                    );
+                                    for h in headers {
+                                        html.push_str(&format!("<th>{}</th>", html_escape(h)));
+                                    }
+                                    html.push_str("</tr></thead><tbody>");
+                                    for row in rows {
+                                        html.push_str("<tr>");
+                                        for cell in row {
+                                            html.push_str(&format!(
+                                                "<td>{}</td>",
+                                                html_escape(cell)
+                                            ));
+                                        }
+                                        html.push_str("</tr>");
+                                    }
+                                    html.push_str("</tbody></table>\n");
+                                }
+                            }
+                        }
+                        html.push_str("</div>\n");
+                    }
+                }
+            }
+            CellType::Markdown => {
+                let rendered = render_markdown(&cell.source);
+                html.push_str(&format!(
+                    "<div class=\"markdown-content\">{rendered}</div>\n"
+                ));
+            }
+        }
+
+        html.push_str("</div>\n");
+    }
+
+    // Footer.
+    html.push_str("<div class=\"footer\">Exported from <strong>ironpad</strong></div>\n");
+    html.push_str("</body>\n</html>");
+
+    html
+}
+
+/// Minimal HTML entity escaping for text content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Render a table as an HTML `<table>` string with the `ironpad-output-table` class.
+fn render_table_html(headers: &[String], rows: &[Vec<String>]) -> String {
+    let mut html = String::from("<table class=\"ironpad-output-table\"><thead><tr>");
+    for h in headers {
+        html.push_str(&format!("<th>{}</th>", html_escape(h)));
+    }
+    html.push_str("</tr></thead><tbody>");
+    for row in rows {
+        html.push_str("<tr>");
+        for cell in row {
+            html.push_str(&format!("<td>{}</td>", html_escape(cell)));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table>");
+    html
+}
+
+/// Render a table as tab-separated values for clipboard copy.
+fn render_table_tsv(headers: &[String], rows: &[Vec<String>]) -> String {
+    let mut tsv = headers.join("\t");
+    for row in rows {
+        tsv.push('\n');
+        tsv.push_str(&row.join("\t"));
+    }
+    tsv
+}
+
+/// Trigger a browser file download from an HTML string.
+#[cfg(feature = "hydrate")]
+fn trigger_html_download(html_content: &str, title: &str) {
+    use wasm_bindgen::JsCast;
+
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return,
+    };
+    let document = match window.document() {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Build a Blob from the HTML string.
+    let parts = js_sys::Array::new();
+    parts.push(&wasm_bindgen::JsValue::from_str(html_content));
+
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type("text/html;charset=utf-8");
+
+    let blob = match web_sys::Blob::new_with_str_sequence_and_options(&parts, &opts) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    let url = match web_sys::Url::create_object_url_with_blob(&blob) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+
+    // Create a temporary <a> element to trigger the download.
+    let anchor: web_sys::HtmlAnchorElement = match document
+        .create_element("a")
+        .ok()
+        .and_then(|el| el.dyn_into::<web_sys::HtmlAnchorElement>().ok())
+    {
+        Some(a) => a,
+        None => return,
+    };
+
+    anchor.set_href(&url);
+    let filename = format!(
+        "{}.html",
+        title
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            })
+            .collect::<String>()
+    );
+    anchor.set_download(&filename);
+    anchor.set_attribute("style", "display:none").ok();
+
+    if let Some(body) = document.body() {
+        let _ = body.append_child(&anchor);
+        anchor.click();
+        let _ = body.remove_child(&anchor);
+    }
+
+    let _ = web_sys::Url::revoke_object_url(&url);
+}
+
 // ── Notebook content ────────────────────────────────────────────────────────
 
 /// Renders the ordered cell list with add-cell buttons.
@@ -387,6 +682,28 @@ fn NotebookContent() -> impl IntoView {
     let add_cell_cb = Callback::new(move |(after, cell_type): (Option<String>, CellType)| {
         add_cell_to_notebook(&state, after, cell_type);
     });
+
+    // ── Delete notebook handler ─────────────────────────────────────────
+
+    let navigate = use_navigate();
+    let on_delete = move |_| {
+        let _ = &navigate;
+        #[cfg(feature = "hydrate")]
+        {
+            let navigate = navigate.clone();
+            let id = state.notebook_id.get_untracked();
+            let confirmed = web_sys::window()
+                .unwrap()
+                .confirm_with_message("Delete this notebook? This cannot be undone.")
+                .unwrap_or(false);
+            if confirmed {
+                leptos::task::spawn_local(async move {
+                    crate::storage::client::delete_notebook(&id).await;
+                    navigate("/", NavigateOptions::default());
+                });
+            }
+        }
+    };
 
     // ── Render ──────────────────────────────────────────────────────────
 
@@ -441,12 +758,17 @@ fn NotebookContent() -> impl IntoView {
 
                             match share_notebook(json).await {
                                 Ok(hash) => {
+                                    #[cfg(target_arch = "wasm32")]
                                     let origin = web_sys::window()
                                         .and_then(|w| w.location().origin().ok())
                                         .unwrap_or_default();
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    let origin = String::new();
+
                                     let url = format!("{origin}/shared/{hash}");
 
                                     // Copy to clipboard.
+                                    #[cfg(target_arch = "wasm32")]
                                     if let Some(window) = web_sys::window() {
                                         let clipboard = window.navigator().clipboard();
                                         let _ =
@@ -487,6 +809,29 @@ fn NotebookContent() -> impl IntoView {
                 }
             >
                 "🔗 Share"
+            </Button>
+            <Button
+                appearance=ButtonAppearance::Subtle
+                on_click=move |_| {
+                    #[cfg(feature = "hydrate")]
+                    {
+                        let nb = state.notebook.get_untracked();
+                        if let Some(nb) = nb {
+                            let display_texts = state.cell_display_texts.get_untracked();
+                            let html = build_export_html(&nb, &display_texts);
+                            trigger_html_download(&html, &nb.title);
+                        }
+                    }
+                }
+            >
+                "📄 Export HTML"
+            </Button>
+            <Button
+                appearance=ButtonAppearance::Subtle
+                class="ironpad-delete-notebook-btn"
+                on_click=on_delete
+            >
+                "🗑 Delete"
             </Button>
         </div>
 
@@ -703,6 +1048,9 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
             }
         });
         state.cell_outputs.update(|map| {
+            map.remove(&cid_cleanup);
+        });
+        state.cell_display_texts.update(|map| {
             map.remove(&cid_cleanup);
         });
         sync_cells_from_notebook(&state);
@@ -1057,6 +1405,11 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                     map.remove(id);
                 }
             });
+            state.cell_display_texts.update(|map| {
+                for id in &downstream_ids {
+                    map.remove(id);
+                }
+            });
         }
 
         cell_status.set(CellStatus::Compiling);
@@ -1137,6 +1490,16 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
                                                         },
                                                     );
                                                 });
+
+                                                // Store display text for export.
+                                                if let Some(ref dt) = display_text {
+                                                    state.cell_display_texts.update(|map| {
+                                                        map.insert(
+                                                            cell_id_for_exec.clone(),
+                                                            dt.clone(),
+                                                        );
+                                                    });
+                                                }
 
                                                 execution_result.set(Some(ExecutionResult {
                                                     display_text,
@@ -1231,28 +1594,65 @@ fn CellItem(cell: CellManifest) -> impl IntoView {
         });
     });
 
-    // ── Shift+Enter keybinding registration ─────────────────────────────
+    // ── Keyboard shortcut registration ─────────────────────────────────
     //
-    // Once the source Monaco editor handle is available, register a
-    // Shift+Enter action that triggers the compile flow.
+    // Once the source Monaco editor handle is available, register:
+    // - Ctrl+Enter (Cmd+Enter on Mac): run the current cell
+    // - Shift+Enter: run the current cell and advance focus to the next cell
 
     #[cfg(feature = "hydrate")]
     {
         use wasm_bindgen::prelude::*;
+
+        let cell_id_for_keys = StoredValue::new(cell.id.clone());
 
         Effect::new(move || {
             let Some(handle) = source_handle.get() else {
                 return;
             };
 
-            let closure = Closure::<dyn Fn()>::new(move || {
+            // Register this cell's editor handle for cross-cell focus.
+            let cid = cell_id_for_keys.get_value();
+            state.editor_handles.update(|m| {
+                m.insert(cid, handle);
+            });
+
+            // Ctrl+Enter / Cmd+Enter → run cell.
+            // Monaco KeyMod.CtrlCmd (2048) | KeyCode.Enter (3) = 2051
+            let run_closure = Closure::<dyn Fn()>::new(move || {
                 run_trigger.update(|g| *g += 1);
             });
-            let cb: js_sys::Function = closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
-            closure.forget();
+            let run_cb: js_sys::Function = run_closure
+                .as_ref()
+                .unchecked_ref::<js_sys::Function>()
+                .clone();
+            run_closure.forget();
+            handle.add_action("ironpad.runCell", &[2051], &run_cb);
 
+            // Shift+Enter → run cell and advance focus to next cell.
             // Monaco KeyMod.Shift (1024) | KeyCode.Enter (3) = 1027
-            handle.add_action("ironpad.runCell", &[1027], &cb);
+            let advance_closure = Closure::<dyn Fn()>::new(move || {
+                run_trigger.update(|g| *g += 1);
+
+                // Find and focus the next cell's editor.
+                let cid = cell_id_for_keys.get_value();
+                let cells = state.cells.get_untracked();
+                let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+                let handles = state.editor_handles.get_untracked();
+
+                // Look for the next cell (any type) that has a registered editor handle.
+                if let Some(next_handle) =
+                    cells[my_idx + 1..].iter().find_map(|c| handles.get(&c.id))
+                {
+                    next_handle.focus();
+                }
+            });
+            let advance_cb: js_sys::Function = advance_closure
+                .as_ref()
+                .unchecked_ref::<js_sys::Function>()
+                .clone();
+            advance_closure.forget();
+            handle.add_action("ironpad.runCellAndAdvance", &[1027], &advance_cb);
         });
     }
 
@@ -2044,21 +2444,53 @@ fn CellOutputPanel(execution_result: RwSignal<Option<ExecutionResult>>) -> impl 
                                 // Display panels section.
                                 {panels.into_iter().map(|panel| {
                                     match panel {
-                                        DisplayPanel::Text(text) => view! {
-                                            <div class="ironpad-output-display">
-                                                <pre class="ironpad-output-display-text">{text}</pre>
-                                            </div>
-                                        }.into_any(),
-                                        DisplayPanel::Html(html) => view! {
-                                            <div class="ironpad-output-display ironpad-output-html"
-                                                 inner_html=html>
-                                            </div>
-                                        }.into_any(),
-                                        DisplayPanel::Svg(svg) => view! {
-                                            <div class="ironpad-output-display ironpad-output-svg"
-                                                 inner_html=svg>
-                                            </div>
-                                        }.into_any(),
+                                        DisplayPanel::Text(text) => {
+                                            let copy_text = text.clone();
+                                            view! {
+                                                <div class="ironpad-output-display">
+                                                    <CopyButton text=copy_text />
+                                                    <pre class="ironpad-output-display-text">{text}</pre>
+                                                </div>
+                                            }.into_any()
+                                        },
+                                        DisplayPanel::Html(html) => {
+                                            let copy_text = html.clone();
+                                            view! {
+                                                <div class="ironpad-output-display ironpad-output-html">
+                                                    <CopyButton text=copy_text />
+                                                    <div inner_html=html></div>
+                                                </div>
+                                            }.into_any()
+                                        },
+                                        DisplayPanel::Svg(svg) => {
+                                            let copy_text = svg.clone();
+                                            view! {
+                                                <div class="ironpad-output-display ironpad-output-svg">
+                                                    <CopyButton text=copy_text />
+                                                    <div inner_html=svg></div>
+                                                </div>
+                                            }.into_any()
+                                        },
+                                        DisplayPanel::Markdown(md) => {
+                                            let copy_text = md.clone();
+                                            let rendered = render_markdown(&md);
+                                            view! {
+                                                <div class="ironpad-output-display">
+                                                    <CopyButton text=copy_text />
+                                                    <div class="ironpad-markdown-cell-preview" inner_html=rendered></div>
+                                                </div>
+                                            }.into_any()
+                                        },
+                                        DisplayPanel::Table { headers, rows } => {
+                                            let copy_text = render_table_tsv(&headers, &rows);
+                                            let table_html = render_table_html(&headers, &rows);
+                                            view! {
+                                                <div class="ironpad-output-display">
+                                                    <CopyButton text=copy_text />
+                                                    <div inner_html=table_html></div>
+                                                </div>
+                                            }.into_any()
+                                        },
                                     }
                                 }).collect::<Vec<_>>()}
 
