@@ -24,7 +24,8 @@ pub mod prelude {
     pub use wasm_bindgen_futures;
 
     pub use crate::{
-        CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Svg, TypeTag,
+        CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Md, Svg,
+        Table, TypeTag,
     };
 
     #[cfg(target_arch = "wasm32")]
@@ -158,9 +159,16 @@ pub enum DisplayPanel {
     Html(String),
     /// SVG markup, rendered inline.
     Svg(String),
+    /// Raw markdown, rendered client-side.
+    Markdown(String),
+    /// Structured table data, rendered as an HTML table.
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
 }
 
-// ── Svg / Html newtypes ──────────────────────────────────────────────────────
+// ── Svg / Html / Md newtypes ─────────────────────────────────────────────────
 
 /// SVG content for rich display output. Use in tuples: `(data, Svg(svg_string))`
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -169,6 +177,29 @@ pub struct Svg(pub String);
 /// HTML content for rich display output. Use in tuples: `(data, Html(html_string))`
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Html(pub String);
+
+/// Structured table for rich display output. Use in tuples: `(data, Table::new(headers, rows))`
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Table {
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
+impl Table {
+    pub fn new(headers: Vec<impl Into<String>>, rows: Vec<Vec<impl Into<String>>>) -> Self {
+        Self {
+            headers: headers.into_iter().map(Into::into).collect(),
+            rows: rows
+                .into_iter()
+                .map(|r| r.into_iter().map(Into::into).collect())
+                .collect(),
+        }
+    }
+}
+
+/// Markdown content for rich display output. Use in tuples: `(data, Md(md_string))`
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Md(pub String);
 
 // ── CellOutput ───────────────────────────────────────────────────────────────
 
@@ -219,6 +250,12 @@ impl CellOutput {
         self
     }
 
+    /// Append a Markdown panel.
+    pub fn with_markdown(mut self, s: impl Into<String>) -> Self {
+        self.panels.push(DisplayPanel::Markdown(s.into()));
+        self
+    }
+
     /// Create an empty output (no data, no display panels).
     pub fn empty() -> Self {
         Self {
@@ -251,6 +288,15 @@ impl CellOutput {
         Self {
             bytes: vec![],
             panels: vec![DisplayPanel::Svg(content.into())],
+            type_tag: None,
+        }
+    }
+
+    /// Create a display-only output with a single Markdown panel and no binary payload.
+    pub fn markdown(content: impl Into<String>) -> Self {
+        Self {
+            bytes: vec![],
+            panels: vec![DisplayPanel::Markdown(content.into())],
             type_tag: None,
         }
     }
@@ -347,6 +393,29 @@ impl From<Html> for CellOutput {
     }
 }
 
+impl From<Table> for CellOutput {
+    fn from(value: Table) -> Self {
+        Self {
+            bytes: vec![],
+            panels: vec![DisplayPanel::Table {
+                headers: value.headers,
+                rows: value.rows,
+            }],
+            type_tag: Some("Table".into()),
+        }
+    }
+}
+
+impl From<Md> for CellOutput {
+    fn from(value: Md) -> Self {
+        Self {
+            bytes: vec![],
+            panels: vec![DisplayPanel::Markdown(value.0)],
+            type_tag: Some("Md".into()),
+        }
+    }
+}
+
 // ── IntoPanels trait ─────────────────────────────────────────────────────────
 
 /// Trait for types that can produce display panels.
@@ -392,6 +461,21 @@ impl IntoPanels for Svg {
 impl IntoPanels for Html {
     fn into_panels(&self) -> Vec<DisplayPanel> {
         vec![DisplayPanel::Html(self.0.clone())]
+    }
+}
+
+impl IntoPanels for Table {
+    fn into_panels(&self) -> Vec<DisplayPanel> {
+        vec![DisplayPanel::Table {
+            headers: self.headers.clone(),
+            rows: self.rows.clone(),
+        }]
+    }
+}
+
+impl IntoPanels for Md {
+    fn into_panels(&self) -> Vec<DisplayPanel> {
+        vec![DisplayPanel::Markdown(self.0.clone())]
     }
 }
 
@@ -451,6 +535,18 @@ impl TypeTag for Svg {
 impl TypeTag for Html {
     fn type_tag() -> String {
         "Html".into()
+    }
+}
+
+impl TypeTag for Table {
+    fn type_tag() -> String {
+        "Table".into()
+    }
+}
+
+impl TypeTag for Md {
+    fn type_tag() -> String {
+        "Md".into()
     }
 }
 
@@ -1273,6 +1369,17 @@ mod tests {
     }
 
     #[test]
+    fn cell_output_markdown_constructor() {
+        let output = CellOutput::markdown("# Hello");
+        assert!(output.bytes.is_empty());
+        assert!(output.type_tag.is_none());
+        assert_eq!(
+            output.panels,
+            vec![DisplayPanel::Markdown("# Hello".into())]
+        );
+    }
+
+    #[test]
     fn cell_output_builder_chain() {
         let output = CellOutput::empty()
             .with_text("hello")
@@ -1292,6 +1399,7 @@ mod tests {
             DisplayPanel::Text("hello".into()),
             DisplayPanel::Html("<b>bold</b>".into()),
             DisplayPanel::Svg("<svg/>".into()),
+            DisplayPanel::Markdown("# heading".into()),
         ];
         let json = serde_json::to_string(&panels).expect("serialize");
         let decoded: Vec<DisplayPanel> = serde_json::from_str(&json).expect("deserialize");
@@ -1309,7 +1417,7 @@ mod tests {
         assert_eq!(converted.panels, expected_panels);
     }
 
-    // ── Svg / Html newtype tests ────────────────────────────────────────
+    // ── Svg / Html / Md newtype tests ──────────────────────────────────
 
     #[test]
     fn svg_newtype_into_cell_output() {
@@ -1329,6 +1437,17 @@ mod tests {
         assert_eq!(
             output.panels,
             vec![DisplayPanel::Html("<b>bold</b>".into())]
+        );
+        assert!(output.bytes.is_empty());
+    }
+
+    #[test]
+    fn md_newtype_into_cell_output() {
+        let output = CellOutput::from(Md("# Hello\n\nworld".into()));
+        assert_eq!(output.type_tag.as_deref(), Some("Md"));
+        assert_eq!(
+            output.panels,
+            vec![DisplayPanel::Markdown("# Hello\n\nworld".into())]
         );
         assert!(output.bytes.is_empty());
     }
@@ -1366,6 +1485,14 @@ mod tests {
         assert_eq!(
             Html("<b>hi</b>".into()).into_panels(),
             vec![DisplayPanel::Html("<b>hi</b>".into())]
+        );
+    }
+
+    #[test]
+    fn into_panels_md() {
+        assert_eq!(
+            Md("**bold**".into()).into_panels(),
+            vec![DisplayPanel::Markdown("**bold**".into())]
         );
     }
 
@@ -1411,6 +1538,7 @@ mod tests {
     fn type_tag_trait_newtypes() {
         assert_eq!(Svg::type_tag(), "Svg");
         assert_eq!(Html::type_tag(), "Html");
+        assert_eq!(Md::type_tag(), "Md");
         assert_eq!(CellOutput::type_tag(), "CellOutput");
         assert_eq!(<()>::type_tag(), "()");
     }
@@ -1487,6 +1615,106 @@ mod tests {
                 DisplayPanel::Text("42".into()),
                 DisplayPanel::Svg("<svg>a</svg>".into()),
                 DisplayPanel::Html("<b>b</b>".into()),
+            ]
+        );
+    }
+
+    // ── Table type tests ────────────────────────────────────────────────
+
+    #[test]
+    fn table_new_constructor() {
+        let table = Table::new(
+            vec!["Name", "Age"],
+            vec![vec!["Alice", "30"], vec!["Bob", "25"]],
+        );
+        assert_eq!(table.headers, vec!["Name", "Age"]);
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0], vec!["Alice", "30"]);
+        assert_eq!(table.rows[1], vec!["Bob", "25"]);
+    }
+
+    #[test]
+    fn table_new_with_owned_strings() {
+        let table = Table::new(
+            vec!["H1".to_string(), "H2".to_string()],
+            vec![vec!["a".to_string(), "b".to_string()]],
+        );
+        assert_eq!(table.headers, vec!["H1", "H2"]);
+        assert_eq!(table.rows, vec![vec!["a", "b"]]);
+    }
+
+    #[test]
+    fn table_into_cell_output() {
+        let table = Table::new(vec!["X", "Y"], vec![vec!["1", "2"]]);
+        let output = CellOutput::from(table);
+        assert_eq!(output.type_tag.as_deref(), Some("Table"));
+        assert!(output.bytes.is_empty());
+        assert_eq!(
+            output.panels,
+            vec![DisplayPanel::Table {
+                headers: vec!["X".into(), "Y".into()],
+                rows: vec![vec!["1".into(), "2".into()]],
+            }]
+        );
+    }
+
+    #[test]
+    fn table_into_panels() {
+        let table = Table::new(vec!["A"], vec![vec!["val"]]);
+        let panels = table.into_panels();
+        assert_eq!(
+            panels,
+            vec![DisplayPanel::Table {
+                headers: vec!["A".into()],
+                rows: vec![vec!["val".into()]],
+            }]
+        );
+    }
+
+    #[test]
+    fn table_type_tag() {
+        assert_eq!(Table::type_tag(), "Table");
+    }
+
+    #[test]
+    fn table_display_panel_json_roundtrip() {
+        let panel = DisplayPanel::Table {
+            headers: vec!["Name".into(), "Score".into()],
+            rows: vec![
+                vec!["Alice".into(), "100".into()],
+                vec!["Bob".into(), "85".into()],
+            ],
+        };
+        let json = serde_json::to_string(&panel).expect("serialize");
+        let decoded: DisplayPanel = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(panel, decoded);
+    }
+
+    #[test]
+    fn table_in_tuple() {
+        let table = Table::new(vec!["Col"], vec![vec!["val"]]);
+        let output = CellOutput::from((42u32, table));
+        assert_eq!(output.type_tag.as_deref(), Some("(u32, Table)"));
+        assert_eq!(output.panels.len(), 2);
+        assert_eq!(output.panels[0], DisplayPanel::Text("42".into()));
+        assert_eq!(
+            output.panels[1],
+            DisplayPanel::Table {
+                headers: vec!["Col".into()],
+                rows: vec![vec!["val".into()]],
+            }
+        );
+    }
+
+    #[test]
+    fn tuple_with_md() {
+        let output = CellOutput::from((42u32, Md("# Title".into())));
+        assert_eq!(output.type_tag.as_deref(), Some("(u32, Md)"));
+        assert_eq!(
+            output.panels,
+            vec![
+                DisplayPanel::Text("42".into()),
+                DisplayPanel::Markdown("# Title".into()),
             ]
         );
     }
