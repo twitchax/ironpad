@@ -1,7 +1,7 @@
 ---
 id: PRD-0005
 title: "Marimo-Inspired Interactivity & UI Polish"
-status: draft
+status: done
 owner: "Aaron Roney"
 created: 2026-03-10
 updated: 2026-03-10
@@ -55,7 +55,7 @@ tasks:
 - id: T-001
   title: "Toolbar reorganization: hamburger, gear, and close button"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Move notebook-level actions into two dropdown menus in the upper-right corner:
     (1) Hamburger (☰): Share, Export HTML, Delete (with confirmation).
@@ -69,7 +69,7 @@ tasks:
 - id: T-002
   title: "Edit/view mode toggle"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Add a toggle button in the bottom-left corner of the notebook editor (fixed position, like marimo).
     Two modes: Edit (pencil icon, default) and View (eye icon).
@@ -83,7 +83,7 @@ tasks:
 - id: T-003
   title: "Per-cell action buttons on right side"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Reposition per-cell action buttons to the right side of the cell card, outside the cell body.
     Layout: cell card takes most of the width, action buttons sit in a narrow vertical strip to the right.
@@ -97,7 +97,7 @@ tasks:
 - id: T-004
   title: "Auto-run downstream cells (toggleable)"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Add a toggle in the notebook toolbar (visible, next to Run Stale) for "Auto-run" mode.
     When auto-run is ON: after a cell completes successfully, automatically enqueue all subsequent
@@ -111,7 +111,7 @@ tasks:
 - id: T-005
   title: "Code collapsed by default in view mode"
   priority: 2
-  status: todo
+  status: done
   notes: >
     When is_view_mode is true, all cell code sections should be collapsed (hidden).
     Only the output panel, cell label, and status badge remain visible.
@@ -125,7 +125,7 @@ tasks:
 - id: T-006
   title: "Interactive UI elements in ironpad-cell"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Add a new ui module to ironpad-cell with 6 widget builders:
     - ui::slider(min, max) -> CellOutput (default: min, output type: f64)
@@ -153,7 +153,7 @@ tasks:
 - id: T-007
   title: "Frontend rendering of interactive elements"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In cell_output.rs, add rendering for DisplayPanel::Interactive.
     Parse the config JSON and render the appropriate HTML widget:
@@ -186,7 +186,7 @@ tasks:
 - id: T-008
   title: "Reactivity: re-execute downstream on UI element change"
   priority: 3
-  status: todo
+  status: done
   notes: >
     When an interactive element's value changes (T-007 callback fires):
     1. Update cell_outputs[cell_id] with new serialized bytes (already done in T-007)
