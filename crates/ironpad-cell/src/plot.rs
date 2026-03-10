@@ -13,6 +13,7 @@ const COLOR_TRANSPARENT: RGBColor = RGBColor(0, 0, 0);
 // ── Plot builder ─────────────────────────────────────────────────────────────
 
 /// Chart variant stored inside `Plot`.
+#[derive(serde::Serialize, serde::Deserialize)]
 enum ChartKind {
     Line(Vec<(f64, f64)>),
     Bar(Vec<(String, f64)>),
@@ -29,6 +30,7 @@ enum ChartKind {
 ///     .x_label("x")
 ///     .y_label("y");
 /// ```
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Plot {
     kind: ChartKind,
     title: Option<String>,
