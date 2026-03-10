@@ -32,6 +32,11 @@ async fn main() {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
+    // Thaw's `ToasterProvider` creates an effect that calls `spawn_local` during
+    // route generation. Entering a `LocalSet` gives `spawn_local` a valid context;
+    // the spawned tasks are never driven since we only need the route list.
+    let local = tokio::task::LocalSet::new();
+    let _guard = local.enter();
     let routes = generate_route_list(App);
 
     let app = Router::new()

@@ -4,6 +4,7 @@
   "title": "Interactive Tutorial",
   "created_at": "2026-01-01T00:00:00Z",
   "updated_at": "2026-01-01T00:00:00Z",
+  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
   "cells": [
     {
       "id": "cell_0",

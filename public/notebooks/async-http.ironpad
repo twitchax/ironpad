@@ -4,7 +4,7 @@
   "title": "Async & HTTP",
   "created_at": "2026-01-01T00:00:00Z",
   "updated_at": "2026-01-01T00:00:00Z",
-  "shared_cargo_toml": "[dependencies]\nserde_json = \"1\"\n",
+  "shared_cargo_toml": "[dependencies]\nserde_json = \"1\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
   "cells": [
     {
       "id": "cell_0",
@@ -19,7 +19,7 @@
       "order": 1,
       "label": "HTTP GET",
       "cell_type": "Code",
-      "source": "// Fetch a fun fact from a public API\nlet response = ironpad_cell::http::get(\"https://httpbin.org/get\").await.unwrap();\n\n// The response is a JSON string\nformat!(\"Response length: {} bytes\\n\\nFirst 500 chars:\\n{}\", response.len(), &response[..500.min(response.len())])\n",
+      "source": "// Fetch JSON from a public API\nlet response = ironpad_cell::http::get(\"https://httpbin.org/get\").await.unwrap();\n\n// Return the raw JSON string so downstream cells can parse it\nresponse\n",
       "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
     },
     {

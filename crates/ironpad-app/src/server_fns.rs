@@ -179,10 +179,13 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 /// Lists all available public notebooks from the static index.
 #[server]
 pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, ServerFnError> {
-    use ironpad_common::{AppConfig, PublicNotebookIndex};
+    use ironpad_common::PublicNotebookIndex;
 
-    let config = expect_context::<AppConfig>();
-    let index_path = config.data_dir.join("public_notebooks").join("index.json");
+    let leptos_options = expect_context::<LeptosOptions>();
+    let site_root: &str = &leptos_options.site_root;
+    let index_path = std::path::Path::new(site_root)
+        .join("notebooks")
+        .join("index.json");
 
     let json = match tokio::fs::read_to_string(&index_path).await {
         Ok(json) => json,

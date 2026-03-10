@@ -280,4 +280,53 @@ mod tests {
         assert_eq!(hit.wasm_bytes, blob);
         assert_eq!(hit.js_glue.as_deref(), Some(glue));
     }
+
+    // ── T-005: Additional edge-case tests ───────────────────────────────
+
+    #[test]
+    fn hash_empty_source_is_valid() {
+        let h = content_hash("", "", &[], None);
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_same_shared_cargo_toml_is_deterministic() {
+        let shared = "[dependencies]\nserde = \"1\"";
+        let a = content_hash("x", "y", &[], Some(shared));
+        let b = content_hash("x", "y", &[], Some(shared));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn store_overwrites_existing_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = "aabbccdd";
+        let blob_v1 = b"version-1";
+        let blob_v2 = b"version-2-longer";
+
+        store_blob(dir.path(), hash, blob_v1, None).unwrap();
+        let hit1 = try_cache_hit(dir.path(), hash).unwrap();
+        assert_eq!(hit1.wasm_bytes, blob_v1);
+
+        store_blob(dir.path(), hash, blob_v2, None).unwrap();
+        let hit2 = try_cache_hit(dir.path(), hash).unwrap();
+        assert_eq!(hit2.wasm_bytes, blob_v2);
+    }
+
+    #[test]
+    fn cache_hit_without_js_glue_then_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = "test1234";
+
+        // Store without JS glue.
+        store_blob(dir.path(), hash, b"wasm", None).unwrap();
+        let hit = try_cache_hit(dir.path(), hash).unwrap();
+        assert!(hit.js_glue.is_none());
+
+        // Store again with JS glue.
+        store_blob(dir.path(), hash, b"wasm", Some("glue()")).unwrap();
+        let hit = try_cache_hit(dir.path(), hash).unwrap();
+        assert_eq!(hit.js_glue.as_deref(), Some("glue()"));
+    }
 }

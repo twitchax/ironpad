@@ -8,6 +8,7 @@ use leptos::prelude::*;
 
 use ironpad_common::{CellType, CompileRequest, ExecutionResult, IronpadCell, IronpadNotebook};
 
+use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
 use crate::server_fns::compile_cell;
@@ -20,6 +21,11 @@ enum DisplayPanel {
     Text(String),
     Html(String),
     Svg(String),
+    Markdown(String),
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
 }
 
 // ── Per-cell output data ────────────────────────────────────────────────────
@@ -49,9 +55,12 @@ pub fn ViewOnlyNotebook(
 
     // Fork handler — clones the notebook with a new ID and navigates to it.
     let fork_label_clone = fork_label.clone();
+    let navigate = leptos_router::hooks::use_navigate();
     let fork_action = move |_| {
+        let _ = &navigate;
         #[cfg(feature = "hydrate")]
         {
+            let navigate = navigate.clone();
             leptos::task::spawn_local(async move {
                 let mut nb = notebook.get_value();
                 nb.id = uuid::Uuid::new_v4();
@@ -61,7 +70,6 @@ pub fn ViewOnlyNotebook(
 
                 crate::storage::client::save_notebook(&nb).await;
 
-                let navigate = leptos_router::hooks::use_navigate();
                 navigate(
                     &format!("/notebook/{}", nb.id),
                     leptos_router::NavigateOptions::default(),
@@ -69,10 +77,6 @@ pub fn ViewOnlyNotebook(
             });
         }
     };
-
-    // Suppress unused warning during SSR.
-    #[cfg(not(feature = "hydrate"))]
-    let _ = &fork_action;
 
     view! {
         <div class="view-only-notebook">
@@ -322,7 +326,7 @@ fn ViewOnlyMarkdownCell(#[prop(into)] source: String) -> impl IntoView {
     if html.trim().is_empty() {
         view! {
             <div class="view-only-cell view-only-markdown">
-                <p style="color: #4a4a6a; font-style: italic;">"(empty markdown cell)"</p>
+                <p class="ironpad-placeholder">"(empty markdown cell)"</p>
             </div>
         }
         .into_any()
@@ -357,19 +361,91 @@ fn ViewOnlyOutput(result: ExecutionResult) -> impl IntoView {
             </div>
             {panels.into_iter().map(|panel| {
                 match panel {
-                    DisplayPanel::Text(text) => view! {
-                        <div class="view-only-output-display">
-                            <pre class="view-only-output-text">{text}</pre>
-                        </div>
-                    }.into_any(),
-                    DisplayPanel::Html(html) => view! {
-                        <div class="view-only-output-display view-only-output-html" inner_html=html></div>
-                    }.into_any(),
-                    DisplayPanel::Svg(svg) => view! {
-                        <div class="view-only-output-display view-only-output-svg" inner_html=svg></div>
-                    }.into_any(),
+                    DisplayPanel::Text(text) => {
+                        let copy_text = text.clone();
+                        view! {
+                            <div class="view-only-output-display">
+                                <CopyButton text=copy_text />
+                                <pre class="view-only-output-text">{text}</pre>
+                            </div>
+                        }.into_any()
+                    },
+                    DisplayPanel::Html(html) => {
+                        let copy_text = html.clone();
+                        view! {
+                            <div class="view-only-output-display view-only-output-html">
+                                <CopyButton text=copy_text />
+                                <div inner_html=html></div>
+                            </div>
+                        }.into_any()
+                    },
+                    DisplayPanel::Svg(svg) => {
+                        let copy_text = svg.clone();
+                        view! {
+                            <div class="view-only-output-display view-only-output-svg">
+                                <CopyButton text=copy_text />
+                                <div inner_html=svg></div>
+                            </div>
+                        }.into_any()
+                    },
+                    DisplayPanel::Markdown(md) => {
+                        let copy_text = md.clone();
+                        let rendered = render_markdown(&md);
+                        view! {
+                            <div class="view-only-output-display">
+                                <CopyButton text=copy_text />
+                                <div class="ironpad-markdown-cell-preview" inner_html=rendered></div>
+                            </div>
+                        }.into_any()
+                    },
+                    DisplayPanel::Table { headers, rows } => {
+                        let copy_text = render_table_tsv(&headers, &rows);
+                        let table_html = render_table_html(&headers, &rows);
+                        view! {
+                            <div class="view-only-output-display">
+                                <CopyButton text=copy_text />
+                                <div inner_html=table_html></div>
+                            </div>
+                        }.into_any()
+                    },
                 }
             }).collect_view()}
         </div>
     }
+}
+
+/// Render a table as an HTML `<table>` string with the `ironpad-output-table` class.
+fn render_table_html(headers: &[String], rows: &[Vec<String>]) -> String {
+    let mut html = String::from("<table class=\"ironpad-output-table\"><thead><tr>");
+    for h in headers {
+        html.push_str(&format!("<th>{}</th>", html_escape(h)));
+    }
+    html.push_str("</tr></thead><tbody>");
+    for row in rows {
+        html.push_str("<tr>");
+        for cell in row {
+            html.push_str(&format!("<td>{}</td>", html_escape(cell)));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table>");
+    html
+}
+
+/// Render a table as tab-separated values for clipboard copy.
+fn render_table_tsv(headers: &[String], rows: &[Vec<String>]) -> String {
+    let mut tsv = headers.join("\t");
+    for row in rows {
+        tsv.push('\n');
+        tsv.push_str(&row.join("\t"));
+    }
+    tsv
+}
+
+/// Minimal HTML entity escaping for text content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

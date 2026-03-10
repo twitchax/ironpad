@@ -1138,6 +1138,7 @@ a:focus-visible {
 
 .ironpad-output-display {
     margin-bottom: 8px;
+    position: relative;
 }
 
 .ironpad-output-display-text {
@@ -1161,6 +1162,34 @@ a:focus-visible {
 
 .ironpad-output-html {
     padding: 0.5rem;
+}
+
+.ironpad-output-table {
+    width: 100%;
+    border-collapse: collapse;
+    color: var(--ip-text-primary);
+    font-size: 0.85rem;
+    margin: 0.25rem 0;
+
+    th,
+    td {
+        padding: 0.4rem 0.75rem;
+        border: 1px solid var(--ip-border);
+        text-align: left;
+    }
+
+    thead th {
+        background: var(--ip-bg-surface);
+        font-weight: 600;
+    }
+
+    tbody tr:nth-child(even) {
+        background: rgba(255, 255, 255, 0.03);
+    }
+
+    tbody tr:hover {
+        background: rgba(255, 255, 255, 0.06);
+    }
 }
 
 .ironpad-output-bytes {
@@ -1427,6 +1456,13 @@ samp,
     color: var(--ip-info);
 }
 
+/* ── Placeholder text ──────────────────────────────────────────────────── */
+
+.ironpad-placeholder {
+    color: var(--ip-text-muted);
+    font-style: italic;
+}
+
 /* ── Markdown cell ──────────────────────────────────────────────────────── */
 
 .ironpad-markdown-cell {
@@ -1667,6 +1703,7 @@ samp,
 
 .view-only-output-display {
     padding: 0.5rem 0.75rem;
+    position: relative;
 }
 
 .view-only-output-text {
@@ -1678,4 +1715,51 @@ samp,
 .view-only-output-html,
 .view-only-output-svg {
     overflow: auto;
+}
+
+/* ── Copy-to-clipboard button ────────────────────────────────────────────── */
+
+.ironpad-copy-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #999;
+    cursor: pointer;
+    font-size: 0.7rem;
+    line-height: 1;
+    opacity: 0.4;
+    transition: opacity 0.15s ease, background 0.15s ease;
+
+    &:hover {
+        opacity: 1;
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.15);
+    }
+}
+
+.ironpad-copy-btn__icon {
+    font-size: 0.75rem;
+}
+
+.ironpad-copy-btn__feedback {
+    opacity: 0;
+    max-width: 0;
+    overflow: hidden;
+    transition: opacity 0.25s ease, max-width 0.25s ease;
+    color: var(--ip-accent, #e94560);
+    font-weight: 600;
+    white-space: nowrap;
+
+    &--visible {
+        opacity: 1;
+        max-width: 60px;
+    }
 }

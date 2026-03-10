@@ -128,7 +128,7 @@ pub fn MarkdownCell(
                         view! {
                             <div class="ironpad-markdown-cell-preview"
                                  on:dblclick=on_dblclick>
-                                <p style="color: #4a4a6a; font-style: italic;">
+                                <p class="ironpad-placeholder">
                                     "Double-click to edit markdown…"
                                 </p>
                             </div>

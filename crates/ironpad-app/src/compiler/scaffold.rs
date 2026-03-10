@@ -910,4 +910,80 @@ codegen-units = 16
         assert!(result.contains("serde"));
         assert!(result.contains("ironpad-cell"));
     }
+
+    // ── T-005: Additional edge-case tests ───────────────────────────────
+
+    #[test]
+    fn generate_lib_rs_with_unicode_source() {
+        let source = "    let msg = \"こんにちは世界 🦀\";\n    CellOutput::text(msg)";
+        let (lib_rs, preamble, _) = generate_lib_rs(source, &[]);
+
+        assert_eq!(preamble, 5);
+        assert!(lib_rs.contains("こんにちは世界 🦀"));
+        // Verify user code appears at the correct preamble offset.
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert!(lines[preamble as usize].contains("こんにちは世界"));
+    }
+
+    #[test]
+    fn merge_shared_ironpad_cell_dep_is_filtered() {
+        // Shared Cargo.toml that redundantly declares ironpad-cell should have
+        // that dep stripped (the scaffold always injects its own).
+        let shared = "[dependencies]\nironpad-cell = \"0.1\"\nserde = \"1\"";
+        let cell = "[dependencies]\nrand = \"0.8\"";
+        let result = merge_dependencies(Some(shared), cell);
+        assert!(
+            !result.contains("ironpad-cell"),
+            "ironpad-cell should be filtered from shared"
+        );
+        assert!(result.contains("serde"));
+        assert!(result.contains("rand"));
+    }
+
+    #[test]
+    fn extra_sections_patch_section_forwarded() {
+        let shared = "\
+[dependencies]
+serde = \"1\"
+
+[patch.crates-io]
+serde = { git = \"https://github.com/serde-rs/serde\" }
+";
+        let result = extract_extra_sections(Some(shared), "");
+        assert!(result.contains("[patch.crates-io]"));
+        assert!(result.contains("serde = { git ="));
+    }
+
+    #[test]
+    fn collect_extra_sections_skips_empty_body() {
+        // A section header followed immediately by another header should
+        // produce no extra section (empty body is filtered).
+        let toml = "\
+[profile.release]
+
+[dependencies]
+serde = \"1\"
+";
+        let sections = collect_extra_sections(toml);
+        assert!(
+            sections.is_empty(),
+            "section with whitespace-only body should be skipped"
+        );
+    }
+
+    #[test]
+    fn crate_name_from_dep_line_whitespace_only() {
+        assert_eq!(crate_name_from_dep_line("   "), None);
+    }
+
+    #[test]
+    fn generate_lib_rs_empty_source() {
+        let (lib_rs, preamble, is_async) = generate_lib_rs("", &[]);
+
+        assert_eq!(preamble, 5);
+        assert!(!is_async);
+        // The empty source should still produce a compilable wrapper.
+        assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
+        assert!(lib_rs.contains("}).into();"));
+    }
 }

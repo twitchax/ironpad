@@ -615,4 +615,80 @@ mod tests {
         // checked_sub(5) on line_start=4 returns None, so span is rejected.
         assert!(adjust_span(span, 5).is_none());
     }
+
+    // ── T-005: Additional edge-case tests ───────────────────────────────
+
+    /// A "help" level message from rustc.
+    const HELP_LEVEL_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"help: consider borrowing here\n","children":[],"code":null,"level":"help","message":"consider borrowing here","spans":[{"byte_end":200,"byte_start":190,"column_end":10,"column_start":5,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"add &","line_end":8,"line_start":8,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+
+    /// A "failure-note" level message (should be skipped).
+    const FAILURE_NOTE_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"note: for more information about this error...\n","children":[],"code":null,"level":"failure-note","message":"for more information about this error, try `rustc --explain E0308`","spans":[]}}"#;
+
+    /// Internal compiler error (ICE).
+    const ICE_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-test","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error: internal compiler error: something broke\n","children":[],"code":null,"level":"error: internal compiler error","message":"internal compiler error: something broke","spans":[]}}"#;
+
+    #[test]
+    fn parses_help_level_as_note() {
+        let diags = parse_diagnostics(HELP_LEVEL_JSON, 5);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Note);
+        assert!(diags[0].message.contains("consider borrowing"));
+        assert_eq!(diags[0].spans.len(), 1);
+        assert_eq!(diags[0].spans[0].line_start, 3); // 8 - 5
+    }
+
+    #[test]
+    fn skips_failure_note_level() {
+        let diags = parse_diagnostics(FAILURE_NOTE_JSON, 5);
+        assert!(diags.is_empty(), "failure-note level should be skipped");
+    }
+
+    #[test]
+    fn parses_internal_compiler_error() {
+        let diags = parse_diagnostics(ICE_JSON, 5);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(diags[0].message.contains("internal compiler error"));
+        assert!(diags[0].spans.is_empty());
+    }
+
+    #[test]
+    fn adjust_span_large_preamble_offset() {
+        // With a large preamble (e.g., 11 lines when many typed cells exist),
+        // verify the adjustment still works correctly.
+        let span = RustcSpan {
+            file_name: "src/lib.rs".to_string(),
+            line_start: 15,
+            line_end: 17,
+            column_start: 5,
+            column_end: 20,
+            is_primary: true,
+            label: Some("some error".to_string()),
+        };
+
+        let adjusted = adjust_span(span, 11).unwrap();
+        assert_eq!(adjusted.line_start, 4); // 15 - 11
+        assert_eq!(adjusted.line_end, 6); // 17 - 11
+    }
+
+    #[test]
+    fn adjust_span_zero_width_column() {
+        // A zero-width span where col_start == col_end (cursor position).
+        let span = RustcSpan {
+            file_name: "src/lib.rs".to_string(),
+            line_start: 8,
+            line_end: 8,
+            column_start: 15,
+            column_end: 15,
+            is_primary: true,
+            label: Some("here".to_string()),
+        };
+
+        let adjusted = adjust_span(span, 5).unwrap();
+        assert_eq!(adjusted.line_start, 3);
+        assert_eq!(adjusted.col_start, 15);
+        assert_eq!(adjusted.col_end, 15);
+    }
 }

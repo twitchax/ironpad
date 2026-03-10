@@ -221,7 +221,7 @@ fn StatusBar(ctx: LayoutContext) -> impl IntoView {
     // Tick counter that bumps every 30 s so the relative timestamp refreshes.
     let tick = RwSignal::new(0u64);
 
-    #[cfg(feature = "hydrate")]
+    #[cfg(target_arch = "wasm32")]
     {
         use wasm_bindgen::prelude::*;
 

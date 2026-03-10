@@ -23,14 +23,17 @@ pub mod prelude {
     #[cfg(target_arch = "wasm32")]
     pub use wasm_bindgen_futures;
 
+    pub use crate::plot::Plot;
     pub use crate::{
-        CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Md, Svg,
-        Table, TypeTag,
+        CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Json, Md,
+        Svg, Table, TypeTag,
     };
 
     #[cfg(target_arch = "wasm32")]
     pub use super::http;
 }
+
+pub mod plot;
 
 #[cfg(target_arch = "wasm32")]
 pub mod http;
@@ -200,6 +203,18 @@ impl Table {
 /// Markdown content for rich display output. Use in tuples: `(data, Md(md_string))`
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Md(pub String);
+
+/// JSON content for syntax-highlighted display output.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Json(pub serde_json::Value);
+
+impl std::str::FromStr for Json {
+    type Err = serde_json::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(serde_json::from_str(s)?))
+    }
+}
 
 // ── CellOutput ───────────────────────────────────────────────────────────────
 
@@ -416,6 +431,16 @@ impl From<Md> for CellOutput {
     }
 }
 
+impl From<Json> for CellOutput {
+    fn from(value: Json) -> Self {
+        Self {
+            bytes: vec![],
+            panels: vec![DisplayPanel::Html(render_json_html(&value.0))],
+            type_tag: Some("Json".into()),
+        }
+    }
+}
+
 // ── IntoPanels trait ─────────────────────────────────────────────────────────
 
 /// Trait for types that can produce display panels.
@@ -476,6 +501,12 @@ impl IntoPanels for Table {
 impl IntoPanels for Md {
     fn into_panels(&self) -> Vec<DisplayPanel> {
         vec![DisplayPanel::Markdown(self.0.clone())]
+    }
+}
+
+impl IntoPanels for Json {
+    fn into_panels(&self) -> Vec<DisplayPanel> {
+        vec![DisplayPanel::Html(render_json_html(&self.0))]
     }
 }
 
@@ -550,6 +581,12 @@ impl TypeTag for Md {
     }
 }
 
+impl TypeTag for Json {
+    fn type_tag() -> String {
+        "Json".into()
+    }
+}
+
 impl TypeTag for CellOutput {
     fn type_tag() -> String {
         "CellOutput".into()
@@ -606,6 +643,100 @@ fn clean_type_name(name: &str) -> String {
         .replace("alloc::boxed::Box", "Box")
         .replace("core::option::Option", "Option")
         .replace("core::result::Result", "Result")
+}
+
+/// Escape HTML special characters to prevent XSS.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Render a `serde_json::Value` as syntax-highlighted HTML inside a `<pre>` block.
+fn render_json_html(value: &serde_json::Value) -> String {
+    const COLOR_KEY: &str = "#e94560";
+    const COLOR_STRING: &str = "#40c080";
+    const COLOR_NUMBER: &str = "#40a0f0";
+    const COLOR_KEYWORD: &str = "#b080f0";
+    const COLOR_PUNCT: &str = "#eaeaea";
+
+    fn span(color: &str, text: &str) -> String {
+        format!("<span style=\"color:{color}\">{text}</span>")
+    }
+
+    fn write_value(buf: &mut String, value: &serde_json::Value, indent: usize) {
+        match value {
+            serde_json::Value::Null => buf.push_str(&span(COLOR_KEYWORD, "null")),
+            serde_json::Value::Bool(b) => {
+                buf.push_str(&span(COLOR_KEYWORD, if *b { "true" } else { "false" }));
+            }
+            serde_json::Value::Number(n) => {
+                buf.push_str(&span(COLOR_NUMBER, &n.to_string()));
+            }
+            serde_json::Value::String(s) => {
+                let escaped = html_escape(s);
+                buf.push_str(&span(COLOR_STRING, &format!("&quot;{escaped}&quot;")));
+            }
+            serde_json::Value::Array(arr) => {
+                if arr.is_empty() {
+                    buf.push_str(&span(COLOR_PUNCT, "[]"));
+                    return;
+                }
+                buf.push_str(&span(COLOR_PUNCT, "["));
+                buf.push('\n');
+                for (i, item) in arr.iter().enumerate() {
+                    let padding = " ".repeat(indent + 2);
+                    buf.push_str(&padding);
+                    write_value(buf, item, indent + 2);
+                    if i + 1 < arr.len() {
+                        buf.push_str(&span(COLOR_PUNCT, ","));
+                    }
+                    buf.push('\n');
+                }
+                let padding = " ".repeat(indent);
+                buf.push_str(&padding);
+                buf.push_str(&span(COLOR_PUNCT, "]"));
+            }
+            serde_json::Value::Object(map) => {
+                if map.is_empty() {
+                    buf.push_str(&span(COLOR_PUNCT, "{}"));
+                    return;
+                }
+                buf.push_str(&span(COLOR_PUNCT, "{"));
+                buf.push('\n');
+                let entries: Vec<_> = map.iter().collect();
+                for (i, (key, val)) in entries.iter().enumerate() {
+                    let padding = " ".repeat(indent + 2);
+                    let escaped_key = html_escape(key);
+                    buf.push_str(&padding);
+                    buf.push_str(&span(COLOR_KEY, &format!("&quot;{escaped_key}&quot;")));
+                    buf.push_str(&span(COLOR_PUNCT, ": "));
+                    write_value(buf, val, indent + 2);
+                    if i + 1 < entries.len() {
+                        buf.push_str(&span(COLOR_PUNCT, ","));
+                    }
+                    buf.push('\n');
+                }
+                let padding = " ".repeat(indent);
+                buf.push_str(&padding);
+                buf.push_str(&span(COLOR_PUNCT, "}"));
+            }
+        }
+    }
+
+    let mut buf = String::from("<pre style=\"margin:0; font-family:monospace; line-height:1.5\">");
+    write_value(&mut buf, value, 0);
+    buf.push_str("</pre>");
+    buf
 }
 
 // NOTE: Identity `From<CellOutput> for CellOutput` is provided by the blanket
@@ -1717,5 +1848,92 @@ mod tests {
                 DisplayPanel::Markdown("# Title".into()),
             ]
         );
+    }
+
+    // ── Json tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn json_from_str_valid() {
+        let json: Json = r#"{"a": 1}"#.parse().expect("valid JSON");
+        assert_eq!(json.0, serde_json::json!({"a": 1}));
+    }
+
+    #[test]
+    fn json_from_str_invalid() {
+        let result = "not json {{{".parse::<Json>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn json_render_contains_pre_tag() {
+        let html = render_json_html(&serde_json::json!({"key": "value"}));
+        assert!(html.starts_with("<pre "));
+        assert!(html.ends_with("</pre>"));
+    }
+
+    #[test]
+    fn json_render_colors_keys_strings_numbers_booleans() {
+        let val = serde_json::json!({
+            "name": "alice",
+            "age": 30,
+            "active": true,
+            "extra": null
+        });
+        let html = render_json_html(&val);
+
+        // Keys colored with accent red.
+        assert!(html.contains("#e94560"), "keys should use #e94560");
+        // String values colored green.
+        assert!(html.contains("#40c080"), "strings should use #40c080");
+        // Numbers colored blue.
+        assert!(html.contains("#40a0f0"), "numbers should use #40a0f0");
+        // Booleans/null colored purple.
+        assert!(html.contains("#b080f0"), "bools/null should use #b080f0");
+        // Punctuation colored light.
+        assert!(html.contains("#eaeaea"), "punctuation should use #eaeaea");
+    }
+
+    #[test]
+    fn json_into_cell_output_html_panel() {
+        let json = Json(serde_json::json!({"x": 1}));
+        let output = CellOutput::from(json);
+        assert_eq!(output.type_tag.as_deref(), Some("Json"));
+        assert_eq!(output.panels.len(), 1);
+        match &output.panels[0] {
+            DisplayPanel::Html(html) => assert!(html.contains("<pre ")),
+            other => panic!("expected Html panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_html_escapes_values() {
+        let json = Json(serde_json::json!({"key": "<script>alert('xss')</script>"}));
+        let output = CellOutput::from(json);
+        match &output.panels[0] {
+            DisplayPanel::Html(html) => {
+                assert!(!html.contains("<script>"), "HTML should be escaped");
+                assert!(html.contains("&lt;script&gt;"));
+            }
+            other => panic!("expected Html panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_into_panels_trait() {
+        let json = Json(serde_json::json!([1, 2, 3]));
+        let panels = json.into_panels();
+        assert_eq!(panels.len(), 1);
+        match &panels[0] {
+            DisplayPanel::Html(html) => {
+                assert!(html.contains("<pre "));
+                assert!(html.contains("#40a0f0")); // numbers
+            }
+            other => panic!("expected Html panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_type_tag() {
+        assert_eq!(Json::type_tag(), "Json");
     }
 }
