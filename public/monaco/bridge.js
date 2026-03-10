@@ -250,6 +250,20 @@
           delete record.pendingReadOnly;
         }
 
+        // Disable built-in scrollbar when content fits.
+        editor.updateOptions({ scrollbar: { alwaysConsumeMouseWheel: false } });
+
+        // Auto-resize editor height to fit content.
+        var updateHeight = function () {
+          var contentHeight = editor.getContentHeight();
+          var newHeight = Math.min(Math.max(contentHeight, 60), 600);
+          container.style.height = newHeight + "px";
+          editor.layout();
+        };
+
+        editor.onDidContentSizeChange(updateHeight);
+        updateHeight();
+
         if (onChange) {
           editor.onDidChangeModelContent(function () {
             onChange(editor.getValue());

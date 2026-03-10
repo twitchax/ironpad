@@ -530,34 +530,6 @@ a:focus-visible {
     align-items: center;
 }
 
-.ironpad-auto-run-toggle {
-    padding: 4px 10px;
-    border: 1px solid var(--colorNeutralStroke1, #d1d1d1);
-    border-radius: 4px;
-    background: var(--colorNeutralBackground1, #fff);
-    color: var(--colorNeutralForeground2, #616161);
-    cursor: pointer;
-    font-size: 0.8125rem;
-    line-height: 1.4;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
-    white-space: nowrap;
-
-    &:hover {
-        background: var(--colorNeutralBackground1Hover, #f5f5f5);
-    }
-
-    &--active {
-        background: var(--colorBrandBackground, #0078d4);
-        color: var(--colorNeutralForegroundOnBrand, #fff);
-        border-color: var(--colorBrandBackground, #0078d4);
-
-        &:hover {
-            background: var(--colorBrandBackgroundHover, #106ebe);
-            border-color: var(--colorBrandBackgroundHover, #106ebe);
-        }
-    }
-}
-
 /* ── Shared dependencies panel ───────────────────────────────────────── */
 
 .ironpad-shared-deps {
@@ -913,7 +885,8 @@ a:focus-visible {
 
 .ironpad-monaco-container {
     width: 100%;
-    min-height: 200px;
+    min-height: 60px;
+    max-height: 600px;
     border-radius: 0 0 8px 8px;
     overflow: hidden;
 }
@@ -1375,7 +1348,7 @@ samp,
     }
 
     .ironpad-monaco-container {
-        min-height: 150px;
+        min-height: 60px;
     }
 
     .ironpad-status-bar {
@@ -1852,38 +1825,50 @@ samp,
 
 .ironpad-mode-toggle {
     position: fixed;
-    bottom: 24px;
+    bottom: 44px;
     left: 24px;
     z-index: 1000;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 10px 18px;
     border: 1px solid #0f3460;
     border-radius: 24px;
     background: #16213e;
-    color: #c0c0c0;
-    font-size: 0.9rem;
-    font-weight: 600;
-    cursor: pointer;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-    transition: background 0.2s, border-color 0.2s, color 0.2s;
+    overflow: hidden;
+}
 
-    &:hover {
+.ironpad-mode-toggle-segment {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 14px;
+    border: none;
+    background: transparent;
+    color: #606060;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+
+    &:hover:not(.ironpad-mode-toggle-segment--active) {
         background: #1a2a4e;
-        border-color: #2a4a7f;
-        color: #ffffff;
+        color: #c0c0c0;
     }
+}
 
-    &:active {
-        background: #0f3460;
-    }
+.ironpad-mode-toggle-segment--active {
+    background: #e94560;
+    color: #ffffff;
 }
 
 /* ── Cell view-mode overrides ───────────────────────────────────────── */
 
 .ironpad-cell--view-mode .ironpad-cell-collapse-btn {
     display: none;
+}
+
+/* View-only cells keep the collapse toggle visible for code expand/collapse. */
+.view-only-cell.ironpad-cell--view-mode .ironpad-cell-collapse-btn {
+    display: inline-block;
 }
 
 .ironpad-cell--view-mode .ironpad-cell-actions {
@@ -1893,6 +1878,25 @@ samp,
 .ironpad-cell--view-mode .ironpad-cell-label-input {
     border-color: transparent;
     background: transparent;
+    pointer-events: none;
+}
+
+/* Hide side action buttons (run, settings, menu) in view mode. */
+.ironpad-cell--view-mode ~ .ironpad-cell-side-actions {
+    display: none !important;
+}
+
+/* Markdown cells in view mode: hide editor and hint, show only preview. */
+.ironpad-cell--view-mode .ironpad-markdown-cell-editor {
+    display: none;
+}
+
+.ironpad-cell--view-mode .ironpad-markdown-cell-hint {
+    display: none;
+}
+
+.ironpad-cell--view-mode .ironpad-markdown-cell-preview {
+    cursor: default;
     pointer-events: none;
 }
 

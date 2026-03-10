@@ -57,10 +57,14 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let saved_collapsed = RwSignal::new(false);
 
     // Save/restore collapse state when toggling view mode.
+    // Only collapse Code cells; Markdown cells keep their body visible
+    // so the rendered preview remains on screen.
     Effect::new(move || {
         if state.is_view_mode.get() {
             saved_collapsed.set(collapsed.get_untracked());
-            collapsed.set(true);
+            if !is_markdown {
+                collapsed.set(true);
+            }
         } else {
             collapsed.set(saved_collapsed.get_untracked());
         }
@@ -968,7 +972,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = source.get_untracked();
             let cid = cid_save.clone();
-            state.notebook.update(|nb_opt| {
+            state.notebook.update_untracked(|nb_opt| {
                 if let Some(nb) = nb_opt {
                     if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
                         cell.source = val;
@@ -1028,7 +1032,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = cargo_toml.get_untracked();
             let cid = cid_save.clone();
-            state.notebook.update(|nb_opt| {
+            state.notebook.update_untracked(|nb_opt| {
                 if let Some(nb) = nb_opt {
                     if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
                         cell.cargo_toml = Some(val);
@@ -1099,7 +1103,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             let toml = cargo_toml.get_untracked();
             let cid = cid_flush.clone();
 
-            state.notebook.update(|nb_opt| {
+            state.notebook.update_untracked(|nb_opt| {
                 if let Some(nb) = nb_opt {
                     if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
                         cell.source = src;
@@ -1132,7 +1136,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
 
     let body_class = Signal::derive(move || {
-        if state.is_view_mode.get() || collapsed.get() {
+        // In view mode, collapse the body only for Code cells (hides tabs
+        // and editors while output panels remain visible outside the body).
+        // Markdown cells keep the body open so the rendered preview shows.
+        let should_collapse = collapsed.get() || (state.is_view_mode.get() && !is_markdown);
+        if should_collapse {
             "ironpad-cell-body ironpad-cell-body--collapsed"
         } else {
             "ironpad-cell-body"

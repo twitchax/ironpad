@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000006",
+  "title": "Interactive Widgets",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z",
+  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "# Interactive Widgets \ud83c\udf9b\ufe0f\n\nironpad supports **interactive widgets** that let you build reactive notebooks. Each widget produces a typed value that flows to downstream cells \u2014 change a slider and every cell that depends on it re-runs automatically.\n\nThis notebook builds a **Tip Calculator** using all six widget types: `slider`, `dropdown`, `number`, `switch`, `text_input`, and `checkbox`.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Bill Amount",
+      "cell_type": "Code",
+      "source": "ui::slider(0.0, 500.0)\n    .step(0.50)\n    .label(\"Bill Amount ($)\")\n    .default_value(85.0)\n",
+      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Tip Percentage",
+      "cell_type": "Code",
+      "source": "ui::dropdown(&[\"15%\", \"18%\", \"20%\", \"25%\"])\n    .label(\"Tip Percentage\")\n    .default_value(\"18%\")\n",
+      "cargo_toml": "[package]\nname = \"cell_2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Number of People",
+      "cell_type": "Code",
+      "source": "ui::number(1.0, 20.0)\n    .step(1.0)\n    .label(\"Number of People\")\n    .default_value(2.0)\n",
+      "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_4",
+      "order": 4,
+      "label": "Round Up",
+      "cell_type": "Code",
+      "source": "ui::switch(\"Round up total?\")\n",
+      "cargo_toml": "[package]\nname = \"cell_4\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_5",
+      "order": 5,
+      "label": "Tip Summary",
+      "cell_type": "Code",
+      "source": "// cell0: f64 (bill), cell1: String (tip %), cell2: f64 (people), cell3: bool (round up)\n\nlet tip_rate = cell1\n    .trim_end_matches('%')\n    .parse::<f64>()\n    .unwrap_or(18.0)\n    / 100.0;\n\nlet tip = cell0 * tip_rate;\nlet mut total = cell0 + tip;\n\nif cell3 {\n    total = total.ceil();\n}\n\nlet per_person = total / cell2;\n\nMd(format!(\n    \"## \\u{1f9fe} Bill Summary\\n\\n\\\n     | | |\\n\\\n     |---|---:|\\n\\\n     | **Subtotal** | ${:.2} |\\n\\\n     | **Tip ({})** | ${:.2} |\\n\\\n     | **Total**{} | ${:.2} |\\n\\\n     | **Per Person** (\\u{00f7}{:.0}) | ${:.2} |\",\n    cell0, cell1, tip,\n    if cell3 { \" (rounded \\u{2b06})\" } else { \"\" },\n    total, cell2, per_person,\n))\n",
+      "cargo_toml": "[package]\nname = \"cell_5\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_6",
+      "order": 6,
+      "label": "Personalize",
+      "cell_type": "Markdown",
+      "source": "---\n\n## Personalize Your Receipt \u270f\ufe0f\n\nAdd your name and choose whether to see a detailed breakdown. These widgets demonstrate `text_input` and `checkbox`.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_7",
+      "order": 7,
+      "label": "Your Name",
+      "cell_type": "Code",
+      "source": "ui::text_input(\"Enter your name\")\n    .label(\"Your Name\")\n    .default_value(\"Friend\")\n",
+      "cargo_toml": "[package]\nname = \"cell_7\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_8",
+      "order": 8,
+      "label": "Detailed Breakdown",
+      "cell_type": "Code",
+      "source": "ui::checkbox(\"Show detailed breakdown\")\n    .default_value(true)\n",
+      "cargo_toml": "[package]\nname = \"cell_8\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_9",
+      "order": 9,
+      "label": "Receipt",
+      "cell_type": "Code",
+      "source": "// cell0: f64 (bill), cell1: String (tip %), cell2: f64 (people)\n// cell3: bool (round up), cell5: String (name), cell6: bool (detailed)\n\nlet name = if cell5.is_empty() { \"Guest\" } else { &cell5 };\n\nlet tip_rate = cell1\n    .trim_end_matches('%')\n    .parse::<f64>()\n    .unwrap_or(18.0)\n    / 100.0;\n\nlet tip = cell0 * tip_rate;\nlet mut total = cell0 + tip;\nif cell3 {\n    total = total.ceil();\n}\nlet per_person = total / cell2;\n\nlet detail = if cell6 {\n    let tax_est = cell0 * 0.08;\n    format!(\n        \"<tr><td colspan='2' style='padding-top:12px;border-top:1px dashed #555;'>\\\n         <strong>\\u{1f4cb} Breakdown</strong><br/>\\\n         Food &amp; drink: <code>${:.2}</code><br/>\\\n         Est. tax (8%): <code>${:.2}</code><br/>\\\n         Tip ({}): <code>${:.2}</code><br/>\\\n         <em>Grand total: <code>${:.2}</code></em>\\\n         </td></tr>\",\n        cell0, tax_est, cell1, tip, total,\n    )\n} else {\n    String::new()\n};\n\nHtml(format!(\n    \"<div style='padding:1.2rem;background:linear-gradient(135deg,#1a1a2e,#16213e);\\\n     border-radius:10px;font-family:monospace;color:#eaeaea;max-width:380px;'>\\\n     <h2 style='margin:0 0 0.8rem;color:#e94560;'>\\u{1f9fe} Receipt for {}</h2>\\\n     <table style='width:100%;border-collapse:collapse;'>\\\n     <tr><td>Subtotal</td><td style='text-align:right;'>${:.2}</td></tr>\\\n     <tr><td>Tip ({})</td><td style='text-align:right;'>${:.2}</td></tr>\\\n     <tr style='border-top:2px solid #e94560;font-weight:bold;'>\\\n     <td>Total{}</td><td style='text-align:right;'>${:.2}</td></tr>\\\n     <tr><td>Per person (\\u{00f7}{:.0})</td>\\\n     <td style='text-align:right;font-size:1.2em;color:#4ecca3;'>${:.2}</td></tr>\\\n     {}</table></div>\",\n    name, cell0, cell1, tip,\n    if cell3 { \" \\u{2b06}\" } else { \"\" },\n    total, cell2, per_person, detail,\n))\n",
+      "cargo_toml": "[package]\nname = \"cell_9\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    }
+  ]
+}

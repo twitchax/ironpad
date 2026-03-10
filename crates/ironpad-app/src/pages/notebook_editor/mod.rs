@@ -11,7 +11,7 @@ use ironpad_common::CellType;
 use leptos::prelude::*;
 use leptos_router::hooks::{use_navigate, use_params_map};
 use leptos_router::NavigateOptions;
-use thaw::{Button, ButtonAppearance, Toast, ToastBody, ToastTitle, ToasterInjection};
+use thaw::{Toast, ToastBody, ToastTitle, ToasterInjection};
 
 use crate::components::app_layout::LayoutContext;
 use crate::server_fns::share_notebook;
@@ -48,7 +48,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         run_all_queue: RwSignal::new(Vec::new()),
         shared_cargo_toml: RwSignal::new(None),
         cell_stale: RwSignal::new(HashMap::new()),
-        auto_run: RwSignal::new(false),
+        auto_run: RwSignal::new(true),
         cell_display_texts: RwSignal::new(HashMap::new()),
         editor_handles: RwSignal::new(HashMap::new()),
         is_view_mode: RwSignal::new(false),
@@ -71,7 +71,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
     // Wire up LayoutContext when notebook data arrives.
 
     let layout = expect_context::<LayoutContext>();
-    layout.show_save_button.set(true);
+    layout.show_save_button.set(false);
 
     Effect::new(move || {
         if let Some(nb) = state.notebook.get() {
@@ -272,46 +272,27 @@ fn NotebookContent() -> impl IntoView {
         click_closure.forget();
     }
 
+    // ── Auto-run all Code cells when entering view mode ────────────────
+
+    Effect::new(move || {
+        if state.is_view_mode.get() {
+            let cell_ids: Vec<String> = state
+                .cells
+                .get_untracked()
+                .iter()
+                .filter(|c| c.cell_type == CellType::Code)
+                .map(|c| c.id.clone())
+                .collect();
+            if !cell_ids.is_empty() {
+                state.run_all_queue.set(cell_ids);
+            }
+        }
+    });
+
     // ── Render ──────────────────────────────────────────────────────────
 
     view! {
         <div class="ironpad-notebook-toolbar">
-            // Run Stale — primary action, always visible.
-            <Button
-                appearance=ButtonAppearance::Subtle
-                on_click=move |_| {
-                    let cells = state.cells.get_untracked();
-                    let stale = state.cell_stale.get_untracked();
-                    let stale_cells: Vec<String> = cells
-                        .iter()
-                        .filter(|c| {
-                            c.cell_type == CellType::Code
-                                && stale.get(&c.id).copied().unwrap_or(false)
-                        })
-                        .map(|c| c.id.clone())
-                        .collect();
-                    if !stale_cells.is_empty() {
-                        state.run_all_queue.set(stale_cells);
-                    }
-                }
-            >
-                "⟳ Run Stale"
-            </Button>
-            // Auto-run toggle — visible standalone control.
-            <button
-                class=move || {
-                    if state.auto_run.get() {
-                        "ironpad-auto-run-toggle ironpad-auto-run-toggle--active"
-                    } else {
-                        "ironpad-auto-run-toggle"
-                    }
-                }
-                title="Auto-run downstream cells when a cell completes"
-                on:click=move |_| state.auto_run.update(|v| *v = !*v)
-            >
-                {move || if state.auto_run.get() { "Auto ⟳ On" } else { "Auto ⟳" }}
-            </button>
-
             <div class="ironpad-toolbar-right">
                 // ── Hamburger dropdown (☰) ──────────────────────────────
                 <div class="ironpad-toolbar-dropdown">
@@ -505,6 +486,20 @@ fn NotebookContent() -> impl IntoView {
                                     <button
                                         class="ironpad-toolbar-dropdown-item"
                                         on:click=move |_| {
+                                            state.auto_run.update(|v| *v = !*v);
+                                        }
+                                    >
+                                        {move || {
+                                            if state.auto_run.get() {
+                                                "✓ Auto-run"
+                                            } else {
+                                                "Auto-run"
+                                            }
+                                        }}
+                                    </button>
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item"
+                                        on:click=move |_| {
                                             gear_open.set(false);
                                             shared_deps_open.update(|v| *v = !*v);
                                         }
@@ -549,7 +544,9 @@ fn NotebookContent() -> impl IntoView {
         }}
 
         <div class="ironpad-cell-list">
-            <AddCellButton after_cell_id=None on_add=add_cell_cb />
+            <Show when=move || !state.is_view_mode.get()>
+                <AddCellButton after_cell_id=None on_add=add_cell_cb />
+            </Show>
 
             <For
                 each=move || state.cells.get()
@@ -557,17 +554,28 @@ fn NotebookContent() -> impl IntoView {
                 let:cell
             >
                 <CellItem cell=cell.clone() />
-                <AddCellButton after_cell_id=Some(cell.id.clone()) on_add=add_cell_cb />
+                <Show when=move || !state.is_view_mode.get()>
+                    <AddCellButton after_cell_id=Some(cell.id.clone()) on_add=add_cell_cb />
+                </Show>
             </For>
         </div>
 
         // ── Edit / View mode toggle (fixed bottom-left) ────────────────
-        <button
-            class="ironpad-mode-toggle"
-            title=move || if state.is_view_mode.get() { "View mode — click to edit" } else { "Edit mode — click to view" }
-            on:click=move |_| state.is_view_mode.update(|v| *v = !*v)
-        >
-            {move || if state.is_view_mode.get() { "👁 View" } else { "✏️ Edit" }}
-        </button>
+        <div class="ironpad-mode-toggle">
+            <button
+                class=move || if state.is_view_mode.get() { "ironpad-mode-toggle-segment" } else { "ironpad-mode-toggle-segment ironpad-mode-toggle-segment--active" }
+                title="Edit mode"
+                on:click=move |_| state.is_view_mode.set(false)
+            >
+                "✏️"
+            </button>
+            <button
+                class=move || if state.is_view_mode.get() { "ironpad-mode-toggle-segment ironpad-mode-toggle-segment--active" } else { "ironpad-mode-toggle-segment" }
+                title="View mode"
+                on:click=move |_| state.is_view_mode.set(true)
+            >
+                "👁"
+            </button>
+        </div>
     }
 }

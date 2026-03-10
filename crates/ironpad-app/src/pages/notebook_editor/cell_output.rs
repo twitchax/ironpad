@@ -283,22 +283,19 @@ pub(super) fn CellOutputPanel(
 /// Encode an `f64` value to bincode v2 standard-config bytes.
 #[cfg(feature = "hydrate")]
 fn bincode_encode_f64(value: f64) -> Vec<u8> {
-    bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .expect("f64 encoding cannot fail")
+    bincode::encode_to_vec(value, bincode::config::standard()).expect("f64 encoding cannot fail")
 }
 
 /// Encode a `bool` value to bincode v2 standard-config bytes.
 #[cfg(feature = "hydrate")]
 fn bincode_encode_bool(value: bool) -> Vec<u8> {
-    bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .expect("bool encoding cannot fail")
+    bincode::encode_to_vec(value, bincode::config::standard()).expect("bool encoding cannot fail")
 }
 
 /// Encode a `String` value to bincode v2 standard-config bytes.
 #[cfg(feature = "hydrate")]
 fn bincode_encode_string(value: &str) -> Vec<u8> {
-    bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .expect("String encoding cannot fail")
+    bincode::encode_to_vec(value, bincode::config::standard()).expect("String encoding cannot fail")
 }
 
 /// Update cell outputs, mark downstream cells stale, and optionally auto-run
@@ -413,7 +410,7 @@ fn render_slider(
 
     // Suppress unused warnings during SSR.
     #[cfg(not(feature = "hydrate"))]
-    let on_input = move |_: web_sys::Event| {};
+    let on_input = move |_: leptos::ev::Event| {};
     let _ = (&cell_id, &widget_ctx);
 
     view! {
@@ -476,7 +473,7 @@ fn render_dropdown(
     };
 
     #[cfg(not(feature = "hydrate"))]
-    let on_change = move |_: web_sys::Event| {};
+    let on_change = move |_: leptos::ev::Event| {};
     let _ = (&cell_id, &widget_ctx);
 
     view! {
@@ -536,7 +533,7 @@ fn render_checkbox(
     };
 
     #[cfg(not(feature = "hydrate"))]
-    let on_change = move |_: web_sys::Event| {};
+    let on_change = move |_: leptos::ev::Event| {};
     let _ = (&cell_id, &widget_ctx);
 
     view! {
@@ -589,7 +586,7 @@ fn render_text_input(
     };
 
     #[cfg(not(feature = "hydrate"))]
-    let on_input = move |_: web_sys::Event| {};
+    let on_input = move |_: leptos::ev::Event| {};
     let _ = (&cell_id, &widget_ctx);
 
     view! {
@@ -641,7 +638,7 @@ fn render_number(
     };
 
     #[cfg(not(feature = "hydrate"))]
-    let on_input = move |_: web_sys::Event| {};
+    let on_input = move |_: leptos::ev::Event| {};
     let _ = (&cell_id, &widget_ctx);
 
     view! {
@@ -695,7 +692,7 @@ fn render_switch(
     };
 
     #[cfg(not(feature = "hydrate"))]
-    let on_change = move |_: web_sys::Event| {};
+    let on_change = move |_: leptos::ev::Event| {};
     let _ = (&cell_id, &widget_ctx);
 
     view! {

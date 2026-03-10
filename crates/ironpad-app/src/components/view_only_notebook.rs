@@ -292,9 +292,26 @@ fn ViewOnlyCodeCell(
     #[cfg(not(feature = "hydrate"))]
     let _ = &run_cell;
 
+    // Code is collapsed by default to match editor view mode.
+    let collapsed = RwSignal::new(true);
+    let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
+    let body_class = Signal::derive(move || {
+        if collapsed.get() {
+            "ironpad-cell-body ironpad-cell-body--collapsed"
+        } else {
+            "ironpad-cell-body"
+        }
+    });
+
     view! {
-        <div class="view-only-cell">
+        <div class="view-only-cell ironpad-cell--view-mode">
             <div class="view-only-cell-header">
+                <button
+                    class="ironpad-cell-collapse-btn"
+                    on:click=move |_| collapsed.update(|c| *c = !*c)
+                >
+                    {collapse_icon}
+                </button>
                 <span class="view-only-cell-label">{cell.with_value(|c| c.label.clone())}</span>
                 <button
                     class="view-only-run-button"
@@ -304,11 +321,13 @@ fn ViewOnlyCodeCell(
                     {move || if compiling.get() { "⏳ Compiling…" } else { "▶ Run" }}
                 </button>
             </div>
-            <MonacoEditor
-                initial_value=cell.with_value(|c| c.source.clone())
-                language="rust"
-                read_only=true
-            />
+            <div class=body_class>
+                <MonacoEditor
+                    initial_value=cell.with_value(|c| c.source.clone())
+                    language="rust"
+                    read_only=true
+                />
+            </div>
             {move || error_message.get().map(|err| view! {
                 <div class="view-only-error">
                     <pre>{err}</pre>
