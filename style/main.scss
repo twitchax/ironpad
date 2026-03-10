@@ -18,6 +18,7 @@
     --ip-warning: #f0c040;
     --ip-info: #40a0f0;
     --ip-error: #e94560;
+    --ip-error-rgb: 233, 69, 96;
     --ip-purple: #b080f0;
     --ip-font-mono: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', 'SF Mono', monospace;
     --ip-font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -1635,15 +1636,15 @@ samp,
 .view-only-error {
     margin-top: 0.5rem;
     padding: 0.5rem 0.75rem;
-    background: rgba(220, 53, 69, 0.1);
-    border: 1px solid rgba(220, 53, 69, 0.3);
+    background: rgba(var(--ip-error-rgb), 0.1);
+    border: 1px solid rgba(var(--ip-error-rgb), 0.3);
     border-radius: 4px;
 
     pre {
         margin: 0;
         white-space: pre-wrap;
         font-size: 0.85rem;
-        color: #dc3545;
+        color: var(--ip-error);
     }
 }
 
