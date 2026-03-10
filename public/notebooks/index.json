@@ -35,6 +35,30 @@
         "tutorial",
         "markdown"
       ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000004",
+      "title": "Charts with Plot",
+      "description": "Create line, bar, and scatter charts with the built-in Plot helper.",
+      "filename": "charts-with-plot.ironpad",
+      "cell_count": 8,
+      "tags": [
+        "charts",
+        "plot",
+        "visualization"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000005",
+      "title": "Working with JSON",
+      "description": "Pretty-print and explore JSON data with syntax-highlighted output.",
+      "filename": "working-with-json.ironpad",
+      "cell_count": 8,
+      "tags": [
+        "json",
+        "data",
+        "http"
+      ]
     }
   ]
 }

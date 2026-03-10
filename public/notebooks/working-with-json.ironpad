@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000005",
+  "title": "Working with JSON",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z",
+  "shared_cargo_toml": "[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "# Working with JSON 🔮\n\nironpad has a built-in `Json` display type that pretty-prints JSON with syntax highlighting. It's great for exploring API responses, configuration data, or any structured data.\n\nThe `Json` type wraps a `serde_json::Value` and renders it with color-coded keys, strings, numbers, and booleans.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Basic JSON",
+      "cell_type": "Code",
+      "source": "use serde_json::json;\n\n// Create a JSON value and display it with syntax highlighting\nlet data = json!({\n    \"name\": \"ironpad\",\n    \"version\": \"0.1.0\",\n    \"features\": [\"wasm\", \"notebooks\", \"charts\"],\n    \"stats\": {\n        \"cells_compiled\": 42,\n        \"tests_passing\": 190,\n        \"is_awesome\": true\n    }\n});\n\nJson(data)\n",
+      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Parsing Strings",
+      "cell_type": "Markdown",
+      "source": "## Parsing JSON Strings\n\nYou can create a `Json` value from a raw string using the standard `str::parse()` method or `serde_json::from_str`.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Parse Example",
+      "cell_type": "Code",
+      "source": "let raw = r#\"{\n  \"users\": [\n    { \"id\": 1, \"name\": \"Alice\", \"active\": true },\n    { \"id\": 2, \"name\": \"Bob\", \"active\": false },\n    { \"id\": 3, \"name\": \"Charlie\", \"active\": true }\n  ],\n  \"total\": 3,\n  \"page\": null\n}\"#;\n\n// Parse and display — notice colors for each JSON type:\n// • keys in red\n// • strings in green\n// • numbers in blue\n// • booleans/null in purple\nlet json: Json = raw.parse().unwrap();\njson\n",
+      "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_4",
+      "order": 4,
+      "label": "Combining with Http",
+      "cell_type": "Markdown",
+      "source": "## JSON + HTTP\n\nCombine `Json` with ironpad's HTTP helpers to fetch and display API responses beautifully.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_5",
+      "order": 5,
+      "label": "Fetch & Display",
+      "cell_type": "Code",
+      "source": "// Fetch a JSON API and display the response\nlet response = ironpad_cell::http::get(\"https://httpbin.org/get\").await.unwrap();\nlet value: serde_json::Value = serde_json::from_str(&response).unwrap();\n\nJson(value)\n",
+      "cargo_toml": "[package]\nname = \"cell_5\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_6",
+      "order": 6,
+      "label": "Structured Data",
+      "cell_type": "Markdown",
+      "source": "## Typed Data → JSON\n\nYou can also serialize your own Rust structs into `Json` for display. This is handy for inspecting complex data structures.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_7",
+      "order": 7,
+      "label": "Struct to JSON",
+      "cell_type": "Code",
+      "source": "use serde_json;\n\n#[derive(Serialize)]\nstruct Project {\n    name: String,\n    language: String,\n    stars: u64,\n    topics: Vec<String>,\n}\n\nlet projects = vec![\n    Project {\n        name: \"ironpad\".into(),\n        language: \"Rust\".into(),\n        stars: 128,\n        topics: vec![\"wasm\".into(), \"notebook\".into()],\n    },\n    Project {\n        name: \"plotters\".into(),\n        language: \"Rust\".into(),\n        stars: 4200,\n        topics: vec![\"visualization\".into(), \"svg\".into()],\n    },\n];\n\nJson(serde_json::to_value(&projects).unwrap())\n",
+      "cargo_toml": "[package]\nname = \"cell_7\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    }
+  ]
+}

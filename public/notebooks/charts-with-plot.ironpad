@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000004",
+  "title": "Charts with Plot",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z",
+  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "# Charts with `Plot` 📊\n\nironpad includes a built-in `Plot` helper that makes it easy to create charts. Under the hood it uses the **plotters** crate, but you don't need to set up backends or boilerplate — just call `Plot::line`, `Plot::bar`, or `Plot::scatter`.\n\nAll charts render as SVG with a dark theme that matches ironpad's UI.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Line Chart",
+      "cell_type": "Code",
+      "source": "// Generate some data: y = sin(x)\nlet data: Vec<(f64, f64)> = (0..=100)\n    .map(|i| {\n        let x = i as f64 * 0.1;\n        (x, x.sin())\n    })\n    .collect();\n\nPlot::line(&data)\n    .title(\"Sine Wave\")\n    .x_label(\"x\")\n    .y_label(\"sin(x)\")\n",
+      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Bar Chart",
+      "cell_type": "Markdown",
+      "source": "## Bar Charts\n\nUse `Plot::bar` with `(&str, f64)` pairs. Great for categorical data.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Bar Chart Example",
+      "cell_type": "Code",
+      "source": "Plot::bar(&[\n    (\"Rust\", 92.0),\n    (\"Python\", 78.0),\n    (\"TypeScript\", 65.0),\n    (\"Go\", 58.0),\n    (\"C++\", 45.0),\n])\n.title(\"Language Satisfaction (%)\")\n.y_label(\"Satisfaction\")\n",
+      "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_4",
+      "order": 4,
+      "label": "Scatter Plot",
+      "cell_type": "Markdown",
+      "source": "## Scatter Plots\n\nUse `Plot::scatter` for visualizing point distributions. You can also customize the chart size with `.size(width, height)`.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_5",
+      "order": 5,
+      "label": "Scatter Example",
+      "cell_type": "Code",
+      "source": "// Generate a spiral pattern\nlet data: Vec<(f64, f64)> = (0..200)\n    .map(|i| {\n        let t = i as f64 * 0.1;\n        let r = t * 0.5;\n        (r * t.cos(), r * t.sin())\n    })\n    .collect();\n\nPlot::scatter(&data)\n    .title(\"Spiral\")\n    .x_label(\"x\")\n    .y_label(\"y\")\n    .size(600, 600)\n",
+      "cargo_toml": "[package]\nname = \"cell_5\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_6",
+      "order": 6,
+      "label": "Combining Outputs",
+      "cell_type": "Markdown",
+      "source": "## Combining Plot with Data\n\nSince `Plot` produces an `Svg`, you can combine it with data output using tuples. The data flows to the next cell, and the chart displays alongside it.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_7",
+      "order": 7,
+      "label": "Plot + Data",
+      "cell_type": "Code",
+      "source": "// Compute statistics and visualize in one cell\nlet temps: Vec<f64> = vec![18.2, 22.5, 25.1, 28.7, 31.0, 33.4, 32.8, 30.1, 26.5, 21.3, 17.8, 15.2];\nlet months: Vec<(&str, f64)> = [\"Jan\",\"Feb\",\"Mar\",\"Apr\",\"May\",\"Jun\",\"Jul\",\"Aug\",\"Sep\",\"Oct\",\"Nov\",\"Dec\"]\n    .iter()\n    .zip(temps.iter())\n    .map(|(m, t)| (*m, *t))\n    .collect();\n\nlet avg = temps.iter().sum::<f64>() / temps.len() as f64;\n\n// Tuple: data for piping + chart for display\n(\n    format!(\"Average temperature: {avg:.1}°C\"),\n    Plot::bar(&months)\n        .title(\"Monthly Temperatures (°C)\")\n        .y_label(\"°C\"),\n)\n",
+      "cargo_toml": "[package]\nname = \"cell_7\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    }
+  ]
+}
