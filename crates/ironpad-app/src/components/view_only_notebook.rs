@@ -26,6 +26,11 @@ enum DisplayPanel {
         headers: Vec<String>,
         rows: Vec<Vec<String>>,
     },
+    /// Interactive UI widget (slider, dropdown, checkbox, etc.).
+    Interactive {
+        kind: String,
+        config: String,
+    },
 }
 
 // ── Per-cell output data ────────────────────────────────────────────────────
@@ -408,6 +413,11 @@ fn ViewOnlyOutput(result: ExecutionResult) -> impl IntoView {
                             </div>
                         }.into_any()
                     },
+                    DisplayPanel::Interactive { kind, config } => {
+                        view! {
+                            <ViewOnlyInteractiveWidget kind=kind config=config />
+                        }.into_any()
+                    },
                 }
             }).collect_view()}
         </div>
@@ -440,6 +450,104 @@ fn render_table_tsv(headers: &[String], rows: &[Vec<String>]) -> String {
         tsv.push_str(&row.join("\t"));
     }
     tsv
+}
+
+// ── ViewOnlyInteractiveWidget ────────────────────────────────────────────────
+
+/// Renders an interactive widget in read-only mode (shows current/default value).
+#[component]
+fn ViewOnlyInteractiveWidget(
+    #[prop(into)] kind: String,
+    #[prop(into)] config: String,
+) -> impl IntoView {
+    let cfg: serde_json::Value = serde_json::from_str(&config).unwrap_or_default();
+    let label = cfg
+        .get("label")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+
+    let content = match kind.as_str() {
+        "slider" | "number" => {
+            let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let min = cfg.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let max = cfg.get("max").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            let label_text = if label.is_empty() {
+                kind.clone()
+            } else {
+                label.clone()
+            };
+            view! {
+                <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                    <span class="ironpad-widget-label">{label_text}</span>
+                    <input type="range" min=min.to_string() max=max.to_string() value=default.to_string() disabled=true />
+                    <span class="ironpad-widget-value">{default.to_string()}</span>
+                </div>
+            }
+            .into_any()
+        }
+        "dropdown" => {
+            let default = cfg
+                .get("default")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let label_text = if label.is_empty() {
+                "dropdown".to_owned()
+            } else {
+                label.clone()
+            };
+            view! {
+                <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                    <span class="ironpad-widget-label">{label_text}</span>
+                    <span class="ironpad-widget-value">{default}</span>
+                </div>
+            }
+            .into_any()
+        }
+        "checkbox" | "switch" => {
+            let default = cfg
+                .get("default")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            view! {
+                <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                    <label>
+                        <input type="checkbox" checked=default disabled=true />
+                        {" "}{label.clone()}
+                    </label>
+                </div>
+            }
+            .into_any()
+        }
+        "text_input" => {
+            let default = cfg
+                .get("default")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let label_text = if label.is_empty() {
+                "text".to_owned()
+            } else {
+                label.clone()
+            };
+            view! {
+                <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                    <span class="ironpad-widget-label">{label_text}</span>
+                    <span class="ironpad-widget-value">{default}</span>
+                </div>
+            }
+            .into_any()
+        }
+        _ => view! {
+            <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                <span class="ironpad-widget-label">{format!("[{kind} widget]")}</span>
+            </div>
+        }
+        .into_any(),
+    };
+
+    content
 }
 
 /// Minimal HTML entity escaping for text content.

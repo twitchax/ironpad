@@ -1,4 +1,8 @@
-use ironpad_common::{CompileResponse, Diagnostic, ExecutionResult, Severity};
+use std::collections::HashMap;
+
+use ironpad_common::{
+    CellManifest, CellType, CompileResponse, Diagnostic, ExecutionResult, Severity,
+};
 use leptos::prelude::*;
 
 use crate::components::copy_button::CopyButton;
@@ -6,7 +10,20 @@ use crate::components::error_panel::ErrorPanel;
 use crate::components::markdown_cell::render_markdown;
 
 use super::export::{render_table_html, render_table_tsv, DisplayPanel};
-use super::state::CellStatus;
+use super::state::{CellOutputData, CellStatus};
+
+// ── Widget context ───────────────────────────────────────────────────────────
+
+/// Bundles the reactive signals needed by interactive widgets to update cell
+/// outputs and trigger downstream re-execution.
+#[derive(Clone, Copy)]
+struct WidgetContext {
+    cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
+    cell_stale: RwSignal<HashMap<String, bool>>,
+    cells: RwSignal<Vec<CellManifest>>,
+    auto_run: RwSignal<bool>,
+    run_all_queue: RwSignal<Vec<String>>,
+}
 
 // ── Compile result panel ─────────────────────────────────────────────────────
 
@@ -89,7 +106,43 @@ pub(super) fn CompileResultPanel(
 #[component]
 pub(super) fn CellOutputPanel(
     execution_result: RwSignal<Option<ExecutionResult>>,
+    /// Cell ID for this cell (needed to update outputs on widget change).
+    #[prop(optional, into)]
+    cell_id: Option<String>,
+    /// Notebook-level cell outputs signal (for updating bytes on widget change).
+    #[prop(optional)]
+    cell_outputs: Option<RwSignal<HashMap<String, CellOutputData>>>,
+    /// Notebook-level cell stale signal (for marking downstream cells stale).
+    #[prop(optional)]
+    cell_stale: Option<RwSignal<HashMap<String, bool>>>,
+    /// Ordered cell list (for finding downstream cells).
+    #[prop(optional)]
+    cells: Option<RwSignal<Vec<CellManifest>>>,
+    /// Auto-run toggle (when true, widget changes re-execute downstream).
+    #[prop(optional)]
+    auto_run: Option<RwSignal<bool>>,
+    /// Run-all queue (downstream cell IDs are pushed here for execution).
+    #[prop(optional)]
+    run_all_queue: Option<RwSignal<Vec<String>>>,
 ) -> impl IntoView {
+    // Build widget context if all required signals are present.
+    let widget_ctx = match (cell_outputs, cell_stale, cells, auto_run, run_all_queue) {
+        (
+            Some(cell_outputs),
+            Some(cell_stale),
+            Some(cells),
+            Some(auto_run),
+            Some(run_all_queue),
+        ) => Some(WidgetContext {
+            cell_outputs,
+            cell_stale,
+            cells,
+            auto_run,
+            run_all_queue,
+        }),
+        _ => None,
+    };
+
     let output_collapsed = RwSignal::new(false);
 
     view! {
@@ -186,6 +239,17 @@ pub(super) fn CellOutputPanel(
                                                 </div>
                                             }.into_any()
                                         },
+                                        DisplayPanel::Interactive { kind, config } => {
+                                            let cid = cell_id.clone();
+                                            view! {
+                                                <InteractiveWidget
+                                                    kind=kind
+                                                    config=config
+                                                    cell_id=cid
+                                                    widget_ctx=widget_ctx
+                                                />
+                                            }.into_any()
+                                        },
                                     }
                                 }).collect::<Vec<_>>()}
 
@@ -211,6 +275,441 @@ pub(super) fn CellOutputPanel(
                 </div>
             }.into_any()
         }}
+    }
+}
+
+// ── Bincode encoding helpers (hydrate-only) ──────────────────────────────────
+
+/// Encode an `f64` value to bincode v2 standard-config bytes.
+#[cfg(feature = "hydrate")]
+fn bincode_encode_f64(value: f64) -> Vec<u8> {
+    bincode::serde::encode_to_vec(value, bincode::config::standard())
+        .expect("f64 encoding cannot fail")
+}
+
+/// Encode a `bool` value to bincode v2 standard-config bytes.
+#[cfg(feature = "hydrate")]
+fn bincode_encode_bool(value: bool) -> Vec<u8> {
+    bincode::serde::encode_to_vec(value, bincode::config::standard())
+        .expect("bool encoding cannot fail")
+}
+
+/// Encode a `String` value to bincode v2 standard-config bytes.
+#[cfg(feature = "hydrate")]
+fn bincode_encode_string(value: &str) -> Vec<u8> {
+    bincode::serde::encode_to_vec(value, bincode::config::standard())
+        .expect("String encoding cannot fail")
+}
+
+/// Update cell outputs, mark downstream cells stale, and optionally auto-run
+/// downstream cells after a widget value change.
+#[cfg(feature = "hydrate")]
+fn update_cell_output(
+    new_bytes: Vec<u8>,
+    cell_id: &Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) {
+    let Some(cid) = cell_id else { return };
+    let Some(ctx) = widget_ctx else { return };
+
+    ctx.cell_outputs.update(|map| {
+        if let Some(data) = map.get_mut(cid) {
+            data.bytes = new_bytes;
+        }
+    });
+
+    ctx.cell_stale.update(|map| {
+        for val in map.values_mut() {
+            *val = true;
+        }
+    });
+
+    // Auto-run downstream Code cells if enabled.
+    if ctx.auto_run.get_untracked() {
+        let all_cells = ctx.cells.get_untracked();
+        let current_outputs = ctx.cell_outputs.get_untracked();
+        let current_queue = ctx.run_all_queue.get_untracked();
+
+        if let Some(my_idx) = all_cells.iter().position(|c| c.id == *cid) {
+            let downstream: Vec<String> = all_cells[my_idx + 1..]
+                .iter()
+                .filter(|c| c.cell_type == CellType::Code)
+                .filter(|c| current_outputs.contains_key(&c.id))
+                .filter(|c| !current_queue.contains(&c.id))
+                .map(|c| c.id.clone())
+                .collect();
+
+            if !downstream.is_empty() {
+                ctx.run_all_queue.update(|q| q.extend(downstream));
+            }
+        }
+    }
+}
+
+// ── Interactive widget component ─────────────────────────────────────────────
+
+/// Renders an interactive UI widget (slider, dropdown, checkbox, etc.) with
+/// live value change callbacks that update cell outputs.
+#[component]
+fn InteractiveWidget(
+    #[prop(into)] kind: String,
+    #[prop(into)] config: String,
+    cell_id: Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) -> impl IntoView {
+    let cfg: serde_json::Value = serde_json::from_str(&config).unwrap_or_default();
+    let label = cfg
+        .get("label")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+
+    match kind.as_str() {
+        "slider" => render_slider(&cfg, &label, cell_id, widget_ctx).into_any(),
+        "dropdown" => render_dropdown(&cfg, &label, cell_id, widget_ctx).into_any(),
+        "checkbox" => render_checkbox(&cfg, &label, cell_id, widget_ctx).into_any(),
+        "text_input" => render_text_input(&cfg, &label, cell_id, widget_ctx).into_any(),
+        "number" => render_number(&cfg, &label, cell_id, widget_ctx).into_any(),
+        "switch" => render_switch(&cfg, &label, cell_id, widget_ctx).into_any(),
+        _ => view! {
+            <div class="ironpad-interactive-widget">
+                <span class="ironpad-widget-label">{format!("[unknown widget: {kind}]")}</span>
+            </div>
+        }
+        .into_any(),
+    }
+}
+
+fn render_slider(
+    cfg: &serde_json::Value,
+    label: &str,
+    cell_id: Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) -> impl IntoView {
+    let min = cfg.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let max = cfg.get("max").and_then(|v| v.as_f64()).unwrap_or(100.0);
+    let step = cfg.get("step").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(min);
+    let label_text = if label.is_empty() {
+        String::new()
+    } else {
+        label.to_owned()
+    };
+
+    let value = RwSignal::new(default.to_string());
+
+    #[cfg(feature = "hydrate")]
+    let on_input = {
+        let cell_id = cell_id.clone();
+        move |ev: web_sys::Event| {
+            let new_val = leptos::prelude::event_target_value(&ev);
+            value.set(new_val.clone());
+            if let Ok(f) = new_val.parse::<f64>() {
+                let bytes = bincode_encode_f64(f);
+                update_cell_output(bytes, &cell_id, widget_ctx);
+            }
+        }
+    };
+
+    // Suppress unused warnings during SSR.
+    #[cfg(not(feature = "hydrate"))]
+    let on_input = move |_: web_sys::Event| {};
+    let _ = (&cell_id, &widget_ctx);
+
+    view! {
+        <div class="ironpad-interactive-widget">
+            {if !label_text.is_empty() {
+                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
+            } else {
+                view! { <span /> }.into_any()
+            }}
+            <input
+                type="range"
+                min=min.to_string()
+                max=max.to_string()
+                step=step.to_string()
+                prop:value=move || value.get()
+                on:input=on_input
+            />
+            <span class="ironpad-widget-value">{move || value.get()}</span>
+        </div>
+    }
+}
+
+fn render_dropdown(
+    cfg: &serde_json::Value,
+    label: &str,
+    cell_id: Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) -> impl IntoView {
+    let options: Vec<String> = cfg
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let default = cfg
+        .get("default")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let label_text = if label.is_empty() {
+        String::new()
+    } else {
+        label.to_owned()
+    };
+
+    let value = RwSignal::new(default);
+
+    #[cfg(feature = "hydrate")]
+    let on_change = {
+        let cell_id = cell_id.clone();
+        move |ev: web_sys::Event| {
+            let new_val = leptos::prelude::event_target_value(&ev);
+            value.set(new_val.clone());
+            let bytes = bincode_encode_string(&new_val);
+            update_cell_output(bytes, &cell_id, widget_ctx);
+        }
+    };
+
+    #[cfg(not(feature = "hydrate"))]
+    let on_change = move |_: web_sys::Event| {};
+    let _ = (&cell_id, &widget_ctx);
+
+    view! {
+        <div class="ironpad-interactive-widget">
+            {if !label_text.is_empty() {
+                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
+            } else {
+                view! { <span /> }.into_any()
+            }}
+            <select
+                prop:value=move || value.get()
+                on:change=on_change
+            >
+                {options.into_iter().map(|opt| {
+                    let opt_val = opt.clone();
+                    let opt_selected = opt.clone();
+                    view! {
+                        <option value=opt_val selected=move || value.get() == opt_selected>
+                            {opt}
+                        </option>
+                    }
+                }).collect_view()}
+            </select>
+        </div>
+    }
+}
+
+fn render_checkbox(
+    cfg: &serde_json::Value,
+    label: &str,
+    cell_id: Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) -> impl IntoView {
+    let default = cfg
+        .get("default")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let label_text = label.to_owned();
+
+    let checked = RwSignal::new(default);
+
+    #[cfg(feature = "hydrate")]
+    let on_change = {
+        let cell_id = cell_id.clone();
+        move |ev: web_sys::Event| {
+            use wasm_bindgen::JsCast;
+            if let Some(input) = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
+                let new_val = input.checked();
+                checked.set(new_val);
+                let bytes = bincode_encode_bool(new_val);
+                update_cell_output(bytes, &cell_id, widget_ctx);
+            }
+        }
+    };
+
+    #[cfg(not(feature = "hydrate"))]
+    let on_change = move |_: web_sys::Event| {};
+    let _ = (&cell_id, &widget_ctx);
+
+    view! {
+        <div class="ironpad-interactive-widget">
+            <label class="ironpad-widget-checkbox-label">
+                <input
+                    type="checkbox"
+                    prop:checked=move || checked.get()
+                    on:change=on_change
+                />
+                {" "}{label_text}
+            </label>
+        </div>
+    }
+}
+
+fn render_text_input(
+    cfg: &serde_json::Value,
+    label: &str,
+    cell_id: Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) -> impl IntoView {
+    let placeholder = cfg
+        .get("placeholder")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let default = cfg
+        .get("default")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let label_text = if label.is_empty() {
+        String::new()
+    } else {
+        label.to_owned()
+    };
+
+    let value = RwSignal::new(default);
+
+    #[cfg(feature = "hydrate")]
+    let on_input = {
+        let cell_id = cell_id.clone();
+        move |ev: web_sys::Event| {
+            let new_val = leptos::prelude::event_target_value(&ev);
+            value.set(new_val.clone());
+            let bytes = bincode_encode_string(&new_val);
+            update_cell_output(bytes, &cell_id, widget_ctx);
+        }
+    };
+
+    #[cfg(not(feature = "hydrate"))]
+    let on_input = move |_: web_sys::Event| {};
+    let _ = (&cell_id, &widget_ctx);
+
+    view! {
+        <div class="ironpad-interactive-widget">
+            {if !label_text.is_empty() {
+                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
+            } else {
+                view! { <span /> }.into_any()
+            }}
+            <input
+                type="text"
+                placeholder=placeholder
+                prop:value=move || value.get()
+                on:input=on_input
+            />
+        </div>
+    }
+}
+
+fn render_number(
+    cfg: &serde_json::Value,
+    label: &str,
+    cell_id: Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) -> impl IntoView {
+    let min = cfg.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let max = cfg.get("max").and_then(|v| v.as_f64()).unwrap_or(100.0);
+    let step = cfg.get("step").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(min);
+    let label_text = if label.is_empty() {
+        String::new()
+    } else {
+        label.to_owned()
+    };
+
+    let value = RwSignal::new(default.to_string());
+
+    #[cfg(feature = "hydrate")]
+    let on_input = {
+        let cell_id = cell_id.clone();
+        move |ev: web_sys::Event| {
+            let new_val = leptos::prelude::event_target_value(&ev);
+            value.set(new_val.clone());
+            if let Ok(f) = new_val.parse::<f64>() {
+                let bytes = bincode_encode_f64(f);
+                update_cell_output(bytes, &cell_id, widget_ctx);
+            }
+        }
+    };
+
+    #[cfg(not(feature = "hydrate"))]
+    let on_input = move |_: web_sys::Event| {};
+    let _ = (&cell_id, &widget_ctx);
+
+    view! {
+        <div class="ironpad-interactive-widget">
+            {if !label_text.is_empty() {
+                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
+            } else {
+                view! { <span /> }.into_any()
+            }}
+            <input
+                type="number"
+                min=min.to_string()
+                max=max.to_string()
+                step=step.to_string()
+                prop:value=move || value.get()
+                on:input=on_input
+            />
+        </div>
+    }
+}
+
+fn render_switch(
+    cfg: &serde_json::Value,
+    label: &str,
+    cell_id: Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) -> impl IntoView {
+    let default = cfg
+        .get("default")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let label_text = label.to_owned();
+
+    let checked = RwSignal::new(default);
+
+    #[cfg(feature = "hydrate")]
+    let on_change = {
+        let cell_id = cell_id.clone();
+        move |ev: web_sys::Event| {
+            use wasm_bindgen::JsCast;
+            if let Some(input) = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
+                let new_val = input.checked();
+                checked.set(new_val);
+                let bytes = bincode_encode_bool(new_val);
+                update_cell_output(bytes, &cell_id, widget_ctx);
+            }
+        }
+    };
+
+    #[cfg(not(feature = "hydrate"))]
+    let on_change = move |_: web_sys::Event| {};
+    let _ = (&cell_id, &widget_ctx);
+
+    view! {
+        <div class="ironpad-interactive-widget">
+            <label class="ironpad-switch">
+                <input
+                    type="checkbox"
+                    prop:checked=move || checked.get()
+                    on:change=on_change
+                />
+                <span class="ironpad-switch-slider"></span>
+                {" "}{label_text}
+            </label>
+        </div>
     }
 }
 

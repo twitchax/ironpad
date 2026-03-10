@@ -18,7 +18,7 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement", "HtmlAnchorElement", "Window", "Navigator", "Clipboard", "Blob", "BlobPropertyBag", "Url"] }
+web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement", "HtmlAnchorElement", "HtmlInputElement", "HtmlSelectElement", "Window", "Navigator", "Clipboard", "Blob", "BlobPropertyBag", "Url", "EventTarget"] }
 
 http.workspace = true
 thiserror.workspace = true
@@ -30,6 +30,7 @@ blake3 = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
+bincode = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -37,7 +38,7 @@ tempfile = "3"
 
 [features]
 default = []
-hydrate = ["leptos/hydrate", "thaw/hydrate", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "dep:serde", "dep:serde_json", "dep:serde-wasm-bindgen", "dep:uuid", "dep:chrono"]
+hydrate = ["leptos/hydrate", "thaw/hydrate", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "dep:serde", "dep:serde_json", "dep:serde-wasm-bindgen", "dep:bincode", "dep:uuid", "dep:chrono"]
 ssr = [
     "leptos/ssr",
     "leptos_meta/ssr",

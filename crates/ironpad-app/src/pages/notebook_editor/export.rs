@@ -17,6 +17,11 @@ pub(super) enum DisplayPanel {
         headers: Vec<String>,
         rows: Vec<Vec<String>>,
     },
+    /// Interactive UI widget (slider, dropdown, checkbox, etc.).
+    Interactive {
+        kind: String,
+        config: String,
+    },
 }
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
@@ -177,6 +182,9 @@ pub(super) fn build_export_html(
                                     }
                                     html.push_str("</tbody></table>\n");
                                 }
+                                DisplayPanel::Interactive { kind, config } => {
+                                    render_interactive_static(&mut html, kind, config);
+                                }
                             }
                         }
                         html.push_str("</div>\n");
@@ -199,6 +207,61 @@ pub(super) fn build_export_html(
     html.push_str("</body>\n</html>");
 
     html
+}
+
+/// Render an interactive widget as a static HTML representation for export.
+fn render_interactive_static(html: &mut String, kind: &str, config: &str) {
+    let cfg: serde_json::Value = serde_json::from_str(config).unwrap_or_default();
+    let label = cfg.get("label").and_then(|v| v.as_str()).unwrap_or("");
+
+    match kind {
+        "slider" | "number" => {
+            let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let label_text = if label.is_empty() {
+                kind.to_owned()
+            } else {
+                label.to_owned()
+            };
+            html.push_str(&format!(
+                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {default}</div>\n",
+                html_escape(&label_text)
+            ));
+        }
+        "dropdown" => {
+            let default = cfg.get("default").and_then(|v| v.as_str()).unwrap_or("");
+            let label_text = if label.is_empty() { "dropdown" } else { label };
+            html.push_str(&format!(
+                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {}</div>\n",
+                html_escape(label_text),
+                html_escape(default)
+            ));
+        }
+        "checkbox" | "switch" => {
+            let default = cfg
+                .get("default")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let icon = if default { "☑" } else { "☐" };
+            html.push_str(&format!(
+                "<div class=\"ironpad-interactive-static\">{icon} {}</div>\n",
+                html_escape(label)
+            ));
+        }
+        "text_input" => {
+            let default = cfg.get("default").and_then(|v| v.as_str()).unwrap_or("");
+            let label_text = if label.is_empty() { "text" } else { label };
+            html.push_str(&format!(
+                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {}</div>\n",
+                html_escape(label_text),
+                html_escape(default)
+            ));
+        }
+        _ => {
+            html.push_str(&format!(
+                "<div class=\"ironpad-interactive-static\">[{kind} widget]</div>\n"
+            ));
+        }
+    }
 }
 
 /// Minimal HTML entity escaping for text content.

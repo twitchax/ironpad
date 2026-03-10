@@ -57,12 +57,17 @@ pub(super) struct NotebookState {
     pub(super) shared_cargo_toml: RwSignal<Option<String>>,
     /// Tracks which cells have stale (outdated) execution results.
     pub(super) cell_stale: RwSignal<HashMap<String, bool>>,
+    /// When true, successfully completing a cell automatically enqueues all
+    /// downstream Code cells for execution.
+    pub(super) auto_run: RwSignal<bool>,
     /// Per-cell display text (JSON of `Vec<DisplayPanel>`) from the last execution.
     /// Used by the export-to-HTML feature to include cell outputs.
     pub(super) cell_display_texts: RwSignal<HashMap<String, String>>,
     /// Per-cell source editor handles, keyed by cell ID.
     /// Used for cross-cell focus (e.g. Shift+Enter → advance to next cell).
     pub(super) editor_handles: RwSignal<HashMap<String, MonacoEditorHandle>>,
+    /// Whether the notebook is in view mode (code hidden, output-focused).
+    pub(super) is_view_mode: RwSignal<bool>,
 }
 
 // ── Notebook state helpers ──────────────────────────────────────────────────

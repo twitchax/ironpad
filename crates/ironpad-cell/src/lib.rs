@@ -24,6 +24,7 @@ pub mod prelude {
     pub use wasm_bindgen_futures;
 
     pub use crate::plot::Plot;
+    pub use crate::ui;
     pub use crate::{
         CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Json, Md,
         Svg, Table, TypeTag,
@@ -34,6 +35,7 @@ pub mod prelude {
 }
 
 pub mod plot;
+pub mod ui;
 
 #[cfg(target_arch = "wasm32")]
 pub mod http;
@@ -169,6 +171,8 @@ pub enum DisplayPanel {
         headers: Vec<String>,
         rows: Vec<Vec<String>>,
     },
+    /// Interactive UI widget (slider, dropdown, checkbox, etc.).
+    Interactive { kind: String, config: String },
 }
 
 // ── Svg / Html / Md newtypes ─────────────────────────────────────────────────

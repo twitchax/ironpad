@@ -48,8 +48,10 @@ pub fn NotebookEditorPage() -> impl IntoView {
         run_all_queue: RwSignal::new(Vec::new()),
         shared_cargo_toml: RwSignal::new(None),
         cell_stale: RwSignal::new(HashMap::new()),
+        auto_run: RwSignal::new(false),
         cell_display_texts: RwSignal::new(HashMap::new()),
         editor_handles: RwSignal::new(HashMap::new()),
+        is_view_mode: RwSignal::new(false),
     };
     provide_context(state);
 
@@ -230,45 +232,62 @@ fn NotebookContent() -> impl IntoView {
         add_cell_to_notebook(&state, after, cell_type);
     });
 
-    // ── Delete notebook handler ─────────────────────────────────────────
+    // ── Dropdown state ─────────────────────────────────────────────────
+
+    let hamburger_open = RwSignal::new(false);
+    let gear_open = RwSignal::new(false);
+
+    // ── Close button navigation ─────────────────────────────────────────
 
     let navigate = use_navigate();
-    let on_delete = move |_| {
-        let _ = &navigate;
-        #[cfg(feature = "hydrate")]
-        {
-            let navigate = navigate.clone();
-            let id = state.notebook_id.get_untracked();
-            let confirmed = web_sys::window()
-                .unwrap()
-                .confirm_with_message("Delete this notebook? This cannot be undone.")
-                .unwrap_or(false);
-            if confirmed {
-                leptos::task::spawn_local(async move {
-                    crate::storage::client::delete_notebook(&id).await;
-                    navigate("/", NavigateOptions::default());
-                });
-            }
-        }
-    };
+    let navigate_close = navigate.clone();
+
+    // ── Outside-click handler to close dropdowns ────────────────────────
+
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::prelude::*;
+
+        let click_closure =
+            Closure::<dyn Fn(web_sys::MouseEvent)>::new(move |e: web_sys::MouseEvent| {
+                if let Some(target) = e.target() {
+                    let el: &web_sys::Element = target.unchecked_ref();
+                    if el
+                        .closest(".ironpad-toolbar-dropdown")
+                        .ok()
+                        .flatten()
+                        .is_none()
+                    {
+                        hamburger_open.set(false);
+                        gear_open.set(false);
+                    }
+                }
+            });
+        web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())
+            .unwrap();
+        click_closure.forget();
+    }
 
     // ── Render ──────────────────────────────────────────────────────────
 
     view! {
         <div class="ironpad-notebook-toolbar">
-            <Button
-                appearance=ButtonAppearance::Subtle
-                on_click=move |_| shared_deps_open.update(|v| *v = !*v)
-            >
-                {move || if shared_deps_open.get() { "📦 Hide Shared Deps" } else { "📦 Shared Deps" }}
-            </Button>
+            // Run Stale — primary action, always visible.
             <Button
                 appearance=ButtonAppearance::Subtle
                 on_click=move |_| {
                     let cells = state.cells.get_untracked();
                     let stale = state.cell_stale.get_untracked();
-                    let stale_cells: Vec<String> = cells.iter()
-                        .filter(|c| c.cell_type == CellType::Code && stale.get(&c.id).copied().unwrap_or(false))
+                    let stale_cells: Vec<String> = cells
+                        .iter()
+                        .filter(|c| {
+                            c.cell_type == CellType::Code
+                                && stale.get(&c.id).copied().unwrap_or(false)
+                        })
                         .map(|c| c.id.clone())
                         .collect();
                     if !stale_cells.is_empty() {
@@ -278,108 +297,247 @@ fn NotebookContent() -> impl IntoView {
             >
                 "⟳ Run Stale"
             </Button>
-            <Button
-                appearance=ButtonAppearance::Subtle
-                on_click=move |_| {
-                    let notebook = state.notebook.get_untracked();
-                    if let Some(nb) = notebook {
-                        let toaster = expect_context::<ToasterInjection>();
-                        leptos::task::spawn_local(async move {
-                            let json = match serde_json::to_string(&nb) {
-                                Ok(j) => j,
-                                Err(e) => {
-                                    toaster.dispatch_toast(
-                                        move || {
-                                            view! {
-                                                <Toast>
-                                                    <ToastTitle>"Share Failed"</ToastTitle>
-                                                    <ToastBody>{format!("Failed to serialize: {e}")}</ToastBody>
-                                                </Toast>
-                                            }
-                                        },
-                                        Default::default(),
-                                    );
-                                    return;
-                                }
-                            };
-
-                            match share_notebook(json).await {
-                                Ok(hash) => {
-                                    #[cfg(target_arch = "wasm32")]
-                                    let origin = web_sys::window()
-                                        .and_then(|w| w.location().origin().ok())
-                                        .unwrap_or_default();
-                                    #[cfg(not(target_arch = "wasm32"))]
-                                    let origin = String::new();
-
-                                    let url = format!("{origin}/shared/{hash}");
-
-                                    // Copy to clipboard.
-                                    #[cfg(target_arch = "wasm32")]
-                                    if let Some(window) = web_sys::window() {
-                                        let clipboard = window.navigator().clipboard();
-                                        let _ =
-                                            wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&url)).await;
-                                    }
-
-                                    let url_clone = url.clone();
-                                    toaster.dispatch_toast(
-                                        move || {
-                                            view! {
-                                                <Toast>
-                                                    <ToastTitle>"Link Copied!"</ToastTitle>
-                                                    <ToastBody>{url_clone.clone()}</ToastBody>
-                                                </Toast>
-                                            }
-                                        },
-                                        thaw::ToastOptions::default()
-                                            .with_intent(thaw::ToastIntent::Success)
-                                            .with_timeout(std::time::Duration::from_secs(5)),
-                                    );
-                                }
-                                Err(e) => {
-                                    toaster.dispatch_toast(
-                                        move || {
-                                            view! {
-                                                <Toast>
-                                                    <ToastTitle>"Share Failed"</ToastTitle>
-                                                    <ToastBody>{format!("{e}")}</ToastBody>
-                                                </Toast>
-                                            }
-                                        },
-                                        Default::default(),
-                                    );
-                                }
-                            }
-                        });
+            // Auto-run toggle — visible standalone control.
+            <button
+                class=move || {
+                    if state.auto_run.get() {
+                        "ironpad-auto-run-toggle ironpad-auto-run-toggle--active"
+                    } else {
+                        "ironpad-auto-run-toggle"
                     }
                 }
+                title="Auto-run downstream cells when a cell completes"
+                on:click=move |_| state.auto_run.update(|v| *v = !*v)
             >
-                "🔗 Share"
-            </Button>
-            <Button
-                appearance=ButtonAppearance::Subtle
-                on_click=move |_| {
-                    #[cfg(feature = "hydrate")]
-                    {
-                        let nb = state.notebook.get_untracked();
-                        if let Some(nb) = nb {
-                            let display_texts = state.cell_display_texts.get_untracked();
-                            let html = export::build_export_html(&nb, &display_texts);
-                            export::trigger_html_download(&html, &nb.title);
+                {move || if state.auto_run.get() { "Auto ⟳ On" } else { "Auto ⟳" }}
+            </button>
+
+            <div class="ironpad-toolbar-right">
+                // ── Hamburger dropdown (☰) ──────────────────────────────
+                <div class="ironpad-toolbar-dropdown">
+                    <button
+                        class="ironpad-toolbar-dropdown-toggle"
+                        on:click=move |_| {
+                            gear_open.set(false);
+                            hamburger_open.update(|v| *v = !*v);
                         }
+                    >
+                        "☰"
+                    </button>
+                    {move || {
+                        let navigate = navigate.clone();
+                        if hamburger_open.get() {
+                            view! {
+                                <div class="ironpad-toolbar-dropdown-menu">
+                                    // Share
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item"
+                                        on:click=move |_| {
+                                            hamburger_open.set(false);
+                                            let notebook = state.notebook.get_untracked();
+                                            if let Some(nb) = notebook {
+                                                let toaster =
+                                                    expect_context::<ToasterInjection>();
+                                                leptos::task::spawn_local(async move {
+                                                    let json =
+                                                        match serde_json::to_string(&nb) {
+                                                            Ok(j) => j,
+                                                            Err(e) => {
+                                                                toaster.dispatch_toast(
+                                                                    move || {
+                                                                        view! {
+                                                                            <Toast>
+                                                                                <ToastTitle>"Share Failed"</ToastTitle>
+                                                                                <ToastBody>
+                                                                                    {format!(
+                                                                                        "Failed to serialize: {e}"
+                                                                                    )}
+                                                                                </ToastBody>
+                                                                            </Toast>
+                                                                        }
+                                                                    },
+                                                                    Default::default(),
+                                                                );
+                                                                return;
+                                                            }
+                                                        };
+                                                    match share_notebook(json).await {
+                                                        Ok(hash) => {
+                                                            #[cfg(target_arch = "wasm32")]
+                                                            let origin = web_sys::window()
+                                                                .and_then(|w| {
+                                                                    w.location().origin().ok()
+                                                                })
+                                                                .unwrap_or_default();
+                                                            #[cfg(not(target_arch = "wasm32"))]
+                                                            let origin = String::new();
+                                                            let url = format!(
+                                                                "{origin}/shared/{hash}"
+                                                            );
+                                                            #[cfg(target_arch = "wasm32")]
+                                                            if let Some(window) =
+                                                                web_sys::window()
+                                                            {
+                                                                let clipboard = window
+                                                                    .navigator()
+                                                                    .clipboard();
+                                                                let _ = wasm_bindgen_futures::JsFuture::from(
+                                                                    clipboard.write_text(&url),
+                                                                )
+                                                                .await;
+                                                            }
+                                                            let url_clone = url.clone();
+                                                            toaster.dispatch_toast(
+                                                                move || {
+                                                                    view! {
+                                                                        <Toast>
+                                                                            <ToastTitle>"Link Copied!"</ToastTitle>
+                                                                            <ToastBody>
+                                                                                {url_clone.clone()}
+                                                                            </ToastBody>
+                                                                        </Toast>
+                                                                    }
+                                                                },
+                                                                thaw::ToastOptions::default()
+                                                                    .with_intent(
+                                                                        thaw::ToastIntent::Success,
+                                                                    )
+                                                                    .with_timeout(
+                                                                        std::time::Duration::from_secs(
+                                                                            5,
+                                                                        ),
+                                                                    ),
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            toaster.dispatch_toast(
+                                                                move || {
+                                                                    view! {
+                                                                        <Toast>
+                                                                            <ToastTitle>"Share Failed"</ToastTitle>
+                                                                            <ToastBody>
+                                                                                {format!("{e}")}
+                                                                            </ToastBody>
+                                                                        </Toast>
+                                                                    }
+                                                                },
+                                                                Default::default(),
+                                                            );
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    >
+                                        "🔗 Share"
+                                    </button>
+                                    // Export HTML
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item"
+                                        on:click=move |_| {
+                                            hamburger_open.set(false);
+                                            #[cfg(feature = "hydrate")]
+                                            {
+                                                let nb = state.notebook.get_untracked();
+                                                if let Some(nb) = nb {
+                                                    let display_texts =
+                                                        state.cell_display_texts.get_untracked();
+                                                    let html =
+                                                        export::build_export_html(&nb, &display_texts);
+                                                    export::trigger_html_download(&html, &nb.title);
+                                                }
+                                            }
+                                        }
+                                    >
+                                        "📄 Export HTML"
+                                    </button>
+                                    // Delete
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
+                                        on:click=move |_| {
+                                            hamburger_open.set(false);
+                                            #[cfg(feature = "hydrate")]
+                                            {
+                                                let id = state.notebook_id.get_untracked();
+                                                let confirmed = web_sys::window()
+                                                    .unwrap()
+                                                    .confirm_with_message(
+                                                        "Delete this notebook? This cannot be undone.",
+                                                    )
+                                                    .unwrap_or(false);
+                                                if confirmed {
+                                                    let navigate = navigate.clone();
+                                                    leptos::task::spawn_local(async move {
+                                                        crate::storage::client::delete_notebook(&id)
+                                                            .await;
+                                                        navigate("/", NavigateOptions::default());
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    >
+                                        "🗑 Delete"
+                                    </button>
+                                </div>
+                            }
+                                .into_any()
+                        } else {
+                            view! { <div style="display:none" /> }.into_any()
+                        }
+                    }}
+                </div>
+
+                // ── Gear dropdown (⚙) ───────────────────────────────────
+                <div class="ironpad-toolbar-dropdown">
+                    <button
+                        class="ironpad-toolbar-dropdown-toggle"
+                        on:click=move |_| {
+                            hamburger_open.set(false);
+                            gear_open.update(|v| *v = !*v);
+                        }
+                    >
+                        "⚙"
+                    </button>
+                    {move || {
+                        if gear_open.get() {
+                            view! {
+                                <div class="ironpad-toolbar-dropdown-menu">
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item"
+                                        on:click=move |_| {
+                                            gear_open.set(false);
+                                            shared_deps_open.update(|v| *v = !*v);
+                                        }
+                                    >
+                                        {move || {
+                                            if shared_deps_open.get() {
+                                                "📦 Hide Shared Deps"
+                                            } else {
+                                                "📦 Shared Deps"
+                                            }
+                                        }}
+                                    </button>
+                                </div>
+                            }
+                                .into_any()
+                        } else {
+                            view! { <div style="display:none" /> }.into_any()
+                        }
+                    }}
+                </div>
+
+                // ── Close button (✕) ────────────────────────────────────
+                <button
+                    class="ironpad-toolbar-close"
+                    title="Back to notebook list"
+                    on:click=move |_| {
+                        let navigate_close = navigate_close.clone();
+                        navigate_close("/", NavigateOptions::default());
                     }
-                }
-            >
-                "📄 Export HTML"
-            </Button>
-            <Button
-                appearance=ButtonAppearance::Subtle
-                class="ironpad-delete-notebook-btn"
-                on_click=on_delete
-            >
-                "🗑 Delete"
-            </Button>
+                >
+                    "✕"
+                </button>
+            </div>
         </div>
 
         {move || {
@@ -402,5 +560,14 @@ fn NotebookContent() -> impl IntoView {
                 <AddCellButton after_cell_id=Some(cell.id.clone()) on_add=add_cell_cb />
             </For>
         </div>
+
+        // ── Edit / View mode toggle (fixed bottom-left) ────────────────
+        <button
+            class="ironpad-mode-toggle"
+            title=move || if state.is_view_mode.get() { "View mode — click to edit" } else { "Edit mode — click to view" }
+            on:click=move |_| state.is_view_mode.update(|v| *v = !*v)
+        >
+            {move || if state.is_view_mode.get() { "👁 View" } else { "✏️ Edit" }}
+        </button>
     }
 }
