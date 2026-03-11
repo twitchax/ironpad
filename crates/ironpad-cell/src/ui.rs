@@ -461,6 +461,58 @@ impl TypeTag for Switch {
     }
 }
 
+// ── Button ───────────────────────────────────────────────────────────────────
+
+/// Builder for a button widget that acts as a trigger (no data output).
+pub struct Button {
+    label: String,
+}
+
+/// Create a button widget with the given label.
+#[must_use]
+pub fn button(label: &str) -> Button {
+    Button {
+        label: label.to_owned(),
+    }
+}
+
+impl Button {
+    fn config_json(&self) -> String {
+        serde_json::json!({
+            "label": self.label,
+        })
+        .to_string()
+    }
+}
+
+impl From<Button> for CellOutput {
+    fn from(b: Button) -> Self {
+        Self {
+            bytes: Vec::new(),
+            panels: vec![DisplayPanel::Interactive {
+                kind: "button".into(),
+                config: b.config_json(),
+            }],
+            type_tag: Some("()".into()),
+        }
+    }
+}
+
+impl IntoPanels for Button {
+    fn into_panels(&self) -> Vec<DisplayPanel> {
+        vec![DisplayPanel::Interactive {
+            kind: "button".into(),
+            config: self.config_json(),
+        }]
+    }
+}
+
+impl TypeTag for Button {
+    fn type_tag() -> String {
+        "()".into()
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -765,6 +817,36 @@ mod tests {
         let panels = s.into_panels();
         assert_eq!(panels.len(), 1);
         assert!(matches!(&panels[0], DisplayPanel::Interactive { kind, .. } if kind == "switch"));
+    }
+
+    // ── Button tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn button_produces_interactive_panel() {
+        let output: CellOutput = button("Run").into();
+        let cfg = assert_interactive(&output, "button");
+        assert_eq!(cfg["label"].as_str().unwrap(), "Run");
+    }
+
+    #[test]
+    fn button_type_tag() {
+        let output: CellOutput = button("Go").into();
+        assert_eq!(output.type_tag.as_deref(), Some("()"));
+        assert_eq!(Button::type_tag(), "()");
+    }
+
+    #[test]
+    fn button_empty_bytes() {
+        let output: CellOutput = button("Click").into();
+        assert!(output.bytes.is_empty());
+    }
+
+    #[test]
+    fn button_into_panels() {
+        let b = button("x");
+        let panels = b.into_panels();
+        assert_eq!(panels.len(), 1);
+        assert!(matches!(&panels[0], DisplayPanel::Interactive { kind, .. } if kind == "button"));
     }
 
     // ── Cross-cutting tests ──────────────────────────────────────────────

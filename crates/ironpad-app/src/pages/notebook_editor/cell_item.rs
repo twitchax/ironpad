@@ -513,6 +513,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 cargo_toml: current_cargo_toml,
                 previous_cell_types,
                 shared_cargo_toml: state.shared_cargo_toml.get_untracked(),
+                shared_source: state.shared_source.get_untracked(),
             };
 
             let result = compile_cell(request).await;
@@ -601,35 +602,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                                     }
                                                 });
 
-                                                // Auto-run: enqueue downstream Code cells.
-                                                if state.auto_run.get_untracked() {
-                                                    let cells = state.cells.get_untracked();
-                                                    let outputs =
-                                                        state.cell_outputs.get_untracked();
-                                                    if let Some(my_idx) = cells
-                                                        .iter()
-                                                        .position(|c| c.id == cell_id_for_exec)
-                                                    {
-                                                        let queue =
-                                                            state.run_all_queue.get_untracked();
-                                                        let downstream: Vec<String> = cells
-                                                            [my_idx + 1..]
-                                                            .iter()
-                                                            .filter(|c| {
-                                                                c.cell_type == CellType::Code
-                                                            })
-                                                            .filter(|c| outputs.contains_key(&c.id))
-                                                            .filter(|c| !queue.contains(&c.id))
-                                                            .map(|c| c.id.clone())
-                                                            .collect();
-                                                        if !downstream.is_empty() {
-                                                            state.run_all_queue.update(|q| {
-                                                                q.extend(downstream);
-                                                            });
-                                                        }
-                                                    }
-                                                }
-
                                                 None
                                             }
                                             Err(e) => Some(format!("Execution error: {e}")),
@@ -668,29 +640,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                     q.remove(0);
                                 }
                             });
-
-                            // Auto-run: enqueue downstream Code cells (SSR path).
-                            if state.auto_run.get_untracked() {
-                                let cells = state.cells.get_untracked();
-                                let outputs = state.cell_outputs.get_untracked();
-                                if let Some(my_idx) =
-                                    cells.iter().position(|c| c.id == cell_id_for_exec)
-                                {
-                                    let queue = state.run_all_queue.get_untracked();
-                                    let downstream: Vec<String> = cells[my_idx + 1..]
-                                        .iter()
-                                        .filter(|c| c.cell_type == CellType::Code)
-                                        .filter(|c| outputs.contains_key(&c.id))
-                                        .filter(|c| !queue.contains(&c.id))
-                                        .map(|c| c.id.clone())
-                                        .collect();
-                                    if !downstream.is_empty() {
-                                        state.run_all_queue.update(|q| {
-                                            q.extend(downstream);
-                                        });
-                                    }
-                                }
-                            }
                         }
                     } else {
                         cell_status.set(CellStatus::Error);
@@ -1354,7 +1303,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         cell_outputs=state.cell_outputs
                         cell_stale=state.cell_stale
                         cells=state.cells
-                        auto_run=state.auto_run
                         run_all_queue=state.run_all_queue
                     />
                 }.into_any()

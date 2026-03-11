@@ -32,6 +32,7 @@ pub fn scaffold_micro_crate(
     cargo_toml: &str,
     previous_cell_types: &[Option<String>],
     shared_cargo_toml: Option<&str>,
+    shared_source: Option<&str>,
 ) -> anyhow::Result<(PathBuf, u32, bool)> {
     let crate_dir = cache_dir.join("workspaces").join(session_id).join(cell_id);
 
@@ -49,8 +50,13 @@ pub fn scaffold_micro_crate(
         generate_cargo_toml(cell_id, cargo_toml, &absolute_cell_path, shared_cargo_toml);
     std::fs::write(crate_dir.join("Cargo.toml"), generated_cargo_toml)?;
 
-    let (lib_rs, preamble_lines, is_async) = generate_lib_rs(source, previous_cell_types);
+    let (lib_rs, preamble_lines, is_async) =
+        generate_lib_rs(source, previous_cell_types, shared_source.is_some());
     std::fs::write(src_dir.join("lib.rs"), lib_rs)?;
+
+    if let Some(shared) = shared_source {
+        std::fs::write(src_dir.join("shared.rs"), shared)?;
+    }
 
     Ok((crate_dir, preamble_lines, is_async))
 }
@@ -303,6 +309,7 @@ fn needs_async(source: &str) -> bool {
 pub fn generate_lib_rs(
     source: &str,
     previous_cell_types: &[Option<String>],
+    has_shared_source: bool,
 ) -> (String, u32, bool) {
     let is_async = needs_async(source);
     let has_any_prev = !previous_cell_types.is_empty();
@@ -320,10 +327,16 @@ pub fn generate_lib_rs(
         ("_input_ptr", "_input_len")
     };
 
+    let shared_mod = if has_shared_source {
+        "mod shared;\n"
+    } else {
+        ""
+    };
+
     let mut code = format!(
         "\
 use ironpad_cell::prelude::*;
-
+{shared_mod}
 #[wasm_bindgen]
 pub {async_kw}fn cell_main({ptr_param}: u32, {len_param}: u32) -> u32 {{\n",
     );
@@ -369,9 +382,13 @@ Box::into_raw(Box::new(result)) as u32
         ));
     }
 
-    // Preamble: 5 base + optional (2 ptr reconstruction + 1 inputs) + cell decls + last.
-    let preamble_lines =
-        5 + if has_any_prev { 3 } else { 0 } + typed_count + if typed_count > 0 { 1 } else { 0 };
+    // Preamble: 5 base + 1 if shared_source + optional (2 ptr reconstruction + 1 inputs) + cell decls + last.
+    let shared_lines = u32::from(has_shared_source);
+    let preamble_lines = 5
+        + shared_lines
+        + if has_any_prev { 3 } else { 0 }
+        + typed_count
+        + if typed_count > 0 { 1 } else { 0 };
 
     (code, preamble_lines, is_async)
 }
@@ -494,7 +511,7 @@ serde = { version = "1", features = ["derive"] }
     fn wraps_user_code_in_cell_main() {
         let source = r#"    CellOutput::text("hello")"#;
 
-        let (lib_rs, _, is_async) = generate_lib_rs(source, &[]);
+        let (lib_rs, _, is_async) = generate_lib_rs(source, &[], false);
 
         assert!(!is_async);
         assert!(lib_rs.contains("use ironpad_cell::prelude::*;"));
@@ -510,7 +527,7 @@ serde = { version = "1", features = ["derive"] }
 
     #[test]
     fn generate_lib_rs_no_previous_cells() {
-        let (lib_rs, preamble, is_async) = generate_lib_rs("    // user code here", &[]);
+        let (lib_rs, preamble, is_async) = generate_lib_rs("    // user code here", &[], false);
 
         assert_eq!(preamble, 5);
         assert!(!is_async);
@@ -528,7 +545,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn generate_lib_rs_with_typed_cells() {
         let types: Vec<Option<String>> = vec![Some("u32".into()), Some("String".into())];
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types);
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
         // 5 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 11
         assert_eq!(preamble, 11);
@@ -546,7 +563,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn generate_lib_rs_with_mixed_types() {
         let types: Vec<Option<String>> = vec![Some("u32".into()), None, Some("bool".into())];
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types);
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
         // 5 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 11
         assert_eq!(preamble, 11);
@@ -562,7 +579,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn generate_lib_rs_all_none_types() {
         let types: Vec<Option<String>> = vec![None, None];
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types);
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
         // 5 base + 3 (ptr reconstruction + inputs) + 0 typed + 0 last = 8
         assert_eq!(preamble, 8);
@@ -596,6 +613,7 @@ serde = "1"
             user_cargo,
             &[],
             None,
+            None,
         )
         .expect("scaffold should succeed");
 
@@ -626,12 +644,32 @@ serde = "1"
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
         // First scaffold.
-        scaffold_micro_crate(&tmp, &cell_path, "s1", "c1", "    // v1", "", &[], None)
-            .expect("first scaffold");
+        scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "s1",
+            "c1",
+            "    // v1",
+            "",
+            &[],
+            None,
+            None,
+        )
+        .expect("first scaffold");
 
         // Second scaffold with different source.
-        scaffold_micro_crate(&tmp, &cell_path, "s1", "c1", "    // v2", "", &[], None)
-            .expect("second scaffold");
+        scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "s1",
+            "c1",
+            "    // v2",
+            "",
+            &[],
+            None,
+            None,
+        )
+        .expect("second scaffold");
 
         let lib_content = std::fs::read_to_string(tmp.join("workspaces/s1/c1/src/lib.rs")).unwrap();
         assert!(lib_content.contains("// v2"));
@@ -716,6 +754,7 @@ serde = "1"
             cell,
             &[],
             Some(shared),
+            None,
         )
         .unwrap();
 
@@ -755,7 +794,7 @@ serde = "1"
 
     #[test]
     fn generate_lib_rs_async_no_previous_cells() {
-        let (lib_rs, preamble, is_async) = generate_lib_rs("    something.await", &[]);
+        let (lib_rs, preamble, is_async) = generate_lib_rs("    something.await", &[], false);
 
         assert!(is_async);
         assert_eq!(preamble, 5);
@@ -772,7 +811,7 @@ serde = "1"
     #[test]
     fn generate_lib_rs_async_with_typed_cells() {
         let types: Vec<Option<String>> = vec![Some("u32".into())];
-        let (lib_rs, preamble, is_async) = generate_lib_rs("    cell0.await", &types);
+        let (lib_rs, preamble, is_async) = generate_lib_rs("    cell0.await", &types, false);
 
         assert!(is_async);
         // 5 base + 3 (ptr reconstruction + inputs) + 1 typed + 1 last = 10
@@ -799,6 +838,7 @@ serde = "1"
             "",
             &[],
             None,
+            None,
         )
         .unwrap();
         assert!(!is_async);
@@ -811,6 +851,7 @@ serde = "1"
             "    foo().await",
             "",
             &[],
+            None,
             None,
         )
         .unwrap();
@@ -916,7 +957,7 @@ codegen-units = 16
     #[test]
     fn generate_lib_rs_with_unicode_source() {
         let source = "    let msg = \"こんにちは世界 🦀\";\n    CellOutput::text(msg)";
-        let (lib_rs, preamble, _) = generate_lib_rs(source, &[]);
+        let (lib_rs, preamble, _) = generate_lib_rs(source, &[], false);
 
         assert_eq!(preamble, 5);
         assert!(lib_rs.contains("こんにちは世界 🦀"));
@@ -978,12 +1019,103 @@ serde = \"1\"
 
     #[test]
     fn generate_lib_rs_empty_source() {
-        let (lib_rs, preamble, is_async) = generate_lib_rs("", &[]);
+        let (lib_rs, preamble, is_async) = generate_lib_rs("", &[], false);
 
         assert_eq!(preamble, 5);
         assert!(!is_async);
         // The empty source should still produce a compilable wrapper.
         assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
         assert!(lib_rs.contains("}).into();"));
+    }
+
+    // ── T-013: shared source tests ──────────────────────────────────────
+
+    #[test]
+    fn generate_lib_rs_with_shared_source() {
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &[], true);
+
+        assert!(
+            lib_rs.contains("mod shared;"),
+            "should contain mod shared declaration"
+        );
+        // 5 base + 1 shared = 6
+        assert_eq!(preamble, 6);
+
+        // Verify user code starts at expected line.
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+    }
+
+    #[test]
+    fn generate_lib_rs_without_shared_source() {
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &[], false);
+
+        assert!(
+            !lib_rs.contains("mod shared;"),
+            "should not contain mod shared declaration"
+        );
+        assert_eq!(preamble, 5);
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+    }
+
+    #[test]
+    fn scaffold_micro_crate_writes_shared_rs() {
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let shared_src = "pub fn helper() -> u32 { 42 }";
+
+        let (crate_dir, preamble, _) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "s1",
+            "c1",
+            "    CellOutput::empty()",
+            "",
+            &[],
+            None,
+            Some(shared_src),
+        )
+        .unwrap();
+
+        let shared_path = crate_dir.join("src/shared.rs");
+        assert!(shared_path.is_file(), "shared.rs should be written");
+        let content = std::fs::read_to_string(&shared_path).unwrap();
+        assert_eq!(content, shared_src);
+
+        // lib.rs should contain mod shared
+        let lib = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(lib.contains("mod shared;"));
+
+        // preamble should be 6 (5 base + 1 shared)
+        assert_eq!(preamble, 6);
+    }
+
+    #[test]
+    fn scaffold_micro_crate_no_shared_rs_when_none() {
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+
+        let (crate_dir, preamble, _) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "s1",
+            "c1",
+            "    CellOutput::empty()",
+            "",
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let shared_path = crate_dir.join("src/shared.rs");
+        assert!(!shared_path.exists(), "shared.rs should not exist");
+
+        let lib = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(!lib.contains("mod shared;"));
+
+        assert_eq!(preamble, 5);
     }
 }

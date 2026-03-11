@@ -17,11 +17,11 @@ use super::state::{CellOutputData, CellStatus};
 /// Bundles the reactive signals needed by interactive widgets to update cell
 /// outputs and trigger downstream re-execution.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct WidgetContext {
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     cell_stale: RwSignal<HashMap<String, bool>>,
     cells: RwSignal<Vec<CellManifest>>,
-    auto_run: RwSignal<bool>,
     run_all_queue: RwSignal<Vec<String>>,
 }
 
@@ -118,28 +118,20 @@ pub(super) fn CellOutputPanel(
     /// Ordered cell list (for finding downstream cells).
     #[prop(optional)]
     cells: Option<RwSignal<Vec<CellManifest>>>,
-    /// Auto-run toggle (when true, widget changes re-execute downstream).
-    #[prop(optional)]
-    auto_run: Option<RwSignal<bool>>,
     /// Run-all queue (downstream cell IDs are pushed here for execution).
     #[prop(optional)]
     run_all_queue: Option<RwSignal<Vec<String>>>,
 ) -> impl IntoView {
     // Build widget context if all required signals are present.
-    let widget_ctx = match (cell_outputs, cell_stale, cells, auto_run, run_all_queue) {
-        (
-            Some(cell_outputs),
-            Some(cell_stale),
-            Some(cells),
-            Some(auto_run),
-            Some(run_all_queue),
-        ) => Some(WidgetContext {
-            cell_outputs,
-            cell_stale,
-            cells,
-            auto_run,
-            run_all_queue,
-        }),
+    let widget_ctx = match (cell_outputs, cell_stale, cells, run_all_queue) {
+        (Some(cell_outputs), Some(cell_stale), Some(cells), Some(run_all_queue)) => {
+            Some(WidgetContext {
+                cell_outputs,
+                cell_stale,
+                cells,
+                run_all_queue,
+            })
+        }
         _ => None,
     };
 
@@ -298,8 +290,8 @@ fn bincode_encode_string(value: &str) -> Vec<u8> {
     bincode::encode_to_vec(value, bincode::config::standard()).expect("String encoding cannot fail")
 }
 
-/// Update cell outputs, mark downstream cells stale, and optionally auto-run
-/// downstream cells after a widget value change.
+/// Update cell outputs and mark downstream cells stale after a widget value
+/// change.
 #[cfg(feature = "hydrate")]
 fn update_cell_output(
     new_bytes: Vec<u8>,
@@ -320,27 +312,6 @@ fn update_cell_output(
             *val = true;
         }
     });
-
-    // Auto-run downstream Code cells if enabled.
-    if ctx.auto_run.get_untracked() {
-        let all_cells = ctx.cells.get_untracked();
-        let current_outputs = ctx.cell_outputs.get_untracked();
-        let current_queue = ctx.run_all_queue.get_untracked();
-
-        if let Some(my_idx) = all_cells.iter().position(|c| c.id == *cid) {
-            let downstream: Vec<String> = all_cells[my_idx + 1..]
-                .iter()
-                .filter(|c| c.cell_type == CellType::Code)
-                .filter(|c| current_outputs.contains_key(&c.id))
-                .filter(|c| !current_queue.contains(&c.id))
-                .map(|c| c.id.clone())
-                .collect();
-
-            if !downstream.is_empty() {
-                ctx.run_all_queue.update(|q| q.extend(downstream));
-            }
-        }
-    }
 }
 
 // ── Interactive widget component ─────────────────────────────────────────────
@@ -368,6 +339,7 @@ fn InteractiveWidget(
         "text_input" => render_text_input(&cfg, &label, cell_id, widget_ctx).into_any(),
         "number" => render_number(&cfg, &label, cell_id, widget_ctx).into_any(),
         "switch" => render_switch(&cfg, &label, cell_id, widget_ctx).into_any(),
+        "button" => render_button(&cfg, &label, cell_id, widget_ctx).into_any(),
         _ => view! {
             <div class="ironpad-interactive-widget">
                 <span class="ironpad-widget-label">{format!("[unknown widget: {kind}]")}</span>
@@ -706,6 +678,55 @@ fn render_switch(
                 <span class="ironpad-switch-slider"></span>
                 {" "}{label_text}
             </label>
+        </div>
+    }
+}
+
+fn render_button(
+    _cfg: &serde_json::Value,
+    label: &str,
+    cell_id: Option<String>,
+    widget_ctx: Option<WidgetContext>,
+) -> impl IntoView {
+    let button_label = if label.is_empty() {
+        "Run ▶".to_owned()
+    } else {
+        label.to_owned()
+    };
+
+    #[cfg(feature = "hydrate")]
+    let on_click = {
+        let cell_id = cell_id.clone();
+        move |_: web_sys::MouseEvent| {
+            let Some(cid) = &cell_id else { return };
+            let Some(ctx) = widget_ctx else { return };
+
+            let all_cells = ctx.cells.get_untracked();
+            if let Some(my_idx) = all_cells.iter().position(|c| c.id == *cid) {
+                let downstream: Vec<String> = all_cells[my_idx + 1..]
+                    .iter()
+                    .filter(|c| c.cell_type == CellType::Code)
+                    .map(|c| c.id.clone())
+                    .collect();
+                if !downstream.is_empty() {
+                    ctx.run_all_queue.set(downstream);
+                }
+            }
+        }
+    };
+
+    #[cfg(not(feature = "hydrate"))]
+    let on_click = move |_: web_sys::MouseEvent| {};
+    let _ = (&cell_id, &widget_ctx);
+
+    view! {
+        <div class="ironpad-interactive-widget">
+            <button
+                class="ironpad-widget-button"
+                on:click=on_click
+            >
+                {button_label}
+            </button>
         </div>
     }
 }

@@ -34,6 +34,7 @@ mod pipeline_tests {
             cargo_toml,
             &[],
             None,
+            None,
         )
         .expect("scaffold should succeed");
 
@@ -78,8 +79,8 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]\nrand = \"0.8\"";
 
         // Hashes must match.
-        let hash_a = content_hash(source, cargo_toml, &[], None);
-        let hash_b = content_hash(source, cargo_toml, &[], None);
+        let hash_a = content_hash(source, cargo_toml, &[], None, None);
+        let hash_b = content_hash(source, cargo_toml, &[], None, None);
         assert_eq!(hash_a, hash_b, "same inputs must produce identical hashes");
 
         // Scaffolded content must be identical for the same inputs.
@@ -87,12 +88,30 @@ mod pipeline_tests {
         let tmp_b = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (dir_a, ..) =
-            scaffold_micro_crate(&tmp_a, &cell_path, "s", "c", source, cargo_toml, &[], None)
-                .unwrap();
-        let (dir_b, ..) =
-            scaffold_micro_crate(&tmp_b, &cell_path, "s", "c", source, cargo_toml, &[], None)
-                .unwrap();
+        let (dir_a, ..) = scaffold_micro_crate(
+            &tmp_a,
+            &cell_path,
+            "s",
+            "c",
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let (dir_b, ..) = scaffold_micro_crate(
+            &tmp_b,
+            &cell_path,
+            "s",
+            "c",
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
 
         let cargo_a = std::fs::read_to_string(dir_a.join("Cargo.toml")).unwrap();
         let cargo_b = std::fs::read_to_string(dir_b.join("Cargo.toml")).unwrap();
@@ -106,8 +125,8 @@ mod pipeline_tests {
     #[test]
     fn changed_source_invalidates_hash() {
         let cargo = "[dependencies]";
-        let hash_v1 = content_hash("    let x = 1;", cargo, &[], None);
-        let hash_v2 = content_hash("    let x = 2;", cargo, &[], None);
+        let hash_v1 = content_hash("    let x = 1;", cargo, &[], None, None);
+        let hash_v2 = content_hash("    let x = 2;", cargo, &[], None, None);
         assert_ne!(
             hash_v1, hash_v2,
             "different source must produce different hashes"
@@ -117,8 +136,8 @@ mod pipeline_tests {
     #[test]
     fn changed_cargo_toml_invalidates_hash() {
         let source = "    CellOutput::empty()";
-        let hash_a = content_hash(source, "[dependencies]\nserde = \"1\"", &[], None);
-        let hash_b = content_hash(source, "[dependencies]\nrand = \"0.8\"", &[], None);
+        let hash_a = content_hash(source, "[dependencies]\nserde = \"1\"", &[], None, None);
+        let hash_b = content_hash(source, "[dependencies]\nrand = \"0.8\"", &[], None, None);
         assert_ne!(
             hash_a, hash_b,
             "different Cargo.toml must produce different hashes"
@@ -134,7 +153,8 @@ mod pipeline_tests {
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
         let (dir, preamble_lines, _) =
-            scaffold_micro_crate(&tmp, &cell_path, "s", "c", user_code, "", &[], None).unwrap();
+            scaffold_micro_crate(&tmp, &cell_path, "s", "c", user_code, "", &[], None, None)
+                .unwrap();
         let lib = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
 
         // User code must start at exactly line preamble_lines + 1 (1-indexed).
@@ -172,7 +192,7 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input.
-        let hash = content_hash(source, cargo_toml, &[], None);
+        let hash = content_hash(source, cargo_toml, &[], None, None);
         assert_eq!(hash.len(), 64, "blake3 hash should be 64 hex chars");
         assert!(
             hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -190,6 +210,7 @@ mod pipeline_tests {
             source,
             cargo_toml,
             &[],
+            None,
             None,
         )
         .unwrap();
@@ -223,7 +244,7 @@ mod pipeline_tests {
     fn scaffold_generates_typed_cell_bindings() {
         // With two typed previous cells.
         let types: Vec<Option<String>> = vec![Some("u32".into()), Some("String".into())];
-        let (code, preamble, _) = generate_lib_rs("    let x = cell0 + 1;", &types);
+        let (code, preamble, _) = generate_lib_rs("    let x = cell0 + 1;", &types, false);
 
         assert!(code.contains("let cell0: u32"));
         assert!(code.contains("let cell1: String"));
@@ -232,7 +253,7 @@ mod pipeline_tests {
         assert_eq!(preamble, 11, "5 base + 3 (ptr + inputs) + 2 cells + 1 last");
 
         // With no previous cells.
-        let (code_empty, preamble_empty, _) = generate_lib_rs("    let x = 1;", &[]);
+        let (code_empty, preamble_empty, _) = generate_lib_rs("    let x = 1;", &[], false);
 
         assert!(!code_empty.contains("__ironpad_inputs__"));
         assert!(!code_empty.contains("let cell"));
@@ -247,7 +268,7 @@ mod pipeline_tests {
 
         let source = "    CellOutput::text(\"cached\")";
         let cargo = "[dependencies]";
-        let hash = content_hash(source, cargo, &[], None);
+        let hash = content_hash(source, cargo, &[], None, None);
 
         let cache_dir = tempdir();
         let fake_wasm = b"\x00asm\x01\x00\x00\x00fake-wasm-bytes";
@@ -263,7 +284,13 @@ mod pipeline_tests {
         assert_eq!(hit.js_glue.as_deref(), Some(fake_js_glue));
 
         // A different source must not hit the same cache entry.
-        let different_hash = content_hash("    CellOutput::text(\"different\")", cargo, &[], None);
+        let different_hash = content_hash(
+            "    CellOutput::text(\"different\")",
+            cargo,
+            &[],
+            None,
+            None,
+        );
         assert!(try_cache_hit(&cache_dir, &different_hash).is_none());
     }
 
@@ -320,6 +347,7 @@ mod e2e_tests {
             source,
             cargo_toml,
             &[],
+            None,
             None,
         )
         .expect("scaffold should succeed");
@@ -388,6 +416,7 @@ mod e2e_tests {
             cargo_toml,
             &[],
             None,
+            None,
         )
         .expect("scaffold should succeed");
 
@@ -430,7 +459,7 @@ mod e2e_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input (should be a cache miss).
-        let hash = content_hash(source, cargo_toml, &[], None);
+        let hash = content_hash(source, cargo_toml, &[], None, None);
         assert!(
             try_cache_hit(&cache_dir, &hash).is_none(),
             "should be a cache miss before compilation",
@@ -445,6 +474,7 @@ mod e2e_tests {
             source,
             cargo_toml,
             &[],
+            None,
             None,
         )
         .expect("scaffold should succeed");
@@ -482,8 +512,13 @@ mod e2e_tests {
         );
 
         // Step 5: Different source should miss the cache.
-        let different_hash =
-            content_hash("    CellOutput::text(\"different\")", cargo_toml, &[], None);
+        let different_hash = content_hash(
+            "    CellOutput::text(\"different\")",
+            cargo_toml,
+            &[],
+            None,
+            None,
+        );
         assert!(
             try_cache_hit(&cache_dir, &different_hash).is_none(),
             "different source should not hit the cache",

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000008",
+  "title": "Interactive Button",
+  "created_at": "2026-03-11T00:00:00Z",
+  "updated_at": "2026-03-11T00:00:00Z",
+  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "# Interactive Button \u25b6\ufe0f\n\nThe **button** widget lets you trigger downstream cell execution on demand. Pair it with other widgets like sliders to build interactive compute-on-click workflows.\n\nTry changing the slider value, then click the button to recalculate.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Input Value",
+      "cell_type": "Code",
+      "source": "ui::slider(1.0, 100.0)\n    .step(1.0)\n    .label(\"Input Value\")\n    .default_value(42.0)\n",
+      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Calculate",
+      "cell_type": "Code",
+      "source": "ui::button(\"Calculate \\u{25b6}\")\n",
+      "cargo_toml": "[package]\nname = \"cell_2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Result",
+      "cell_type": "Code",
+      "source": "let value = cell0;\nlet squared = value * value;\nlet cubed = value * value * value;\n\nMd(format!(\n    \"## Results for {value:.0}\\n\\n\\\n     | Operation | Result |\\n\\\n     |---|---:|\\n\\\n     | **Square** | {squared:.0} |\\n\\\n     | **Cube** | {cubed:.0} |\\n\\\n     | **Square root** | {sr:.4} |\",\n    sr = value.sqrt(),\n))\n",
+      "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    }
+  ]
+}

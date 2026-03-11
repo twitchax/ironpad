@@ -58,6 +58,56 @@ pub fn ViewOnlyNotebook(
     // Shared state: execution outputs keyed by cell ID (for piping between cells).
     let cell_outputs: RwSignal<HashMap<String, CellOutputData>> = RwSignal::new(HashMap::new());
 
+    // Run-all sequential execution queue (cell IDs in order).
+    let run_all_queue: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
+    let running_all: RwSignal<bool> = RwSignal::new(false);
+
+    // Keep running_all in sync with the queue.
+    Effect::new(move || {
+        let empty = run_all_queue.get().is_empty();
+        running_all.set(!empty);
+    });
+
+    // Auto-execute all code cells on page load (hydrate-only, fires once).
+    #[cfg(feature = "hydrate")]
+    {
+        let auto_run_done = RwSignal::new(false);
+        Effect::new(move || {
+            if auto_run_done.get_untracked() {
+                return;
+            }
+            auto_run_done.set(true);
+
+            let cell_ids: Vec<String> = notebook.with_value(|nb| {
+                nb.cells
+                    .iter()
+                    .filter(|c| c.cell_type == CellType::Code)
+                    .map(|c| c.id.clone())
+                    .collect()
+            });
+            if !cell_ids.is_empty() {
+                run_all_queue.set(cell_ids);
+            }
+        });
+    }
+
+    // Run All handler — collect all code cell IDs and enqueue them.
+    let run_all_action = move |_| {
+        if running_all.get_untracked() {
+            return;
+        }
+        let cell_ids: Vec<String> = notebook.with_value(|nb| {
+            nb.cells
+                .iter()
+                .filter(|c| c.cell_type == CellType::Code)
+                .map(|c| c.id.clone())
+                .collect()
+        });
+        if !cell_ids.is_empty() {
+            run_all_queue.set(cell_ids);
+        }
+    };
+
     // Fork handler — clones the notebook with a new ID and navigates to it.
     let fork_label_clone = fork_label.clone();
     let navigate = leptos_router::hooks::use_navigate();
@@ -87,6 +137,13 @@ pub fn ViewOnlyNotebook(
         <div class="view-only-notebook">
             <div class="view-only-toolbar">
                 <h1 class="view-only-title">{notebook.with_value(|nb| nb.title.clone())}</h1>
+                <button
+                    class="run-all-button"
+                    on:click=run_all_action
+                    disabled=move || running_all.get()
+                >
+                    {move || if running_all.get() { "⏳ Running…" } else { "▶▶ Run All" }}
+                </button>
                 <button class="fork-button" on:click=fork_action>
                     {"🍴 "}{fork_label_clone}
                 </button>
@@ -95,12 +152,14 @@ pub fn ViewOnlyNotebook(
                 {notebook.with_value(|nb| {
                     let cells = nb.cells.clone();
                     let shared_cargo_toml = nb.shared_cargo_toml.clone();
+                    let shared_source = nb.shared_source.clone();
                     let notebook_id = nb.id.to_string();
 
                     cells.iter().map(|cell| {
                         let cell = cell.clone();
                         let all_cells = cells.clone();
                         let shared = shared_cargo_toml.clone();
+                        let shared_src = shared_source.clone();
                         let nid = notebook_id.clone();
 
                         view! {
@@ -108,8 +167,10 @@ pub fn ViewOnlyNotebook(
                                 cell=cell
                                 all_cells=all_cells
                                 shared_cargo_toml=shared
+                                shared_source=shared_src
                                 notebook_id=nid
                                 cell_outputs=cell_outputs
+                                run_all_queue=run_all_queue
                             />
                         }
                     }).collect_view()
@@ -127,8 +188,10 @@ fn ViewOnlyCell(
     cell: IronpadCell,
     all_cells: Vec<IronpadCell>,
     shared_cargo_toml: Option<String>,
+    shared_source: Option<String>,
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
+    run_all_queue: RwSignal<Vec<String>>,
 ) -> impl IntoView {
     match cell.cell_type {
         CellType::Code => view! {
@@ -136,8 +199,10 @@ fn ViewOnlyCell(
                 cell=cell
                 all_cells=all_cells
                 shared_cargo_toml=shared_cargo_toml
+                shared_source=shared_source
                 notebook_id=notebook_id
                 cell_outputs=cell_outputs
+                run_all_queue=run_all_queue
             />
         }
         .into_any(),
@@ -156,30 +221,76 @@ fn ViewOnlyCodeCell(
     cell: IronpadCell,
     all_cells: Vec<IronpadCell>,
     shared_cargo_toml: Option<String>,
+    shared_source: Option<String>,
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
+    run_all_queue: RwSignal<Vec<String>>,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let all_cells = StoredValue::new(all_cells);
     let shared_cargo_toml = StoredValue::new(shared_cargo_toml);
+    let shared_source = StoredValue::new(shared_source);
     let notebook_id = StoredValue::new(notebook_id);
 
     let compiling = RwSignal::new(false);
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
     let error_message: RwSignal<Option<String>> = RwSignal::new(None);
 
-    // Run cell: compile → load WASM → execute → display output.
+    // Trigger signal: incrementing this dispatches a compile.
+    let run_trigger = RwSignal::new(0u64);
+
+    // Run button click — increment run_trigger to start compile.
     let run_cell = move |_| {
+        run_trigger.update(|g| *g += 1);
+    };
+
+    // ── Run-all queue watcher ───────────────────────────────────────────
+    //
+    // When this cell appears at the front of the run-all queue, trigger
+    // its compile flow. Non-front cells show a "Queued" status badge.
+
+    let cell_id_for_queue = StoredValue::new(cell.with_value(|c| c.id.clone()));
+
+    let queued = Signal::derive(move || {
+        let queue = run_all_queue.get();
+        let cid = cell_id_for_queue.get_value();
+        queue
+            .iter()
+            .position(|id| id == &cid)
+            .is_some_and(|pos| pos > 0)
+    });
+
+    Effect::new(move || {
+        let queue = run_all_queue.get();
+        let cid = cell_id_for_queue.get_value();
+
+        if queue.first().map(|id| id == &cid).unwrap_or(false) && !compiling.get_untracked() {
+            run_trigger.update(|g| *g += 1);
+        }
+    });
+
+    // ── Compile + execute flow, driven by `run_trigger` ─────────────────
+
+    let cell_id_for_exec = StoredValue::new(cell.with_value(|c| c.id.clone()));
+
+    Effect::new(move || {
+        let gen = run_trigger.get();
+        if gen == 0 {
+            return;
+        }
+
+        if compiling.get_untracked() {
+            return;
+        }
+
         #[cfg(feature = "hydrate")]
         {
-            if compiling.get_untracked() {
-                return;
-            }
             compiling.set(true);
             error_message.set(None);
 
             leptos::task::spawn_local(async move {
                 let cell_data = cell.get_value();
+                let cell_id = cell_id_for_exec.get_value();
                 let cells = all_cells.get_value();
                 let my_idx = cells.iter().position(|c| c.id == cell_data.id).unwrap_or(0);
 
@@ -218,7 +329,10 @@ fn ViewOnlyCodeCell(
                     cargo_toml: cell_data.cargo_toml.clone().unwrap_or_default(),
                     previous_cell_types: types,
                     shared_cargo_toml: shared_cargo_toml.get_value(),
+                    shared_source: shared_source.get_value(),
                 };
+
+                let mut had_error = false;
 
                 match compile_cell(request).await {
                     Ok(response) => {
@@ -229,64 +343,79 @@ fn ViewOnlyCodeCell(
                                 .map(|d| d.message.clone())
                                 .collect();
                             error_message.set(Some(errors.join("\n")));
-                            compiling.set(false);
-                            return;
-                        }
+                            had_error = true;
+                        } else {
+                            let hash =
+                                crate::components::executor::hash_wasm_blob(&response.wasm_blob);
+                            match crate::components::executor::load_blob(
+                                &cell_data.id,
+                                &hash,
+                                &response.wasm_blob,
+                                response.js_glue,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    let exec_start = js_sys::Date::now();
+                                    match crate::components::executor::execute_cell(
+                                        &cell_data.id,
+                                        &input_buf,
+                                    )
+                                    .await
+                                    {
+                                        Ok((output_bytes, display_text, type_tag)) => {
+                                            cell_outputs.update(|map| {
+                                                map.insert(
+                                                    cell_data.id.clone(),
+                                                    CellOutputData {
+                                                        bytes: output_bytes.clone(),
+                                                        type_tag: type_tag.clone(),
+                                                    },
+                                                );
+                                            });
 
-                        let hash = crate::components::executor::hash_wasm_blob(&response.wasm_blob);
-                        match crate::components::executor::load_blob(
-                            &cell_data.id,
-                            &hash,
-                            &response.wasm_blob,
-                            response.js_glue,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                let exec_start = js_sys::Date::now();
-                                match crate::components::executor::execute_cell(
-                                    &cell_data.id,
-                                    &input_buf,
-                                )
-                                .await
-                                {
-                                    Ok((output_bytes, display_text, type_tag)) => {
-                                        cell_outputs.update(|map| {
-                                            map.insert(
-                                                cell_data.id.clone(),
-                                                CellOutputData {
-                                                    bytes: output_bytes.clone(),
-                                                    type_tag: type_tag.clone(),
-                                                },
-                                            );
-                                        });
-
-                                        execution_result.set(Some(ExecutionResult {
-                                            display_text,
-                                            output_bytes,
-                                            execution_time_ms: js_sys::Date::now() - exec_start,
-                                            type_tag,
-                                        }));
-                                    }
-                                    Err(e) => {
-                                        error_message.set(Some(format!("Execution error: {e}")));
+                                            execution_result.set(Some(ExecutionResult {
+                                                display_text,
+                                                output_bytes,
+                                                execution_time_ms: js_sys::Date::now() - exec_start,
+                                                type_tag,
+                                            }));
+                                        }
+                                        Err(e) => {
+                                            error_message
+                                                .set(Some(format!("Execution error: {e}")));
+                                            had_error = true;
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                error_message.set(Some(format!("WASM load error: {e}")));
+                                Err(e) => {
+                                    error_message.set(Some(format!("WASM load error: {e}")));
+                                    had_error = true;
+                                }
                             }
                         }
                     }
                     Err(e) => {
                         error_message.set(Some(format!("Compile error: {e}")));
+                        had_error = true;
                     }
+                }
+
+                // Advance or clear the run-all queue.
+                if had_error {
+                    run_all_queue.set(vec![]);
+                } else {
+                    run_all_queue.update(|q| {
+                        if q.first().map(|id| id == &cell_id).unwrap_or(false) {
+                            q.remove(0);
+                        }
+                    });
                 }
 
                 compiling.set(false);
             });
         }
-    };
+    });
 
     // Suppress unused warning during SSR.
     #[cfg(not(feature = "hydrate"))]
@@ -303,6 +432,17 @@ fn ViewOnlyCodeCell(
         }
     });
 
+    // Button text depends on compiling/queued state.
+    let button_text = Signal::derive(move || {
+        if compiling.get() {
+            "⏳ Compiling…"
+        } else if queued.get() {
+            "⏳ Queued"
+        } else {
+            "▶ Run"
+        }
+    });
+
     view! {
         <div class="view-only-cell ironpad-cell--view-mode">
             <div class="view-only-cell-header">
@@ -316,9 +456,9 @@ fn ViewOnlyCodeCell(
                 <button
                     class="view-only-run-button"
                     on:click=run_cell
-                    disabled=move || compiling.get()
+                    disabled=move || compiling.get() || queued.get()
                 >
-                    {move || if compiling.get() { "⏳ Compiling…" } else { "▶ Run" }}
+                    {button_text}
                 </button>
             </div>
             <div class=body_class>
@@ -334,7 +474,9 @@ fn ViewOnlyCodeCell(
                 </div>
             })}
             {move || execution_result.get().map(|result| {
-                view! { <ViewOnlyOutput result=result /> }
+                let cell_id = cell.with_value(|c| c.id.clone());
+                let all_cells_vec = all_cells.get_value();
+                view! { <ViewOnlyOutput result=result cell_id=cell_id all_cells=all_cells_vec run_all_queue=run_all_queue /> }
             })}
         </div>
     }
@@ -366,7 +508,12 @@ fn ViewOnlyMarkdownCell(#[prop(into)] source: String) -> impl IntoView {
 
 /// Renders execution output panels (text, HTML, SVG) and timing metadata.
 #[component]
-fn ViewOnlyOutput(result: ExecutionResult) -> impl IntoView {
+fn ViewOnlyOutput(
+    result: ExecutionResult,
+    #[prop(into)] cell_id: String,
+    all_cells: Vec<IronpadCell>,
+    run_all_queue: RwSignal<Vec<String>>,
+) -> impl IntoView {
     let panels: Vec<DisplayPanel> = match &result.display_text {
         Some(json) => {
             serde_json::from_str(json).unwrap_or_else(|_| vec![DisplayPanel::Text(json.clone())])
@@ -433,8 +580,10 @@ fn ViewOnlyOutput(result: ExecutionResult) -> impl IntoView {
                         }.into_any()
                     },
                     DisplayPanel::Interactive { kind, config } => {
+                        let cid = cell_id.clone();
+                        let cells = all_cells.clone();
                         view! {
-                            <ViewOnlyInteractiveWidget kind=kind config=config />
+                            <ViewOnlyInteractiveWidget kind=kind config=config cell_id=cid all_cells=cells run_all_queue=run_all_queue />
                         }.into_any()
                     },
                 }
@@ -478,6 +627,9 @@ fn render_table_tsv(headers: &[String], rows: &[Vec<String>]) -> String {
 fn ViewOnlyInteractiveWidget(
     #[prop(into)] kind: String,
     #[prop(into)] config: String,
+    #[prop(into)] cell_id: String,
+    all_cells: Vec<IronpadCell>,
+    run_all_queue: RwSignal<Vec<String>>,
 ) -> impl IntoView {
     let cfg: serde_json::Value = serde_json::from_str(&config).unwrap_or_default();
     let label = cfg
@@ -554,6 +706,43 @@ fn ViewOnlyInteractiveWidget(
                 <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
                     <span class="ironpad-widget-label">{label_text}</span>
                     <span class="ironpad-widget-value">{default}</span>
+                </div>
+            }
+            .into_any()
+        }
+        "button" => {
+            let button_label = if label.is_empty() {
+                "Run ▶".to_owned()
+            } else {
+                label.clone()
+            };
+
+            #[cfg(feature = "hydrate")]
+            let on_click = {
+                let cell_id = cell_id.clone();
+                move |_: web_sys::MouseEvent| {
+                    if let Some(my_idx) = all_cells.iter().position(|c| c.id == cell_id) {
+                        let downstream: Vec<String> = all_cells[my_idx + 1..]
+                            .iter()
+                            .filter(|c| c.cell_type == CellType::Code)
+                            .map(|c| c.id.clone())
+                            .collect();
+                        if !downstream.is_empty() {
+                            run_all_queue.set(downstream);
+                        }
+                    }
+                }
+            };
+
+            #[cfg(not(feature = "hydrate"))]
+            let on_click = move |_: web_sys::MouseEvent| {};
+            let _ = (&cell_id, &run_all_queue);
+
+            view! {
+                <div class="ironpad-interactive-widget">
+                    <button class="ironpad-widget-button" on:click=on_click>
+                        {button_label}
+                    </button>
                 </div>
             }
             .into_any()

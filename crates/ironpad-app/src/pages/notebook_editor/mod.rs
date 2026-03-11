@@ -2,6 +2,7 @@ mod cell_item;
 mod cell_output;
 mod export;
 mod shared_deps;
+mod shared_source;
 mod skeleton;
 mod state;
 
@@ -18,6 +19,7 @@ use crate::server_fns::share_notebook;
 
 use self::cell_item::CellItem;
 use self::shared_deps::SharedDepsPanel;
+use self::shared_source::SharedSourcePanel;
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
 use self::state::{
     add_cell_to_notebook, persist_notebook, sync_cells_from_notebook, NotebookState,
@@ -47,8 +49,8 @@ pub fn NotebookEditorPage() -> impl IntoView {
         save_generation: RwSignal::new(0),
         run_all_queue: RwSignal::new(Vec::new()),
         shared_cargo_toml: RwSignal::new(None),
+        shared_source: RwSignal::new(None),
         cell_stale: RwSignal::new(HashMap::new()),
-        auto_run: RwSignal::new(true),
         cell_display_texts: RwSignal::new(HashMap::new()),
         editor_handles: RwSignal::new(HashMap::new()),
         is_view_mode: RwSignal::new(false),
@@ -80,6 +82,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
             layout.cell_count.set(nb.cells.len());
             state.notebook_id.set(nb.id.to_string());
             state.shared_cargo_toml.set(nb.shared_cargo_toml.clone());
+            state.shared_source.set(nb.shared_source.clone());
         }
     });
 
@@ -225,6 +228,7 @@ fn NotebookContent() -> impl IntoView {
     // ── Shared deps panel toggle ────────────────────────────────────────
 
     let shared_deps_open = RwSignal::new(false);
+    let shared_source_open = RwSignal::new(false);
 
     // ── Add cell callback ───────────────────────────────────────────────
 
@@ -293,6 +297,26 @@ fn NotebookContent() -> impl IntoView {
 
     view! {
         <div class="ironpad-notebook-toolbar">
+            // ── Run All button ──────────────────────────────────────────
+            <button
+                class="ironpad-run-all-button"
+                title="Run all code cells (Ctrl+Shift+Enter)"
+                on:click=move |_| {
+                    let cell_ids: Vec<String> = state
+                        .cells
+                        .get_untracked()
+                        .iter()
+                        .filter(|c| c.cell_type == CellType::Code)
+                        .map(|c| c.id.clone())
+                        .collect();
+                    if !cell_ids.is_empty() {
+                        state.run_all_queue.set(cell_ids);
+                    }
+                }
+            >
+                "▶▶ Run All"
+            </button>
+
             <div class="ironpad-toolbar-right">
                 // ── Hamburger dropdown (☰) ──────────────────────────────
                 <div class="ironpad-toolbar-dropdown">
@@ -486,20 +510,6 @@ fn NotebookContent() -> impl IntoView {
                                     <button
                                         class="ironpad-toolbar-dropdown-item"
                                         on:click=move |_| {
-                                            state.auto_run.update(|v| *v = !*v);
-                                        }
-                                    >
-                                        {move || {
-                                            if state.auto_run.get() {
-                                                "✓ Auto-run"
-                                            } else {
-                                                "Auto-run"
-                                            }
-                                        }}
-                                    </button>
-                                    <button
-                                        class="ironpad-toolbar-dropdown-item"
-                                        on:click=move |_| {
                                             gear_open.set(false);
                                             shared_deps_open.update(|v| *v = !*v);
                                         }
@@ -509,6 +519,21 @@ fn NotebookContent() -> impl IntoView {
                                                 "📦 Hide Shared Deps"
                                             } else {
                                                 "📦 Shared Deps"
+                                            }
+                                        }}
+                                    </button>
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item"
+                                        on:click=move |_| {
+                                            gear_open.set(false);
+                                            shared_source_open.update(|v| *v = !*v);
+                                        }
+                                    >
+                                        {move || {
+                                            if shared_source_open.get() {
+                                                "🔧 Hide Shared Source"
+                                            } else {
+                                                "🔧 Shared Source"
                                             }
                                         }}
                                     </button>
@@ -538,6 +563,14 @@ fn NotebookContent() -> impl IntoView {
         {move || {
             if shared_deps_open.get() {
                 view! { <SharedDepsPanel /> }.into_any()
+            } else {
+                view! { <div /> }.into_any()
+            }
+        }}
+
+        {move || {
+            if shared_source_open.get() {
+                view! { <SharedSourcePanel /> }.into_any()
             } else {
                 view! { <div /> }.into_any()
             }

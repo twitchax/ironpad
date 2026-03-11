@@ -24,6 +24,7 @@ pub fn content_hash(
     cargo_toml: &str,
     previous_types: &[Option<String>],
     shared_cargo_toml: Option<&str>,
+    shared_source: Option<&str>,
 ) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(source.as_bytes());
@@ -35,6 +36,10 @@ pub fn content_hash(
     }
     if let Some(shared) = shared_cargo_toml {
         hasher.update(b"\x01");
+        hasher.update(shared.as_bytes());
+    }
+    if let Some(shared) = shared_source {
+        hasher.update(b"\x02");
         hasher.update(shared.as_bytes());
     }
     hasher.finalize().to_hex().to_string()
@@ -136,29 +141,29 @@ mod tests {
 
     #[test]
     fn hash_is_deterministic() {
-        let a = content_hash("fn main() {}", "[dependencies]", &[], None);
-        let b = content_hash("fn main() {}", "[dependencies]", &[], None);
+        let a = content_hash("fn main() {}", "[dependencies]", &[], None, None);
+        let b = content_hash("fn main() {}", "[dependencies]", &[], None, None);
         assert_eq!(a, b);
     }
 
     #[test]
     fn hash_changes_when_source_changes() {
-        let a = content_hash("fn main() { 1 }", "[dependencies]", &[], None);
-        let b = content_hash("fn main() { 2 }", "[dependencies]", &[], None);
+        let a = content_hash("fn main() { 1 }", "[dependencies]", &[], None, None);
+        let b = content_hash("fn main() { 2 }", "[dependencies]", &[], None, None);
         assert_ne!(a, b);
     }
 
     #[test]
     fn hash_changes_when_cargo_toml_changes() {
         let source = "fn main() {}";
-        let a = content_hash(source, r#"[dependencies]\nserde = "1""#, &[], None);
-        let b = content_hash(source, r#"[dependencies]\nrand = "0.8""#, &[], None);
+        let a = content_hash(source, r#"[dependencies]\nserde = "1""#, &[], None, None);
+        let b = content_hash(source, r#"[dependencies]\nrand = "0.8""#, &[], None, None);
         assert_ne!(a, b);
     }
 
     #[test]
     fn hash_is_64_hex_chars() {
-        let h = content_hash("x", "y", &[], None);
+        let h = content_hash("x", "y", &[], None, None);
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -167,9 +172,9 @@ mod tests {
     fn hash_changes_when_previous_types_change() {
         let s = "let x = 1;";
         let c = "[dependencies]";
-        let a = content_hash(s, c, &[], None);
-        let b = content_hash(s, c, &[Some("u32".into())], None);
-        let d = content_hash(s, c, &[Some("String".into())], None);
+        let a = content_hash(s, c, &[], None, None);
+        let b = content_hash(s, c, &[Some("u32".into())], None, None);
+        let d = content_hash(s, c, &[Some("String".into())], None, None);
         assert_ne!(a, b);
         assert_ne!(b, d);
     }
@@ -178,8 +183,8 @@ mod tests {
     fn hash_distinguishes_type_positions() {
         let s = "x";
         let c = "y";
-        let a = content_hash(s, c, &[Some("u32".into()), None], None);
-        let b = content_hash(s, c, &[None, Some("u32".into())], None);
+        let a = content_hash(s, c, &[Some("u32".into()), None], None, None);
+        let b = content_hash(s, c, &[None, Some("u32".into())], None, None);
         assert_ne!(a, b);
     }
 
@@ -187,9 +192,9 @@ mod tests {
     fn hash_changes_when_shared_cargo_toml_changes() {
         let s = "let x = 1;";
         let c = "[dependencies]";
-        let a = content_hash(s, c, &[], None);
-        let b = content_hash(s, c, &[], Some("[dependencies]\nserde = \"1\""));
-        let d = content_hash(s, c, &[], Some("[dependencies]\nrand = \"0.8\""));
+        let a = content_hash(s, c, &[], None, None);
+        let b = content_hash(s, c, &[], Some("[dependencies]\nserde = \"1\""), None);
+        let d = content_hash(s, c, &[], Some("[dependencies]\nrand = \"0.8\""), None);
         assert_ne!(a, b);
         assert_ne!(b, d);
     }
@@ -198,8 +203,8 @@ mod tests {
     fn hash_with_none_shared_differs_from_empty_shared() {
         let s = "x";
         let c = "y";
-        let a = content_hash(s, c, &[], None);
-        let b = content_hash(s, c, &[], Some(""));
+        let a = content_hash(s, c, &[], None, None);
+        let b = content_hash(s, c, &[], Some(""), None);
         assert_ne!(a, b);
     }
 
@@ -270,7 +275,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let source = "let x = 42;";
         let cargo = "[dependencies]";
-        let hash = content_hash(source, cargo, &[], None);
+        let hash = content_hash(source, cargo, &[], None, None);
         let blob = vec![0u8; 256];
         let glue = "// js glue content";
 
@@ -285,7 +290,7 @@ mod tests {
 
     #[test]
     fn hash_empty_source_is_valid() {
-        let h = content_hash("", "", &[], None);
+        let h = content_hash("", "", &[], None, None);
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -293,8 +298,8 @@ mod tests {
     #[test]
     fn hash_same_shared_cargo_toml_is_deterministic() {
         let shared = "[dependencies]\nserde = \"1\"";
-        let a = content_hash("x", "y", &[], Some(shared));
-        let b = content_hash("x", "y", &[], Some(shared));
+        let a = content_hash("x", "y", &[], Some(shared), None);
+        let b = content_hash("x", "y", &[], Some(shared), None);
         assert_eq!(a, b);
     }
 

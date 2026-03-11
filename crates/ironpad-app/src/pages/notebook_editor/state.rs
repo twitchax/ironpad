@@ -55,11 +55,10 @@ pub(super) struct NotebookState {
     pub(super) run_all_queue: RwSignal<Vec<String>>,
     /// Notebook-level shared Cargo.toml content.
     pub(super) shared_cargo_toml: RwSignal<Option<String>>,
+    /// Notebook-level shared Rust source included as `src/shared.rs` in every cell.
+    pub(super) shared_source: RwSignal<Option<String>>,
     /// Tracks which cells have stale (outdated) execution results.
     pub(super) cell_stale: RwSignal<HashMap<String, bool>>,
-    /// When true, successfully completing a cell automatically enqueues all
-    /// downstream Code cells for execution.
-    pub(super) auto_run: RwSignal<bool>,
     /// Per-cell display text (JSON of `Vec<DisplayPanel>`) from the last execution.
     /// Used by the export-to-HTML feature to include cell outputs.
     pub(super) cell_display_texts: RwSignal<HashMap<String, String>>,

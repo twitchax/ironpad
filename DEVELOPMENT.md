@@ -55,13 +55,13 @@ cargo make uat
 
 ironpad is a Cargo workspace with 5 crates:
 
-| Crate                | Role                                                                                                             |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **ironpad-app**      | Core crate — compiler pipeline, Leptos UI components, client-side storage (IndexedDB), server functions            |
-| **ironpad-server**   | Axum HTTP server entry point (minimal — `main.rs` + `config.rs`)                                                 |
-| **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos)                                                |
+| Crate                | Role                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **ironpad-app**      | Core crate — compiler pipeline, Leptos UI components, client-side storage (IndexedDB), server functions                  |
+| **ironpad-server**   | Axum HTTP server entry point (minimal — `main.rs` + `config.rs`)                                                         |
+| **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos)                                                        |
 | **ironpad-common**   | Shared types: `CompileRequest`, `CompileResponse`, `IronpadNotebook`, `PublicNotebookSummary`, `Diagnostic`, `AppConfig` |
-| **ironpad-cell**     | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports         |
+| **ironpad-cell**     | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports                 |
 
 ```
 crates/
@@ -110,11 +110,11 @@ scaffold → cache check → cargo build → diagnostics → wasm-opt
 
 ### Client-Side APIs
 
-| Namespace                    | Purpose                                                         |
-| ---------------------------- | --------------------------------------------------------------- |
-| `window.IronpadMonaco.*`     | Monaco editor JS bridge (create, get/set content, set markers)  |
-| `window.IronpadExecutor.*`   | WASM executor (load module, execute `cell_main`, manage memory) |
-| `window.IronpadStorage.*`    | IndexedDB storage (notebook CRUD, from `public/storage.js`)     |
+| Namespace                  | Purpose                                                         |
+| -------------------------- | --------------------------------------------------------------- |
+| `window.IronpadMonaco.*`   | Monaco editor JS bridge (create, get/set content, set markers)  |
+| `window.IronpadExecutor.*` | WASM executor (load module, execute `cell_main`, manage memory) |
+| `window.IronpadStorage.*`  | IndexedDB storage (notebook CRUD, from `public/storage.js`)     |
 
 Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) code paths.
 
@@ -122,13 +122,12 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 
 ## TODO / Future Ideas
 
+- **CI / code coverage / docker**: Set up CI pipeline with GitHub Actions, code coverage reporting, and Docker image publishing
+- **Publish to fly.io**: Deploy to fly.io for easy public access and sharing
 - **Cell drag-and-drop reordering**: Visual reordering via drag handles
 - **Light mode toggle**: Alternative light theme for Monaco + UI
 - **Notebook tagging/filtering**: Tags on notebooks for organization, search/filter on home page
-- **Progress bars**: Visual progress for long compilations (>5s)
-- **Output persistence**: Cache execution results across page reloads
+- **Progress bars widget**: Visual progress for long executions
+- **Auto Run**: Automatically run cells on load or after edits (with debounce)
 - **LSP integration**: Full rust-analyzer completions in Monaco (per-cell analysis)
 - **Collaboration**: Real-time multi-user editing via WebSocket
-- **Cell templates/snippets**: Quick-start templates for common patterns
-- **"Copy" Buttons**: Copy cell output to clipboard with one click
-- **Make code cells expandable**: code snippet is small right now.

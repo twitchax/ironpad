@@ -19,6 +19,9 @@ pub struct CompileRequest {
     /// Notebook-level shared Cargo.toml whose dependencies are merged with per-cell deps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_cargo_toml: Option<String>,
+    /// Notebook-level shared Rust source included as `src/shared.rs` in every cell micro-crate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_source: Option<String>,
 }
 
 /// Response from the server after a compilation attempt.
@@ -129,6 +132,8 @@ pub struct IronpadNotebook {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_cargo_toml: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_source: Option<String>,
     pub cells: Vec<IronpadCell>,
 }
 
@@ -143,6 +148,7 @@ impl IronpadNotebook {
             created_at: now,
             updated_at: now,
             shared_cargo_toml: None,
+            shared_source: None,
             cells: Vec::new(),
         }
     }

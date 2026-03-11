@@ -71,6 +71,30 @@
         "interactive",
         "ui"
       ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000007",
+      "title": "Shared Code",
+      "description": "Define reusable helper functions in a shared module accessible from every cell.",
+      "filename": "shared-code.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "shared-source",
+        "modules",
+        "reuse"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000008",
+      "title": "Interactive Button",
+      "description": "Use a button widget to trigger downstream computation on demand with a slider input.",
+      "filename": "interactive-button.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "button",
+        "widgets",
+        "interactive"
+      ]
     }
   ]
 }

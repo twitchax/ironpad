@@ -27,6 +27,7 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
         &request.cargo_toml,
         &request.previous_cell_types,
         request.shared_cargo_toml.as_deref(),
+        request.shared_source.as_deref(),
     );
     tracing::info!(cell_id = %request.cell_id, hash = %hash, "compile_cell started");
 
@@ -56,6 +57,7 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
         &request.cargo_toml,
         &request.previous_cell_types,
         request.shared_cargo_toml.as_deref(),
+        request.shared_source.as_deref(),
     )
     .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
 
