@@ -1,7 +1,7 @@
 ---
 id: PRD-0007
 title: "Notebook UX: Run All, Shared Code, Button Widget & Auto-Run"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2026-03-11
 updated: 2026-03-11
@@ -71,13 +71,13 @@ acceptance_tests:
 - id: uat-010
   name: "All changes pass cargo make ci"
   command: cargo make ci
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
   title: "Add Run All button to notebook editor toolbar"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Add a ▶▶ Run All button to the notebook toolbar (mod.rs NotebookContent).
     On click, collect all Code cell IDs in order and set state.run_all_queue.
@@ -86,7 +86,7 @@ tasks:
 - id: T-002
   title: "Add Run All button to ViewOnlyNotebook toolbar"
   priority: 1
-  status: todo
+  status: done
   notes: >
     The ViewOnlyNotebook component needs a Run All button in its toolbar
     (next to the Fork button). It must implement sequential execution: compile
@@ -98,7 +98,7 @@ tasks:
 - id: T-003
   title: "Add shared_source field to IronpadNotebook and CompileRequest"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Add `shared_source: Option<String>` to IronpadNotebook (ironpad-common/types.rs),
     CompileRequest (ironpad-common/types.rs), and NotebookState (state.rs).
@@ -109,7 +109,7 @@ tasks:
 - id: T-004
   title: "Scaffold shared source as src/shared.rs in micro-crate"
   priority: 1
-  status: todo
+  status: done
   notes: >
     In scaffold.rs: accept an optional shared_source parameter. When present,
     write the source to `{crate_dir}/src/shared.rs` and add `mod shared;` to
@@ -120,7 +120,7 @@ tasks:
 - id: T-005
   title: "Add Shared Source UI panel in the editor"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Mirror the SharedDepsPanel pattern (shared_deps.rs): add a SharedSourcePanel
     component with a Monaco editor for shared Rust code. Accessible from the
@@ -131,7 +131,7 @@ tasks:
 - id: T-006
   title: "Remove auto-reactivity from widget value changes"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In cell_output.rs update_cell_output(): remove the auto_run check and the
     downstream run_all_queue enqueue logic. Widget value changes should still
@@ -143,7 +143,7 @@ tasks:
 - id: T-007
   title: "Add ui::button widget to ironpad-cell"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Add a Button builder to ironpad-cell/src/ui.rs following the same pattern
     as Slider, Dropdown, etc. A button has a label, produces
@@ -154,7 +154,7 @@ tasks:
 - id: T-008
   title: "Render button widget in editor cell output panel"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In cell_output.rs: add a render_button() case in InteractiveWidget. The
     button renders as a clickable <button> element. On click, it enqueues the
@@ -166,7 +166,7 @@ tasks:
 - id: T-009
   title: "Render button widget in ViewOnlyNotebook"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Extend ViewOnlyInteractiveWidget in view_only_notebook.rs to handle
     kind="button". In view-only mode, clicking the button should trigger
@@ -176,7 +176,7 @@ tasks:
 - id: T-010
   title: "Auto-execute all cells on public/shared notebook page load"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In ViewOnlyNotebook: after the component mounts and hydrates, automatically
     trigger sequential execution of all code cells (equivalent to clicking
@@ -186,7 +186,7 @@ tasks:
 - id: T-011
   title: "Include shared_source in view-only notebook compile requests"
   priority: 2
-  status: todo
+  status: done
   notes: >
     The ViewOnlyNotebook component constructs CompileRequest in run_cell.
     Thread the notebook's shared_source and shared_cargo_toml into these
@@ -197,7 +197,7 @@ tasks:
 - id: T-012
   title: "Update public example notebooks to demonstrate new features"
   priority: 3
-  status: todo
+  status: done
   notes: >
     Add or update public notebooks in public/notebooks/ to showcase:
     (1) shared source usage (defining a function in shared code, calling from cells),
@@ -207,7 +207,7 @@ tasks:
 - id: T-013
   title: "Tests for shared source scaffolding"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Add unit tests in scaffold.rs for the shared source feature:
     (1) shared source written to src/shared.rs,
@@ -219,7 +219,7 @@ tasks:
 - id: T-014
   title: "Tests for button widget"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Add unit tests in ironpad-cell for the button widget builder:
     (1) produces DisplayPanel::Interactive with kind="button",
@@ -358,5 +358,28 @@ Add an on-mount effect in ViewOnlyNotebook that populates the run-all queue with
 # History
 
 (Entries appended during implementation go below this line.)
+
+## 2026-03-11 — Fleet Execution (T-001 through T-014)
+
+- **Tasks completed**: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013, T-014
+- **Changes**:
+  - T-001: Run All (▶▶) button in editor toolbar, triggers sequential execution via run_all_queue
+  - T-002: Run All button in ViewOnlyNotebook with queue-based sequential execution
+  - T-003: shared_source field added to IronpadNotebook, CompileRequest, NotebookState
+  - T-004: Scaffold writes src/shared.rs, adds `mod shared;` to preamble, adjusts preamble_lines
+  - T-005: SharedSourcePanel component (Monaco editor, gear menu entry)
+  - T-006: Removed auto_run field and all auto-reactivity logic from widgets
+  - T-007: Button widget (`ui::button()`) in ironpad-cell with builder pattern
+  - T-008: render_button in cell_output.rs, triggers downstream cell re-execution on click
+  - T-009: Button widget rendering in ViewOnlyNotebook with downstream execution
+  - T-010: Auto-execute all code cells on public/shared notebook page load (one-shot Effect)
+  - T-011: shared_source threaded through view-only compile requests
+  - T-012: New public notebooks: shared-code.ironpad, interactive-button.ironpad
+  - T-013: 4 new scaffold tests for shared source
+  - T-014: 4 new button widget tests
+- **Test results**: cargo make ci passed — 233/233 tests, clippy clean, fmt clean
+- **UATs verified**: uat-010 (cargo make ci passes)
+- **UATs deferred**: uat-001 through uat-009 (require running app or playwright)
+- **Constitution compliance**: No violations
 
 ---
