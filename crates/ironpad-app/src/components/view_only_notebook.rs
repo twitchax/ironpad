@@ -476,7 +476,7 @@ fn ViewOnlyCodeCell(
             {move || execution_result.get().map(|result| {
                 let cell_id = cell.with_value(|c| c.id.clone());
                 let all_cells_vec = all_cells.get_value();
-                view! { <ViewOnlyOutput result=result cell_id=cell_id all_cells=all_cells_vec run_all_queue=run_all_queue /> }
+                view! { <ViewOnlyOutput result=result cell_id=cell_id all_cells=all_cells_vec run_all_queue=run_all_queue cell_outputs=cell_outputs /> }
             })}
         </div>
     }
@@ -513,6 +513,7 @@ fn ViewOnlyOutput(
     #[prop(into)] cell_id: String,
     all_cells: Vec<IronpadCell>,
     run_all_queue: RwSignal<Vec<String>>,
+    cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
 ) -> impl IntoView {
     let panels: Vec<DisplayPanel> = match &result.display_text {
         Some(json) => {
@@ -583,7 +584,7 @@ fn ViewOnlyOutput(
                         let cid = cell_id.clone();
                         let cells = all_cells.clone();
                         view! {
-                            <ViewOnlyInteractiveWidget kind=kind config=config cell_id=cid all_cells=cells run_all_queue=run_all_queue />
+                            <ViewOnlyInteractiveWidget kind=kind config=config cell_id=cid all_cells=cells run_all_queue=run_all_queue cell_outputs=cell_outputs />
                         }.into_any()
                     },
                 }
@@ -630,6 +631,7 @@ fn ViewOnlyInteractiveWidget(
     #[prop(into)] cell_id: String,
     all_cells: Vec<IronpadCell>,
     run_all_queue: RwSignal<Vec<String>>,
+    cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
 ) -> impl IntoView {
     let cfg: serde_json::Value = serde_json::from_str(&config).unwrap_or_default();
     let label = cfg
@@ -643,21 +645,58 @@ fn ViewOnlyInteractiveWidget(
             let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let min = cfg.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let max = cfg.get("max").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            let step = cfg.get("step").and_then(|v| v.as_f64()).unwrap_or(1.0);
             let label_text = if label.is_empty() {
                 kind.clone()
             } else {
                 label.clone()
             };
+
+            let value = RwSignal::new(default.to_string());
+
+            #[cfg(feature = "hydrate")]
+            let on_input = {
+                let cell_id = cell_id.clone();
+                move |ev: web_sys::Event| {
+                    let new_val = leptos::prelude::event_target_value(&ev);
+                    value.set(new_val.clone());
+                    if let Ok(f) = new_val.parse::<f64>() {
+                        let bytes = bincode_encode_f64(f);
+                        update_view_cell_output(bytes, &cell_id, cell_outputs);
+                    }
+                }
+            };
+
+            #[cfg(not(feature = "hydrate"))]
+            let on_input = move |_: leptos::ev::Event| {};
+            let _ = (&cell_id, &cell_outputs);
+
             view! {
-                <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                <div class="ironpad-interactive-widget">
                     <span class="ironpad-widget-label">{label_text}</span>
-                    <input type="range" min=min.to_string() max=max.to_string() value=default.to_string() disabled=true />
-                    <span class="ironpad-widget-value">{default.to_string()}</span>
+                    <input
+                        type="range"
+                        min=min.to_string()
+                        max=max.to_string()
+                        step=step.to_string()
+                        prop:value=move || value.get()
+                        on:input=on_input
+                    />
+                    <span class="ironpad-widget-value">{move || value.get()}</span>
                 </div>
             }
             .into_any()
         }
         "dropdown" => {
+            let options: Vec<String> = cfg
+                .get("options")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
             let default = cfg
                 .get("default")
                 .and_then(|v| v.as_str())
@@ -668,10 +707,41 @@ fn ViewOnlyInteractiveWidget(
             } else {
                 label.clone()
             };
+
+            let selected = RwSignal::new(default);
+
+            #[cfg(feature = "hydrate")]
+            let on_change = {
+                let cell_id = cell_id.clone();
+                move |ev: web_sys::Event| {
+                    let new_val = leptos::prelude::event_target_value(&ev);
+                    selected.set(new_val.clone());
+                    let bytes = bincode_encode_string(&new_val);
+                    update_view_cell_output(bytes, &cell_id, cell_outputs);
+                }
+            };
+
+            #[cfg(not(feature = "hydrate"))]
+            let on_change = move |_: leptos::ev::Event| {};
+            let _ = (&cell_id, &cell_outputs);
+
             view! {
-                <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                <div class="ironpad-interactive-widget">
                     <span class="ironpad-widget-label">{label_text}</span>
-                    <span class="ironpad-widget-value">{default}</span>
+                    <select
+                        prop:value=move || selected.get()
+                        on:change=on_change
+                    >
+                        {options.into_iter().map(|opt| {
+                            let opt_val = opt.clone();
+                            let opt_selected = opt.clone();
+                            view! {
+                                <option value=opt_val selected=move || selected.get() == opt_selected>
+                                    {opt}
+                                </option>
+                            }
+                        }).collect_view()}
+                    </select>
                 </div>
             }
             .into_any()
@@ -681,10 +751,38 @@ fn ViewOnlyInteractiveWidget(
                 .get("default")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+
+            let checked = RwSignal::new(default);
+
+            #[cfg(feature = "hydrate")]
+            let on_change = {
+                let cell_id = cell_id.clone();
+                move |ev: web_sys::Event| {
+                    use wasm_bindgen::JsCast;
+                    if let Some(input) = ev
+                        .target()
+                        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                    {
+                        let new_val = input.checked();
+                        checked.set(new_val);
+                        let bytes = bincode_encode_bool(new_val);
+                        update_view_cell_output(bytes, &cell_id, cell_outputs);
+                    }
+                }
+            };
+
+            #[cfg(not(feature = "hydrate"))]
+            let on_change = move |_: leptos::ev::Event| {};
+            let _ = (&cell_id, &cell_outputs);
+
             view! {
-                <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                <div class="ironpad-interactive-widget">
                     <label>
-                        <input type="checkbox" checked=default disabled=true />
+                        <input
+                            type="checkbox"
+                            prop:checked=move || checked.get()
+                            on:change=on_change
+                        />
                         {" "}{label.clone()}
                     </label>
                 </div>
@@ -692,6 +790,11 @@ fn ViewOnlyInteractiveWidget(
             .into_any()
         }
         "text_input" => {
+            let placeholder = cfg
+                .get("placeholder")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
             let default = cfg
                 .get("default")
                 .and_then(|v| v.as_str())
@@ -702,10 +805,33 @@ fn ViewOnlyInteractiveWidget(
             } else {
                 label.clone()
             };
+
+            let text = RwSignal::new(default);
+
+            #[cfg(feature = "hydrate")]
+            let on_input = {
+                let cell_id = cell_id.clone();
+                move |ev: web_sys::Event| {
+                    let new_val = leptos::prelude::event_target_value(&ev);
+                    text.set(new_val.clone());
+                    let bytes = bincode_encode_string(&new_val);
+                    update_view_cell_output(bytes, &cell_id, cell_outputs);
+                }
+            };
+
+            #[cfg(not(feature = "hydrate"))]
+            let on_input = move |_: leptos::ev::Event| {};
+            let _ = (&cell_id, &cell_outputs);
+
             view! {
-                <div class="ironpad-interactive-widget ironpad-interactive-widget--readonly">
+                <div class="ironpad-interactive-widget">
                     <span class="ironpad-widget-label">{label_text}</span>
-                    <span class="ironpad-widget-value">{default}</span>
+                    <input
+                        type="text"
+                        placeholder=placeholder
+                        prop:value=move || text.get()
+                        on:input=on_input
+                    />
                 </div>
             }
             .into_any()
@@ -756,6 +882,36 @@ fn ViewOnlyInteractiveWidget(
     };
 
     content
+}
+
+// ── Bincode encoding helpers (hydrate-only) ─────────────────────────────────
+
+#[cfg(feature = "hydrate")]
+fn bincode_encode_f64(value: f64) -> Vec<u8> {
+    bincode::encode_to_vec(value, bincode::config::standard()).expect("f64 encoding cannot fail")
+}
+
+#[cfg(feature = "hydrate")]
+fn bincode_encode_bool(value: bool) -> Vec<u8> {
+    bincode::encode_to_vec(value, bincode::config::standard()).expect("bool encoding cannot fail")
+}
+
+#[cfg(feature = "hydrate")]
+fn bincode_encode_string(value: &str) -> Vec<u8> {
+    bincode::encode_to_vec(value, bincode::config::standard()).expect("String encoding cannot fail")
+}
+
+#[cfg(feature = "hydrate")]
+fn update_view_cell_output(
+    new_bytes: Vec<u8>,
+    cell_id: &str,
+    cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
+) {
+    cell_outputs.update(|map| {
+        if let Some(data) = map.get_mut(cell_id) {
+            data.bytes = new_bytes;
+        }
+    });
 }
 
 /// Minimal HTML entity escaping for text content.

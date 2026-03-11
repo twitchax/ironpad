@@ -96,7 +96,7 @@ pub(super) fn persist_notebook(state: &NotebookState) {
             nb.updated_at = chrono::Utc::now();
             state
                 .notebook
-                .update(|existing| *existing = Some(nb.clone()));
+                .update_untracked(|existing| *existing = Some(nb.clone()));
             leptos::task::spawn_local(async move {
                 crate::storage::client::save_notebook(&nb).await;
             });

@@ -106,6 +106,12 @@ impl TypeTag for Slider {
     }
 }
 
+impl serde::Serialize for Slider {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.default.serialize(serializer)
+    }
+}
+
 // ── Dropdown ─────────────────────────────────────────────────────────────────
 
 /// Builder for a dropdown select widget producing a `String` value.
@@ -180,6 +186,12 @@ impl TypeTag for Dropdown {
     }
 }
 
+impl serde::Serialize for Dropdown {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.default.serialize(serializer)
+    }
+}
+
 // ── Checkbox ─────────────────────────────────────────────────────────────────
 
 /// Builder for a checkbox widget producing a `bool` value.
@@ -239,6 +251,12 @@ impl IntoPanels for Checkbox {
 impl TypeTag for Checkbox {
     fn type_tag() -> String {
         "bool".into()
+    }
+}
+
+impl serde::Serialize for Checkbox {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.default.serialize(serializer)
     }
 }
 
@@ -311,6 +329,12 @@ impl IntoPanels for TextInput {
 impl TypeTag for TextInput {
     fn type_tag() -> String {
         "String".into()
+    }
+}
+
+impl serde::Serialize for TextInput {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.default.serialize(serializer)
     }
 }
 
@@ -399,6 +423,12 @@ impl TypeTag for Number {
     }
 }
 
+impl serde::Serialize for Number {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.default.serialize(serializer)
+    }
+}
+
 // ── Switch ───────────────────────────────────────────────────────────────────
 
 /// Builder for a toggle switch widget producing a `bool` value.
@@ -461,6 +491,12 @@ impl TypeTag for Switch {
     }
 }
 
+impl serde::Serialize for Switch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.default.serialize(serializer)
+    }
+}
+
 // ── Button ───────────────────────────────────────────────────────────────────
 
 /// Builder for a button widget that acts as a trigger (no data output).
@@ -510,6 +546,12 @@ impl IntoPanels for Button {
 impl TypeTag for Button {
     fn type_tag() -> String {
         "()".into()
+    }
+}
+
+impl serde::Serialize for Button {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ().serialize(serializer)
     }
 }
 
@@ -887,5 +929,45 @@ mod tests {
         assert_eq!(output.type_tag.as_deref(), Some("f64"));
         let cfg = assert_interactive(&output, "number");
         assert!((cfg["min"].as_f64().unwrap() - (-10.0)).abs() < f64::EPSILON);
+    }
+
+    // ── Serialize / tuple tests ──────────────────────────────────────────
+
+    #[test]
+    fn slider_serialize_matches_from_bytes() {
+        let s = slider(0.0, 100.0).default_value(42.0);
+        let expected = encode_bincode(&s.default);
+        let actual = encode_bincode(&s);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn tuple_slider_button_produces_valid_cell_output() {
+        let s = slider(0.0, 100.0).default_value(25.0);
+        let b = button("Go");
+        let output = CellOutput::from((s, b));
+
+        assert_eq!(output.type_tag.as_deref(), Some("(f64, ())"));
+
+        let (decoded, _): ((f64, ()), _) =
+            bincode::serde::decode_from_slice(&output.bytes, bincode::config::standard())
+                .expect("decode (f64, ())");
+        assert!((decoded.0 - 25.0).abs() < f64::EPSILON);
+        assert_eq!(decoded.1, ());
+    }
+
+    #[test]
+    fn tuple_slider_dropdown_produces_valid_cell_output() {
+        let s = slider(0.0, 10.0).default_value(3.0);
+        let d = dropdown(&["red", "green", "blue"]);
+        let output = CellOutput::from((s, d));
+
+        assert_eq!(output.type_tag.as_deref(), Some("(f64, String)"));
+
+        let (decoded, _): ((f64, String), _) =
+            bincode::serde::decode_from_slice(&output.bytes, bincode::config::standard())
+                .expect("decode (f64, String)");
+        assert!((decoded.0 - 3.0).abs() < f64::EPSILON);
+        assert_eq!(decoded.1, "red");
     }
 }
