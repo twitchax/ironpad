@@ -133,24 +133,6 @@ pub fn ViewOnlyNotebook(
         }
     };
 
-    // ── Theme toggle state ──────────────────────────────────────────────
-
-    let is_light_theme = RwSignal::new(false);
-
-    #[cfg(feature = "hydrate")]
-    {
-        if let Some(window) = web_sys::window() {
-            let stored = window
-                .local_storage()
-                .ok()
-                .flatten()
-                .and_then(|ls| ls.get_item("ironpad-theme").ok().flatten());
-            if stored.as_deref() == Some("light") {
-                is_light_theme.set(true);
-            }
-        }
-    }
-
     view! {
         <div class="view-only-notebook">
             <div class="view-only-toolbar">
@@ -161,64 +143,6 @@ pub fn ViewOnlyNotebook(
                     disabled=move || running_all.get()
                 >
                     {move || if running_all.get() { "⏳ Running…" } else { "▶▶ Run All" }}
-                </button>
-                <button
-                    class="ironpad-toolbar-dropdown-toggle"
-                    title="Toggle light/dark theme"
-                    on:click=move |_| {
-                        #[cfg(feature = "hydrate")]
-                        {
-                            use wasm_bindgen::JsCast as _;
-
-                            let new_light = !is_light_theme.get_untracked();
-                            is_light_theme.set(new_light);
-                            if let Some(doc) = web_sys::window()
-                                .and_then(|w| w.document())
-                            {
-                                if let Some(html) = doc.document_element() {
-                                    if new_light {
-                                        let _ = html.set_attribute("data-theme", "light");
-                                    } else {
-                                        let _ = html.remove_attribute("data-theme");
-                                    }
-                                }
-                            }
-                            if let Some(ls) = web_sys::window()
-                                .and_then(|w| w.local_storage().ok().flatten())
-                            {
-                                let _ = ls.set_item(
-                                    "ironpad-theme",
-                                    if new_light { "light" } else { "dark" },
-                                );
-                            }
-                            if let Some(monaco) = js_sys::Reflect::get(
-                                &web_sys::window().unwrap(),
-                                &"IronpadMonaco".into(),
-                            )
-                            .ok()
-                            .filter(|v| !v.is_undefined())
-                            {
-                                if let Ok(set_theme) =
-                                    js_sys::Reflect::get(&monaco, &"setTheme".into())
-                                {
-                                    if set_theme.is_function() {
-                                        let f: js_sys::Function = set_theme.unchecked_into();
-                                        let theme_name = if new_light {
-                                            "ironpad-light"
-                                        } else {
-                                            "ironpad-dark"
-                                        };
-                                        let _ = f.call1(
-                                            &wasm_bindgen::JsValue::NULL,
-                                            &theme_name.into(),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                >
-                    {move || if is_light_theme.get() { "☀" } else { "🌙" }}
                 </button>
                 <button class="fork-button" on:click=fork_action>
                     {"🍴 "}{fork_label_clone}
