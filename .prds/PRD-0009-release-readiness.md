@@ -1,7 +1,7 @@
 ---
 id: PRD-0009
 title: "Release Readiness: CI, Docker, Coverage, Fly.io, README"
-status: draft
+status: done
 owner: "Aaron Roney"
 created: 2026-03-12
 updated: 2026-03-12
@@ -52,49 +52,49 @@ tasks:
 - id: T-001
   title: "Create GitHub Actions CI workflow"
   priority: 1
-  status: todo
+  status: done
   notes: "Create .github/workflows/build.yml. Trigger: on [push]. Jobs: (1) test — checkout, dtolnay/rust-toolchain@stable, rust-cache, install cargo-make + cargo-nextest + wasm32 target, run cargo make ci. (2) codecov — needs test, install cargo-llvm-cov, run coverage, upload via codecov/codecov-action@v5 with CODECOV_TOKEN secret."
 
 - id: T-002
   title: "Add Docker build + push job to CI workflow"
   priority: 1
-  status: todo
+  status: done
   notes: "Add docker job to build.yml. Condition: if github.ref == 'refs/heads/main'. Steps: checkout, login to ghcr.io via docker/login-action, build with docker/build-push-action, push to ghcr.io/twitchax/ironpad:latest + ghcr.io/twitchax/ironpad:sha-$GITHUB_SHA. Use buildx for layer caching."
 
 - id: T-003
   title: "Add cargo make coverage task"
   priority: 1
-  status: todo
+  status: done
   notes: "Add coverage task to Makefile.toml. Installs cargo-llvm-cov if missing, runs cargo llvm-cov nextest --workspace --lcov --output-path coverage.lcov. Also add install-coverage-tools dependency task."
 
 - id: T-004
   title: "Create Fly.io deployment config"
   priority: 2
-  status: todo
+  status: done
   notes: "Create .hidden/fly.toml with app name twitchax-ironpad, region sea, internal_port 3111, force_https, auto_stop_machines stop, auto_start_machines true, min_machines_running 0. Dockerfile reference: docker/Dockerfile. Add .hidden/ to .gitignore. Include persistent volume mount for /data and /cache."
 
 - id: T-005
   title: "Update README with badges and quick-start"
   priority: 2
-  status: todo
+  status: done
   notes: "Add badges: CI status (GitHub Actions), codecov coverage, license. Add Quick Start section with Docker run command (docker run -p 3111:3111 ghcr.io/twitchax/ironpad:latest). Keep existing architecture docs intact."
 
 - id: T-006
   title: "Add .gitignore entries for new artifacts"
   priority: 1
-  status: todo
+  status: done
   notes: "Ensure .gitignore includes: .hidden/, coverage.lcov, *.lcov. Check existing .gitignore and only add missing entries."
 
 - id: T-007
   title: "Add LICENSE file"
   priority: 2
-  status: todo
+  status: done
   notes: "Add MIT LICENSE file if not already present. Reference in README badges."
 
 - id: T-008
   title: "Optimize Dockerfile for CI caching"
   priority: 3
-  status: todo
+  status: done
   notes: "Consider adding DOCKER_BUILDKIT=1 inline cache hints to Dockerfile for faster CI rebuilds. Add .dockerignore to exclude target/, node_modules/, test-results/, playwright-report/ from build context."
 ---
 
