@@ -1,17 +1,41 @@
 # ironpad — Interactive Rust Notebooks
 
+[![Build and Test](https://github.com/twitchax/ironpad/actions/workflows/build.yml/badge.svg)](https://github.com/twitchax/ironpad/actions/workflows/build.yml)
+[![codecov](https://codecov.io/gh/twitchax/ironpad/graph/badge.svg?token=PLACEHOLDER)](https://codecov.io/gh/twitchax/ironpad)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 **ironpad** is a full-stack web application for writing, compiling, and executing Rust code in an interactive notebook environment. Users write Rust cells that compile to WebAssembly, execute in the browser, and communicate through a bincode-serialized data pipeline.
+
+## Quick Start
+
+The fastest way to run ironpad is with Docker:
+
+```bash
+docker run -p 3111:3111 ghcr.io/twitchax/ironpad:latest
+```
+
+Then open [http://localhost:3111](http://localhost:3111) in your browser.
+
+For persistent data (notebooks and compiled cell cache):
+
+```bash
+docker run -p 3111:3111 \
+  -v ironpad-data:/data \
+  -v ironpad-cache:/cache \
+  ghcr.io/twitchax/ironpad:latest
+```
 
 ## Table of Contents
 
-1. [Architecture Overview](#architecture-overview)
-2. [Workspace Structure](#workspace-structure)
-3. [Core Components](#core-components)
-4. [Compilation Pipeline](#compilation-pipeline)
-5. [Frontend UI](#frontend-ui)
-6. [Server & Deployment](#server--deployment)
-7. [Development Guide](#development-guide)
-8. [Project Layout](#project-layout)
+1. [Quick Start](#quick-start)
+2. [Architecture Overview](#architecture-overview)
+3. [Workspace Structure](#workspace-structure)
+4. [Core Components](#core-components)
+5. [Compilation Pipeline](#compilation-pipeline)
+6. [Frontend UI](#frontend-ui)
+7. [Server & Deployment](#server--deployment)
+8. [Development Guide](#development-guide)
+9. [Project Layout](#project-layout)
 
 ---
 

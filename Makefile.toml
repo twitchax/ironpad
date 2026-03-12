@@ -164,6 +164,24 @@ npx playwright test
 description = "UAT: ci + integration tests + playwright (the one true gate)"
 dependencies = ["ci", "test-integration", "playwright"]
 
+# ── Coverage ─────────────────────────────────────────────────────────────────
+
+[tasks.coverage]
+description = "Generate code coverage report via cargo-llvm-cov"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v cargo-llvm-cov >/dev/null 2>&1 || {
+    echo "==> Installing cargo-llvm-cov..."
+    cargo install cargo-llvm-cov
+}
+
+echo "==> Running coverage..."
+cargo llvm-cov nextest --workspace --lcov --output-path coverage.lcov
+echo "==> Coverage report written to coverage.lcov"
+'''
+
 # ── Docker ───────────────────────────────────────────────────────────────────
 
 [tasks.docker-build]

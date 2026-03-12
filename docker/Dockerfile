@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # ── ironpad Dockerfile ────────────────────────────────────────────────────────
 #
 # Multi-stage build:

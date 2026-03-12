@@ -26,3 +26,10 @@ playwright-report/
 
 # Misc
 *.log
+
+# Fly.io (local deployment config)
+.hidden/
+
+# Coverage
+coverage.lcov
+*.lcov
