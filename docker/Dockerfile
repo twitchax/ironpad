@@ -59,8 +59,8 @@ COPY crates/ironpad-cell /app/crates/ironpad-cell
 # Copy the Leptos configuration so the server can find site assets.
 COPY Cargo.toml /app/Cargo.toml
 
-ENV IRONPAD_DATA_DIR=/data
-ENV IRONPAD_CACHE_DIR=/cache
+ENV IRONPAD_DATA_DIR=/ironpad/data
+ENV IRONPAD_CACHE_DIR=/ironpad/cache
 ENV IRONPAD_PORT=3111
 ENV IRONPAD_CELL_PATH=/app/crates/ironpad-cell
 ENV RUST_LOG=info
@@ -68,6 +68,6 @@ ENV LEPTOS_SITE_ROOT=/app/target/site
 
 EXPOSE 3111
 
-VOLUME ["/data", "/cache"]
+VOLUME ["/ironpad"]
 
 CMD ["/app/ironpad-server"]
