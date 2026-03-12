@@ -1,7 +1,10 @@
+#[cfg(feature = "hydrate")]
 use std::collections::HashMap;
 
+#[cfg(feature = "hydrate")]
 use ironpad_common::{CellType, IronpadNotebook};
 
+#[cfg(feature = "hydrate")]
 use crate::components::markdown_cell::render_markdown;
 
 // ── Display panels ──────────────────────────────────────────────────────────
@@ -26,6 +29,7 @@ pub(super) enum DisplayPanel {
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
 
+#[cfg(feature = "hydrate")]
 const EXPORT_CSS: &str = r#"
 :root { color-scheme: dark; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -100,6 +104,7 @@ pre.code-block {
 "#;
 
 /// Build a self-contained HTML document from a notebook and its cached display texts.
+#[cfg(feature = "hydrate")]
 pub(super) fn build_export_html(
     nb: &IronpadNotebook,
     display_texts: &HashMap<String, String>,
@@ -210,6 +215,7 @@ pub(super) fn build_export_html(
 }
 
 /// Render an interactive widget as a static HTML representation for export.
+#[cfg(feature = "hydrate")]
 fn render_interactive_static(html: &mut String, kind: &str, config: &str) {
     let cfg: serde_json::Value = serde_json::from_str(config).unwrap_or_default();
     let label = cfg.get("label").and_then(|v| v.as_str()).unwrap_or("");

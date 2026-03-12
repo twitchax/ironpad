@@ -78,6 +78,7 @@ mod js {
 /// all operations are silent no-ops.
 #[derive(Clone, Copy)]
 pub struct MonacoEditorHandle {
+    #[allow(dead_code)]
     editor_id: RwSignal<Option<f64>>,
 }
 

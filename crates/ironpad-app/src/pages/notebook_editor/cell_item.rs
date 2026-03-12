@@ -10,9 +10,9 @@ use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::compile_cell;
 
 use super::cell_output::{CellOutputPanel, CompileResultPanel};
-use super::state::{
-    persist_notebook, sync_cells_from_notebook, CellOutputData, CellStatus, NotebookState,
-};
+use super::state::{persist_notebook, sync_cells_from_notebook, CellStatus, NotebookState};
+#[cfg(feature = "hydrate")]
+use super::state::CellOutputData;
 
 // ── Cell item ───────────────────────────────────────────────────────────────
 
@@ -29,8 +29,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_delete = cell.id.clone();
     let cell_id_for_delete_cleanup = cell.id.clone();
     let cell_id_for_focus = cell.id.clone();
+    #[cfg(feature = "hydrate")]
     let cell_id_for_flush = cell.id.clone();
+    #[cfg(feature = "hydrate")]
     let cell_id_for_stale_src = cell.id.clone();
+    #[cfg(feature = "hydrate")]
     let cell_id_for_stale_toml = cell.id.clone();
     let cell_id_for_stale_header = cell.id.clone();
     let cell_id_for_output = cell.id.clone();
@@ -429,7 +432,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
         // Collect previous Code cell outputs for the I/O pipeline.
         // Markdown cells are skipped — they produce no output.
-        let (input_bytes, previous_cell_types) = {
+        let (_input_bytes, previous_cell_types) = {
             let cells = state.cells.get_untracked();
             let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
             let outputs = state.cell_outputs.get_untracked();
@@ -552,7 +555,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         let exec_start = js_sys::Date::now();
                                         match executor::execute_cell(
                                             &cell_id_for_exec,
-                                            &input_bytes,
+                                            &_input_bytes,
                                         )
                                         .await
                                         {

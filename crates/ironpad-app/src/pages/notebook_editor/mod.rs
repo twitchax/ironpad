@@ -21,9 +21,9 @@ use self::cell_item::CellItem;
 use self::shared_deps::SharedDepsPanel;
 use self::shared_source::SharedSourcePanel;
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
-use self::state::{
-    add_cell_to_notebook, persist_notebook, sync_cells_from_notebook, NotebookState,
-};
+use self::state::{add_cell_to_notebook, NotebookState};
+#[cfg(feature = "hydrate")]
+use self::state::{persist_notebook, sync_cells_from_notebook};
 
 // ── Notebook editor page ────────────────────────────────────────────────────
 
@@ -406,7 +406,7 @@ fn NotebookContent() -> impl IntoView {
                         "☰"
                     </button>
                     {move || {
-                        let navigate = navigate.clone();
+                        let _navigate = navigate.clone();
                         if hamburger_open.get() {
                             view! {
                                 <div class="ironpad-toolbar-dropdown-menu">
@@ -547,7 +547,7 @@ fn NotebookContent() -> impl IntoView {
                                                     )
                                                     .unwrap_or(false);
                                                 if confirmed {
-                                                    let navigate = navigate.clone();
+                                                    let navigate = _navigate.clone();
                                                     leptos::task::spawn_local(async move {
                                                         crate::storage::client::delete_notebook(&id)
                                                             .await;

@@ -6,11 +6,14 @@ use std::collections::HashMap;
 
 use leptos::prelude::*;
 
-use ironpad_common::{CellType, CompileRequest, ExecutionResult, IronpadCell, IronpadNotebook};
+use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
+#[cfg(feature = "hydrate")]
+use ironpad_common::CompileRequest;
 
 use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
+#[cfg(feature = "hydrate")]
 use crate::server_fns::compile_cell;
 
 // ── Display panels ──────────────────────────────────────────────────────────
@@ -37,6 +40,7 @@ enum DisplayPanel {
 
 /// Cached output from a cell execution, used for piping data to downstream cells.
 #[derive(Clone)]
+#[allow(dead_code)]
 struct CellOutputData {
     bytes: Vec<u8>,
     type_tag: Option<String>,
@@ -228,9 +232,9 @@ fn ViewOnlyCodeCell(
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let all_cells = StoredValue::new(all_cells);
-    let shared_cargo_toml = StoredValue::new(shared_cargo_toml);
-    let shared_source = StoredValue::new(shared_source);
-    let notebook_id = StoredValue::new(notebook_id);
+    let _shared_cargo_toml = StoredValue::new(shared_cargo_toml);
+    let _shared_source = StoredValue::new(shared_source);
+    let _notebook_id = StoredValue::new(notebook_id);
 
     let compiling = RwSignal::new(false);
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
@@ -271,7 +275,7 @@ fn ViewOnlyCodeCell(
 
     // ── Compile + execute flow, driven by `run_trigger` ─────────────────
 
-    let cell_id_for_exec = StoredValue::new(cell.with_value(|c| c.id.clone()));
+    let _cell_id_for_exec = StoredValue::new(cell.with_value(|c| c.id.clone()));
 
     Effect::new(move || {
         let gen = run_trigger.get();
@@ -290,7 +294,7 @@ fn ViewOnlyCodeCell(
 
             leptos::task::spawn_local(async move {
                 let cell_data = cell.get_value();
-                let cell_id = cell_id_for_exec.get_value();
+                let cell_id = _cell_id_for_exec.get_value();
                 let cells = all_cells.get_value();
                 let my_idx = cells.iter().position(|c| c.id == cell_data.id).unwrap_or(0);
 
@@ -323,13 +327,13 @@ fn ViewOnlyCodeCell(
                 }
 
                 let request = CompileRequest {
-                    notebook_id: notebook_id.get_value(),
+                    notebook_id: _notebook_id.get_value(),
                     cell_id: cell_data.id.clone(),
                     source: cell_data.source.clone(),
                     cargo_toml: cell_data.cargo_toml.clone().unwrap_or_default(),
                     previous_cell_types: types,
-                    shared_cargo_toml: shared_cargo_toml.get_value(),
-                    shared_source: shared_source.get_value(),
+                    shared_cargo_toml: _shared_cargo_toml.get_value(),
+                    shared_source: _shared_source.get_value(),
                 };
 
                 let mut had_error = false;
@@ -633,6 +637,7 @@ fn ViewOnlyInteractiveWidget(
     run_all_queue: RwSignal<Vec<String>>,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
 ) -> impl IntoView {
+    let _ = &all_cells;
     let cfg: serde_json::Value = serde_json::from_str(&config).unwrap_or_default();
     let label = cfg
         .get("label")

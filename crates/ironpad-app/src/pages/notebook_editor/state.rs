@@ -13,6 +13,7 @@ pub(super) enum CellStatus {
     Idle,
     Queued,
     Compiling,
+    #[allow(dead_code)]
     Running,
     Success,
     Error,
@@ -49,6 +50,7 @@ pub(super) struct NotebookState {
     /// Used to pipe cell N's output as cell N+1's input.
     pub(super) cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     /// Triggers all cells to immediately flush their content to the server.
+    #[allow(dead_code)]
     pub(super) save_generation: RwSignal<u64>,
     /// Ordered queue of cell IDs for "Run All Below" sequential execution.
     /// The cell at position [0] is the one currently being executed.
@@ -64,6 +66,7 @@ pub(super) struct NotebookState {
     pub(super) cell_display_texts: RwSignal<HashMap<String, String>>,
     /// Per-cell source editor handles, keyed by cell ID.
     /// Used for cross-cell focus (e.g. Shift+Enter → advance to next cell).
+    #[allow(dead_code)]
     pub(super) editor_handles: RwSignal<HashMap<String, MonacoEditorHandle>>,
     /// Whether the notebook is in view mode (code hidden, output-focused).
     pub(super) is_view_mode: RwSignal<bool>,
@@ -89,6 +92,7 @@ pub(super) fn sync_cells_from_notebook(state: &NotebookState) {
 }
 
 /// Persists the current notebook to IndexedDB (client-only).
+#[allow(unused_variables)]
 pub(super) fn persist_notebook(state: &NotebookState) {
     #[cfg(feature = "hydrate")]
     {

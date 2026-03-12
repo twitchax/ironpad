@@ -1,6 +1,8 @@
 use ironpad_common::{IronpadNotebook, PublicNotebookSummary};
 use leptos::prelude::*;
-use leptos_router::{hooks::use_navigate, NavigateOptions};
+use leptos_router::hooks::use_navigate;
+#[cfg(feature = "hydrate")]
+use leptos_router::NavigateOptions;
 use thaw::{Button, ButtonAppearance, Card, CardHeader, Skeleton, SkeletonItem};
 
 use crate::components::app_layout::LayoutContext;
@@ -226,6 +228,7 @@ fn NotebookCard(
     item: NotebookListItem,
     private_notebooks: RwSignal<Vec<IronpadNotebook>>,
 ) -> impl IntoView {
+    let _ = &private_notebooks;
     match item {
         NotebookListItem::Private {
             id,
