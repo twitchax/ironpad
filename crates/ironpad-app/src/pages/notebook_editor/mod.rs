@@ -241,6 +241,29 @@ fn NotebookContent() -> impl IntoView {
     let hamburger_open = RwSignal::new(false);
     let gear_open = RwSignal::new(false);
 
+    // ── Theme toggle state ──────────────────────────────────────────────
+
+    let is_light_theme = RwSignal::new(false);
+
+    #[cfg(feature = "hydrate")]
+    {
+        // Read persisted theme from localStorage on mount.
+        if let Some(window) = web_sys::window() {
+            let stored = window
+                .local_storage()
+                .ok()
+                .flatten()
+                .and_then(|ls| ls.get_item("ironpad-theme").ok().flatten());
+            if stored.as_deref() == Some("light") {
+                is_light_theme.set(true);
+            }
+        }
+    }
+
+    // ── Cells container ref for SortableJS ──────────────────────────────
+
+    let cells_container_ref = NodeRef::new();
+
     // ── Close button navigation ─────────────────────────────────────────
 
     let navigate = use_navigate();
@@ -274,6 +297,78 @@ fn NotebookContent() -> impl IntoView {
             .add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())
             .unwrap();
         click_closure.forget();
+    }
+
+    // ── SortableJS initialization ───────────────────────────────────────
+
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::prelude::*;
+
+        let cells_ref = cells_container_ref;
+        Effect::new(move || {
+            let Some(el) = cells_ref.get() else { return };
+            let el: JsValue = JsValue::from(el);
+
+            // Only init in edit mode.
+            if state.is_view_mode.get_untracked() {
+                return;
+            }
+
+            let sortable_class =
+                js_sys::Reflect::get(&web_sys::window().unwrap(), &"Sortable".into()).ok();
+            let Some(sortable_class) = sortable_class.filter(|v| v.is_function()) else {
+                return;
+            };
+
+            let options = js_sys::Object::new();
+            let _ =
+                js_sys::Reflect::set(&options, &"handle".into(), &".ironpad-drag-handle".into());
+            let _ = js_sys::Reflect::set(&options, &"animation".into(), &150.into());
+            let _ = js_sys::Reflect::set(
+                &options,
+                &"ghostClass".into(),
+                &"ironpad-sortable-ghost".into(),
+            );
+
+            let on_end = Closure::<dyn Fn(JsValue)>::new(move |evt: JsValue| {
+                let old_index = js_sys::Reflect::get(&evt, &"oldIndex".into())
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as usize);
+                let new_index = js_sys::Reflect::get(&evt, &"newIndex".into())
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as usize);
+
+                if let (Some(old_idx), Some(new_idx)) = (old_index, new_index) {
+                    if old_idx != new_idx {
+                        state.notebook.update(|nb_opt| {
+                            if let Some(nb) = nb_opt {
+                                let cell = nb.cells.remove(old_idx);
+                                nb.cells.insert(new_idx, cell);
+                                for (i, c) in nb.cells.iter_mut().enumerate() {
+                                    c.order = i as u32;
+                                }
+                            }
+                        });
+                        sync_cells_from_notebook(&state);
+                        persist_notebook(&state);
+                    }
+                }
+            });
+            let _ =
+                js_sys::Reflect::set(&options, &"onEnd".into(), on_end.as_ref().unchecked_ref());
+            on_end.forget();
+
+            let create_fn = js_sys::Reflect::get(&sortable_class, &"create".into())
+                .ok()
+                .filter(|v| v.is_function());
+            if let Some(create_fn) = create_fn {
+                let create_fn: js_sys::Function = create_fn.unchecked_into();
+                let _ = create_fn.call2(&sortable_class, &el, &options);
+            }
+        });
     }
 
     // ── Auto-run all Code cells when entering view mode ────────────────
@@ -546,6 +641,64 @@ fn NotebookContent() -> impl IntoView {
                     }}
                 </div>
 
+                // ── Theme toggle (🌙/☀) ────────────────────────────────
+                <button
+                    class="ironpad-toolbar-dropdown-toggle"
+                    title="Toggle light/dark theme"
+                    on:click=move |_| {
+                        #[cfg(feature = "hydrate")]
+                        {
+                            use wasm_bindgen::JsCast as _;
+
+                            let new_light = !is_light_theme.get_untracked();
+                            is_light_theme.set(new_light);
+                            if let Some(doc) = web_sys::window()
+                                .and_then(|w| w.document())
+                            {
+                                if let Some(html) = doc.document_element() {
+                                    if new_light {
+                                        let _ = html.set_attribute("data-theme", "light");
+                                    } else {
+                                        let _ = html.remove_attribute("data-theme");
+                                    }
+                                }
+                            }
+                            if let Some(ls) = web_sys::window()
+                                .and_then(|w| w.local_storage().ok().flatten())
+                            {
+                                let _ = ls.set_item(
+                                    "ironpad-theme",
+                                    if new_light { "light" } else { "dark" },
+                                );
+                            }
+                            // Switch Monaco editor theme.
+                            if let Some(monaco) = js_sys::Reflect::get(
+                                &web_sys::window().unwrap(),
+                                &"IronpadMonaco".into(),
+                            )
+                            .ok()
+                            .filter(|v| !v.is_undefined())
+                            {
+                                if let Ok(set_theme) =
+                                    js_sys::Reflect::get(&monaco, &"setTheme".into())
+                                {
+                                    if set_theme.is_function() {
+                                        let f: js_sys::Function = set_theme.unchecked_into();
+                                        let theme_name = if new_light {
+                                            "ironpad-light"
+                                        } else {
+                                            "ironpad-dark"
+                                        };
+                                        let _ = f.call1(&wasm_bindgen::JsValue::NULL, &theme_name.into());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                >
+                    {move || if is_light_theme.get() { "☀" } else { "🌙" }}
+                </button>
+
                 // ── Close button (✕) ────────────────────────────────────
                 <button
                     class="ironpad-toolbar-close"
@@ -576,7 +729,7 @@ fn NotebookContent() -> impl IntoView {
             }
         }}
 
-        <div class="ironpad-cell-list">
+        <div class="ironpad-cell-list ironpad-cells-container" node_ref=cells_container_ref>
             <Show when=move || !state.is_view_mode.get()>
                 <AddCellButton after_cell_id=None on_add=add_cell_cb />
             </Show>

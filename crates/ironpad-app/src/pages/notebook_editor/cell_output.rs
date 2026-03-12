@@ -249,12 +249,12 @@ pub(super) fn CellOutputPanel(
                                 {if !output_bytes.is_empty() {
                                     let hex = format_hex_dump(&output_bytes);
                                     view! {
-                                        <div class="ironpad-output-bytes">
-                                            <div class="ironpad-output-bytes-header">
+                                        <details class="ironpad-output-bytes">
+                                            <summary class="ironpad-output-bytes-header">
                                                 {format!("Raw output ({byte_count} bytes)")}
-                                            </div>
+                                            </summary>
                                             <pre class="ironpad-output-hex-dump">{hex}</pre>
-                                        </div>
+                                        </details>
                                     }.into_any()
                                 } else {
                                     view! { <div /> }.into_any()
@@ -340,6 +340,7 @@ fn InteractiveWidget(
         "number" => render_number(&cfg, &label, cell_id, widget_ctx).into_any(),
         "switch" => render_switch(&cfg, &label, cell_id, widget_ctx).into_any(),
         "button" => render_button(&cfg, &label, cell_id, widget_ctx).into_any(),
+        "progress" => render_progress(&cfg, &label).into_any(),
         _ => view! {
             <div class="ironpad-interactive-widget">
                 <span class="ironpad-widget-label">{format!("[unknown widget: {kind}]")}</span>
@@ -727,6 +728,38 @@ fn render_button(
             >
                 {button_label}
             </button>
+        </div>
+    }
+}
+
+fn render_progress(cfg: &serde_json::Value, label: &str) -> impl IntoView {
+    let id = cfg
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let initial = cfg.get("initial").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let pct = initial.clamp(0.0, 100.0);
+    let width_style = format!("width: {pct}%");
+    let label_text = if label.is_empty() {
+        String::new()
+    } else {
+        label.to_owned()
+    };
+
+    view! {
+        <div class="ironpad-interactive-widget">
+            {if !label_text.is_empty() {
+                Some(view! { <span class="ironpad-widget-label">{label_text}</span> })
+            } else {
+                None
+            }}
+            <div class="ironpad-progress" data-progress-id={id}>
+                <div class="ironpad-progress-bar">
+                    <div class="ironpad-progress-fill" style={width_style}></div>
+                </div>
+                <span class="ironpad-progress-value">{format!("{}%", pct as u32)}</span>
+            </div>
         </div>
     }
 }

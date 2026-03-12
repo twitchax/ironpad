@@ -10,16 +10,27 @@
     --ip-border-hover: #2a4a7f;
     --ip-accent: #e94560;
     --ip-accent-hover: #ff6b81;
+    --ip-accent-pressed: #c73050;
     --ip-text-primary: #eaeaea;
     --ip-text-secondary: #b0b0cc;
     --ip-text-tertiary: #8888aa;
     --ip-text-muted: #6a6a8a;
+    --ip-text-on-accent: #ffffff;
     --ip-success: #40c080;
     --ip-warning: #f0c040;
     --ip-info: #40a0f0;
+    --ip-info-hover: #70c0ff;
     --ip-error: #e94560;
     --ip-error-rgb: 233, 69, 96;
     --ip-purple: #b080f0;
+    --ip-code-string: #e8e0d0;
+    --ip-code-comment: #b0a090;
+    --ip-outline-dashed: #4a4a6a;
+    --ip-menu-disabled: #555;
+    --ip-interactive-static: #b0b0cc;
+    --ip-stale-indicator: #f0ad4e;
+    --ip-neutral-dim: #c0c0c0;
+    --ip-neutral-dimmer: #606060;
     --ip-font-mono: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', 'SF Mono', monospace;
     --ip-font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
     --ip-radius-sm: 4px;
@@ -27,6 +38,57 @@
     --ip-radius-lg: 8px;
     --ip-transition-fast: 0.15s ease;
     --ip-transition-normal: 0.2s ease;
+}
+
+/* ── Light theme overrides ─────────────────────────────────────────────── */
+
+[data-theme="light"] {
+    --ip-bg-primary: #f5f6fa;
+    --ip-bg-surface: #ffffff;
+    --ip-bg-elevated: #eef0f5;
+    --ip-border: #d0d5e0;
+    --ip-border-hover: #b0b8c8;
+    --ip-accent: #d63851;
+    --ip-accent-hover: #e94560;
+    --ip-accent-pressed: #b82e44;
+    --ip-text-primary: #1a1a2e;
+    --ip-text-secondary: #444466;
+    --ip-text-tertiary: #666688;
+    --ip-text-muted: #8888aa;
+    --ip-text-on-accent: #ffffff;
+    --ip-success: #2a9060;
+    --ip-warning: #c09030;
+    --ip-info: #3080d0;
+    --ip-info-hover: #2060b0;
+    --ip-error: #d63851;
+    --ip-error-rgb: 214, 56, 81;
+    --ip-purple: #8050d0;
+    --ip-code-string: #2a2a1e;
+    --ip-code-comment: #706050;
+    --ip-outline-dashed: #b0b8c8;
+    --ip-menu-disabled: #aaa;
+    --ip-interactive-static: #444466;
+    --ip-stale-indicator: #c09030;
+    --ip-neutral-dim: #555566;
+    --ip-neutral-dimmer: #888899;
+
+    .thaw-config-provider {
+        --colorBrandBackground: #d63851;
+        --colorBrandBackgroundHover: #e94560;
+        --colorBrandBackgroundPressed: #b82e44;
+        --colorBrandStroke1: #d63851;
+        --colorNeutralBackground1: #ffffff;
+        --colorNeutralBackground1Hover: #eef0f5;
+        --colorNeutralBackground1Pressed: #e0e2ea;
+        --colorNeutralBackground3: #f5f6fa;
+        --colorNeutralForeground1: #1a1a2e;
+        --colorNeutralForeground2: #444466;
+        --colorSubtleBackground: transparent;
+        --colorSubtleBackgroundHover: rgba(0, 0, 0, 0.06);
+        --colorSubtleBackgroundPressed: rgba(0, 0, 0, 0.04);
+        --colorNeutralStroke1: #d0d5e0;
+        --fontFamilyBase: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    }
 }
 
 /* ── Base reset & typography ────────────────────────────────────────────── */
@@ -49,8 +111,8 @@ body {
 }
 
 ::selection {
-    background: rgba(233, 69, 96, 0.3);
-    color: #fff;
+    background: rgba(var(--ip-error-rgb), 0.3);
+    color: var(--ip-text-on-accent);
 }
 
 a {
@@ -60,7 +122,7 @@ a {
 }
 
 a:hover {
-    color: #70c0ff;
+    color: var(--ip-info-hover);
     text-decoration: underline;
 }
 
@@ -82,12 +144,12 @@ a:focus-visible {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(136, 136, 170, 0.3);
+    background: rgba(var(--ip-error-rgb), 0.15);
     border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(136, 136, 170, 0.5);
+    background: rgba(var(--ip-error-rgb), 0.25);
 }
 
 ::-webkit-scrollbar-corner {
@@ -97,26 +159,26 @@ a:focus-visible {
 /* Firefox scrollbar */
 * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(136, 136, 170, 0.3) transparent;
+    scrollbar-color: rgba(var(--ip-error-rgb), 0.15) transparent;
 }
 
 /* ── Thaw component overrides ───────────────────────────────────────────── */
 
 .thaw-config-provider {
-    --colorBrandBackground: #e94560;
-    --colorBrandBackgroundHover: #ff6b81;
-    --colorBrandBackgroundPressed: #c73050;
-    --colorBrandStroke1: #e94560;
-    --colorNeutralBackground1: #16213e;
-    --colorNeutralBackground1Hover: #1e2a4a;
+    --colorBrandBackground: var(--ip-accent);
+    --colorBrandBackgroundHover: var(--ip-accent-hover);
+    --colorBrandBackgroundPressed: var(--ip-accent-pressed);
+    --colorBrandStroke1: var(--ip-accent);
+    --colorNeutralBackground1: var(--ip-bg-surface);
+    --colorNeutralBackground1Hover: var(--ip-bg-elevated);
     --colorNeutralBackground1Pressed: #0f1a30;
-    --colorNeutralBackground3: #1a1a2e;
-    --colorNeutralForeground1: #eaeaea;
-    --colorNeutralForeground2: #b0b0cc;
+    --colorNeutralBackground3: var(--ip-bg-primary);
+    --colorNeutralForeground1: var(--ip-text-primary);
+    --colorNeutralForeground2: var(--ip-text-secondary);
     --colorSubtleBackground: transparent;
     --colorSubtleBackgroundHover: rgba(255, 255, 255, 0.06);
     --colorSubtleBackgroundPressed: rgba(255, 255, 255, 0.04);
-    --colorNeutralStroke1: #0f3460;
+    --colorNeutralStroke1: var(--ip-border);
     --fontFamilyBase: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
@@ -179,8 +241,8 @@ a:focus-visible {
     padding: 0 16px;
     height: 48px;
     min-height: 48px;
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
+    background: var(--ip-bg-surface);
+    border-bottom: 1px solid var(--ip-border);
     z-index: 100;
 }
 
@@ -207,19 +269,19 @@ a:focus-visible {
 .ironpad-brand {
     font-size: 1.25rem;
     font-weight: 700;
-    color: #e94560;
+    color: var(--ip-accent);
     text-decoration: none;
     letter-spacing: 0.5px;
 }
 
 .ironpad-brand:hover {
-    color: #ff6b81;
+    color: var(--ip-accent-hover);
 }
 
 .ironpad-notebook-title {
     font-size: 0.95rem;
     font-weight: 500;
-    color: #b0b0cc;
+    color: var(--ip-text-secondary);
     max-width: 400px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -236,15 +298,15 @@ a:focus-visible {
 
 .ironpad-notebook-title--editable:hover {
     background: rgba(255, 255, 255, 0.06);
-    border-bottom-color: #0f3460;
+    border-bottom-color: var(--ip-border);
 }
 
 .ironpad-header-title-input {
     font-size: 0.95rem;
     font-weight: 500;
-    color: #eaeaea;
+    color: var(--ip-text-primary);
     background: rgba(255, 255, 255, 0.06);
-    border: 1px solid #e94560;
+    border: 1px solid var(--ip-accent);
     border-radius: 3px;
     padding: 2px 6px;
     outline: none;
@@ -269,10 +331,10 @@ a:focus-visible {
     padding: 0 16px;
     height: 28px;
     min-height: 28px;
-    background: #16213e;
-    border-top: 1px solid #0f3460;
+    background: var(--ip-bg-surface);
+    border-top: 1px solid var(--ip-border);
     font-size: 0.75rem;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     z-index: 100;
 }
 
@@ -288,7 +350,7 @@ a:focus-visible {
 }
 
 .ironpad-status-separator {
-    color: #444466;
+    color: var(--ip-text-secondary);
 }
 
 /* ── Home page ──────────────────────────────────────────────────────────── */
@@ -502,7 +564,7 @@ a:focus-visible {
 }
 
 .ironpad-error {
-    color: #e94560;
+    color: var(--ip-error);
     text-align: center;
     padding: 24px 0;
 }
@@ -528,6 +590,41 @@ a:focus-visible {
     padding: 8px 0;
     gap: 8px;
     align-items: center;
+}
+
+/* ── Run All button ──────────────────────────────────────────────────── */
+
+.ironpad-run-all-button,
+.run-all-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    background: linear-gradient(135deg, var(--ip-accent), var(--ip-accent-hover));
+    color: var(--ip-text-on-accent);
+    font-weight: 700;
+    font-size: 0.85rem;
+    font-family: var(--ip-font-sans);
+    border: none;
+    border-radius: var(--ip-radius-md);
+    cursor: pointer;
+    transition: background var(--ip-transition-fast), box-shadow var(--ip-transition-fast), transform var(--ip-transition-fast);
+
+    &:hover:not(:disabled) {
+        background: linear-gradient(135deg, var(--ip-accent-hover), var(--ip-accent));
+        box-shadow: 0 2px 12px rgba(var(--ip-error-rgb), 0.4);
+    }
+
+    &:active:not(:disabled) {
+        background: linear-gradient(135deg, var(--ip-accent-pressed), var(--ip-accent));
+        transform: translateY(1px);
+        box-shadow: none;
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
 }
 
 /* ── Shared dependencies panel ───────────────────────────────────────── */
@@ -576,31 +673,31 @@ a:focus-visible {
 
 .ironpad-cell-card {
     width: 100%;
-    background: #16213e;
-    border: 1px solid #0f3460;
+    background: var(--ip-bg-surface);
+    border: 1px solid var(--ip-border);
     border-radius: 8px;
     transition: border-color 0.2s;
 }
 
 .ironpad-cell-card:hover {
-    border-color: #2a4a7f;
+    border-color: var(--ip-border-hover);
 }
 
 .ironpad-cell-card--active {
-    border-color: #e94560;
+    border-color: var(--ip-accent);
 }
 
 .ironpad-cell-card--markdown {
-    border-left: 3px solid #40a0f0;
+    border-left: 3px solid var(--ip-info);
 }
 
 .ironpad-cell-card--markdown.ironpad-cell-card--active {
-    border-color: #e94560;
-    border-left: 3px solid #40a0f0;
+    border-color: var(--ip-accent);
+    border-left: 3px solid var(--ip-info);
 }
 
 .ironpad-cell-type-badge--markdown {
-    color: #40a0f0;
+    color: var(--ip-info);
     font-size: 0.75rem;
 }
 
@@ -615,7 +712,7 @@ a:focus-visible {
     flex-shrink: 0;
     background: transparent;
     border: none;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     cursor: pointer;
     font-size: 0.85rem;
     padding: 2px 4px;
@@ -625,14 +722,14 @@ a:focus-visible {
 }
 
 .ironpad-cell-collapse-btn:hover {
-    color: #eaeaea;
+    color: var(--ip-text-primary);
     background: rgba(255, 255, 255, 0.08);
 }
 
 .ironpad-cell-order {
     font-size: 0.8rem;
     font-weight: 600;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     flex-shrink: 0;
     font-family: monospace;
 }
@@ -641,7 +738,7 @@ a:focus-visible {
     flex: 1 1 auto;
     font-size: 0.9rem;
     font-weight: 500;
-    color: #b0b0cc;
+    color: var(--ip-text-secondary);
     background: transparent;
     border: none;
     border-bottom: 1px solid transparent;
@@ -651,11 +748,11 @@ a:focus-visible {
 }
 
 .ironpad-cell-label-input:focus {
-    border-bottom-color: #e94560;
+    border-bottom-color: var(--ip-accent);
 }
 
 .ironpad-cell-label-input:hover {
-    border-bottom-color: #0f3460;
+    border-bottom-color: var(--ip-border);
 }
 
 .ironpad-cell-actions {
@@ -686,8 +783,8 @@ a:focus-visible {
     right: 0;
     z-index: 100;
     min-width: 160px;
-    background: #1a1a2e;
-    border: 1px solid #0f3460;
+    background: var(--ip-bg-primary);
+    border: 1px solid var(--ip-border);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     padding: 4px 0;
@@ -699,7 +796,7 @@ a:focus-visible {
     padding: 8px 14px;
     background: transparent;
     border: none;
-    color: #eaeaea;
+    color: var(--ip-text-primary);
     font-size: 0.85rem;
     text-align: left;
     cursor: pointer;
@@ -711,12 +808,12 @@ a:focus-visible {
 }
 
 .ironpad-cell-menu-item:disabled {
-    color: #555;
+    color: var(--ip-menu-disabled);
     cursor: not-allowed;
 }
 
 .ironpad-cell-menu-item--danger {
-    color: #e94560;
+    color: var(--ip-error);
 }
 
 .ironpad-cell-menu-item--danger:hover:not(:disabled) {
@@ -726,7 +823,7 @@ a:focus-visible {
 .ironpad-cell-menu-divider {
     height: 1px;
     margin: 4px 0;
-    background: rgba(15, 52, 96, 0.8);
+    background: var(--ip-border);
     opacity: 0.9;
 }
 
@@ -755,36 +852,36 @@ a:focus-visible {
 }
 
 .ironpad-cell-status--idle {
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     background: rgba(136, 136, 170, 0.15);
 }
 
 .ironpad-cell-status--queued {
-    color: #b080f0;
+    color: var(--ip-purple);
     background: rgba(176, 128, 240, 0.15);
     animation: ironpad-status-pulse 1.2s ease-in-out infinite;
 }
 
 .ironpad-cell-status--compiling {
-    color: #f0c040;
+    color: var(--ip-warning);
     background: rgba(240, 192, 64, 0.15);
     animation: ironpad-status-pulse 1.2s ease-in-out infinite;
 }
 
 .ironpad-cell-status--running {
-    color: #40a0f0;
+    color: var(--ip-info);
     background: rgba(64, 160, 240, 0.15);
     animation: ironpad-status-pulse 1.2s ease-in-out infinite;
 }
 
 .ironpad-cell-status--success {
-    color: #40c080;
+    color: var(--ip-success);
     background: rgba(64, 192, 128, 0.15);
 }
 
 .ironpad-cell-status--error {
-    color: #e94560;
-    background: rgba(233, 69, 96, 0.15);
+    color: var(--ip-error);
+    background: rgba(var(--ip-error-rgb), 0.15);
 }
 
 /* ── Cell body / collapse ───────────────────────────────────────────── */
@@ -834,6 +931,29 @@ a:focus-visible {
     opacity: 1;
 }
 
+.ironpad-drag-handle {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ip-text-tertiary);
+    cursor: grab;
+    font-size: 1rem;
+    border-radius: 50%;
+    transition: color var(--ip-transition-fast), background var(--ip-transition-fast);
+    user-select: none;
+
+    &:hover {
+        color: var(--ip-text-primary);
+        background: rgba(255, 255, 255, 0.08);
+    }
+
+    &:active {
+        cursor: grabbing;
+    }
+}
+
 .ironpad-side-btn {
     width: 28px;
     height: 28px;
@@ -843,7 +963,7 @@ a:focus-visible {
     background: transparent;
     border: 1px solid transparent;
     border-radius: 50%;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     cursor: pointer;
     font-size: 0.85rem;
     padding: 0;
@@ -851,7 +971,7 @@ a:focus-visible {
 }
 
 .ironpad-side-btn:hover {
-    color: #eaeaea;
+    color: var(--ip-text-primary);
     background: rgba(255, 255, 255, 0.08);
     border-color: rgba(255, 255, 255, 0.12);
 }
@@ -860,7 +980,7 @@ a:focus-visible {
 
 .ironpad-cell-tabs {
     padding: 0 12px;
-    border-bottom: 1px solid #0f3460;
+    border-bottom: 1px solid var(--ip-border);
 }
 
 .ironpad-cell-tabs .thaw-tab-list {
@@ -908,9 +1028,9 @@ a:focus-visible {
 
 .ironpad-add-cell-btn {
     background: transparent;
-    border: 1px dashed #0f3460;
+    border: 1px dashed var(--ip-border);
     border-radius: 6px;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     font-size: 0.8rem;
     padding: 4px 16px;
     cursor: pointer;
@@ -918,12 +1038,12 @@ a:focus-visible {
 }
 
 .ironpad-add-cell-btn:hover {
-    border-color: #e94560;
-    color: #eaeaea;
+    border-color: var(--ip-accent);
+    color: var(--ip-text-primary);
 }
 
 .ironpad-add-cell-btn--markdown:hover {
-    border-color: #40a0f0;
+    border-color: var(--ip-info);
 }
 
 /* ── Compile result panel ────────────────────────────────────────────── */
@@ -938,11 +1058,11 @@ a:focus-visible {
 }
 
 .ironpad-compile-result--success .ironpad-compile-result-summary {
-    color: #40c080;
+    color: var(--ip-success);
 }
 
 .ironpad-compile-result--error {
-    color: #e8e0d0;
+    color: var(--ip-code-string);
 }
 
 .ironpad-compile-warnings {
@@ -970,19 +1090,19 @@ a:focus-visible {
 }
 
 .ironpad-diag--error .ironpad-diag-severity {
-    color: #e94560;
+    color: var(--ip-error);
 }
 
 .ironpad-diag--warning .ironpad-diag-severity {
-    color: #f0c040;
+    color: var(--ip-warning);
 }
 
 .ironpad-diag--note .ironpad-diag-severity {
-    color: #40a0f0;
+    color: var(--ip-info);
 }
 
 .ironpad-diag-message {
-    color: #e8e0d0;
+    color: var(--ip-code-string);
     white-space: pre-wrap;
     word-break: break-word;
 }
@@ -994,7 +1114,7 @@ a:focus-visible {
 
 .ironpad-diag-span {
     display: block;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     font-size: 0.75rem;
 }
 
@@ -1013,12 +1133,12 @@ a:focus-visible {
     padding: 6px 12px;
     cursor: pointer;
     user-select: none;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     transition: color 0.15s;
 }
 
 .ironpad-error-panel-header:hover {
-    color: #eaeaea;
+    color: var(--ip-text-primary);
 }
 
 .ironpad-error-panel-toggle {
@@ -1032,13 +1152,13 @@ a:focus-visible {
     font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #e94560;
+    color: var(--ip-error);
 }
 
 .ironpad-error-panel-summary {
     margin-left: auto;
     font-size: 0.7rem;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
 }
 
 .ironpad-error-panel-body {
@@ -1075,38 +1195,38 @@ a:focus-visible {
 }
 
 .ironpad-error-diag--error .ironpad-error-diag-severity {
-    color: #e94560;
-    background: rgba(233, 69, 96, 0.12);
+    color: var(--ip-error);
+    background: rgba(var(--ip-error-rgb), 0.12);
 }
 
 .ironpad-error-diag--warning .ironpad-error-diag-severity {
-    color: #f0c040;
+    color: var(--ip-warning);
     background: rgba(240, 192, 64, 0.12);
 }
 
 .ironpad-error-diag--note .ironpad-error-diag-severity {
-    color: #40a0f0;
+    color: var(--ip-info);
     background: rgba(64, 160, 240, 0.12);
 }
 
 .ironpad-error-diag-code {
     font-size: 0.7rem;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
 }
 
 .ironpad-error-diag-code--link {
-    color: #40a0f0;
+    color: var(--ip-info);
     text-decoration: none;
     transition: color 0.15s;
 }
 
 .ironpad-error-diag-code--link:hover {
-    color: #70c0ff;
+    color: var(--ip-info-hover);
     text-decoration: underline;
 }
 
 .ironpad-error-diag-message {
-    color: #e8e0d0;
+    color: var(--ip-code-string);
     white-space: pre-wrap;
     word-break: break-word;
     line-height: 1.4;
@@ -1128,14 +1248,14 @@ a:focus-visible {
 }
 
 .ironpad-error-span-location {
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     font-weight: 500;
     white-space: nowrap;
     flex-shrink: 0;
 }
 
 .ironpad-error-span-label {
-    color: #b0a090;
+    color: var(--ip-code-comment);
     font-style: italic;
 }
 
@@ -1158,12 +1278,12 @@ a:focus-visible {
     padding: 6px 12px;
     cursor: pointer;
     user-select: none;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     transition: color 0.15s;
 }
 
 .ironpad-output-header:hover {
-    color: #eaeaea;
+    color: var(--ip-text-primary);
 }
 
 .ironpad-output-toggle {
@@ -1177,13 +1297,13 @@ a:focus-visible {
     font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #40c080;
+    color: var(--ip-success);
 }
 
 .ironpad-output-meta {
     margin-left: auto;
     font-size: 0.7rem;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     background: rgba(64, 192, 128, 0.15);
     padding: 2px 8px;
     border-radius: 10px;
@@ -1203,7 +1323,7 @@ a:focus-visible {
     padding: 6px 8px;
     background: rgba(64, 192, 128, 0.06);
     border-radius: 4px;
-    color: #eaeaea;
+    color: var(--ip-text-primary);
     white-space: pre-wrap;
     word-break: break-word;
     font-size: 0.8rem;
@@ -1214,6 +1334,27 @@ a:focus-visible {
     svg {
         max-width: 100%;
         height: auto;
+
+        // Plot interactivity — hover effects on data elements.
+        circle, rect:not(:first-child) {
+            transition: opacity 0.15s ease, filter 0.15s ease;
+
+            &:hover {
+                opacity: 0.8;
+                filter: brightness(1.3) drop-shadow(0 0 4px var(--ip-accent));
+                cursor: crosshair;
+            }
+        }
+
+        // Tooltip overlay circles.
+        .ironpad-tooltips {
+            pointer-events: all;
+
+            circle:hover {
+                opacity: 0.3 !important;
+                fill: var(--ip-accent);
+            }
+        }
     }
 }
 
@@ -1255,10 +1396,25 @@ a:focus-visible {
 
 .ironpad-output-bytes-header {
     font-size: 0.7rem;
-    color: #8888aa;
+    color: var(--ip-text-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 4px;
+    cursor: pointer;
+    list-style: disclosure-closed;
+    transition: color 0.15s ease;
+
+    &:hover {
+        color: var(--ip-text-secondary);
+    }
+
+    &::marker {
+        font-size: 0.6rem;
+    }
+}
+
+details[open].ironpad-output-bytes > .ironpad-output-bytes-header {
+    list-style: disclosure-open;
 }
 
 .ironpad-output-hex-dump {
@@ -1266,7 +1422,7 @@ a:focus-visible {
     padding: 6px 8px;
     background: rgba(255, 255, 255, 0.03);
     border-radius: 4px;
-    color: #b0b0cc;
+    color: var(--ip-text-secondary);
     font-size: 0.75rem;
     line-height: 1.5;
     overflow-x: auto;
@@ -1525,28 +1681,28 @@ samp,
 .ironpad-markdown-cell {
     &-preview {
         padding: 1rem 1.5rem;
-        color: #eaeaea;
+        color: var(--ip-text-primary);
         line-height: 1.6;
         cursor: pointer;
 
         h1 {
             font-size: 1.8em;
             margin: 0.5em 0;
-            color: #fff;
-            border-bottom: 1px solid #0f3460;
+            color: var(--ip-text-on-accent);
+            border-bottom: 1px solid var(--ip-border);
             padding-bottom: 0.3em;
         }
 
         h2 {
             font-size: 1.5em;
             margin: 0.5em 0;
-            color: #fff;
+            color: var(--ip-text-on-accent);
         }
 
         h3 {
             font-size: 1.25em;
             margin: 0.5em 0;
-            color: #fff;
+            color: var(--ip-text-on-accent);
         }
 
         p {
@@ -1554,7 +1710,7 @@ samp,
         }
 
         code {
-            background: #1a1a2e;
+            background: var(--ip-bg-primary);
             padding: 2px 6px;
             border-radius: 3px;
             font-family: var(--ip-font-mono);
@@ -1562,7 +1718,7 @@ samp,
         }
 
         pre {
-            background: #1a1a2e;
+            background: var(--ip-bg-primary);
             padding: 1rem;
             border-radius: 6px;
             overflow-x: auto;
@@ -1574,7 +1730,7 @@ samp,
         }
 
         a {
-            color: #e94560;
+            color: var(--ip-accent);
             text-decoration: none;
 
             &:hover {
@@ -1592,9 +1748,9 @@ samp,
         }
 
         blockquote {
-            border-left: 3px solid #e94560;
+            border-left: 3px solid var(--ip-accent);
             padding-left: 1em;
-            color: #8888aa;
+            color: var(--ip-text-tertiary);
             margin: 0.5em 0;
         }
 
@@ -1605,12 +1761,12 @@ samp,
 
         th,
         td {
-            border: 1px solid #0f3460;
+            border: 1px solid var(--ip-border);
             padding: 0.5em 1em;
         }
 
         th {
-            background: #1a1a2e;
+            background: var(--ip-bg-primary);
         }
 
         img {
@@ -1618,7 +1774,7 @@ samp,
         }
 
         &:hover {
-            outline: 1px dashed #4a4a6a;
+            outline: 1px dashed var(--ip-outline-dashed);
             outline-offset: -1px;
         }
     }
@@ -1629,14 +1785,14 @@ samp,
 
     &-hint {
         font-size: 0.75em;
-        color: #4a4a6a;
+        color: var(--ip-outline-dashed);
         padding: 0.25rem 1.5rem;
         font-style: italic;
     }
 }
 
 .ironpad-stale-indicator {
-    color: #f0ad4e;
+    color: var(--ip-stale-indicator);
     margin-left: 0.5rem;
     font-size: 0.85em;
     cursor: help;
@@ -1774,6 +1930,27 @@ samp,
     overflow: auto;
 }
 
+.view-only-output-svg svg {
+    circle, rect:not(:first-child) {
+        transition: opacity 0.15s ease, filter 0.15s ease;
+
+        &:hover {
+            opacity: 0.8;
+            filter: brightness(1.3) drop-shadow(0 0 4px var(--ip-accent));
+            cursor: crosshair;
+        }
+    }
+
+    .ironpad-tooltips {
+        pointer-events: all;
+
+        circle:hover {
+            opacity: 0.3 !important;
+            fill: var(--ip-accent);
+        }
+    }
+}
+
 /* ── Copy-to-clipboard button ────────────────────────────────────────────── */
 
 .ironpad-copy-btn {
@@ -1788,7 +1965,7 @@ samp,
     border: 1px solid transparent;
     border-radius: 4px;
     background: rgba(255, 255, 255, 0.06);
-    color: #999;
+    color: var(--ip-text-muted);
     cursor: pointer;
     font-size: 0.7rem;
     line-height: 1;
@@ -1811,7 +1988,7 @@ samp,
     max-width: 0;
     overflow: hidden;
     transition: opacity 0.25s ease, max-width 0.25s ease;
-    color: var(--ip-accent, #e94560);
+    color: var(--ip-accent);
     font-weight: 600;
     white-space: nowrap;
 
@@ -1830,9 +2007,9 @@ samp,
     z-index: 1000;
     display: flex;
     align-items: center;
-    border: 1px solid #0f3460;
+    border: 1px solid var(--ip-border);
     border-radius: 24px;
-    background: #16213e;
+    background: var(--ip-bg-surface);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     overflow: hidden;
 }
@@ -1844,20 +2021,20 @@ samp,
     padding: 8px 14px;
     border: none;
     background: transparent;
-    color: #606060;
+    color: var(--ip-neutral-dimmer);
     font-size: 1rem;
     cursor: pointer;
     transition: background 0.2s, color 0.2s;
 
     &:hover:not(.ironpad-mode-toggle-segment--active) {
-        background: #1a2a4e;
-        color: #c0c0c0;
+        background: var(--ip-bg-elevated);
+        color: var(--ip-neutral-dim);
     }
 }
 
 .ironpad-mode-toggle-segment--active {
-    background: #e94560;
-    color: #ffffff;
+    background: var(--ip-accent);
+    color: var(--ip-text-on-accent);
 }
 
 /* ── Cell view-mode overrides ───────────────────────────────────────── */
@@ -1924,15 +2101,15 @@ samp,
     border: 1px solid transparent;
     border-radius: 6px;
     background: transparent;
-    color: #c0c0c0;
+    color: var(--ip-neutral-dim);
     font-size: 1.2rem;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 
     &:hover {
         background: rgba(255, 255, 255, 0.08);
-        border-color: #0f3460;
-        color: #ffffff;
+        border-color: var(--ip-border);
+        color: var(--ip-text-on-accent);
     }
 }
 
@@ -1944,9 +2121,9 @@ samp,
     min-width: 180px;
     margin-top: 4px;
     padding: 4px 0;
-    border: 1px solid #0f3460;
+    border: 1px solid var(--ip-border);
     border-radius: 8px;
-    background: #16213e;
+    background: var(--ip-bg-surface);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -1956,7 +2133,7 @@ samp,
     padding: 8px 16px;
     border: none;
     background: transparent;
-    color: #c0c0c0;
+    color: var(--ip-neutral-dim);
     font-size: 0.875rem;
     text-align: left;
     cursor: pointer;
@@ -1964,15 +2141,15 @@ samp,
 
     &:hover {
         background: rgba(255, 255, 255, 0.08);
-        color: #ffffff;
+        color: var(--ip-text-on-accent);
     }
 
     &--danger {
-        color: #e94560;
+        color: var(--ip-error);
 
         &:hover {
-            background: rgba(233, 69, 96, 0.12);
-            color: #ff6b8a;
+            background: rgba(var(--ip-error-rgb), 0.12);
+            color: var(--ip-accent-hover);
         }
     }
 }
@@ -1988,15 +2165,15 @@ samp,
     border: 1px solid transparent;
     border-radius: 6px;
     background: transparent;
-    color: #c0c0c0;
+    color: var(--ip-neutral-dim);
     font-size: 1.3rem;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 
     &:hover {
-        background: rgba(233, 69, 96, 0.12);
-        border-color: #e94560;
-        color: #e94560;
+        background: rgba(var(--ip-error-rgb), 0.12);
+        border-color: var(--ip-error);
+        color: var(--ip-error);
     }
 }
 /* ── Interactive widget styles ──────────────────────────────────────── */
@@ -2186,5 +2363,73 @@ samp,
 .ironpad-interactive-static {
     padding: 0.4rem 0.75rem;
     font-size: 0.85rem;
-    color: #b0b0cc;
+    color: var(--ip-interactive-static);
+}
+
+/* ── SortableJS drag-and-drop ─────────────────────────────────────────── */
+
+.ironpad-sortable-ghost {
+    opacity: 0.4;
+    background: var(--ip-bg-elevated);
+    border: 2px dashed var(--ip-accent);
+    border-radius: var(--ip-radius-lg);
+}
+
+.ironpad-drag-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    cursor: grab;
+    color: var(--ip-text-muted);
+    font-size: 0.9rem;
+    opacity: 0;
+    transition: opacity var(--ip-transition-fast), color var(--ip-transition-fast);
+
+    &:active {
+        cursor: grabbing;
+    }
+}
+
+// Progress bar widget
+
+.ironpad-progress {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.25rem 0;
+}
+
+.ironpad-progress-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--ip-bg-tertiary, #2a2a2e);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.ironpad-progress-fill {
+    height: 100%;
+    background: var(--ip-accent, #4fc3f7);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    min-width: 0;
+}
+
+.ironpad-progress-value {
+    font-size: 0.8rem;
+    color: var(--ip-text-secondary, #aaa);
+    min-width: 3em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.ironpad-cell-card:hover .ironpad-drag-handle {
+    opacity: 1;
+}
+
+.ironpad-drag-handle:hover {
+    color: var(--ip-text-secondary);
 }

@@ -18,7 +18,7 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement", "HtmlAnchorElement", "HtmlInputElement", "HtmlSelectElement", "Window", "Navigator", "Clipboard", "Blob", "BlobPropertyBag", "Url", "EventTarget"] }
+web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement", "HtmlAnchorElement", "HtmlInputElement", "HtmlSelectElement", "Window", "Navigator", "Clipboard", "Blob", "BlobPropertyBag", "Url", "EventTarget", "Storage"] }
 
 http.workspace = true
 thiserror.workspace = true

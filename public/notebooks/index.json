@@ -41,11 +41,13 @@
       "title": "Charts with Plot",
       "description": "Create line, bar, and scatter charts with the built-in Plot helper.",
       "filename": "charts-with-plot.ironpad",
-      "cell_count": 8,
+      "cell_count": 11,
       "tags": [
         "charts",
         "plot",
-        "visualization"
+        "visualization",
+        "tooltips",
+        "point-labels"
       ]
     },
     {
@@ -92,6 +94,18 @@
       "cell_count": 4,
       "tags": [
         "button",
+        "widgets",
+        "interactive"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000009",
+      "title": "Progress Bar Demo",
+      "description": "Create a progress bar and update it in real time from a downstream cell using ProgressHandle.",
+      "filename": "progress-bar.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "progress-bar",
         "widgets",
         "interactive"
       ]

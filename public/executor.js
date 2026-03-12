@@ -30,7 +30,48 @@
 
   function CellExecutor() {
     this.modules = new Map(); // cell_id -> { hash, type, ... }
+    this._messageHandlers = {}; // type -> handler(msg, cellId)
   }
+
+  // ── Host message infrastructure ─────────────────────────────────────────
+  //
+  // Cells can send JSON messages to the host via `ironpad_host_message`.
+  // Messages are dispatched by their `type` field to registered handlers.
+  //
+  // NOTE: WASM import wiring for `ironpad_host_message` (providing the
+  // function in the `env` import namespace so WASM instantiation succeeds)
+  // is handled in `loadBlob` for both the raw and wasm-bindgen paths.
+
+  /// Register a handler for a specific host message type.
+  CellExecutor.prototype.onHostMessage = function (type, handler) {
+    this._messageHandlers[type] = handler;
+  };
+
+  /// Read a JSON message from WASM memory and dispatch to the appropriate
+  /// handler.  Called by the `ironpad_host_message` import at runtime.
+  CellExecutor.prototype._dispatchHostMessage = function (cellId, ptr, len) {
+    var entry = this.modules.get(cellId);
+    if (!entry) return;
+
+    // Resolve WASM memory from whichever loading path was used.
+    var memory = entry.type === "bindgen"
+      ? (entry.wasm && entry.wasm.memory)
+      : (entry.instance && entry.instance.exports.memory);
+    if (!memory) return;
+
+    var bytes = new Uint8Array(memory.buffer, ptr, len);
+    var text = new TextDecoder().decode(bytes);
+
+    try {
+      var msg = JSON.parse(text);
+      var handler = this._messageHandlers[msg.type];
+      if (handler) {
+        handler(msg, cellId);
+      }
+    } catch (e) {
+      console.warn("ironpad: failed to parse host message:", e);
+    }
+  };
 
   /// Load a compiled WASM blob for a cell.
   ///
@@ -48,7 +89,29 @@
 
     if (jsGlue) {
       // ── wasm-bindgen path ────────────────────────────────────────────
-      var jsBlob = new Blob([jsGlue], { type: "application/javascript" });
+      //
+      // The cell's `extern "C" { fn ironpad_host_message(..) }` produces a
+      // WASM import under the `env` namespace.  wasm-bindgen's generated
+      // glue does NOT know about it, so we inject a preamble that wraps
+      // `__wbg_get_imports` (hoisted by the module before evaluation) to
+      // supply `env.ironpad_host_message` at instantiation time.
+      var preamble =
+        "var __ironpad_cell_id = " + JSON.stringify(cellId) + ";\n" +
+        "if (typeof __wbg_get_imports === 'function') {\n" +
+        "  var __ironpad_orig_get_imports = __wbg_get_imports;\n" +
+        "  __wbg_get_imports = function() {\n" +
+        "    var imports = __ironpad_orig_get_imports();\n" +
+        "    if (!imports.env) imports.env = {};\n" +
+        "    imports.env.ironpad_host_message = function(ptr, len) {\n" +
+        "      if (window.IronpadExecutor) {\n" +
+        "        window.IronpadExecutor._dispatchHostMessage(__ironpad_cell_id, ptr, len);\n" +
+        "      }\n" +
+        "    };\n" +
+        "    return imports;\n" +
+        "  };\n" +
+        "}\n";
+      var augmentedGlue = preamble + jsGlue;
+      var jsBlob = new Blob([augmentedGlue], { type: "application/javascript" });
       var jsUrl = URL.createObjectURL(jsBlob);
 
       try {
@@ -56,7 +119,7 @@
 
         // wasm-bindgen's default export is the init function.
         // It returns the raw WASM exports object.
-        var wasm = await mod.default(wasmBytes);
+        var wasm = await mod.default({ module_or_path: wasmBytes });
 
         this.modules.set(cellId, {
           hash: hash,
@@ -69,7 +132,15 @@
       }
     } else {
       // ── Legacy raw WASM path ─────────────────────────────────────────
-      var imports = { env: {} };
+      var rawCellId = cellId;
+      var rawSelf = this;
+      var imports = {
+        env: {
+          ironpad_host_message: function (ptr, len) {
+            rawSelf._dispatchHostMessage(rawCellId, ptr, len);
+          },
+        },
+      };
       var result = await WebAssembly.instantiate(wasmBytes, imports);
       this.modules.set(cellId, {
         hash: hash,
@@ -282,5 +353,25 @@
 
   // ── Expose as a global singleton ─────────────────────────────────────────
 
-  window.IronpadExecutor = new CellExecutor();
+  var executor = new CellExecutor();
+
+  // ── Built-in host message handlers ──────────────────────────────────────
+
+  executor.onHostMessage("progress_update", function (msg, _cellId) {
+    var el = document.querySelector('[data-progress-id="' + msg.id + '"]');
+    if (!el) return;
+
+    var fill = el.querySelector(".ironpad-progress-fill");
+    if (fill) {
+      var pct = Math.min(100, Math.max(0, msg.value));
+      fill.style.width = pct + "%";
+    }
+
+    var label = el.querySelector(".ironpad-progress-value");
+    if (label) {
+      label.textContent = Math.round(msg.value) + "%";
+    }
+  });
+
+  window.IronpadExecutor = executor;
 })();

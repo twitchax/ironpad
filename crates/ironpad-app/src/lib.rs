@@ -23,6 +23,11 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
         <!DOCTYPE html>
         <html lang="en">
             <head>
+                // Inline theme init to prevent FOUC.
+                <script>
+                    "(function(){var t=localStorage.getItem('ironpad-theme');if(t==='light'){document.documentElement.setAttribute('data-theme','light');}}());"
+                </script>
+
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
@@ -41,6 +46,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 
                 // IndexedDB notebook storage.
                 <script src="/storage.js"></script>
+
+                // Drag-and-drop sortable library.
+                <script src="/sortable.min.js"></script>
             </head>
             <body>
                 <App/>

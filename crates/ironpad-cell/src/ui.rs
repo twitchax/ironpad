@@ -21,6 +21,12 @@ fn encode_bincode<T: serde::Serialize>(value: &T) -> Vec<u8> {
         .expect("serialization of primitive widget value cannot fail")
 }
 
+fn simple_id() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    format!("{:08x}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
 // ── Slider ───────────────────────────────────────────────────────────────────
 
 /// Builder for a range slider widget producing an `f64` value.
@@ -555,6 +561,118 @@ impl serde::Serialize for Button {
     }
 }
 
+// ── ProgressBar ──────────────────────────────────────────────────────────────
+
+/// Builder for a progress bar widget with real-time update support.
+pub struct ProgressBar {
+    label: Option<String>,
+    initial: f64,
+    id: String,
+}
+
+/// Create a progress bar widget.
+#[must_use]
+pub fn progress_bar() -> ProgressBar {
+    ProgressBar {
+        label: None,
+        initial: 0.0,
+        id: format!("progress-{}", simple_id()),
+    }
+}
+
+impl ProgressBar {
+    /// Set an optional label.
+    #[must_use]
+    pub fn label(mut self, label: &str) -> Self {
+        self.label = Some(label.to_owned());
+        self
+    }
+
+    /// Set the initial progress value (0.0 to 100.0).
+    #[must_use]
+    pub fn initial(mut self, value: f64) -> Self {
+        self.initial = value.clamp(0.0, 100.0);
+        self
+    }
+
+    fn config_json(&self) -> String {
+        serde_json::json!({
+            "label": self.label,
+            "initial": self.initial,
+            "id": self.id,
+        })
+        .to_string()
+    }
+}
+
+impl From<ProgressBar> for CellOutput {
+    fn from(pb: ProgressBar) -> Self {
+        Self {
+            bytes: encode_bincode(&pb.id),
+            panels: vec![DisplayPanel::Interactive {
+                kind: "progress".into(),
+                config: pb.config_json(),
+            }],
+            type_tag: Some("String".into()),
+        }
+    }
+}
+
+impl IntoPanels for ProgressBar {
+    fn into_panels(&self) -> Vec<DisplayPanel> {
+        vec![DisplayPanel::Interactive {
+            kind: "progress".into(),
+            config: self.config_json(),
+        }]
+    }
+}
+
+impl TypeTag for ProgressBar {
+    fn type_tag() -> String {
+        "String".into()
+    }
+}
+
+impl serde::Serialize for ProgressBar {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.id.serialize(serializer)
+    }
+}
+
+// ── ProgressHandle ──────────────────────────────────────────────────────────
+
+/// Handle for updating a progress bar from a downstream cell.
+///
+/// When a cell outputs a `ProgressBar`, downstream cells receive
+/// the progress bar's ID as a `String`. Wrap it in a `ProgressHandle`
+/// to send real-time updates:
+///
+/// ```ignore
+/// let handle = ProgressHandle::new(cell0.deserialize::<String>().unwrap());
+/// handle.update(50.0); // Set to 50%
+/// ```
+pub struct ProgressHandle {
+    id: String,
+}
+
+impl ProgressHandle {
+    /// Create a handle from a progress bar ID (obtained from upstream cell output).
+    pub fn new(id: String) -> Self {
+        Self { id }
+    }
+
+    /// Update the progress bar to the given percentage (0.0–100.0).
+    pub fn update(&self, value: f64) {
+        let clamped = value.clamp(0.0, 100.0);
+        let msg = serde_json::json!({
+            "type": "progress_update",
+            "id": self.id,
+            "value": clamped,
+        });
+        crate::host_message_json(&msg);
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -969,5 +1087,38 @@ mod tests {
                 .expect("decode (f64, String)");
         assert!((decoded.0 - 3.0).abs() < f64::EPSILON);
         assert_eq!(decoded.1, "red");
+    }
+
+    // ── ProgressBar tests ────────────────────────────────────────────────
+
+    #[test]
+    fn progress_bar_produces_interactive_panel() {
+        let output: CellOutput = progress_bar().label("Loading").into();
+        let cfg = assert_interactive(&output, "progress");
+        assert_eq!(cfg["label"].as_str().unwrap(), "Loading");
+        assert!(cfg["id"].as_str().unwrap().starts_with("progress-"));
+    }
+
+    #[test]
+    fn progress_bar_id_is_unique() {
+        let a = progress_bar();
+        let b = progress_bar();
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn progress_bar_serializes_as_id() {
+        let pb = progress_bar();
+        let expected_id = pb.id.clone();
+        let json = serde_json::to_string(&pb).expect("serialize");
+        let decoded: String = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, expected_id);
+    }
+
+    #[test]
+    fn progress_handle_update_noop_on_native() {
+        let handle = ProgressHandle::new("progress-test".to_owned());
+        // Should not panic on native (non-WASM) — host_message is a no-op.
+        handle.update(50.0);
     }
 }

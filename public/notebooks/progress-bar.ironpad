@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000009",
+  "title": "Progress Bar Demo",
+  "created_at": "2026-03-15T00:00:00Z",
+  "updated_at": "2026-03-15T00:00:00Z",
+  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "# Progress Bar Demo \u23f3\n\nThis notebook demonstrates the **progress bar** widget with real-time updates.\n\n- **Cell 1** creates a progress bar at 25%.\n- **Cell 2** adds a button that bumps the bar to 75% on click.\n\nThe progress bar outputs its ID so downstream cells can update it via `ProgressHandle`.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Progress Bar",
+      "cell_type": "Code",
+      "source": "ui::progress_bar()\n    .label(\"Download Progress\")\n    .initial(25.0)\n",
+      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Update Progress",
+      "cell_type": "Code",
+      "source": "// cell0 is the progress bar ID (String) from the previous code cell.\nlet handle = ProgressHandle::new(cell0);\nhandle.update(75.0);\n\nui::button(\"Run Task \\u{25b6}\")\n",
+      "cargo_toml": "[package]\nname = \"cell_2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Next Steps",
+      "cell_type": "Markdown",
+      "source": "---\n\n## How It Works\n\n1. `ui::progress_bar()` renders a bar and outputs its **ID** as a `String`.\n2. Downstream cells deserialize that ID automatically (`cell0`) and create a `ProgressHandle`.\n3. Calling `handle.update(value)` sends a real-time message to the executor, updating the bar without re-rendering.\n\nCombine progress bars with buttons and async work to build interactive dashboards that report status as they go.",
+      "cargo_toml": null
+    }
+  ]
+}

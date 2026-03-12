@@ -124,10 +124,6 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 
 - **CI / code coverage / docker**: Set up CI pipeline with GitHub Actions, code coverage reporting, and Docker image publishing
 - **Publish to fly.io**: Deploy to fly.io for easy public access and sharing
-- **Cell drag-and-drop reordering**: Visual reordering via drag handles
-- **Light mode toggle**: Alternative light theme for Monaco + UI
 - **Notebook tagging/filtering**: Tags on notebooks for organization, search/filter on home page
-- **Progress bars widget**: Visual progress for long executions
-- **Auto Run**: Automatically run cells on load or after edits (with debounce)
 - **LSP integration**: Full rust-analyzer completions in Monaco (per-cell analysis)
 - **Collaboration**: Real-time multi-user editing via WebSocket

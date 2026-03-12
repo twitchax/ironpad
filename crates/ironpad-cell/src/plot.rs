@@ -38,6 +38,10 @@ pub struct Plot {
     y_label: Option<String>,
     width: u32,
     height: u32,
+    #[serde(default)]
+    tooltips: bool,
+    #[serde(default)]
+    point_labels: bool,
 }
 
 impl Plot {
@@ -51,6 +55,8 @@ impl Plot {
             y_label: None,
             width: 800,
             height: 400,
+            tooltips: false,
+            point_labels: false,
         }
     }
 
@@ -64,6 +70,8 @@ impl Plot {
             y_label: None,
             width: 800,
             height: 400,
+            tooltips: false,
+            point_labels: false,
         }
     }
 
@@ -77,6 +85,8 @@ impl Plot {
             y_label: None,
             width: 800,
             height: 400,
+            tooltips: false,
+            point_labels: false,
         }
     }
 
@@ -109,9 +119,24 @@ impl Plot {
         self
     }
 
+    /// Enable native SVG tooltips on data points.
+    #[must_use]
+    pub fn tooltips(mut self, enabled: bool) -> Self {
+        self.tooltips = enabled;
+        self
+    }
+
+    /// Show data values as text labels on each data point.
+    #[must_use]
+    pub fn point_labels(mut self, enabled: bool) -> Self {
+        self.point_labels = enabled;
+        self
+    }
+
     /// Render the chart to an SVG string.
     fn render_svg(&self) -> String {
         let mut buf = String::new();
+        let mut tooltip_points: Vec<(i32, i32, String)> = Vec::new();
 
         {
             let root =
@@ -121,16 +146,24 @@ impl Plot {
             root.fill(&COLOR_TRANSPARENT).unwrap();
 
             match &self.kind {
-                ChartKind::Line(data) => self.render_line(&root, data),
-                ChartKind::Bar(data) => self.render_bar(&root, data),
-                ChartKind::Scatter(data) => self.render_scatter(&root, data),
+                ChartKind::Line(data) => self.render_line(&root, data, &mut tooltip_points),
+                ChartKind::Bar(data) => self.render_bar(&root, data, &mut tooltip_points),
+                ChartKind::Scatter(data) => {
+                    self.render_scatter(&root, data, &mut tooltip_points);
+                }
             }
 
             root.present().unwrap();
         }
 
         // Make the background truly transparent by replacing the initial rect fill.
-        buf.replace("fill=\"#000000\"", "fill=\"transparent\"")
+        let svg = buf.replace("fill=\"#000000\"", "fill=\"transparent\"");
+
+        if self.tooltips && !tooltip_points.is_empty() {
+            inject_tooltips(&svg, &tooltip_points)
+        } else {
+            svg
+        }
     }
 
     // ── Per-kind renderers ───────────────────────────────────────────────
@@ -139,6 +172,7 @@ impl Plot {
         &self,
         root: &DrawingArea<SVGBackend<'_>, plotters::coord::Shift>,
         data: &[(f64, f64)],
+        tooltip_points: &mut Vec<(i32, i32, String)>,
     ) {
         let (x_range, y_range) = xy_ranges(data);
 
@@ -150,12 +184,32 @@ impl Plot {
                 COLOR_ACCENT.stroke_width(2),
             ))
             .unwrap();
+
+        if self.point_labels {
+            chart
+                .draw_series(data.iter().map(|&(x, y)| {
+                    Text::new(
+                        format!("{y:.1}"),
+                        (x, y),
+                        ("sans-serif", 10).into_font().color(&COLOR_TEXT),
+                    )
+                }))
+                .unwrap();
+        }
+
+        if self.tooltips {
+            for &(x, y) in data {
+                let (px, py) = chart.backend_coord(&(x, y));
+                tooltip_points.push((px, py, format!("({x}, {y})")));
+            }
+        }
     }
 
     fn render_bar(
         &self,
         root: &DrawingArea<SVGBackend<'_>, plotters::coord::Shift>,
         data: &[(String, f64)],
+        tooltip_points: &mut Vec<(i32, i32, String)>,
     ) {
         if data.is_empty() {
             return;
@@ -205,12 +259,32 @@ impl Plot {
                 bar
             }))
             .unwrap();
+
+        if self.point_labels {
+            chart
+                .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
+                    Text::new(
+                        format!("{val:.1}"),
+                        (i as f64 + 0.5, *val),
+                        ("sans-serif", 10).into_font().color(&COLOR_TEXT),
+                    )
+                }))
+                .unwrap();
+        }
+
+        if self.tooltips {
+            for (i, (label, val)) in data.iter().enumerate() {
+                let (px, py) = chart.backend_coord(&(i as f64 + 0.5, *val));
+                tooltip_points.push((px, py, format!("{label}: {val}")));
+            }
+        }
     }
 
     fn render_scatter(
         &self,
         root: &DrawingArea<SVGBackend<'_>, plotters::coord::Shift>,
         data: &[(f64, f64)],
+        tooltip_points: &mut Vec<(i32, i32, String)>,
     ) {
         let (x_range, y_range) = xy_ranges(data);
 
@@ -222,6 +296,25 @@ impl Plot {
                     .map(|(x, y)| Circle::new((*x, *y), 4, COLOR_ACCENT.filled())),
             )
             .unwrap();
+
+        if self.point_labels {
+            chart
+                .draw_series(data.iter().map(|&(x, y)| {
+                    Text::new(
+                        format!("{y:.1}"),
+                        (x, y),
+                        ("sans-serif", 10).into_font().color(&COLOR_TEXT),
+                    )
+                }))
+                .unwrap();
+        }
+
+        if self.tooltips {
+            for &(x, y) in data {
+                let (px, py) = chart.backend_coord(&(x, y));
+                tooltip_points.push((px, py, format!("({x}, {y})")));
+            }
+        }
     }
 
     // ── Shared chart builder helper ──────────────────────────────────────
@@ -324,6 +417,32 @@ fn xy_ranges(data: &[(f64, f64)]) -> (std::ops::Range<f64>, std::ops::Range<f64>
     )
 }
 
+/// Inject SVG `<title>` tooltip elements at the given pixel coordinates.
+fn inject_tooltips(svg: &str, points: &[(i32, i32, String)]) -> String {
+    if let Some(pos) = svg.rfind("</svg>") {
+        let mut result = String::with_capacity(svg.len() + points.len() * 120);
+        result.push_str(&svg[..pos]);
+        result.push_str("<g class=\"ironpad-tooltips\">");
+        for (px, py, label) in points {
+            let escaped = xml_escape(label);
+            result.push_str(&format!(
+                "<circle cx=\"{px}\" cy=\"{py}\" r=\"8\" fill=\"transparent\" stroke=\"none\">\
+                 <title>{escaped}</title></circle>"
+            ));
+        }
+        result.push_str("</g></svg>");
+        result
+    } else {
+        svg.to_owned()
+    }
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -424,5 +543,55 @@ mod tests {
         let panels = plot.into_panels();
         assert_eq!(panels.len(), 1);
         assert!(matches!(panels[0], DisplayPanel::Svg(_)));
+    }
+
+    #[test]
+    fn tooltips_adds_title_elements() {
+        let svg = Plot::scatter(&[(1.0, 2.0), (3.0, 4.0)])
+            .tooltips(true)
+            .render_svg();
+        assert!(
+            svg.contains("<title>"),
+            "tooltips should add <title> elements"
+        );
+        assert!(
+            svg.contains("ironpad-tooltips"),
+            "tooltips should add ironpad-tooltips group"
+        );
+        assert!(
+            svg.contains("(1, 2)"),
+            "tooltip should contain first data point"
+        );
+        assert!(
+            svg.contains("(3, 4)"),
+            "tooltip should contain second data point"
+        );
+    }
+
+    #[test]
+    fn point_labels_adds_text_elements() {
+        let svg = Plot::scatter(&[(1.0, 2.0), (3.0, 4.0)])
+            .point_labels(true)
+            .render_svg();
+        assert!(svg.contains("2.0"), "point label for y=2.0 should appear");
+        assert!(svg.contains("4.0"), "point label for y=4.0 should appear");
+    }
+
+    #[test]
+    fn tooltips_off_by_default() {
+        let svg = Plot::scatter(&[(1.0, 2.0), (3.0, 4.0)]).render_svg();
+        assert!(
+            !svg.contains("ironpad-tooltips"),
+            "default plot should not have tooltip group"
+        );
+    }
+
+    #[test]
+    fn point_labels_off_by_default() {
+        let svg = Plot::scatter(&[(1.0, 2.7)]).render_svg();
+        assert!(
+            !svg.contains("2.7"),
+            "default plot should not have point label text"
+        );
     }
 }

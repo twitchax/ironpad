@@ -1311,6 +1311,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
         // ── Side action buttons ─────────────────────────────────────────
         <div class="ironpad-cell-side-actions">
+            {if !is_markdown && !state.is_view_mode.get() {
+                view! {
+                    <div class="ironpad-drag-handle" title="Drag to reorder">
+                        "⠿"
+                    </div>
+                }.into_any()
+            } else {
+                view! { <span /> }.into_any()
+            }}
             {if !is_markdown {
                 view! {
                     <button

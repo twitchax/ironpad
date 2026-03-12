@@ -371,5 +371,13 @@
       }
       delete editors[id];
     },
+
+    /// Switch the global Monaco theme for all editors.
+    /// `themeName` should be "ironpad-dark" or "ironpad-light".
+    setTheme: function (themeName) {
+      ensureMonaco().then(function (monaco) {
+        monaco.editor.setTheme(themeName);
+      });
+    },
   };
 })();

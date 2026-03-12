@@ -8,6 +8,45 @@
 //! use ironpad_cell::prelude::*;
 //! ```
 
+// ── Host messaging FFI ───────────────────────────────────────────────────────
+
+#[cfg(target_arch = "wasm32")]
+extern "C" {
+    /// Send a JSON-encoded message to the host runtime.
+    fn ironpad_host_message(ptr: *const u8, len: u32);
+}
+
+/// Send a JSON message to the host runtime during cell execution.
+///
+/// This is the generic channel for cell-to-host communication. Messages
+/// are JSON strings dispatched by the executor based on the `"type"` field.
+///
+/// # Panics
+/// Panics if `msg` length exceeds `u32::MAX`.
+pub fn host_message(msg: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bytes = msg.as_bytes();
+        unsafe {
+            ironpad_host_message(bytes.as_ptr(), bytes.len() as u32);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = msg;
+        // No-op outside WASM — host messaging is only available in the browser runtime.
+    }
+}
+
+/// Send a structured message to the host runtime.
+///
+/// Serializes `value` to JSON and sends it via [`host_message`].
+pub fn host_message_json<T: serde::Serialize>(value: &T) {
+    if let Ok(json) = serde_json::to_string(value) {
+        host_message(&json);
+    }
+}
+
 // ── Prelude ──────────────────────────────────────────────────────────────────
 
 pub mod prelude {
@@ -25,6 +64,8 @@ pub mod prelude {
 
     pub use crate::plot::Plot;
     pub use crate::ui;
+    pub use crate::ui::ProgressHandle;
+    pub use crate::{host_message, host_message_json};
     pub use crate::{
         CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Json, Md,
         Svg, Table, TypeTag,
@@ -1939,5 +1980,14 @@ mod tests {
     #[test]
     fn json_type_tag() {
         assert_eq!(Json::type_tag(), "Json");
+    }
+
+    // ── Host messaging ──────────────────────────────────────────────────
+
+    #[test]
+    fn host_message_noop_on_native() {
+        // Should not panic on non-wasm targets.
+        host_message("{\"type\":\"test\"}");
+        host_message_json(&serde_json::json!({"type": "test", "value": 42}));
     }
 }

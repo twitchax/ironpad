@@ -291,6 +291,71 @@
     },
   };
 
+  // ── Custom "ironpad-light" Theme ──────────────────────────────────────────
+  //
+  // Based on vs, customised to match ironpad's light-mode UI palette:
+  //   bg: #f5f6fa, surface: #ffffff, border: #d0d5e0,
+  //   text: #1a1a2e, muted: #8888aa, accent: #d63851.
+
+  var ironpadLightTheme = {
+    base: "vs",
+    inherit: true,
+    rules: [
+      { token: "comment", foreground: "8888aa", fontStyle: "italic" },
+      { token: "string", foreground: "2a7040" },
+      { token: "string.escape", foreground: "8050d0" },
+      { token: "number", foreground: "8050d0" },
+      { token: "number.float", foreground: "8050d0" },
+      { token: "keyword", foreground: "d63851", fontStyle: "bold" },
+      { token: "keyword.control", foreground: "d63851" },
+      { token: "type", foreground: "2080a0" },
+      { token: "type.identifier", foreground: "2080a0" },
+      { token: "entity.name.function", foreground: "3060c0" },
+      { token: "support.function", foreground: "3060c0" },
+      { token: "delimiter", foreground: "444466" },
+      { token: "operator", foreground: "444466" },
+      { token: "metatag", foreground: "c07030" },
+      { token: "key", foreground: "3060c0" },
+      { token: "keyword.rust", foreground: "d63851" },
+      { token: "attribute.rust", foreground: "c07030" },
+      { token: "string.quoted.double.rust", foreground: "2a7040" },
+      { token: "lifetime.rust", foreground: "8050d0", fontStyle: "italic" },
+    ],
+    colors: {
+      "editor.background": "#f5f6fa",
+      "editor.foreground": "#1a1a2e",
+      "editor.lineHighlightBackground": "#eef0f5",
+      "editor.selectionBackground": "#d0d5e080",
+      "editor.inactiveSelectionBackground": "#d0d5e040",
+      "editorCursor.foreground": "#d63851",
+      "editorLineNumber.foreground": "#b0b8c8",
+      "editorLineNumber.activeForeground": "#666688",
+      "editorIndentGuide.background": "#d0d5e0",
+      "editorIndentGuide.activeBackground": "#b0b8c8",
+      "editorBracketMatch.background": "#d6385120",
+      "editorBracketMatch.border": "#d63851",
+      "editorWidget.background": "#ffffff",
+      "editorWidget.border": "#d0d5e0",
+      "editorSuggestWidget.background": "#ffffff",
+      "editorSuggestWidget.border": "#d0d5e0",
+      "editorSuggestWidget.selectedBackground": "#eef0f5",
+      "editorGutter.background": "#f5f6fa",
+      "editorOverviewRuler.border": "#d0d5e0",
+      "scrollbarSlider.background": "#b0b8c880",
+      "scrollbarSlider.hoverBackground": "#9098a8a0",
+      "scrollbarSlider.activeBackground": "#8088a0c0",
+      "minimap.background": "#f5f6fa",
+      "editor.findMatchBackground": "#d6385140",
+      "editor.findMatchHighlightBackground": "#d6385120",
+      "editorError.foreground": "#d63851",
+      "editorWarning.foreground": "#c09030",
+      "editorInfo.foreground": "#3080d0",
+      "peekView.border": "#d0d5e0",
+      "peekViewEditor.background": "#ffffff",
+      "peekViewResult.background": "#f5f6fa",
+    },
+  };
+
   // ── Registration function ─────────────────────────────────────────────────
 
   // Called by the Monaco bridge after the editor AMD module is loaded.
@@ -301,11 +366,13 @@
       monaco.languages.setMonarchTokensProvider("toml", tomlLanguage);
       monaco.languages.setLanguageConfiguration("toml", tomlLanguageConfiguration);
 
-      // Define the custom ironpad-dark theme.
+      // Define the custom ironpad themes.
       monaco.editor.defineTheme("ironpad-dark", ironpadDarkTheme);
+      monaco.editor.defineTheme("ironpad-light", ironpadLightTheme);
 
-      // Set it as the default for all future editors.
-      monaco.editor.setTheme("ironpad-dark");
+      // Apply the theme that matches the current document theme.
+      var currentTheme = document.documentElement.getAttribute("data-theme");
+      monaco.editor.setTheme(currentTheme === "light" ? "ironpad-light" : "ironpad-dark");
     },
   };
 })();

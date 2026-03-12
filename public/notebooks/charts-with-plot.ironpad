@@ -69,6 +69,30 @@
       "cell_type": "Code",
       "source": "// Compute statistics and visualize in one cell\nlet temps: Vec<f64> = vec![18.2, 22.5, 25.1, 28.7, 31.0, 33.4, 32.8, 30.1, 26.5, 21.3, 17.8, 15.2];\nlet months: Vec<(&str, f64)> = [\"Jan\",\"Feb\",\"Mar\",\"Apr\",\"May\",\"Jun\",\"Jul\",\"Aug\",\"Sep\",\"Oct\",\"Nov\",\"Dec\"]\n    .iter()\n    .zip(temps.iter())\n    .map(|(m, t)| (*m, *t))\n    .collect();\n\nlet avg = temps.iter().sum::<f64>() / temps.len() as f64;\n\n// Tuple: data for piping + chart for display\n(\n    format!(\"Average temperature: {avg:.1}°C\"),\n    Plot::bar(&months)\n        .title(\"Monthly Temperatures (°C)\")\n        .y_label(\"°C\"),\n)\n",
       "cargo_toml": "[package]\nname = \"cell_7\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_8",
+      "order": 8,
+      "label": "Tooltips & Labels",
+      "cell_type": "Markdown",
+      "source": "## Tooltips & Point Labels\n\nPlot supports two opt-in features for richer charts:\n\n- **`.tooltips(true)`** — adds hover tooltips to each data point (rendered as SVG `<title>` elements).\n- **`.point_labels(true)`** — draws the numeric value directly on each point or bar.\n\nBoth are off by default. Try hovering over the scatter points below, or reading the values on the bar chart!",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_9",
+      "order": 9,
+      "label": "Scatter with Tooltips",
+      "cell_type": "Code",
+      "source": "// City coordinates (longitude, latitude)\nlet cities: Vec<(f64, f64)> = vec![\n    (-122.4, 37.8),  // San Francisco\n    (-73.9, 40.7),   // New York\n    (-87.6, 41.9),   // Chicago\n    (-118.2, 34.1),  // Los Angeles\n    (-95.4, 29.8),   // Houston\n    (-104.9, 39.7),  // Denver\n    (-122.3, 47.6),  // Seattle\n    (-80.2, 25.8),   // Miami\n];\n\nPlot::scatter(&cities)\n    .title(\"US Cities\")\n    .x_label(\"Longitude\")\n    .y_label(\"Latitude\")\n    .tooltips(true)\n",
+      "cargo_toml": "[package]\nname = \"cell_9\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_10",
+      "order": 10,
+      "label": "Bar with Point Labels",
+      "cell_type": "Code",
+      "source": "Plot::bar(&[\n    (\"Q1\", 42.5),\n    (\"Q2\", 58.3),\n    (\"Q3\", 71.0),\n    (\"Q4\", 63.8),\n])\n.title(\"Quarterly Revenue ($M)\")\n.y_label(\"Revenue\")\n.point_labels(true)\n",
+      "cargo_toml": "[package]\nname = \"cell_10\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
     }
   ]
 }
