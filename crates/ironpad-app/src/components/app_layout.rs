@@ -196,62 +196,92 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
         </div>
 
         <div class="ironpad-header-right">
-            <button
-                class="ironpad-theme-toggle"
-                title="Toggle light/dark theme"
-                on:click=move |_| {
-                    #[cfg(feature = "hydrate")]
-                    {
-                        use wasm_bindgen::JsCast as _;
-
-                        let new_light = !is_light_theme.get_untracked();
-                        is_light_theme.set(new_light);
-                        if let Some(doc) = web_sys::window()
-                            .and_then(|w| w.document())
+            <div class="ironpad-theme-toggle">
+                <button
+                    class=move || if is_light_theme.get() { "ironpad-theme-toggle-segment" } else { "ironpad-theme-toggle-segment ironpad-theme-toggle-segment--active" }
+                    title="Dark mode"
+                    on:click=move |_| {
+                        #[cfg(feature = "hydrate")]
                         {
-                            if let Some(html) = doc.document_element() {
-                                if new_light {
-                                    let _ = html.set_attribute("data-theme", "light");
-                                } else {
+                            use wasm_bindgen::JsCast as _;
+
+                            is_light_theme.set(false);
+                            if let Some(doc) = web_sys::window()
+                                .and_then(|w| w.document())
+                            {
+                                if let Some(html) = doc.document_element() {
                                     let _ = html.remove_attribute("data-theme");
                                 }
                             }
-                        }
-                        if let Some(ls) = web_sys::window()
-                            .and_then(|w| w.local_storage().ok().flatten())
-                        {
-                            let _ = ls.set_item(
-                                "ironpad-theme",
-                                if new_light { "light" } else { "dark" },
-                            );
-                        }
-                        // Switch Monaco editor theme.
-                        if let Some(monaco) = js_sys::Reflect::get(
-                            &web_sys::window().unwrap(),
-                            &"IronpadMonaco".into(),
-                        )
-                        .ok()
-                        .filter(|v| !v.is_undefined())
-                        {
-                            if let Ok(set_theme) =
-                                js_sys::Reflect::get(&monaco, &"setTheme".into())
+                            if let Some(ls) = web_sys::window()
+                                .and_then(|w| w.local_storage().ok().flatten())
                             {
-                                if set_theme.is_function() {
-                                    let f: js_sys::Function = set_theme.unchecked_into();
-                                    let theme_name = if new_light {
-                                        "ironpad-light"
-                                    } else {
-                                        "ironpad-dark"
-                                    };
-                                    let _ = f.call1(&wasm_bindgen::JsValue::NULL, &theme_name.into());
+                                let _ = ls.set_item("ironpad-theme", "dark");
+                            }
+                            if let Some(monaco) = js_sys::Reflect::get(
+                                &web_sys::window().unwrap(),
+                                &"IronpadMonaco".into(),
+                            )
+                            .ok()
+                            .filter(|v| !v.is_undefined())
+                            {
+                                if let Ok(set_theme) =
+                                    js_sys::Reflect::get(&monaco, &"setTheme".into())
+                                {
+                                    if set_theme.is_function() {
+                                        let f: js_sys::Function = set_theme.unchecked_into();
+                                        let _ = f.call1(&wasm_bindgen::JsValue::NULL, &"ironpad-dark".into());
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            >
-                {move || if is_light_theme.get() { "☀" } else { "🌙" }}
-            </button>
+                >
+                    "🌙"
+                </button>
+                <button
+                    class=move || if is_light_theme.get() { "ironpad-theme-toggle-segment ironpad-theme-toggle-segment--active" } else { "ironpad-theme-toggle-segment" }
+                    title="Light mode"
+                    on:click=move |_| {
+                        #[cfg(feature = "hydrate")]
+                        {
+                            use wasm_bindgen::JsCast as _;
+
+                            is_light_theme.set(true);
+                            if let Some(doc) = web_sys::window()
+                                .and_then(|w| w.document())
+                            {
+                                if let Some(html) = doc.document_element() {
+                                    let _ = html.set_attribute("data-theme", "light");
+                                }
+                            }
+                            if let Some(ls) = web_sys::window()
+                                .and_then(|w| w.local_storage().ok().flatten())
+                            {
+                                let _ = ls.set_item("ironpad-theme", "light");
+                            }
+                            if let Some(monaco) = js_sys::Reflect::get(
+                                &web_sys::window().unwrap(),
+                                &"IronpadMonaco".into(),
+                            )
+                            .ok()
+                            .filter(|v| !v.is_undefined())
+                            {
+                                if let Ok(set_theme) =
+                                    js_sys::Reflect::get(&monaco, &"setTheme".into())
+                                {
+                                    if set_theme.is_function() {
+                                        let f: js_sys::Function = set_theme.unchecked_into();
+                                        let _ = f.call1(&wasm_bindgen::JsValue::NULL, &"ironpad-light".into());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                >
+                    "☀"
+                </button>
+            </div>
             {move || ctx.show_save_button.get().then(|| {
                 view! {
                     <Button
