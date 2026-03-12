@@ -717,7 +717,7 @@ fn render_button(
     };
 
     #[cfg(not(feature = "hydrate"))]
-    let on_click = move |_: web_sys::MouseEvent| {};
+    let on_click = move |_: leptos::web_sys::MouseEvent| {};
     let _ = (&cell_id, &widget_ctx);
 
     view! {

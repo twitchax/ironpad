@@ -937,7 +937,7 @@ fn ViewOnlyInteractiveWidget(
             };
 
             #[cfg(not(feature = "hydrate"))]
-            let on_click = move |_: web_sys::MouseEvent| {};
+            let on_click = move |_: leptos::web_sys::MouseEvent| {};
             let _ = (&cell_id, &run_all_queue);
 
             view! {

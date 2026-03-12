@@ -1,7 +1,7 @@
 ---
 id: PRD-0008
 title: "UX Polish: Theming, Drag-Drop, Plot Interactivity, Progress Bar & Host Messaging"
-status: draft
+status: done
 owner: "Aaron Roney"
 created: 2026-03-11
 updated: 2026-03-11
@@ -92,7 +92,7 @@ tasks:
 - id: T-019
   title: "Style the Run All button"
   priority: 1
-  status: todo
+  status: done
   notes: >
     In style/main.scss, add proper styles for `.ironpad-run-all-button`:
     gradient background using --ip-accent, rounded corners, hover/active
@@ -103,7 +103,7 @@ tasks:
 - id: T-020
   title: "Make raw output collapsible (collapsed by default)"
   priority: 1
-  status: todo
+  status: done
   notes: >
     In cell_output.rs (editor) and view_only_notebook.rs: wrap the raw
     output hex dump section in an HTML <details>/<summary> element.
@@ -113,7 +113,7 @@ tasks:
 - id: T-021
   title: "Fix deprecated wasm-bindgen init parameters"
   priority: 1
-  status: todo
+  status: done
   notes: >
     In public/executor.js line 59, change:
       `var wasm = await mod.default(wasmBytes);`
@@ -128,7 +128,7 @@ tasks:
 - id: T-022
   title: "Add light theme CSS variables"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In style/main.scss, add a `[data-theme="light"]` selector block that
     overrides ALL --ip-* CSS variables with light-appropriate values:
@@ -140,7 +140,7 @@ tasks:
 - id: T-023
   title: "Add theme toggle button to notebook toolbar"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Add a 🌙/☀ toggle button in the upper-right area of the notebook
     toolbar (mod.rs). On click: toggle `data-theme` attribute on
@@ -153,7 +153,7 @@ tasks:
 - id: T-024
   title: "Theme initialization script"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Add a small inline <script> in the HTML head (or a public JS file)
     that reads localStorage("ironpad-theme") and sets data-theme on
@@ -165,7 +165,7 @@ tasks:
 - id: T-025
   title: "Add SortableJS dependency"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Add SortableJS to the project. Options: (a) npm install sortablejs
     and include via a <script> tag from node_modules or a CDN, or
@@ -176,7 +176,7 @@ tasks:
 - id: T-026
   title: "Add drag handle to cell side actions"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In cell_item.rs, add a drag handle element (⠿ or ☰ icon) to the
     .ironpad-cell-side-actions div. It should appear above or below the
@@ -187,7 +187,7 @@ tasks:
 - id: T-027
   title: "Initialize SortableJS on the cell list"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In mod.rs (NotebookContent), after the cell list renders, initialize
     SortableJS on the container div that holds the <For> loop of cells.
@@ -202,7 +202,7 @@ tasks:
 - id: T-028
   title: "Add tooltip builder methods to Plot"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In plot.rs, add a `tooltips` field (bool, default false) and a
     `.tooltips(enabled: bool)` builder method to Plot. When enabled,
@@ -217,7 +217,7 @@ tasks:
 - id: T-029
   title: "Add CSS hover effects for plot elements"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In style/main.scss, add CSS rules for SVG elements inside
     .ironpad-output-svg (or wherever plots render): on hover, increase
@@ -228,7 +228,7 @@ tasks:
 - id: T-030
   title: "Update plot example notebooks"
   priority: 3
-  status: todo
+  status: done
   notes: >
     Update the charts-with-plot.ironpad example notebook to demonstrate
     the new tooltip and point_labels features. Add a cell showing
@@ -239,7 +239,7 @@ tasks:
 - id: T-031
   title: "Add host_message FFI to ironpad-cell"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In ironpad-cell/src/lib.rs, declare a host-imported FFI function:
       extern "C" { fn ironpad_host_message(ptr: *const u8, len: u32); }
@@ -252,7 +252,7 @@ tasks:
 - id: T-032
   title: "Implement host_message import in executor.js"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In public/executor.js, when loading a wasm-bindgen module, provide
     `ironpad_host_message` as an import. The function reads the JSON
@@ -266,7 +266,7 @@ tasks:
 - id: T-033
   title: "Add progress bar widget to ironpad-cell"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In ironpad-cell/src/ui.rs, add a ProgressBar builder:
       pub struct ProgressBar { label: Option<String>, initial: f64, id: String }
@@ -282,7 +282,7 @@ tasks:
 - id: T-034
   title: "Render progress bar widget in editor and view-only"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In cell_output.rs and view_only_notebook.rs, add rendering for
     kind="progress" widgets. Render as an HTML progress bar element
@@ -295,7 +295,7 @@ tasks:
 - id: T-035
   title: "Wire executor progress_update handler to DOM"
   priority: 2
-  status: todo
+  status: done
   notes: >
     In executor.js, implement the progress_update message handler:
     when a host_message with type="progress_update" arrives, find the
@@ -310,7 +310,7 @@ tasks:
 - id: T-036
   title: "Add progress bar example notebook"
   priority: 3
-  status: todo
+  status: done
   notes: >
     Create a public/notebooks/progress-bar.ironpad example that
     demonstrates: (1) a cell creating a progress bar, (2) a subsequent
