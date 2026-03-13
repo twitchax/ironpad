@@ -137,7 +137,9 @@ pub(crate) fn start_session(
     });
 
     // Store the WebSocket on window so end_session can close it.
-    let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__ironpad_session_ws"), &ws);
+    if js_sys::Reflect::set(&window, &JsValue::from_str("__ironpad_session_ws"), &ws).is_err() {
+        web_sys::console::error_1(&"failed to store WebSocket on window".into());
+    }
 
     Ok(())
 }

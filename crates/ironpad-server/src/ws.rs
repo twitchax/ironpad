@@ -355,13 +355,32 @@ async fn handle_guest_message(
     match &msg.kind {
         // Guest sends mutations → forward to host.
         MessageKind::Mutation(_) => {
-            state.ws.send_to_host(notebook_id, text).await;
+            if !state.ws.send_to_host(notebook_id, text).await {
+                let err = wire_msg(
+                    &msg.id,
+                    MessageKind::Response(Response::Error {
+                        code: ErrorCode::SessionNotFound,
+                        message: "host disconnected".into(),
+                    }),
+                );
+                state.ws.send_to_guest(client_id, &err).await;
+            }
         }
 
         // Guest sends queries → forward to host, track for response routing.
         MessageKind::Query(_) => {
             state.ws.track_query(&msg.id, client_id).await;
-            state.ws.send_to_host(notebook_id, text).await;
+            if !state.ws.send_to_host(notebook_id, text).await {
+                state.ws.resolve_query(&msg.id).await;
+                let err = wire_msg(
+                    &msg.id,
+                    MessageKind::Response(Response::Error {
+                        code: ErrorCode::SessionNotFound,
+                        message: "host disconnected".into(),
+                    }),
+                );
+                state.ws.send_to_guest(client_id, &err).await;
+            }
         }
 
         // Guests don't send events, responses, or control messages.

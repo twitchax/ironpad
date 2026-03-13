@@ -29,7 +29,10 @@ pub fn daemon_dir() -> PathBuf {
 fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
-        .expect("HOME environment variable must be set")
+        .unwrap_or_else(|_| {
+            eprintln!("error: HOME environment variable is not set");
+            std::process::exit(1);
+        })
 }
 
 pub fn socket_path() -> PathBuf {
@@ -93,7 +96,9 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
     };
     let (init_tx, init_rx) = oneshot::channel::<String>();
     state.pending.write().await.insert(init_id, init_tx);
-    let _ = ws_tx.send(serde_json::to_string(&init_msg)?);
+    if ws_tx.send(serde_json::to_string(&init_msg)?).is_err() {
+        tracing::warn!("failed to send initial NotebookGet query — WS channel closed");
+    }
 
     // ── Task: forward channel → WebSocket ───────────────────────────────
 
@@ -122,19 +127,20 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
     });
 
     // Wait for initial notebook fetch.
-    if let Ok(response_text) =
-        tokio::time::timeout(std::time::Duration::from_secs(10), init_rx).await
-    {
-        if let Ok(text) = response_text {
-            if let Ok(msg) = serde_json::from_str::<protocol::Message>(&text) {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), init_rx).await {
+        Ok(Ok(text)) => match serde_json::from_str::<protocol::Message>(&text) {
+            Ok(msg) => {
                 if let MessageKind::Response(protocol::Response::Notebook { notebook }) = msg.kind {
                     *state.notebook.write().await = Some(notebook);
                     tracing::info!("notebook state cached");
+                } else {
+                    tracing::warn!("unexpected response kind for NotebookGet: {:?}", msg.kind);
                 }
             }
-        }
-    } else {
-        tracing::warn!("timed out waiting for initial notebook state");
+            Err(e) => tracing::warn!("failed to parse NotebookGet response: {e}"),
+        },
+        Ok(Err(_)) => tracing::warn!("NotebookGet response channel closed"),
+        Err(_) => tracing::warn!("timed out waiting for initial notebook state"),
     }
 
     // ── Task: Unix socket listener ──────────────────────────────────────

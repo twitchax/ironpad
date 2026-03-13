@@ -206,7 +206,13 @@ async fn main() {
         Command::Cells(cmd) => handle_cells_command(cmd).await,
 
         Command::Raw { command, args } => {
-            let args: serde_json::Value = serde_json::from_str(&args).unwrap_or_default();
+            let args: serde_json::Value = match serde_json::from_str(&args) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("invalid JSON args: {e}");
+                    std::process::exit(1);
+                }
+            };
             let response = send_ipc(&command, args).await;
             print_response(&response);
         }
@@ -329,9 +335,10 @@ fn resolve_source(source: Option<String>, source_file: Option<String>) -> Option
     if let Some(ref s) = source {
         if s == "-" {
             let mut buf = String::new();
-            std::io::stdin()
-                .read_to_string(&mut buf)
-                .expect("failed to read stdin");
+            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                eprintln!("failed to read stdin: {e}");
+                std::process::exit(1);
+            }
             return Some(buf);
         }
         return source;
