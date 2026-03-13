@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ironpad-app",
+    "crates/ironpad-cli",
     "crates/ironpad-frontend",
     "crates/ironpad-server",
     "crates/ironpad-cell",
@@ -62,6 +63,7 @@ console_error_panic_hook = "0.1"
 
 # Async utilities
 futures = "0.3"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 
 # Error handling
 thiserror = "2"
