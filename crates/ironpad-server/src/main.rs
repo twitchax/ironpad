@@ -1,9 +1,11 @@
 mod config;
-#[allow(dead_code)] // Consumed by the WebSocket relay (0005).
 pub(crate) mod sessions;
+pub(crate) mod state;
+pub(crate) mod ws;
 
 use std::net::SocketAddr;
 
+use axum::routing::get;
 use axum::Router;
 use clap::Parser;
 use leptos::prelude::*;
@@ -13,6 +15,7 @@ use ironpad_app::*;
 use ironpad_common::AppConfig;
 
 use crate::config::CliArgs;
+use crate::state::{AppState, WsState};
 
 #[tokio::main]
 async fn main() {
@@ -34,6 +37,12 @@ async fn main() {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
+    let app_state = AppState {
+        leptos_options: leptos_options.clone(),
+        config: config.clone(),
+        ws: WsState::default(),
+    };
+
     // Thaw's `ToasterProvider` creates an effect that calls `spawn_local` during
     // route generation. Entering a `LocalSet` gives `spawn_local` a valid context;
     // the spawned tasks are never driven since we only need the route list.
@@ -42,8 +51,10 @@ async fn main() {
     let routes = generate_route_list(App);
 
     let app = Router::new()
+        .route("/ws/host", get(ws::ws_host_handler))
+        .route("/ws/connect", get(ws::ws_connect_handler))
         .leptos_routes_with_context(
-            &leptos_options,
+            &app_state,
             routes,
             {
                 let config = config.clone();
@@ -56,8 +67,8 @@ async fn main() {
                 move || shell(leptos_options.clone())
             },
         )
-        .fallback(leptos_axum::file_and_error_handler(shell))
-        .with_state(leptos_options);
+        .fallback(leptos_axum::file_and_error_handler::<AppState, _>(shell))
+        .with_state(app_state);
 
     tracing::info!("listening on http://{}", &addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();

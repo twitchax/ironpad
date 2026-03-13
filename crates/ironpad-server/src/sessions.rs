@@ -155,6 +155,17 @@ impl SessionStore {
         to_remove
     }
 
+    /// Return all non-expired sessions.
+    pub async fn all_sessions(&self) -> Vec<Session> {
+        let sessions = self.sessions.read().await;
+        let now = Utc::now();
+        sessions
+            .values()
+            .filter(|s| s.expires_at > now)
+            .cloned()
+            .collect()
+    }
+
     /// Remove expired sessions. Call periodically to prevent unbounded growth.
     pub async fn sweep_expired(&self) -> usize {
         let mut sessions = self.sessions.write().await;
