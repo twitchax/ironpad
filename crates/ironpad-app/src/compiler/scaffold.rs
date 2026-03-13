@@ -30,7 +30,7 @@ pub fn scaffold_micro_crate(
     cell_id: &str,
     source: &str,
     cargo_toml: &str,
-    previous_cell_types: &[Option<String>],
+    previous_cell_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
 ) -> anyhow::Result<(PathBuf, u32, bool)> {
@@ -308,7 +308,7 @@ fn needs_async(source: &str) -> bool {
 /// and `is_async` indicates whether the cell wrapper is async.
 pub fn generate_lib_rs(
     source: &str,
-    previous_cell_types: &[Option<String>],
+    previous_cell_types: &[String],
     has_shared_source: bool,
 ) -> (String, u32, bool) {
     let is_async = needs_async(source);
@@ -316,7 +316,8 @@ pub fn generate_lib_rs(
     let typed_cells: Vec<(usize, &str)> = previous_cell_types
         .iter()
         .enumerate()
-        .filter_map(|(i, opt)| opt.as_deref().map(|tag| (i, tag)))
+        .filter(|(_, tag)| !tag.is_empty())
+        .map(|(i, tag)| (i, tag.as_str()))
         .collect();
     let typed_count = typed_cells.len() as u32;
 
@@ -546,7 +547,7 @@ serde = { version = "1", features = ["derive"] }
 
     #[test]
     fn generate_lib_rs_with_typed_cells() {
-        let types: Vec<Option<String>> = vec![Some("u32".into()), Some("String".into())];
+        let types: Vec<String> = vec!["u32".into(), "String".into()];
         let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
         // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
@@ -564,7 +565,7 @@ serde = { version = "1", features = ["derive"] }
 
     #[test]
     fn generate_lib_rs_with_mixed_types() {
-        let types: Vec<Option<String>> = vec![Some("u32".into()), None, Some("bool".into())];
+        let types: Vec<String> = vec!["u32".into(), String::new(), "bool".into()];
         let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
         // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
@@ -580,7 +581,7 @@ serde = { version = "1", features = ["derive"] }
 
     #[test]
     fn generate_lib_rs_all_none_types() {
-        let types: Vec<Option<String>> = vec![None, None];
+        let types: Vec<String> = vec![String::new(), String::new()];
         let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
         // 6 base + 3 (ptr reconstruction + inputs) + 0 typed + 0 last = 9
@@ -812,7 +813,7 @@ serde = "1"
 
     #[test]
     fn generate_lib_rs_async_with_typed_cells() {
-        let types: Vec<Option<String>> = vec![Some("u32".into())];
+        let types: Vec<String> = vec!["u32".into()];
         let (lib_rs, preamble, is_async) = generate_lib_rs("    cell0.await", &types, false);
 
         assert!(is_async);

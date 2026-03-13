@@ -127,3 +127,8 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 - **Notebook tagging/filtering**: Tags on notebooks for organization, search/filter on home page
 - **LSP integration**: Full rust-analyzer completions in Monaco (per-cell analysis)
 - **Collaboration**: Real-time multi-user editing via WebSocket
+- Button to download / upload notebooks as JSON files (sharing already exists, but that requires persistent server).
+- Notebook with a bunch of cool mandelbrot zooms, cellular automata, physics simulations, etc. to show off capabilities.
+- Pedantic clippy / unwrap / unnecessary Box / Arc pass.
+- UI cleanup.
+- CI cleanup.

@@ -445,15 +445,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     .filter(|c| c.cell_type == CellType::Code)
                     .collect();
                 let mut all_outputs: Vec<&[u8]> = Vec::new();
-                let mut types: Vec<Option<String>> = Vec::new();
+                let mut types: Vec<String> = Vec::new();
 
                 for c in &prev_code_cells {
                     if let Some(data) = outputs.get(&c.id) {
                         all_outputs.push(&data.bytes);
-                        types.push(data.type_tag.clone());
+                        types.push(data.type_tag.clone().unwrap_or_default());
                     } else {
                         all_outputs.push(&[]);
-                        types.push(None);
+                        types.push(String::new());
                     }
                 }
 

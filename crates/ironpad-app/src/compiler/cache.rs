@@ -22,7 +22,7 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 pub fn content_hash(
     source: &str,
     cargo_toml: &str,
-    previous_types: &[Option<String>],
+    previous_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
 ) -> String {
@@ -31,7 +31,7 @@ pub fn content_hash(
     hasher.update(cargo_toml.as_bytes());
     hasher.update(TARGET_TRIPLE.as_bytes());
     for t in previous_types {
-        hasher.update(t.as_deref().unwrap_or("").as_bytes());
+        hasher.update(t.as_bytes());
         hasher.update(b"\x00");
     }
     if let Some(shared) = shared_cargo_toml {
@@ -173,8 +173,8 @@ mod tests {
         let s = "let x = 1;";
         let c = "[dependencies]";
         let a = content_hash(s, c, &[], None, None);
-        let b = content_hash(s, c, &[Some("u32".into())], None, None);
-        let d = content_hash(s, c, &[Some("String".into())], None, None);
+        let b = content_hash(s, c, &["u32".into()], None, None);
+        let d = content_hash(s, c, &["String".into()], None, None);
         assert_ne!(a, b);
         assert_ne!(b, d);
     }
@@ -183,8 +183,8 @@ mod tests {
     fn hash_distinguishes_type_positions() {
         let s = "x";
         let c = "y";
-        let a = content_hash(s, c, &[Some("u32".into()), None], None, None);
-        let b = content_hash(s, c, &[None, Some("u32".into())], None, None);
+        let a = content_hash(s, c, &["u32".into(), String::new()], None, None);
+        let b = content_hash(s, c, &[String::new(), "u32".into()], None, None);
         assert_ne!(a, b);
     }
 

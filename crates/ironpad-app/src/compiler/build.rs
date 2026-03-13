@@ -12,7 +12,7 @@ use anyhow::Context;
 use tokio::process::Command;
 
 /// Hard timeout for a single `cargo build` invocation.
-const BUILD_TIMEOUT: Duration = Duration::from_secs(30);
+const BUILD_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── Build Result ─────────────────────────────────────────────────────────────
 

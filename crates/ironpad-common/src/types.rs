@@ -14,8 +14,9 @@ pub struct CompileRequest {
     pub source: String,
     pub cargo_toml: String,
     /// Type tags from all previous cells, used to generate typed input bindings.
+    /// Empty string means the cell has no type tag (display-only output).
     #[serde(default)]
-    pub previous_cell_types: Vec<Option<String>>,
+    pub previous_cell_types: Vec<String>,
     /// Notebook-level shared Cargo.toml whose dependencies are merged with per-cell deps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_cargo_toml: Option<String>,

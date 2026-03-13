@@ -243,7 +243,7 @@ mod pipeline_tests {
     #[test]
     fn scaffold_generates_typed_cell_bindings() {
         // With two typed previous cells.
-        let types: Vec<Option<String>> = vec![Some("u32".into()), Some("String".into())];
+        let types: Vec<String> = vec!["u32".into(), "String".into()];
         let (code, preamble, _) = generate_lib_rs("    let x = cell0 + 1;", &types, false);
 
         assert!(code.contains("let cell0: u32"));
