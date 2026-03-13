@@ -93,4 +93,4 @@ Once **0005** lands:
 | [0008](./0008-cli-daemon.md) | CLI Daemon | **done** | Long-lived process with WS connection and Unix socket IPC |
 | [0009](./0009-cli-client.md) | CLI Client | **done** | Agent-facing subcommands with JSON output |
 | [0010](./0010-integration-testing.md) | Integration Testing | **done** | End-to-end Playwright + CLI subprocess tests |
-| [0011](./0011-repo-alignment.md) | Repo Alignment | not started | Final sweep: workspace manifest, CI, Docker, cargo-make, dependency hygiene, dead code audit |
+| [0011](./0011-repo-alignment.md) | Repo Alignment | **done** | Final sweep: workspace manifest, CI, Docker, cargo-make, dependency hygiene, dead code audit |

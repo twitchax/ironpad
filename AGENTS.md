@@ -4,14 +4,14 @@ This document provides guidance for AI coding agents working in the ironpad repo
 
 ## Quick Overview
 
-**ironpad** is an interactive Rust notebook environment that compiles cells to WebAssembly and executes them in the browser. The codebase is ~7.6k LoC across 5 Rust crates, with a full-stack Leptos (SSR/WASM) frontend, Axum server, and a sophisticated multi-stage compiler pipeline.
+**ironpad** is an interactive Rust notebook environment that compiles cells to WebAssembly and executes them in the browser. It supports real-time collaboration between humans and AI agents via WebSocket. The codebase spans 6 Rust crates, with a full-stack Leptos (SSR/WASM) frontend, Axum server with WebSocket relay, and a CLI daemon for agent interaction.
 
 ### Key Statistics
-- **Total LoC**: ~7.6k (ironpad-app) + supporting crates
-- **Crates**: 5 (app, server, frontend, common, cell)
+- **Crates**: 6 (app, cli, server, frontend, common, cell)
 - **Compiler modules**: 6 (scaffold, cache, build, diagnostics, optimize, mod)
 - **Framework**: Leptos 0.8 + Axum + Monaco editor
 - **Build tool**: cargo-make (all dev commands)
+- **Collaboration**: WebSocket relay + CLI daemon + session/token management
 
 ---
 
@@ -19,14 +19,15 @@ This document provides guidance for AI coding agents working in the ironpad repo
 
 ```
 crates/
-  ironpad-app/          # Core: compiler, UI, storage, pages
-  ironpad-server/       # HTTP server entry (minimal)
+  ironpad-app/          # Core: compiler, UI, storage, pages, model, session
+  ironpad-cli/          # CLI daemon + agent commands
+  ironpad-server/       # HTTP server + WebSocket relay + session management
   ironpad-frontend/     # WASM hydration (minimal)
-  ironpad-common/       # Shared types (IronpadNotebook, CompileRequest, etc.)
+  ironpad-common/       # Shared types + collaboration protocol
   ironpad-cell/         # Cell runtime (injected into every cell)
 
 docker/                 # Multi-stage build + docker-compose
-tests/e2e/              # Playwright e2e tests
+tests/e2e/              # Playwright e2e tests (including agent session tests)
 public/                 # executor.js, storage.js, Monaco editor, public notebooks
 style/                  # SCSS styles
 data/                   # Server-side shares + public notebook index
@@ -65,15 +66,17 @@ cargo make uat
 
 | Task               | Purpose                                            |
 | ------------------ | -------------------------------------------------- |
+| `install-tools`    | Install all dev tools + wasm target                |
 | `dev`              | Start cargo-leptos watch (dev server, live reload) |
 | `build`            | Release build via cargo-leptos                     |
+| `build-cli`        | Build ironpad-cli binary (release)                 |
 | `fmt`              | Auto-format all Rust code                          |
 | `fmt-check`        | Check formatting (no changes)                      |
 | `clippy`           | Run clippy lints                                   |
 | `test`             | Unit/integration tests via cargo-nextest           |
 | `test-integration` | Slow tests (requires wasm32 target)                |
 | `ci`               | fmt-check + clippy + test                          |
-| `playwright`       | Run Playwright e2e tests                           |
+| `playwright`       | Build CLI + run Playwright e2e tests               |
 | `uat`              | ci + test-integration + playwright                 |
 | `docker-build`     | Build Docker image                                 |
 | `docker-up`        | Start container via docker-compose                 |
@@ -168,8 +171,29 @@ The core of ironpad is a 5-stage WASM compiler:
 - `/notebook/{id}` — NotebookEditorPage (private, IndexedDB-backed)
 - `/notebook/public/{filename}` — PublicNotebookPage (read-only, static `.ironpad` file)
 - `/shared/{hash}` — SharedNotebookPage (read-only, shared via hash)
+- `/ws/host?notebook_id=<id>` — WebSocket: browser connects as session host
+- `/ws/connect?token=<token>` — WebSocket: CLI connects as session guest
 
 Cell I/O uses **bincode 2.0** serialization for piping output between cells.
+
+### Agent Collaboration Architecture
+
+The browser is the authoritative model server. The API server is a dumb relay. The CLI daemon keeps a warm WebSocket connection for fast agent interactions.
+
+```
+Browser (model) ←→ WS ←→ API Server (relay) ←→ WS ←→ CLI Daemon ←→ Agent
+```
+
+Key modules:
+- **`ironpad-common/src/protocol.rs`** — unified message protocol (mutations, queries, events, control messages)
+- **`ironpad-server/src/sessions.rs`** — session store, token generation/validation, permission checking
+- **`ironpad-server/src/ws.rs`** — WebSocket relay handlers
+- **`ironpad-server/src/state.rs`** — shared server state (`AppState`, `WsState`)
+- **`ironpad-app/src/model.rs`** — `NotebookModel` — all mutations go through here (same codepath for UI and agent)
+- **`ironpad-app/src/session/`** — browser-side WebSocket session management
+- **`ironpad-app/src/components/session_panel.rs`** — session UI (start/stop, token display, agent list)
+- **`ironpad-cli/src/daemon.rs`** — CLI daemon (WS connection, Unix socket IPC, state cache)
+- **`ironpad-cli/src/main.rs`** — CLI subcommands (cells list/get/add/update/delete/reorder, notebook, status)
 
 ### Frontend Architecture
 
@@ -279,10 +303,15 @@ Check browser console (F12) for JS errors, especially:
 Files you'll frequently modify:
 
 - **Compiler logic**: `crates/ironpad-app/src/compiler/*.rs`
+- **Notebook model**: `crates/ironpad-app/src/model.rs`
 - **UI components**: `crates/ironpad-app/src/components/*.rs`
+- **Session management**: `crates/ironpad-app/src/session/`
 - **Client storage**: `crates/ironpad-app/src/storage/*.rs` (IndexedDB bindings)
 - **Server functions**: `crates/ironpad-app/src/server_fns.rs`
 - **Pages**: `crates/ironpad-app/src/pages/*.rs`
+- **WebSocket relay**: `crates/ironpad-server/src/ws.rs`, `state.rs`, `sessions.rs`
+- **Protocol types**: `crates/ironpad-common/src/protocol.rs`
+- **CLI daemon/commands**: `crates/ironpad-cli/src/`
 - **Styles**: `style/main.scss`
 - **IndexedDB JS**: `public/storage.js`
 - **Public notebooks**: `public/notebooks/*.ironpad`
