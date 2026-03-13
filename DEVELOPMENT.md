@@ -33,16 +33,17 @@ cargo make uat
 
 | Task               | Purpose                                            |
 | ------------------ | -------------------------------------------------- |
-| `install-tools`    | Install all required dev tools                     |
+| `install-tools`    | Install all required dev tools + wasm target       |
 | `dev`              | Start cargo-leptos watch (dev server, live reload) |
 | `build`            | Release build via cargo-leptos                     |
+| `build-cli`        | Build ironpad-cli binary (release)                 |
 | `fmt`              | Auto-format all Rust code                          |
 | `fmt-check`        | Check formatting (no changes)                      |
 | `clippy`           | Run clippy lints (`-D warnings`)                   |
 | `test`             | Unit/integration tests via cargo-nextest           |
 | `test-integration` | Slow tests (requires wasm32 target)                |
 | `ci`               | fmt-check + clippy + test                          |
-| `playwright`       | Run Playwright e2e tests                           |
+| `playwright`       | Build CLI + run Playwright e2e tests               |
 | `uat`              | ci + test-integration + playwright                 |
 | `docker-build`     | Build Docker image                                 |
 | `docker-up`        | Start container via docker-compose                 |
@@ -53,22 +54,24 @@ cargo make uat
 
 ## Architecture Overview
 
-ironpad is a Cargo workspace with 5 crates:
+ironpad is a Cargo workspace with 6 crates:
 
 | Crate                | Role                                                                                                                     |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **ironpad-app**      | Core crate — compiler pipeline, Leptos UI components, client-side storage (IndexedDB), server functions                  |
-| **ironpad-server**   | Axum HTTP server entry point (minimal — `main.rs` + `config.rs`)                                                         |
+| **ironpad-app**      | Core crate — compiler pipeline, Leptos UI components, notebook model, session management, client-side storage            |
+| **ironpad-server**   | Axum HTTP server — Leptos SSR, WebSocket relay for agent collaboration, session/token management                         |
 | **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos)                                                        |
-| **ironpad-common**   | Shared types: `CompileRequest`, `CompileResponse`, `IronpadNotebook`, `PublicNotebookSummary`, `Diagnostic`, `AppConfig` |
+| **ironpad-common**   | Shared types: `CompileRequest`, `IronpadNotebook`, `Diagnostic`, `AppConfig`, collaboration protocol (`protocol.rs`)     |
 | **ironpad-cell**     | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports                 |
+| **ironpad-cli**      | CLI daemon + agent commands for programmatic notebook interaction via WebSocket                                           |
 
 ```
 crates/
-  ironpad-app/          # Core: compiler, UI, storage, pages
-  ironpad-server/       # HTTP server entry
+  ironpad-app/          # Core: compiler, UI, storage, pages, model, session
+  ironpad-cli/          # CLI daemon + agent commands
+  ironpad-server/       # HTTP server + WebSocket relay
   ironpad-frontend/     # WASM hydration entry
-  ironpad-common/       # Shared types
+  ironpad-common/       # Shared types + collaboration protocol
   ironpad-cell/         # Cell runtime (injected into every cell)
 ```
 
@@ -117,6 +120,55 @@ scaffold → cache check → cargo build → diagnostics → wasm-opt
 | `window.IronpadStorage.*`  | IndexedDB storage (notebook CRUD, from `public/storage.js`)     |
 
 Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) code paths.
+
+---
+
+## Agent Collaboration
+
+ironpad supports real-time collaboration between a human user in the browser and AI agents connected via CLI.
+
+### Architecture
+
+```
+Browser (model server) ←→ WebSocket ←→ API Server (relay) ←→ WebSocket ←→ CLI Daemon ←→ Agent
+```
+
+- The **browser** owns the notebook state (IndexedDB). It is the authoritative model server.
+- The **API server** relays messages and enforces session/token-based access control.
+- The **CLI daemon** maintains a warm WebSocket connection and caches notebook state for fast reads.
+
+### Quick Start
+
+```bash
+# 1. Start the dev server
+cargo make dev
+
+# 2. Open a notebook in the browser and click "Start Agent Session"
+# 3. Copy the token
+
+# 4. In another terminal, start the CLI daemon
+cargo make build-cli
+./target/release/ironpad-cli --host ws://localhost:3111 --token <TOKEN> daemon
+
+# 5. In a third terminal, interact with the notebook
+./target/release/ironpad-cli cells list
+./target/release/ironpad-cli cells add --source 'let x = 42;' --label "My Cell"
+./target/release/ironpad-cli cells update <CELL_ID> --source 'let x = 99;'
+```
+
+### WebSocket Routes
+
+| Route | Purpose |
+|-------|---------|
+| `GET /ws/host?notebook_id=<id>` | Browser connects as session host |
+| `GET /ws/connect?token=<token>` | CLI connects as session guest |
+
+### CLI Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `IRONPAD_HOST` | Server WebSocket URL (e.g. `ws://localhost:3111`) |
+| `IRONPAD_TOKEN` | Session token |
 
 ---
 

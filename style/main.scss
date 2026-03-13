@@ -2490,3 +2490,154 @@ samp,
 .ironpad-drag-handle:hover {
     color: var(--ip-text-secondary);
 }
+
+/* ── Session panel ─────────────────────────────────────────────────────── */
+
+.ironpad-session-wrapper {
+    position: relative;
+    display: inline-block;
+}
+
+.ironpad-session-button {
+    background: transparent;
+    border: 1px solid var(--ip-border);
+    color: var(--ip-text-secondary);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    white-space: nowrap;
+
+    &:hover {
+        border-color: var(--ip-text-secondary);
+        color: var(--ip-text-primary);
+    }
+
+    &--active {
+        border-color: var(--ip-accent);
+        color: var(--ip-accent);
+
+        &:hover {
+            background: rgba(var(--ip-accent-rgb, 100, 200, 255), 0.1);
+        }
+    }
+}
+
+.ironpad-session-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 1000;
+    background: var(--ip-surface-1);
+    border: 1px solid var(--ip-border);
+    border-radius: 8px;
+    padding: 16px;
+    min-width: 360px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.ironpad-session-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.ironpad-session-panel-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--ip-text-primary);
+}
+
+.ironpad-session-panel-close {
+    background: transparent;
+    border: none;
+    color: var(--ip-text-tertiary);
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 2px 6px;
+
+    &:hover {
+        color: var(--ip-text-primary);
+    }
+}
+
+.ironpad-session-label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--ip-text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+}
+
+.ironpad-session-token-section,
+.ironpad-session-cli-section,
+.ironpad-session-agents-section {
+    margin-bottom: 12px;
+}
+
+.ironpad-session-token-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ironpad-session-token {
+    font-family: var(--ip-font-mono);
+    font-size: 0.8rem;
+    color: var(--ip-accent);
+    background: var(--ip-surface-0);
+    padding: 4px 8px;
+    border-radius: 4px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ironpad-session-token-toggle,
+.ironpad-session-token-copy {
+    background: transparent;
+    border: 1px solid var(--ip-border);
+    color: var(--ip-text-secondary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+
+    &:hover {
+        color: var(--ip-text-primary);
+        border-color: var(--ip-text-secondary);
+    }
+}
+
+.ironpad-session-cli-cmd {
+    display: block;
+    font-family: var(--ip-font-mono);
+    font-size: 0.75rem;
+    color: var(--ip-text-secondary);
+    background: var(--ip-surface-0);
+    padding: 6px 8px;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    word-break: break-all;
+}
+
+.ironpad-session-no-agents {
+    font-size: 0.8rem;
+    color: var(--ip-text-tertiary);
+    font-style: italic;
+}
+
+.ironpad-session-agent-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.ironpad-session-actions {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ip-border);
+}

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ironpad-app",
+    "crates/ironpad-cli",
     "crates/ironpad-frontend",
     "crates/ironpad-server",
     "crates/ironpad-cell",
@@ -38,8 +39,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "2"
 
-# Hashing
+# Hashing & crypto
 blake3 = "1"
+rand = "0.9"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -58,6 +60,10 @@ wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
+
+# Async utilities
+futures = "0.3"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 
 # Error handling
 thiserror = "2"

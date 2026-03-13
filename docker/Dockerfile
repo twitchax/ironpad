@@ -24,6 +24,7 @@ WORKDIR /build
 COPY . .
 
 RUN cargo leptos build --release
+RUN cargo build --release -p ironpad-cli
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 
@@ -48,8 +49,9 @@ RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
 
 WORKDIR /app
 
-# Copy the compiled server binary.
+# Copy the compiled binaries.
 COPY --from=builder /build/target/release/ironpad-server /app/ironpad-server
+COPY --from=builder /build/target/release/ironpad-cli /app/ironpad-cli
 
 # Copy the site assets (CSS, JS, WASM frontend bundle).
 COPY --from=builder /build/target/site /app/target/site

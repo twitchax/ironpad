@@ -1,10 +1,10 @@
-use ironpad_common::CellType;
 use leptos::prelude::*;
 use thaw::{
     Button, ButtonAppearance, Card, CardHeader, Toast, ToastBody, ToastTitle, ToasterInjection,
 };
 
 use crate::components::monaco_editor::MonacoEditor;
+use crate::model::NotebookModel;
 
 use super::state::{persist_notebook, NotebookState};
 
@@ -27,6 +27,7 @@ codegen-units = 16
 #[component]
 pub(super) fn SharedDepsPanel() -> impl IntoView {
     let state = expect_context::<NotebookState>();
+    let model = expect_context::<NotebookModel>();
     let toaster = ToasterInjection::expect_context();
 
     let editor_text = RwSignal::new(
@@ -40,26 +41,21 @@ pub(super) fn SharedDepsPanel() -> impl IntoView {
     let on_save = move |_| {
         let content = editor_text.get_untracked();
 
-        // Update notebook in-memory.
-        state.shared_cargo_toml.set(Some(content.clone()));
-        state.notebook.update(|nb_opt| {
-            if let Some(nb) = nb_opt {
-                nb.shared_cargo_toml = Some(content.clone());
-            }
-        });
-
-        // Mark all code cells as stale when shared deps change.
-        state.cell_stale.update(|stale| {
-            let cells = state.cells.get_untracked();
-            for cell in &cells {
-                if cell.cell_type == CellType::Code {
-                    stale.insert(cell.id.clone(), true);
-                }
-            }
-        });
-
-        // Persist to IndexedDB.
-        persist_notebook(&state);
+        // Update via the model (handles stale marking; the notebook Effect
+        // syncs the convenience signals automatically).
+        if model
+            .apply(
+                ironpad_common::protocol::Mutation::NotebookUpdateMeta {
+                    title: None,
+                    shared_cargo_toml: Some(Some(content)),
+                    shared_source: None,
+                },
+                ironpad_common::protocol::ClientId::browser(),
+            )
+            .is_ok()
+        {
+            persist_notebook(&state);
+        }
 
         let toaster = toaster;
         toaster.dispatch_toast(
