@@ -91,6 +91,6 @@ Once **0005** lands:
 | [0006](./0006-browser-websocket-integration.md) | Browser WebSocket Integration | **done** | Browser connects to server WS, bridges messages to/from NotebookModel |
 | [0007](./0007-browser-session-ui.md) | Browser Session UI | **done** | Start/stop session, token display, agent activity indicators |
 | [0008](./0008-cli-daemon.md) | CLI Daemon | **done** | Long-lived process with WS connection and Unix socket IPC |
-| [0009](./0009-cli-client.md) | CLI Client | not started | Agent-facing subcommands with JSON output |
+| [0009](./0009-cli-client.md) | CLI Client | **done** | Agent-facing subcommands with JSON output |
 | [0010](./0010-integration-testing.md) | Integration Testing | not started | End-to-end Playwright + CLI subprocess tests |
 | [0011](./0011-repo-alignment.md) | Repo Alignment | not started | Final sweep: workspace manifest, CI, Docker, cargo-make, dependency hygiene, dead code audit |
