@@ -22,6 +22,9 @@ pub struct CompileRequest {
     /// Notebook-level shared Rust source included as `src/shared.rs` in every cell micro-crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_source: Option<String>,
+    /// When `true`, bypass the compilation cache and force a fresh build.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Response from the server after a compilation attempt.

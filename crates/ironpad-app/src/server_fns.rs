@@ -31,20 +31,26 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
     );
     tracing::info!(cell_id = %request.cell_id, hash = %hash, "compile_cell started");
 
-    // Cache check.
+    // Cache check (skipped when force-recompile is requested).
 
-    if let Some(cache_hit) = try_cache_hit(&config.cache_dir, &hash) {
-        tracing::info!(cell_id = %request.cell_id, blob_size = cache_hit.wasm_bytes.len(), "cache hit");
-        return Ok(CompileResponse {
-            wasm_blob: cache_hit.wasm_bytes,
-            diagnostics: vec![],
-            cached: true,
-            preamble_lines: 0,
-            js_glue: cache_hit.js_glue,
-        });
+    if !request.force {
+        if let Some(cache_hit) = try_cache_hit(&config.cache_dir, &hash) {
+            tracing::info!(cell_id = %request.cell_id, blob_size = cache_hit.wasm_bytes.len(), "cache hit");
+            return Ok(CompileResponse {
+                wasm_blob: cache_hit.wasm_bytes,
+                diagnostics: vec![],
+                cached: true,
+                preamble_lines: 0,
+                js_glue: cache_hit.js_glue,
+            });
+        }
     }
 
-    tracing::info!(cell_id = %request.cell_id, "cache miss — compiling");
+    if request.force {
+        tracing::info!(cell_id = %request.cell_id, "force recompile requested — skipping cache");
+    } else {
+        tracing::info!(cell_id = %request.cell_id, "cache miss — compiling");
+    }
 
     // Scaffold micro-crate.
 

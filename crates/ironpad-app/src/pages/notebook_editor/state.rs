@@ -70,6 +70,8 @@ pub(super) struct NotebookState {
     pub(super) editor_handles: RwSignal<HashMap<String, MonacoEditorHandle>>,
     /// Whether the notebook is in view mode (code hidden, output-focused).
     pub(super) is_view_mode: RwSignal<bool>,
+    /// When `true`, the next compilation(s) bypass the server-side WASM cache.
+    pub(super) force_recompile: RwSignal<bool>,
 }
 
 // ── Notebook state helpers ──────────────────────────────────────────────────

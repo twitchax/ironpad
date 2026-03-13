@@ -65,6 +65,7 @@ pub fn ViewOnlyNotebook(
     // Run-all sequential execution queue (cell IDs in order).
     let run_all_queue: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
     let running_all: RwSignal<bool> = RwSignal::new(false);
+    let force_recompile: RwSignal<bool> = RwSignal::new(false);
 
     // Keep running_all in sync with the queue.
     Effect::new(move || {
@@ -151,6 +152,13 @@ pub fn ViewOnlyNotebook(
                 <button class="fork-button" on:click=fork_action>
                     {"🍴 "}{fork_label_clone}
                 </button>
+                <button
+                    class={move || if force_recompile.get() { "force-recompile-button active" } else { "force-recompile-button" }}
+                    on:click=move |_| force_recompile.update(|v| *v = !*v)
+                    title="Bypass WASM cache and force fresh compilation"
+                >
+                    {move || if force_recompile.get() { "🔄 Force Recompile ✓" } else { "🔄 Force Recompile" }}
+                </button>
             </div>
             <div class="view-only-cells">
                 {notebook.with_value(|nb| {
@@ -175,6 +183,7 @@ pub fn ViewOnlyNotebook(
                                 notebook_id=nid
                                 cell_outputs=cell_outputs
                                 run_all_queue=run_all_queue
+                                force_recompile=force_recompile
                             />
                         }
                     }).collect_view()
@@ -196,6 +205,7 @@ fn ViewOnlyCell(
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
+    force_recompile: RwSignal<bool>,
 ) -> impl IntoView {
     match cell.cell_type {
         CellType::Code => view! {
@@ -207,6 +217,7 @@ fn ViewOnlyCell(
                 notebook_id=notebook_id
                 cell_outputs=cell_outputs
                 run_all_queue=run_all_queue
+                force_recompile=force_recompile
             />
         }
         .into_any(),
@@ -229,6 +240,7 @@ fn ViewOnlyCodeCell(
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
+    force_recompile: RwSignal<bool>,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let all_cells = StoredValue::new(all_cells);
@@ -334,6 +346,7 @@ fn ViewOnlyCodeCell(
                     previous_cell_types: types,
                     shared_cargo_toml: _shared_cargo_toml.get_value(),
                     shared_source: _shared_source.get_value(),
+                    force: force_recompile.get_untracked(),
                 };
 
                 let mut had_error = false;

@@ -54,6 +54,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         cell_display_texts: RwSignal::new(HashMap::new()),
         editor_handles: RwSignal::new(HashMap::new()),
         is_view_mode: RwSignal::new(false),
+        force_recompile: RwSignal::new(false),
     };
     provide_context(state);
 
@@ -610,6 +611,20 @@ fn NotebookContent() -> impl IntoView {
                                                 "🔧 Hide Shared Source"
                                             } else {
                                                 "🔧 Shared Source"
+                                            }
+                                        }}
+                                    </button>
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item"
+                                        on:click=move |_| {
+                                            state.force_recompile.update(|v| *v = !*v);
+                                        }
+                                    >
+                                        {move || {
+                                            if state.force_recompile.get() {
+                                                "🔄 Force Recompile ✓"
+                                            } else {
+                                                "🔄 Force Recompile"
                                             }
                                         }}
                                     </button>

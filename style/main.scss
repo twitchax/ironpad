@@ -1869,6 +1869,26 @@ samp,
     }
 }
 
+.force-recompile-button {
+    padding: 0.5rem 1rem;
+    background: var(--colorNeutralBackground3);
+    color: var(--colorNeutralForeground2);
+    border: 1px solid var(--colorNeutralStroke1);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+
+    &:hover {
+        background: var(--colorNeutralBackground3Hover);
+    }
+
+    &.active {
+        background: var(--colorPaletteYellowBackground2);
+        color: var(--colorPaletteYellowForeground2);
+        border-color: var(--colorPaletteYellowBorder2);
+    }
+}
+
 .view-only-cells {
     flex: 1;
     overflow-y: auto;

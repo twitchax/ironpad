@@ -517,6 +517,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 previous_cell_types,
                 shared_cargo_toml: state.shared_cargo_toml.get_untracked(),
                 shared_source: state.shared_source.get_untracked(),
+                force: state.force_recompile.get_untracked(),
             };
 
             let result = compile_cell(request).await;
