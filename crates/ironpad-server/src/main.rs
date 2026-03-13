@@ -58,8 +58,10 @@ async fn main() {
             routes,
             {
                 let config = config.clone();
+                let leptos_options = leptos_options.clone();
                 move || {
                     provide_context(config.clone());
+                    provide_context(leptos_options.clone());
                 }
             },
             {

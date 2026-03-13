@@ -196,8 +196,16 @@ async fn handle_ws_message(text: &str, state: &DaemonState) {
         }
 
         // Event from the host browser — update local cache.
+        // If the event has a pending message ID, it's the response to a
+        // mutation we sent — resolve the pending request as well.
         MessageKind::Event(envelope) => {
             update_cache_from_event(&envelope.event, state).await;
+            if !msg.id.is_empty() {
+                let mut pending = state.pending.write().await;
+                if let Some(tx) = pending.remove(&msg.id) {
+                    let _ = tx.send(text.to_string());
+                }
+            }
         }
 
         // Control messages (session ended, etc.).
@@ -388,7 +396,10 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
     };
 
     let json = match serde_json::to_string(&msg) {
-        Ok(j) => j,
+        Ok(j) => {
+            tracing::debug!(ws_send = %j, "forwarding to server");
+            j
+        }
         Err(e) => return IpcResponse::error(format!("serialization error: {e}")),
     };
 
