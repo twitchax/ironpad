@@ -338,7 +338,8 @@ pub fn generate_lib_rs(
 use ironpad_cell::prelude::*;
 {shared_mod}
 #[wasm_bindgen]
-pub {async_kw}fn cell_main({ptr_param}: u32, {len_param}: u32) -> u32 {{\n",
+pub {async_kw}fn cell_main({ptr_param}: u32, {len_param}: u32) -> u32 {{
+console_error_panic_hook::set_once();\n",
     );
 
     if has_any_prev {
@@ -348,7 +349,7 @@ pub {async_kw}fn cell_main({ptr_param}: u32, {len_param}: u32) -> u32 {{\n",
 
         for &(i, tag) in &typed_cells {
             code.push_str(&format!(
-                "let cell{i}: {tag} = __ironpad_inputs__.get({i}).deserialize().expect(\"failed to deserialize cell{i}\");\n"
+                "let cell{i}: {tag} = __ironpad_inputs__.get({i}).deserialize().unwrap_or_else(|e| panic!(\"failed to deserialize cell{i} as `{tag}` (input {{}} bytes): {{e}}\", __ironpad_inputs__.get({i}).raw().len()));\n"
             ));
         }
 
@@ -382,9 +383,9 @@ Box::into_raw(Box::new(result)) as u32
         ));
     }
 
-    // Preamble: 5 base + 1 if shared_source + optional (2 ptr reconstruction + 1 inputs) + cell decls + last.
+    // Preamble: 6 base (includes panic hook) + 1 if shared_source + optional (2 ptr reconstruction + 1 inputs) + cell decls + last.
     let shared_lines = u32::from(has_shared_source);
-    let preamble_lines = 5
+    let preamble_lines = 6
         + shared_lines
         + if has_any_prev { 3 } else { 0 }
         + typed_count
@@ -517,6 +518,7 @@ serde = { version = "1", features = ["derive"] }
         assert!(lib_rs.contains("use ironpad_cell::prelude::*;"));
         assert!(lib_rs.contains("#[wasm_bindgen]"));
         assert!(lib_rs.contains("pub fn cell_main("));
+        assert!(lib_rs.contains("console_error_panic_hook::set_once();"));
         assert!(lib_rs.contains("-> u32 {"));
         assert!(lib_rs.contains("CellOutput::text(\"hello\")"));
         assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
@@ -529,7 +531,7 @@ serde = { version = "1", features = ["derive"] }
     fn generate_lib_rs_no_previous_cells() {
         let (lib_rs, preamble, is_async) = generate_lib_rs("    // user code here", &[], false);
 
-        assert_eq!(preamble, 5);
+        assert_eq!(preamble, 6);
         assert!(!is_async);
         assert!(!lib_rs.contains("__ironpad_inputs__"));
         assert!(!lib_rs.contains("let cell"));
@@ -547,8 +549,8 @@ serde = { version = "1", features = ["derive"] }
         let types: Vec<Option<String>> = vec![Some("u32".into()), Some("String".into())];
         let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
-        // 5 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 11
-        assert_eq!(preamble, 11);
+        // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
+        assert_eq!(preamble, 12);
         assert!(lib_rs.contains("let input_ptr = input_ptr as *const u8;"));
         assert!(lib_rs.contains("let input_len = input_len as usize;"));
         assert!(lib_rs.contains("let __ironpad_inputs__ = CellInputs::from_raw("));
@@ -565,8 +567,8 @@ serde = { version = "1", features = ["derive"] }
         let types: Vec<Option<String>> = vec![Some("u32".into()), None, Some("bool".into())];
         let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
-        // 5 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 11
-        assert_eq!(preamble, 11);
+        // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
+        assert_eq!(preamble, 12);
         assert!(lib_rs.contains("let cell0: u32 = __ironpad_inputs__.get(0).deserialize()"));
         assert!(!lib_rs.contains("let cell1:"));
         assert!(lib_rs.contains("let cell2: bool = __ironpad_inputs__.get(2).deserialize()"));
@@ -581,8 +583,8 @@ serde = { version = "1", features = ["derive"] }
         let types: Vec<Option<String>> = vec![None, None];
         let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
 
-        // 5 base + 3 (ptr reconstruction + inputs) + 0 typed + 0 last = 8
-        assert_eq!(preamble, 8);
+        // 6 base + 3 (ptr reconstruction + inputs) + 0 typed + 0 last = 9
+        assert_eq!(preamble, 9);
         assert!(lib_rs.contains("let __ironpad_inputs__ = CellInputs::from_raw("));
         assert!(!lib_rs.contains("let cell0"));
         assert!(!lib_rs.contains("let cell1"));
@@ -617,7 +619,7 @@ serde = "1"
         )
         .expect("scaffold should succeed");
 
-        assert_eq!(preamble_lines, 5);
+        assert_eq!(preamble_lines, 6);
         assert!(!is_async);
 
         // Verify directory structure.
@@ -797,7 +799,7 @@ serde = "1"
         let (lib_rs, preamble, is_async) = generate_lib_rs("    something.await", &[], false);
 
         assert!(is_async);
-        assert_eq!(preamble, 5);
+        assert_eq!(preamble, 6);
         assert!(lib_rs.contains("#[wasm_bindgen]"));
         assert!(lib_rs.contains("pub async fn cell_main("));
         assert!(lib_rs.contains("(async {"));
@@ -814,8 +816,8 @@ serde = "1"
         let (lib_rs, preamble, is_async) = generate_lib_rs("    cell0.await", &types, false);
 
         assert!(is_async);
-        // 5 base + 3 (ptr reconstruction + inputs) + 1 typed + 1 last = 10
-        assert_eq!(preamble, 10);
+        // 6 base + 3 (ptr reconstruction + inputs) + 1 typed + 1 last = 11
+        assert_eq!(preamble, 11);
         assert!(lib_rs.contains("pub async fn cell_main(input_ptr: u32, input_len: u32)"));
         assert!(lib_rs.contains("let cell0: u32"));
         assert!(lib_rs.contains("(async {"));
@@ -959,7 +961,7 @@ codegen-units = 16
         let source = "    let msg = \"こんにちは世界 🦀\";\n    CellOutput::text(msg)";
         let (lib_rs, preamble, _) = generate_lib_rs(source, &[], false);
 
-        assert_eq!(preamble, 5);
+        assert_eq!(preamble, 6);
         assert!(lib_rs.contains("こんにちは世界 🦀"));
         // Verify user code appears at the correct preamble offset.
         let lines: Vec<&str> = lib_rs.lines().collect();
@@ -1021,7 +1023,7 @@ serde = \"1\"
     fn generate_lib_rs_empty_source() {
         let (lib_rs, preamble, is_async) = generate_lib_rs("", &[], false);
 
-        assert_eq!(preamble, 5);
+        assert_eq!(preamble, 6);
         assert!(!is_async);
         // The empty source should still produce a compilable wrapper.
         assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
@@ -1038,8 +1040,8 @@ serde = \"1\"
             lib_rs.contains("mod shared;"),
             "should contain mod shared declaration"
         );
-        // 5 base + 1 shared = 6
-        assert_eq!(preamble, 6);
+        // 6 base + 1 shared = 7
+        assert_eq!(preamble, 7);
 
         // Verify user code starts at expected line.
         let lines: Vec<&str> = lib_rs.lines().collect();
@@ -1054,7 +1056,7 @@ serde = \"1\"
             !lib_rs.contains("mod shared;"),
             "should not contain mod shared declaration"
         );
-        assert_eq!(preamble, 5);
+        assert_eq!(preamble, 6);
 
         let lines: Vec<&str> = lib_rs.lines().collect();
         assert_eq!(lines[preamble as usize].trim(), "// user code here");
@@ -1088,8 +1090,8 @@ serde = \"1\"
         let lib = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
         assert!(lib.contains("mod shared;"));
 
-        // preamble should be 6 (5 base + 1 shared)
-        assert_eq!(preamble, 6);
+        // preamble should be 7 (6 base + 1 shared)
+        assert_eq!(preamble, 7);
     }
 
     #[test]
@@ -1116,6 +1118,6 @@ serde = \"1\"
         let lib = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
         assert!(!lib.contains("mod shared;"));
 
-        assert_eq!(preamble, 5);
+        assert_eq!(preamble, 6);
     }
 }

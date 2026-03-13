@@ -39,6 +39,7 @@ async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path) -> Result<Vec<u8>> {
 
     let output = tokio::process::Command::new("wasm-opt")
         .arg("-Oz")
+        .arg("--debuginfo")
         .arg(&input_path)
         .arg("-o")
         .arg(&output_path)

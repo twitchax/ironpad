@@ -62,6 +62,8 @@ pub mod prelude {
     #[cfg(target_arch = "wasm32")]
     pub use wasm_bindgen_futures;
 
+    pub use console_error_panic_hook;
+
     pub use crate::plot::Plot;
     pub use crate::ui;
     pub use crate::ui::ProgressHandle;

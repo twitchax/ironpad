@@ -960,7 +960,7 @@ a:focus-visible {
     opacity: 1;
 }
 
-.ironpad-cell-card--active ~ .ironpad-cell-side-actions {
+.ironpad-cell-card--active~.ironpad-cell-side-actions {
     opacity: 1;
 }
 
@@ -1369,7 +1369,8 @@ a:focus-visible {
         height: auto;
 
         // Plot interactivity — hover effects on data elements.
-        circle, rect:not(:first-child) {
+        circle,
+        rect:not(:first-child) {
             transition: opacity 0.15s ease, filter 0.15s ease;
 
             &:hover {
@@ -1446,7 +1447,7 @@ a:focus-visible {
     }
 }
 
-details[open].ironpad-output-bytes > .ironpad-output-bytes-header {
+details[open].ironpad-output-bytes>.ironpad-output-bytes-header {
     list-style: disclosure-open;
 }
 
@@ -1984,7 +1985,9 @@ samp,
 }
 
 .view-only-output-svg svg {
-    circle, rect:not(:first-child) {
+
+    circle,
+    rect:not(:first-child) {
         transition: opacity 0.15s ease, filter 0.15s ease;
 
         &:hover {
@@ -2112,7 +2115,7 @@ samp,
 }
 
 /* Hide side action buttons (run, settings, menu) in view mode. */
-.ironpad-cell--view-mode ~ .ironpad-cell-side-actions {
+.ironpad-cell--view-mode~.ironpad-cell-side-actions {
     display: none !important;
 }
 
@@ -2229,6 +2232,7 @@ samp,
         color: var(--ip-error);
     }
 }
+
 /* ── Interactive widget styles ──────────────────────────────────────── */
 
 .ironpad-interactive-widget {
@@ -2400,7 +2404,7 @@ samp,
         }
     }
 
-    input:checked + .ironpad-switch-slider {
+    input:checked+.ironpad-switch-slider {
         background: rgba(233, 69, 96, 0.25);
         border-color: var(--ip-accent);
 

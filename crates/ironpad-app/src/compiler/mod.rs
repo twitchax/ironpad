@@ -227,14 +227,14 @@ mod pipeline_tests {
         );
 
         // Step 4: Parse mock build output (simulated cargo JSON diagnostics).
-        let mock_cargo_output = r#"{"reason":"compiler-message","package_id":"cell-cell-0 0.1.0 (path+file:///tmp/cell)","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-cell-0","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0308]: mismatched types\n","children":[],"code":{"code":"E0308","explanation":null},"level":"error","message":"mismatched types","spans":[{"byte_end":200,"byte_start":190,"column_end":30,"column_start":22,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected `i32`, found `&str`","line_end":6,"line_start":6,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+        let mock_cargo_output = r#"{"reason":"compiler-message","package_id":"cell-cell-0 0.1.0 (path+file:///tmp/cell)","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-cell-0","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0308]: mismatched types\n","children":[],"code":{"code":"E0308","explanation":null},"level":"error","message":"mismatched types","spans":[{"byte_end":200,"byte_start":190,"column_end":30,"column_start":22,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected `i32`, found `&str`","line_end":7,"line_start":7,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
 
         let diagnostics = parse_diagnostics(mock_cargo_output, preamble_lines);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, ironpad_common::Severity::Error);
         assert_eq!(diagnostics[0].code.as_deref(), Some("E0308"));
 
-        // The error was on wrapper line 6 → user line 1.
+        // The error was on wrapper line 7 → user line 1.
         assert_eq!(diagnostics[0].spans[0].line_start, 1);
     }
 
@@ -250,14 +250,14 @@ mod pipeline_tests {
         assert!(code.contains("let cell1: String"));
         assert!(code.contains("let last = &cell1"));
         assert!(code.contains("__ironpad_inputs__"));
-        assert_eq!(preamble, 11, "5 base + 3 (ptr + inputs) + 2 cells + 1 last");
+        assert_eq!(preamble, 12, "6 base + 3 (ptr + inputs) + 2 cells + 1 last");
 
         // With no previous cells.
         let (code_empty, preamble_empty, _) = generate_lib_rs("    let x = 1;", &[], false);
 
         assert!(!code_empty.contains("__ironpad_inputs__"));
         assert!(!code_empty.contains("let cell"));
-        assert_eq!(preamble_empty, 5);
+        assert_eq!(preamble_empty, 6);
     }
 
     // ── Cache round-trip with content hash ──────────────────────────────
