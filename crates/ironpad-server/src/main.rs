@@ -1,4 +1,6 @@
 mod config;
+#[allow(dead_code)] // Consumed by the WebSocket relay (0005).
+pub(crate) mod sessions;
 
 use std::net::SocketAddr;
 
