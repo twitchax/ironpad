@@ -169,6 +169,10 @@ pub struct IronpadCell {
     /// Per-cell `Cargo.toml` content. `None` for Markdown cells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo_toml: Option<String>,
+    /// Optimistic concurrency control version. Incremented on each mutation.
+    /// Defaults to 0 for backward compatibility with existing notebooks.
+    #[serde(default)]
+    pub version: u64,
 }
 
 // ── Public Notebook Types ───────────────────────────────────────────────────
@@ -189,4 +193,56 @@ pub struct PublicNotebookSummary {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PublicNotebookIndex {
     pub notebooks: Vec<PublicNotebookSummary>,
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_without_version_field_defaults_to_zero() {
+        // Simulates loading a notebook saved before the version field existed.
+        let json = r#"{
+            "id": "cell-1",
+            "order": 0,
+            "label": "Cell 1",
+            "source": "42"
+        }"#;
+        let cell: IronpadCell = serde_json::from_str(json).unwrap();
+        assert_eq!(cell.version, 0);
+    }
+
+    #[test]
+    fn cell_with_version_field_round_trips() {
+        let cell = IronpadCell {
+            id: "cell-1".into(),
+            order: 0,
+            label: "Cell 1".into(),
+            cell_type: CellType::Code,
+            source: "42".into(),
+            cargo_toml: None,
+            version: 7,
+        };
+        let json = serde_json::to_string(&cell).unwrap();
+        let back: IronpadCell = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.version, 7);
+    }
+
+    #[test]
+    fn cell_version_zero_is_serialized() {
+        let cell = IronpadCell {
+            id: "cell-1".into(),
+            order: 0,
+            label: "Cell 1".into(),
+            cell_type: CellType::Code,
+            source: "42".into(),
+            cargo_toml: None,
+            version: 0,
+        };
+        let json = serde_json::to_string(&cell).unwrap();
+        // version:0 should be present (not skipped).
+        assert!(json.contains("\"version\":0"));
+    }
 }

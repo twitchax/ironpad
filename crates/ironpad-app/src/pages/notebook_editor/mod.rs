@@ -67,7 +67,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             if let Some(nb) = crate::storage::client::get_notebook(&nb_id).await {
                 state.notebook.set(Some(nb));
-                model.sync_cells();
+                model.sync_from_notebook();
             }
         });
     }

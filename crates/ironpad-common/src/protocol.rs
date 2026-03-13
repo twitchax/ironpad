@@ -146,7 +146,6 @@ pub enum Event {
     CellAdded {
         cell: IronpadCell,
         after_cell_id: Option<String>,
-        version: u64,
     },
     CellUpdated {
         cell_id: String,
@@ -203,7 +202,6 @@ pub enum Response {
     },
     Cell {
         cell: IronpadCell,
-        version: u64,
     },
     CellsList {
         cells: Vec<CellManifest>,

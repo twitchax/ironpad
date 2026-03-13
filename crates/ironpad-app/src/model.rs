@@ -15,7 +15,7 @@ use leptos::prelude::*;
 
 /// Error returned by model operations.
 #[derive(Clone, Debug)]
-// Fields read by future WebSocket bridge (task 0006).
+// Fields read by the future WebSocket bridge.
 #[allow(dead_code)]
 pub(crate) struct ModelError {
     pub(crate) code: ErrorCode,
@@ -94,7 +94,7 @@ impl NotebookModel {
 
     /// Read-only queries against the notebook model.
     ///
-    /// Used by the WebSocket bridge (task 0006) to serve agent queries.
+    /// Used by the future WebSocket bridge to serve agent queries.
     #[allow(dead_code)]
     pub(crate) fn query(&self, query: Query) -> Result<Response, ModelError> {
         match query {
@@ -118,11 +118,7 @@ impl NotebookModel {
                         code: ErrorCode::CellNotFound,
                         message: format!("Cell {cell_id} not found"),
                     })?;
-                let version = self.cell_version(&cell_id);
-                Ok(Response::Cell {
-                    cell: cell.clone(),
-                    version,
-                })
+                Ok(Response::Cell { cell: cell.clone() })
             }
             Query::CellsList => {
                 let cells = self.cells.get_untracked();
@@ -147,8 +143,8 @@ impl NotebookModel {
     // ── Internal helpers ────────────────────────────────────────────────
 
     /// Rebuild the `cells` signal (ordered `CellManifest` list) from the
-    /// canonical `notebook` signal.
-    pub(crate) fn sync_cells(&self) {
+    /// canonical `notebook` signal, and sync version tracking.
+    pub(crate) fn sync_from_notebook(&self) {
         if let Some(nb) = self.notebook.get_untracked() {
             self.cells.set(
                 nb.cells
@@ -161,6 +157,15 @@ impl NotebookModel {
                     })
                     .collect(),
             );
+
+            // Sync version map from persisted cell versions (e.g. after loading
+            // a notebook from IndexedDB). Only populate entries that aren't
+            // already tracked, so in-flight versions aren't overwritten.
+            self.cell_versions.update(|versions| {
+                for c in &nb.cells {
+                    versions.entry(c.id.clone()).or_insert(c.version);
+                }
+            });
         }
     }
 
@@ -213,6 +218,7 @@ impl NotebookModel {
             cell_type: new_cell.cell_type,
             source: new_cell.source,
             cargo_toml,
+            version: 0,
         };
 
         self.notebook.update(|nb_opt| {
@@ -236,7 +242,7 @@ impl NotebookModel {
         self.cell_versions.update(|v| {
             v.insert(new_id.clone(), 0);
         });
-        self.sync_cells();
+        self.sync_from_notebook();
 
         Ok((
             MutationResult::CellAdded {
@@ -246,7 +252,6 @@ impl NotebookModel {
             Event::CellAdded {
                 cell,
                 after_cell_id,
-                version: 0,
             },
         ))
     }
@@ -300,6 +305,7 @@ impl NotebookModel {
             if let Some(ref lbl) = label {
                 cell.label = lbl.clone();
             }
+            cell.version = new_version;
         });
 
         self.cell_versions.update(|v| {
@@ -312,7 +318,7 @@ impl NotebookModel {
 
         // Label is part of CellManifest, so sync the derived list.
         if label.is_some() {
-            self.sync_cells();
+            self.sync_from_notebook();
         }
 
         Ok((
@@ -355,7 +361,7 @@ impl NotebookModel {
         self.cell_stale.update(|s| {
             s.remove(&cell_id);
         });
-        self.sync_cells();
+        self.sync_from_notebook();
 
         Ok((
             MutationResult::CellDeleted {
@@ -382,7 +388,7 @@ impl NotebookModel {
             nb.cells = reordered;
         });
 
-        self.sync_cells();
+        self.sync_from_notebook();
 
         Ok((
             MutationResult::CellReordered,
