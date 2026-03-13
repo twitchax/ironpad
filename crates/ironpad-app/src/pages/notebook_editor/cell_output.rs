@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use ironpad_common::{CellManifest, CompileResponse, Diagnostic, ExecutionResult, Severity};
 #[cfg(feature = "hydrate")]
 use ironpad_common::CellType;
+use ironpad_common::{CellManifest, CompileResponse, Diagnostic, ExecutionResult, Severity};
 use leptos::prelude::*;
 
 use crate::components::copy_button::CopyButton;

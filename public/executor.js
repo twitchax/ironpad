@@ -91,10 +91,32 @@
       // ── wasm-bindgen path ────────────────────────────────────────────
       //
       // The cell's `extern "C" { fn ironpad_host_message(..) }` produces a
-      // WASM import under the `env` namespace.  wasm-bindgen's generated
-      // glue does NOT know about it, so we inject a preamble that wraps
-      // `__wbg_get_imports` (hoisted by the module before evaluation) to
-      // supply `env.ironpad_host_message` at instantiation time.
+      // WASM import under the `env` namespace.  wasm-bindgen (--target web)
+      // may emit `import * as __wbg_starN from 'env'` at the top of the
+      // ESM glue.  Since we load glue from a blob URL, the browser cannot
+      // resolve bare module specifiers — so we rewrite the import into an
+      // inline `var` that provides the host-message shim directly.
+      //
+      // As a belt-and-suspenders fallback (older wasm-bindgen that uses
+      // `__wbg_get_imports` without the ESM import), we also prepend a
+      // wrapper that injects `env.ironpad_host_message` at import-build
+      // time.
+
+      // 1) Replace bare `import * as __wbg_starN from 'env'` with an
+      //    inline shim so the ESM can load from a blob URL.
+      var hostShimBody =
+        "ironpad_host_message: function(ptr, len) { " +
+        "if (window.IronpadExecutor) { " +
+        "window.IronpadExecutor._dispatchHostMessage(" +
+        JSON.stringify(cellId) + ", ptr, len); } }";
+      jsGlue = jsGlue.replace(
+        /import\s*\*\s*as\s+(\w+)\s+from\s+['"]env['"]\s*;?/g,
+        function (_match, starName) {
+          return "var " + starName + " = { " + hostShimBody + " };";
+        }
+      );
+
+      // 2) Preamble: wrap __wbg_get_imports (fallback for older wasm-bindgen).
       var preamble =
         "var __ironpad_cell_id = " + JSON.stringify(cellId) + ";\n" +
         "if (typeof __wbg_get_imports === 'function') {\n" +

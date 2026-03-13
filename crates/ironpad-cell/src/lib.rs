@@ -435,8 +435,10 @@ impl<T: serde::Serialize + std::fmt::Debug> From<Vec<T>> for CellOutput {
 
 impl From<Svg> for CellOutput {
     fn from(value: Svg) -> Self {
+        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
+            .expect("serialization of Svg cannot fail");
         Self {
-            bytes: vec![],
+            bytes,
             panels: vec![DisplayPanel::Svg(value.0)],
             type_tag: Some("Svg".into()),
         }
@@ -445,8 +447,10 @@ impl From<Svg> for CellOutput {
 
 impl From<Html> for CellOutput {
     fn from(value: Html) -> Self {
+        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
+            .expect("serialization of Html cannot fail");
         Self {
-            bytes: vec![],
+            bytes,
             panels: vec![DisplayPanel::Html(value.0)],
             type_tag: Some("Html".into()),
         }
@@ -455,8 +459,10 @@ impl From<Html> for CellOutput {
 
 impl From<Table> for CellOutput {
     fn from(value: Table) -> Self {
+        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
+            .expect("serialization of Table cannot fail");
         Self {
-            bytes: vec![],
+            bytes,
             panels: vec![DisplayPanel::Table {
                 headers: value.headers,
                 rows: value.rows,
@@ -468,8 +474,10 @@ impl From<Table> for CellOutput {
 
 impl From<Md> for CellOutput {
     fn from(value: Md) -> Self {
+        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
+            .expect("serialization of Md cannot fail");
         Self {
-            bytes: vec![],
+            bytes,
             panels: vec![DisplayPanel::Markdown(value.0)],
             type_tag: Some("Md".into()),
         }
@@ -478,8 +486,10 @@ impl From<Md> for CellOutput {
 
 impl From<Json> for CellOutput {
     fn from(value: Json) -> Self {
+        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
+            .expect("serialization of Json cannot fail");
         Self {
-            bytes: vec![],
+            bytes,
             panels: vec![DisplayPanel::Html(render_json_html(&value.0))],
             type_tag: Some("Json".into()),
         }
@@ -1603,7 +1613,12 @@ mod tests {
             output.panels,
             vec![DisplayPanel::Svg("<svg><circle r='10'/></svg>".into())]
         );
-        assert!(output.bytes.is_empty());
+        assert!(!output.bytes.is_empty());
+
+        // Verify round-trip deserialization.
+        let input = CellInput::new(&output.bytes);
+        let decoded: Svg = input.deserialize().expect("deserialize Svg");
+        assert_eq!(decoded.0, "<svg><circle r='10'/></svg>");
     }
 
     #[test]
@@ -1614,7 +1629,12 @@ mod tests {
             output.panels,
             vec![DisplayPanel::Html("<b>bold</b>".into())]
         );
-        assert!(output.bytes.is_empty());
+        assert!(!output.bytes.is_empty());
+
+        // Verify round-trip deserialization.
+        let input = CellInput::new(&output.bytes);
+        let decoded: Html = input.deserialize().expect("deserialize Html");
+        assert_eq!(decoded.0, "<b>bold</b>");
     }
 
     #[test]
@@ -1625,7 +1645,12 @@ mod tests {
             output.panels,
             vec![DisplayPanel::Markdown("# Hello\n\nworld".into())]
         );
-        assert!(output.bytes.is_empty());
+        assert!(!output.bytes.is_empty());
+
+        // Verify round-trip deserialization.
+        let input = CellInput::new(&output.bytes);
+        let decoded: Md = input.deserialize().expect("deserialize Md");
+        assert_eq!(decoded.0, "# Hello\n\nworld");
     }
 
     // ── IntoPanels trait tests ──────────────────────────────────────────
@@ -1824,7 +1849,7 @@ mod tests {
         let table = Table::new(vec!["X", "Y"], vec![vec!["1", "2"]]);
         let output = CellOutput::from(table);
         assert_eq!(output.type_tag.as_deref(), Some("Table"));
-        assert!(output.bytes.is_empty());
+        assert!(!output.bytes.is_empty());
         assert_eq!(
             output.panels,
             vec![DisplayPanel::Table {
@@ -1832,6 +1857,12 @@ mod tests {
                 rows: vec![vec!["1".into(), "2".into()]],
             }]
         );
+
+        // Verify round-trip deserialization.
+        let input = CellInput::new(&output.bytes);
+        let decoded: Table = input.deserialize().expect("deserialize Table");
+        assert_eq!(decoded.headers, vec!["X", "Y"]);
+        assert_eq!(decoded.rows, vec![vec!["1".to_string(), "2".to_string()]]);
     }
 
     #[test]

@@ -10,9 +10,9 @@ use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::server_fns::compile_cell;
 
 use super::cell_output::{CellOutputPanel, CompileResultPanel};
-use super::state::{persist_notebook, sync_cells_from_notebook, CellStatus, NotebookState};
 #[cfg(feature = "hydrate")]
 use super::state::CellOutputData;
+use super::state::{persist_notebook, sync_cells_from_notebook, CellStatus, NotebookState};
 
 // ── Cell item ───────────────────────────────────────────────────────────────
 

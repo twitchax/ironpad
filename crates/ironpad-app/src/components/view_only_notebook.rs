@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use leptos::prelude::*;
 
-use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 #[cfg(feature = "hydrate")]
 use ironpad_common::CompileRequest;
+use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 
 use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
