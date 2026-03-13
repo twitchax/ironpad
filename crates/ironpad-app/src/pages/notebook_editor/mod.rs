@@ -15,15 +15,14 @@ use leptos_router::NavigateOptions;
 use thaw::{Toast, ToastBody, ToastTitle, ToasterInjection};
 
 use crate::components::app_layout::LayoutContext;
+use crate::model::NotebookModel;
 use crate::server_fns::share_notebook;
 
 use self::cell_item::CellItem;
 use self::shared_deps::SharedDepsPanel;
 use self::shared_source::SharedSourcePanel;
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
-use self::state::{add_cell_to_notebook, NotebookState};
-#[cfg(feature = "hydrate")]
-use self::state::{persist_notebook, sync_cells_from_notebook};
+use self::state::{persist_notebook, NotebookState};
 
 // ── Notebook editor page ────────────────────────────────────────────────────
 
@@ -56,7 +55,9 @@ pub fn NotebookEditorPage() -> impl IntoView {
         is_view_mode: RwSignal::new(false),
         force_recompile: RwSignal::new(false),
     };
+    let model = NotebookModel::new(state.notebook, state.cells, state.cell_stale);
     provide_context(state);
+    provide_context(model);
 
     // Load notebook from IndexedDB on the client side.
 
@@ -66,7 +67,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             if let Some(nb) = crate::storage::client::get_notebook(&nb_id).await {
                 state.notebook.set(Some(nb));
-                sync_cells_from_notebook(&state);
+                model.sync_cells();
             }
         });
     }
@@ -122,7 +123,32 @@ pub fn NotebookEditorPage() -> impl IntoView {
                 {
                     e.prevent_default();
                     let after_cell_id = state.active_cell.get_untracked();
-                    add_cell_to_notebook(&state, after_cell_id, CellType::Code);
+                    if let Ok((result, _event)) = model.apply(
+                        ironpad_common::protocol::Mutation::CellAdd {
+                            cell: ironpad_common::protocol::NewCell {
+                                source: "42".to_string(),
+                                cell_type: CellType::Code,
+                                label: format!(
+                                    "Cell {}",
+                                    state.notebook.with_untracked(|nb| nb
+                                        .as_ref()
+                                        .map(|n| n.cells.len())
+                                        .unwrap_or(0))
+                                ),
+                                cargo_toml: None,
+                            },
+                            after_cell_id,
+                        },
+                        ironpad_common::protocol::ClientId::browser(),
+                    ) {
+                        if let ironpad_common::protocol::MutationResult::CellAdded {
+                            cell_id, ..
+                        } = result
+                        {
+                            state.pending_focus_cell.set(Some(cell_id));
+                        }
+                        persist_notebook(&state);
+                    }
                 }
             });
 
@@ -165,11 +191,14 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
             // Update title from layout into the notebook signal.
             let title = layout.notebook_title.get_untracked().unwrap_or_default();
-            state.notebook.update(|nb_opt| {
-                if let Some(nb) = nb_opt {
-                    nb.title = title;
-                }
-            });
+            let _ = model.apply(
+                ironpad_common::protocol::Mutation::NotebookUpdateMeta {
+                    title: Some(title),
+                    shared_cargo_toml: None,
+                    shared_source: None,
+                },
+                ironpad_common::protocol::ClientId::browser(),
+            );
 
             // Persist to IndexedDB.
             persist_notebook(&state);
@@ -225,6 +254,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
 #[component]
 fn NotebookContent() -> impl IntoView {
     let state = expect_context::<NotebookState>();
+    let model = expect_context::<NotebookModel>();
 
     // ── Shared deps panel toggle ────────────────────────────────────────
 
@@ -234,7 +264,33 @@ fn NotebookContent() -> impl IntoView {
     // ── Add cell callback ───────────────────────────────────────────────
 
     let add_cell_cb = Callback::new(move |(after, cell_type): (Option<String>, CellType)| {
-        add_cell_to_notebook(&state, after, cell_type);
+        let default_source = if cell_type == CellType::Markdown {
+            "# New Section\n\nAdd your notes here.".to_string()
+        } else {
+            "42".to_string()
+        };
+        if let Ok((result, _event)) = model.apply(
+            ironpad_common::protocol::Mutation::CellAdd {
+                cell: ironpad_common::protocol::NewCell {
+                    source: default_source,
+                    cell_type,
+                    label: format!(
+                        "Cell {}",
+                        state
+                            .notebook
+                            .with_untracked(|nb| nb.as_ref().map(|n| n.cells.len()).unwrap_or(0))
+                    ),
+                    cargo_toml: None,
+                },
+                after_cell_id: after,
+            },
+            ironpad_common::protocol::ClientId::browser(),
+        ) {
+            if let ironpad_common::protocol::MutationResult::CellAdded { cell_id, .. } = result {
+                state.pending_focus_cell.set(Some(cell_id));
+            }
+            persist_notebook(&state);
+        }
     });
 
     // ── Dropdown state ─────────────────────────────────────────────────
@@ -325,17 +381,27 @@ fn NotebookContent() -> impl IntoView {
 
                 if let (Some(old_idx), Some(new_idx)) = (old_index, new_index) {
                     if old_idx != new_idx {
-                        state.notebook.update(|nb_opt| {
-                            if let Some(nb) = nb_opt {
-                                let cell = nb.cells.remove(old_idx);
-                                nb.cells.insert(new_idx, cell);
-                                for (i, c) in nb.cells.iter_mut().enumerate() {
-                                    c.order = i as u32;
-                                }
+                        let mut ids: Vec<String> = state
+                            .cells
+                            .get_untracked()
+                            .iter()
+                            .map(|c| c.id.clone())
+                            .collect();
+                        if old_idx < ids.len() && new_idx < ids.len() {
+                            let id = ids.remove(old_idx);
+                            ids.insert(new_idx, id);
+                            if model
+                                .apply(
+                                    ironpad_common::protocol::Mutation::CellReorder {
+                                        cell_ids: ids,
+                                    },
+                                    ironpad_common::protocol::ClientId::browser(),
+                                )
+                                .is_ok()
+                            {
+                                persist_notebook(&state);
                             }
-                        });
-                        sync_cells_from_notebook(&state);
-                        persist_notebook(&state);
+                        }
                     }
                 }
             });

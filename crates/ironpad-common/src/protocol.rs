@@ -61,7 +61,7 @@ impl ClientId {
 pub enum Mutation {
     CellAdd {
         cell: NewCell,
-        /// Insert after this cell. `None` = append to end.
+        /// Insert after this cell. `None` = insert at beginning.
         after_cell_id: Option<String>,
     },
     CellUpdate {
@@ -246,26 +246,15 @@ pub enum ControlMessage {
         permissions: Permissions,
     },
     /// Server → Host: session created, here's the token.
-    SessionCreated {
-        session_id: String,
-        token: String,
-    },
+    SessionCreated { session_id: String, token: String },
     /// Host → Server: end a session, disconnect all guests.
-    EndSession {
-        session_id: String,
-    },
+    EndSession { session_id: String },
     /// Server → Host/Guests: session has ended.
-    SessionEnded {
-        session_id: String,
-    },
+    SessionEnded { session_id: String },
     /// Server → Host: a guest connected.
-    GuestConnected {
-        client_id: ClientId,
-    },
+    GuestConnected { client_id: ClientId },
     /// Server → Host: a guest disconnected.
-    GuestDisconnected {
-        client_id: ClientId,
-    },
+    GuestDisconnected { client_id: ClientId },
 }
 
 // ── Permissions ─────────────────────────────────────────────────────────────
