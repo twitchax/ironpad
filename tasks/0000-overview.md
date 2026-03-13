@@ -81,15 +81,15 @@ Once **0005** lands:
 
 ## Task Index
 
-| Task | Title | Key Change |
-|------|-------|------------|
-| [0001](./0001-message-protocol.md) | Message Protocol | Shared types in `ironpad-common` for all mutations, queries, events |
-| [0002](./0002-notebook-model-abstraction.md) | Notebook Model Abstraction | Extract mutations into unified `NotebookModel` — the architectural centerpiece |
-| [0003](./0003-cell-versioning.md) | Cell Versioning (OCC) | Monotonic version counters on cells for conflict detection |
-| [0004](./0004-session-and-token-management.md) | Session & Token Management | Server-side session store, crypto-random tokens, permission scoping |
-| [0005](./0005-server-websocket-relay.md) | Server WebSocket Relay | WebSocket upgrade routes in Axum, message routing between host and guests |
-| [0006](./0006-browser-websocket-integration.md) | Browser WebSocket Integration | Browser connects to server WS, bridges messages to/from NotebookModel |
-| [0007](./0007-browser-session-ui.md) | Browser Session UI | Start/stop session, token display, agent activity indicators |
-| [0008](./0008-cli-daemon.md) | CLI Daemon | Long-lived process with WS connection and Unix socket IPC |
-| [0009](./0009-cli-client.md) | CLI Client | Agent-facing subcommands with JSON output |
-| [0010](./0010-integration-testing.md) | Integration Testing | End-to-end Playwright + CLI subprocess tests |
+| Task | Title | Status | Key Change |
+|------|-------|--------|------------|
+| [0001](./0001-message-protocol.md) | Message Protocol | **done** | Shared types in `ironpad-common` for all mutations, queries, events |
+| [0002](./0002-notebook-model-abstraction.md) | Notebook Model Abstraction | not started | Extract mutations into unified `NotebookModel` — the architectural centerpiece |
+| [0003](./0003-cell-versioning.md) | Cell Versioning (OCC) | not started | Monotonic version counters on cells for conflict detection |
+| [0004](./0004-session-and-token-management.md) | Session & Token Management | not started | Server-side session store, crypto-random tokens, permission scoping |
+| [0005](./0005-server-websocket-relay.md) | Server WebSocket Relay | not started | WebSocket upgrade routes in Axum, message routing between host and guests |
+| [0006](./0006-browser-websocket-integration.md) | Browser WebSocket Integration | not started | Browser connects to server WS, bridges messages to/from NotebookModel |
+| [0007](./0007-browser-session-ui.md) | Browser Session UI | not started | Start/stop session, token display, agent activity indicators |
+| [0008](./0008-cli-daemon.md) | CLI Daemon | not started | Long-lived process with WS connection and Unix socket IPC |
+| [0009](./0009-cli-client.md) | CLI Client | not started | Agent-facing subcommands with JSON output |
+| [0010](./0010-integration-testing.md) | Integration Testing | not started | End-to-end Playwright + CLI subprocess tests |
