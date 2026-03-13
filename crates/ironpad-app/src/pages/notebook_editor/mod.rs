@@ -4,7 +4,7 @@ mod export;
 mod shared_deps;
 mod shared_source;
 mod skeleton;
-mod state;
+pub(crate) mod state;
 
 use std::collections::HashMap;
 
@@ -17,6 +17,9 @@ use thaw::{Toast, ToastBody, ToastTitle, ToasterInjection};
 use crate::components::app_layout::LayoutContext;
 use crate::model::NotebookModel;
 use crate::server_fns::share_notebook;
+use crate::session::SessionState;
+
+use crate::components::session_panel::SessionButton;
 
 use self::cell_item::CellItem;
 use self::shared_deps::SharedDepsPanel;
@@ -56,8 +59,10 @@ pub fn NotebookEditorPage() -> impl IntoView {
         force_recompile: RwSignal::new(false),
     };
     let model = NotebookModel::new(state.notebook, state.cells, state.cell_stale);
+    let session_state = SessionState::new();
     provide_context(state);
     provide_context(model);
+    provide_context(session_state);
 
     // Load notebook from IndexedDB on the client side.
 
@@ -459,6 +464,8 @@ fn NotebookContent() -> impl IntoView {
             >
                 "▶▶ Run All"
             </button>
+
+            <SessionButton />
 
             <div class="ironpad-toolbar-right">
                 // ── Hamburger dropdown (☰) ──────────────────────────────

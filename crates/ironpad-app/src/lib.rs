@@ -3,6 +3,7 @@ pub mod compiler;
 
 pub mod components;
 pub(crate) mod model;
+pub(crate) mod session;
 
 pub mod pages;
 pub mod server_fns;

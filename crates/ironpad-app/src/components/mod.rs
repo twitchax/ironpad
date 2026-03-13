@@ -4,4 +4,5 @@ pub mod error_panel;
 pub mod executor;
 pub mod markdown_cell;
 pub mod monaco_editor;
+pub mod session_panel;
 pub mod view_only_notebook;

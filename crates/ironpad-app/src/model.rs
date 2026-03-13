@@ -15,8 +15,6 @@ use leptos::prelude::*;
 
 /// Error returned by model operations.
 #[derive(Clone, Debug)]
-// Fields read by the future WebSocket bridge.
-#[allow(dead_code)]
 pub(crate) struct ModelError {
     pub(crate) code: ErrorCode,
     pub(crate) message: String,
@@ -35,6 +33,11 @@ pub(crate) struct NotebookModel {
     cells: RwSignal<Vec<CellManifest>>,
     cell_stale: RwSignal<HashMap<String, bool>>,
     cell_versions: RwSignal<HashMap<String, u64>>,
+    /// Events waiting to be sent over WebSocket. Subscribers watch
+    /// `event_generation` (tracked) and drain this via `drain_events`.
+    pending_events: RwSignal<Vec<EventEnvelope>>,
+    /// Bumped each time events are pushed. The WebSocket bridge watches this.
+    event_generation: RwSignal<u64>,
 }
 
 impl NotebookModel {
@@ -49,6 +52,8 @@ impl NotebookModel {
             cells,
             cell_stale,
             cell_versions: RwSignal::new(HashMap::new()),
+            pending_events: RwSignal::new(Vec::new()),
+            event_generation: RwSignal::new(0),
         }
     }
 
@@ -89,13 +94,23 @@ impl NotebookModel {
                 });
             }
         };
-        Ok((result, EventEnvelope { by, event }))
+        let envelope = EventEnvelope { by, event };
+
+        // Push event for the WebSocket bridge to pick up.
+        // Cap the buffer to prevent unbounded growth when no session is
+        // active (nobody is draining). 64 events is plenty of headroom
+        // for the bridge Effect to keep up during an active session.
+        self.pending_events.update(|events| {
+            if events.len() < 64 {
+                events.push(envelope.clone());
+            }
+        });
+        self.event_generation.update(|g| *g += 1);
+
+        Ok((result, envelope))
     }
 
     /// Read-only queries against the notebook model.
-    ///
-    /// Used by the future WebSocket bridge to serve agent queries.
-    #[allow(dead_code)]
     pub(crate) fn query(&self, query: Query) -> Result<Response, ModelError> {
         match query {
             Query::NotebookGet => {
@@ -138,6 +153,21 @@ impl NotebookModel {
             .get(cell_id)
             .copied()
             .unwrap_or(0)
+    }
+
+    /// Reactive signal that bumps when new events are pushed.
+    /// The WebSocket bridge watches this to know when to drain.
+    pub(crate) fn event_generation(&self) -> Signal<u64> {
+        self.event_generation.into()
+    }
+
+    /// Drain all pending events (untracked — won't re-trigger watchers).
+    pub(crate) fn drain_events(&self) -> Vec<EventEnvelope> {
+        let mut events = Vec::new();
+        self.pending_events.update(|e| {
+            events = std::mem::take(e);
+        });
+        events
     }
 
     // ── Internal helpers ────────────────────────────────────────────────
