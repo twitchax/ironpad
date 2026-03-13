@@ -3,7 +3,7 @@
 #
 # Multi-stage build:
 #   Stage 1 (builder): Compile the ironpad server + frontend WASM via cargo-leptos.
-#   Stage 2 (runtime): Rust toolchain (needed for cell compilation) + built artifacts.
+#   Stage 2 (runtime): Slim Rust toolchain (needed for cell compilation) + built artifacts.
 #
 # Build context is the repo root:
 #   docker build -f docker/Dockerfile -t ironpad .
@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     binaryen \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-leptos
+RUN cargo install cargo-leptos wasm-bindgen-cli
 
 WORKDIR /build
 COPY . .
@@ -27,16 +27,14 @@ RUN cargo leptos build --release
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 
-FROM rust:1.93.0 AS runtime
+FROM rust:1.93.0-slim AS runtime
 
 # The runtime needs the Rust toolchain + wasm target for compiling user cells.
 RUN rustup target add wasm32-unknown-unknown
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    binaryen \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN cargo install wasm-bindgen-cli
+# Copy tool binaries from builder (avoids recompiling / reinstalling in runtime).
+COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-bindgen
+COPY --from=builder /usr/bin/wasm-opt /usr/bin/wasm-opt
 
 # Pre-warm the cargo registry cache with ironpad-cell dependencies so that
 # the first cell compile only downloads user-added deps.
@@ -45,7 +43,8 @@ COPY docker/warmup-Cargo.toml /tmp/warmup/Cargo.toml
 RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
     && cd /tmp/warmup \
     && cargo build --target wasm32-unknown-unknown --release 2>/dev/null || true \
-    && rm -rf /tmp/warmup
+    && rm -rf /tmp/warmup \
+    && rm -rf /usr/local/cargo/registry/src
 
 WORKDIR /app
 

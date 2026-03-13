@@ -6,16 +6,14 @@ services:
     ports:
       - "3111:3111"
     volumes:
-      - notebooks:/data
-      - cache:/cache
+      - ironpad:/ironpad
     environment:
-      - IRONPAD_DATA_DIR=/data
-      - IRONPAD_CACHE_DIR=/cache
+      - IRONPAD_DATA_DIR=/ironpad/data
+      - IRONPAD_CACHE_DIR=/ironpad/cache
       - IRONPAD_PORT=3111
       - IRONPAD_CELL_PATH=/app/crates/ironpad-cell
       - RUST_LOG=info
     restart: unless-stopped
 
 volumes:
-  notebooks:
-  cache:
+  ironpad:
