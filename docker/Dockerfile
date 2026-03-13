@@ -36,6 +36,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     binaryen \
     && rm -rf /var/lib/apt/lists/*
 
+RUN cargo install wasm-bindgen-cli
+
 # Pre-warm the cargo registry cache with ironpad-cell dependencies so that
 # the first cell compile only downloads user-added deps.
 COPY crates/ironpad-cell /tmp/warmup/crates/ironpad-cell
