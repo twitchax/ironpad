@@ -35,6 +35,12 @@ cargo binstall cargo-make --no-confirm --force 2>/dev/null || cargo install carg
 echo "==> Installing wasm-bindgen-cli..."
 cargo binstall wasm-bindgen-cli --no-confirm --force 2>/dev/null || cargo install wasm-bindgen-cli
 
+echo "==> Adding wasm32-unknown-unknown target..."
+rustup target add wasm32-unknown-unknown 2>/dev/null || true
+
+echo "==> Adding llvm-tools-preview component..."
+rustup component add llvm-tools-preview 2>/dev/null || true
+
 echo "==> Installing Playwright browsers..."
 if command -v npx >/dev/null 2>&1 && [ -f package.json ]; then
     npx playwright install --with-deps chromium
@@ -122,6 +128,13 @@ args = ["nextest", "run", "--run-ignored=ignored-only", "--no-tests=pass"]
 description = "Full CI check: fmt-check → clippy → test"
 dependencies = ["fmt-check", "clippy", "test"]
 
+# ── CLI Build ───────────────────────────────────────────────────────────
+
+[tasks.build-cli]
+description = "Build the ironpad-cli binary (release)"
+command = "cargo"
+args = ["build", "--release", "-p", "ironpad-cli"]
+
 # ── Playwright ───────────────────────────────────────────────────────────────
 
 [tasks.playwright-install]
@@ -140,6 +153,7 @@ npx playwright install --with-deps chromium
 
 [tasks.playwright]
 description = "Run Playwright end-to-end tests"
+dependencies = ["build-cli"]
 script = '''
 #!/usr/bin/env bash
 set -euo pipefail

@@ -1,18 +1,18 @@
 use ironpad_common::{
-    CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult,
-    IronpadCell, Severity,
+    CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult, Severity,
 };
 use leptos::prelude::*;
 use thaw::{Card, CardHeader, Tab, TabList, Tag, TagSize};
 
 use crate::components::markdown_cell::MarkdownCell;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
+use crate::model::NotebookModel;
 use crate::server_fns::compile_cell;
 
 use super::cell_output::{CellOutputPanel, CompileResultPanel};
 #[cfg(feature = "hydrate")]
 use super::state::CellOutputData;
-use super::state::{persist_notebook, sync_cells_from_notebook, CellStatus, NotebookState};
+use super::state::{persist_notebook, CellStatus, NotebookState};
 
 // ── Cell item ───────────────────────────────────────────────────────────────
 
@@ -24,6 +24,7 @@ use super::state::{persist_notebook, sync_cells_from_notebook, CellStatus, Noteb
 #[component]
 pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let state = expect_context::<NotebookState>();
+    let model = expect_context::<NotebookModel>();
     let cell_id = cell.id.clone();
     let cell_id_for_click = cell.id.clone();
     let cell_id_for_delete = cell.id.clone();
@@ -31,10 +32,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_focus = cell.id.clone();
     #[cfg(feature = "hydrate")]
     let cell_id_for_flush = cell.id.clone();
-    #[cfg(feature = "hydrate")]
-    let cell_id_for_stale_src = cell.id.clone();
-    #[cfg(feature = "hydrate")]
-    let cell_id_for_stale_toml = cell.id.clone();
     let cell_id_for_stale_header = cell.id.clone();
     let cell_id_for_output = cell.id.clone();
     let cell_id_for_markdown = StoredValue::new(cell.id.clone());
@@ -118,22 +115,26 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let delete_cell_fn = move || {
         let cid = cell_id_for_delete_sv.get_value();
         let cid_cleanup = cell_id_for_delete_cleanup_sv.get_value();
-        state.notebook.update(|nb_opt| {
-            if let Some(nb) = nb_opt {
-                nb.cells.retain(|c| c.id != cid);
-                for (i, cell) in nb.cells.iter_mut().enumerate() {
-                    cell.order = i as u32;
-                }
-            }
-        });
-        state.cell_outputs.update(|map| {
-            map.remove(&cid_cleanup);
-        });
-        state.cell_display_texts.update(|map| {
-            map.remove(&cid_cleanup);
-        });
-        sync_cells_from_notebook(&state);
-        persist_notebook(&state);
+        let version = model.cell_version(&cid);
+        if model
+            .apply(
+                ironpad_common::protocol::Mutation::CellDelete {
+                    cell_id: cid,
+                    version,
+                },
+                ironpad_common::protocol::ClientId::browser(),
+            )
+            .is_ok()
+        {
+            // Clean up execution state (UI concern, not model concern).
+            state.cell_outputs.update(|map| {
+                map.remove(&cid_cleanup);
+            });
+            state.cell_display_texts.update(|map| {
+                map.remove(&cid_cleanup);
+            });
+            persist_notebook(&state);
+        }
     };
 
     // ── Rename action ───────────────────────────────────────────────────
@@ -144,15 +145,22 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_label_blur = move |_| {
         let current = label.get_untracked();
         let cid = cell_id_for_rename.clone();
-        state.notebook.update(|nb_opt| {
-            if let Some(nb) = nb_opt {
-                if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
-                    cell.label = current;
-                }
-            }
-        });
-        sync_cells_from_notebook(&state);
-        persist_notebook(&state);
+        let version = model.cell_version(&cid);
+        if model
+            .apply(
+                ironpad_common::protocol::Mutation::CellUpdate {
+                    cell_id: cid,
+                    source: None,
+                    cargo_toml: None,
+                    label: Some(current),
+                    version,
+                },
+                ironpad_common::protocol::ClientId::browser(),
+            )
+            .is_ok()
+        {
+            persist_notebook(&state);
+        }
     };
 
     // ── Menu state ──────────────────────────────────────────────────────
@@ -164,23 +172,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_move = StoredValue::new(cell.id.clone());
 
     let reorder_cells_fn = move |new_ids: Vec<String>| {
-        state.notebook.update(|nb_opt| {
-            let Some(nb) = nb_opt else { return };
-            let mut reordered = Vec::with_capacity(new_ids.len());
-            for id in &new_ids {
-                if let Some(pos) = nb.cells.iter().position(|c| &c.id == id) {
-                    reordered.push(nb.cells.remove(pos));
-                }
-            }
-            // Append any cells not in new_ids (shouldn't happen, but safe).
-            reordered.append(&mut nb.cells);
-            for (i, cell) in reordered.iter_mut().enumerate() {
-                cell.order = i as u32;
-            }
-            nb.cells = reordered;
-        });
-        sync_cells_from_notebook(&state);
-        persist_notebook(&state);
+        if model
+            .apply(
+                ironpad_common::protocol::Mutation::CellReorder { cell_ids: new_ids },
+                ironpad_common::protocol::ClientId::browser(),
+            )
+            .is_ok()
+        {
+            persist_notebook(&state);
+        }
     };
 
     let reorder_for_up = reorder_cells_fn;
@@ -226,40 +226,32 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         menu_open.set(false);
 
         let cid = cell_id_for_dup.get_value();
-        let new_id = {
-            #[cfg(feature = "hydrate")]
-            {
-                uuid::Uuid::new_v4().to_string()
-            }
-            #[cfg(not(feature = "hydrate"))]
-            {
-                format!("{cid}_dup")
-            }
-        };
 
-        state.notebook.update(|nb_opt| {
-            let Some(nb) = nb_opt else { return };
-            let Some(idx) = nb.cells.iter().position(|c| c.id == cid) else {
-                return;
-            };
-            let original = nb.cells[idx].clone();
-            let new_cell = IronpadCell {
-                id: new_id.clone(),
-                order: 0,
-                label: format!("{} (copy)", original.label),
-                cell_type: original.cell_type,
-                source: original.source,
-                cargo_toml: original.cargo_toml,
-            };
-            nb.cells.insert(idx + 1, new_cell);
-            for (i, cell) in nb.cells.iter_mut().enumerate() {
-                cell.order = i as u32;
-            }
+        // Read the original cell from the notebook.
+        let original = state.notebook.with_untracked(|nb_opt| {
+            nb_opt
+                .as_ref()
+                .and_then(|nb| nb.cells.iter().find(|c| c.id == cid).cloned())
         });
+        let Some(original) = original else { return };
 
-        state.pending_focus_cell.set(Some(new_id));
-        sync_cells_from_notebook(&state);
-        persist_notebook(&state);
+        if let Ok((result, _event)) = model.apply(
+            ironpad_common::protocol::Mutation::CellAdd {
+                cell: ironpad_common::protocol::NewCell {
+                    source: original.source,
+                    cell_type: original.cell_type,
+                    label: format!("{} (copy)", original.label),
+                    cargo_toml: original.cargo_toml,
+                },
+                after_cell_id: Some(cid),
+            },
+            ironpad_common::protocol::ClientId::browser(),
+        ) {
+            if let ironpad_common::protocol::MutationResult::CellAdded { cell_id, .. } = result {
+                state.pending_focus_cell.set(Some(cell_id));
+            }
+            persist_notebook(&state);
+        }
     };
 
     // ── Delete with confirmation ────────────────────────────────────────
@@ -921,19 +913,27 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let debounce_handle: RwSignal<i32> = RwSignal::new(0);
 
         // Build a reusable JS function that reads the *current* source from
-        // the signal and persists it to IndexedDB via the notebook signal.
+        // the signal and persists it via the model.
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = source.get_untracked();
             let cid = cid_save.clone();
-            state.notebook.update_untracked(|nb_opt| {
-                if let Some(nb) = nb_opt {
-                    if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
-                        cell.source = val;
-                    }
-                }
-            });
-            persist_notebook(&state);
-            source_dirty.set(false);
+            let version = model.cell_version(&cid);
+            if model
+                .apply(
+                    ironpad_common::protocol::Mutation::CellUpdate {
+                        cell_id: cid,
+                        source: Some(val),
+                        cargo_toml: None,
+                        label: None,
+                        version,
+                    },
+                    ironpad_common::protocol::ClientId::browser(),
+                )
+                .is_ok()
+            {
+                persist_notebook(&state);
+                source_dirty.set(false);
+            }
         });
         let save_fn: js_sys::Function =
             closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
@@ -942,20 +942,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         Callback::new(move |val: String| {
             source.set(val);
             source_dirty.set(true);
-
-            // Mark this cell and all subsequent Code cells as stale.
-            if !is_markdown {
-                let cid = cell_id_for_stale_src.clone();
-                state.cell_stale.update(|stale| {
-                    let cells = state.cells.get_untracked();
-                    let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-                    for cell in &cells[my_idx..] {
-                        if cell.cell_type == CellType::Code {
-                            stale.insert(cell.id.clone(), true);
-                        }
-                    }
-                });
-            }
 
             // Clear the previous debounce timer and start a fresh 1 s window.
             let win = web_sys::window().unwrap();
@@ -985,15 +971,23 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = cargo_toml.get_untracked();
             let cid = cid_save.clone();
-            state.notebook.update_untracked(|nb_opt| {
-                if let Some(nb) = nb_opt {
-                    if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
-                        cell.cargo_toml = Some(val);
-                    }
-                }
-            });
-            persist_notebook(&state);
-            cargo_toml_dirty.set(false);
+            let version = model.cell_version(&cid);
+            if model
+                .apply(
+                    ironpad_common::protocol::Mutation::CellUpdate {
+                        cell_id: cid,
+                        source: None,
+                        cargo_toml: Some(Some(val)),
+                        label: None,
+                        version,
+                    },
+                    ironpad_common::protocol::ClientId::browser(),
+                )
+                .is_ok()
+            {
+                persist_notebook(&state);
+                cargo_toml_dirty.set(false);
+            }
         });
         let save_fn: js_sys::Function =
             closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
@@ -1002,20 +996,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         Callback::new(move |val: String| {
             cargo_toml.set(val);
             cargo_toml_dirty.set(true);
-
-            // Mark this cell and all subsequent Code cells as stale.
-            if !is_markdown {
-                let cid = cell_id_for_stale_toml.clone();
-                state.cell_stale.update(|stale| {
-                    let cells = state.cells.get_untracked();
-                    let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-                    for cell in &cells[my_idx..] {
-                        if cell.cell_type == CellType::Code {
-                            stale.insert(cell.id.clone(), true);
-                        }
-                    }
-                });
-            }
 
             let win = web_sys::window().unwrap();
             let prev = debounce_handle.get_untracked();
@@ -1055,18 +1035,25 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             let src = source.get_untracked();
             let toml = cargo_toml.get_untracked();
             let cid = cid_flush.clone();
+            let version = model.cell_version(&cid);
 
-            state.notebook.update_untracked(|nb_opt| {
-                if let Some(nb) = nb_opt {
-                    if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cid) {
-                        cell.source = src;
-                        cell.cargo_toml = Some(toml);
-                    }
-                }
-            });
-
-            source_dirty.set(false);
-            cargo_toml_dirty.set(false);
+            // Flush current editor content into the model.
+            if model
+                .apply(
+                    ironpad_common::protocol::Mutation::CellUpdate {
+                        cell_id: cid,
+                        source: Some(src),
+                        cargo_toml: Some(Some(toml)),
+                        label: None,
+                        version,
+                    },
+                    ironpad_common::protocol::ClientId::browser(),
+                )
+                .is_ok()
+            {
+                source_dirty.set(false);
+                cargo_toml_dirty.set(false);
+            }
         });
     }
 
