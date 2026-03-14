@@ -302,22 +302,27 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
 /// Format an epoch-ms timestamp as a human-readable relative string.
 #[cfg(feature = "hydrate")]
 fn format_relative_time(epoch_ms: f64, now_ms: f64) -> String {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "value is clamped to non-negative and fits comfortably in u64"
+    )]
     let diff_secs = ((now_ms - epoch_ms) / 1000.0).max(0.0) as u64;
 
     match diff_secs {
         0..=4 => "just now".to_string(),
-        5..=59 => format!("{}s ago", diff_secs),
+        5..=59 => format!("{diff_secs}s ago"),
         60..=3599 => {
             let mins = diff_secs / 60;
-            format!("{}m ago", mins)
+            format!("{mins}m ago")
         }
         3600..=86399 => {
             let hours = diff_secs / 3600;
-            format!("{}h ago", hours)
+            format!("{hours}h ago")
         }
         _ => {
             let days = diff_secs / 86400;
-            format!("{}d ago", days)
+            format!("{days}d ago")
         }
     }
 }

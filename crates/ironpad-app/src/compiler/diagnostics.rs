@@ -247,10 +247,7 @@ mod tests {
 
     #[test]
     fn handles_multiline_cargo_output() {
-        let combined = format!(
-            "{}\n{}\n{}\n{}",
-            ARTIFACT_JSON, TYPE_ERROR_JSON, WARNING_JSON, NOTE_JSON
-        );
+        let combined = format!("{ARTIFACT_JSON}\n{TYPE_ERROR_JSON}\n{WARNING_JSON}\n{NOTE_JSON}");
         let diags = parse_diagnostics(&combined, 5);
 
         // Artifact skipped, type error + warning + note-error = 3 diagnostics.
@@ -535,8 +532,7 @@ mod tests {
         // Simulates a realistic compilation that produces multiple diagnostics:
         // a syntax error, a type error, a warning, and a note.
         let combined = format!(
-            "{}\n{}\n{}\n{}\n{}",
-            ARTIFACT_JSON, SYNTAX_MISSING_SEMI_JSON, TYPE_ERROR_JSON, WARNING_JSON, NOTE_JSON,
+            "{ARTIFACT_JSON}\n{SYNTAX_MISSING_SEMI_JSON}\n{TYPE_ERROR_JSON}\n{WARNING_JSON}\n{NOTE_JSON}"
         );
         let diags = parse_diagnostics(&combined, 5);
 

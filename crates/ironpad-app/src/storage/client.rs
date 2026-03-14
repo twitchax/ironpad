@@ -1,4 +1,4 @@
-//! wasm-bindgen bindings for the IronpadStorage JavaScript API.
+//! wasm-bindgen bindings for the `IronpadStorage` JavaScript API.
 
 use wasm_bindgen::prelude::*;
 
@@ -32,7 +32,7 @@ extern "C" {
 
 // ── Typed Rust API ──────────────────────────────────────────────────────────
 
-/// Lists all private notebooks from IndexedDB, sorted by updated_at descending.
+/// Lists all private notebooks from `IndexedDB`, sorted by `updated_at` descending.
 pub async fn list_notebooks() -> Vec<IronpadNotebook> {
     let val = js_list_notebooks().await;
     serde_wasm_bindgen::from_value(val).unwrap_or_default()
@@ -47,13 +47,13 @@ pub async fn get_notebook(id: &str) -> Option<IronpadNotebook> {
     serde_wasm_bindgen::from_value(val).ok()
 }
 
-/// Saves (upserts) a notebook to IndexedDB.
+/// Saves (upserts) a notebook to `IndexedDB`.
 pub async fn save_notebook(notebook: &IronpadNotebook) {
     let val = serde_wasm_bindgen::to_value(notebook).expect("failed to serialize notebook");
     js_save_notebook(val).await;
 }
 
-/// Deletes a notebook from IndexedDB by ID.
+/// Deletes a notebook from `IndexedDB` by ID.
 pub async fn delete_notebook(id: &str) {
     js_delete_notebook(id).await;
 }

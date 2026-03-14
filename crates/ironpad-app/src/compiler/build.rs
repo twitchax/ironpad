@@ -143,7 +143,7 @@ pub async fn build_micro_crate(
 
     if !wb_output.status.success() {
         let wb_stderr = String::from_utf8_lossy(&wb_output.stderr);
-        anyhow::bail!("wasm-bindgen failed: {}", wb_stderr);
+        anyhow::bail!("wasm-bindgen failed: {wb_stderr}");
     }
 
     // wasm-bindgen converts hyphens to underscores in output filenames.

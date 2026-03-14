@@ -49,10 +49,10 @@ mod js {
 /// WASM client side.  The hash is only used to detect same-blob cache hits.
 #[cfg(feature = "hydrate")]
 pub fn hash_wasm_blob(bytes: &[u8]) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     format!("{hash:016x}")
 }
@@ -96,7 +96,7 @@ pub async fn load_blob(
     Ok(())
 }
 
-/// Execution result from running a cell: (output_bytes, display_text, type_tag).
+/// Execution result from running a cell: (`output_bytes`, `display_text`, `type_tag`).
 #[cfg(feature = "hydrate")]
 pub type CellExecResult = (Vec<u8>, Option<String>, Option<String>);
 

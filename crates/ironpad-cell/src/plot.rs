@@ -1,5 +1,7 @@
 //! Ergonomic plotting API wrapping plotters' `SVGBackend`.
 
+use std::fmt::Write as _;
+
 use plotters::prelude::*;
 
 use crate::{CellOutput, DisplayPanel, IntoPanels, TypeTag};
@@ -143,7 +145,8 @@ impl Plot {
                 SVGBackend::with_string(&mut buf, (self.width, self.height)).into_drawing_area();
 
             // Transparent background (writes black fill, but we strip it below).
-            root.fill(&COLOR_TRANSPARENT).unwrap();
+            root.fill(&COLOR_TRANSPARENT)
+                .expect("filling SVG background cannot fail");
 
             match &self.kind {
                 ChartKind::Line(data) => self.render_line(&root, data, &mut tooltip_points),
@@ -153,7 +156,7 @@ impl Plot {
                 }
             }
 
-            root.present().unwrap();
+            root.present().expect("presenting SVG drawing cannot fail");
         }
 
         // Make the background truly transparent by replacing the initial rect fill.
@@ -183,7 +186,7 @@ impl Plot {
                 data.iter().copied(),
                 COLOR_ACCENT.stroke_width(2),
             ))
-            .unwrap();
+            .expect("drawing line series cannot fail");
 
         if self.point_labels {
             chart
@@ -194,7 +197,7 @@ impl Plot {
                         ("sans-serif", 10).into_font().color(&COLOR_TEXT),
                     )
                 }))
-                .unwrap();
+                .expect("drawing point labels cannot fail");
         }
 
         if self.tooltips {
@@ -205,6 +208,7 @@ impl Plot {
         }
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn render_bar(
         &self,
         root: &DrawingArea<SVGBackend<'_>, plotters::coord::Shift>,
@@ -235,12 +239,15 @@ impl Plot {
         builder.set_label_area_size(LabelAreaPosition::Bottom, 40);
         builder.set_label_area_size(LabelAreaPosition::Left, 60);
 
-        let mut chart = builder.build_cartesian_2d(0.0..n, 0.0..y_top).unwrap();
+        let mut chart = builder
+            .build_cartesian_2d(0.0..n, 0.0..y_top)
+            .expect("building bar chart context cannot fail");
 
         chart
             .configure_mesh()
             .disable_x_mesh()
             .x_label_formatter(&|x| {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let idx = *x as usize;
                 data.get(idx).map_or_else(String::new, |(l, _)| l.clone())
             })
@@ -248,7 +255,7 @@ impl Plot {
             .label_style(("sans-serif", 12).into_font().color(&COLOR_TEXT))
             .axis_style(COLOR_TEXT)
             .draw()
-            .unwrap();
+            .expect("drawing bar chart mesh cannot fail");
 
         chart
             .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
@@ -258,7 +265,7 @@ impl Plot {
                 bar.set_margin(0, 0, 2, 2);
                 bar
             }))
-            .unwrap();
+            .expect("drawing bar series cannot fail");
 
         if self.point_labels {
             chart
@@ -269,7 +276,7 @@ impl Plot {
                         ("sans-serif", 10).into_font().color(&COLOR_TEXT),
                     )
                 }))
-                .unwrap();
+                .expect("drawing bar point labels cannot fail");
         }
 
         if self.tooltips {
@@ -295,7 +302,7 @@ impl Plot {
                 data.iter()
                     .map(|(x, y)| Circle::new((*x, *y), 4, COLOR_ACCENT.filled())),
             )
-            .unwrap();
+            .expect("drawing scatter series cannot fail");
 
         if self.point_labels {
             chart
@@ -306,7 +313,7 @@ impl Plot {
                         ("sans-serif", 10).into_font().color(&COLOR_TEXT),
                     )
                 }))
-                .unwrap();
+                .expect("drawing scatter point labels cannot fail");
         }
 
         if self.tooltips {
@@ -343,7 +350,9 @@ impl Plot {
             builder.set_label_area_size(LabelAreaPosition::Left, 60);
         }
 
-        let mut chart = builder.build_cartesian_2d(x_range, y_range).unwrap();
+        let mut chart = builder
+            .build_cartesian_2d(x_range, y_range)
+            .expect("building chart context cannot fail");
 
         let mut mesh = chart.configure_mesh();
         mesh.label_style(("sans-serif", 12).into_font().color(&COLOR_TEXT))
@@ -356,7 +365,7 @@ impl Plot {
             mesh.y_desc(lbl.as_str());
         }
 
-        mesh.draw().unwrap();
+        mesh.draw().expect("drawing chart mesh cannot fail");
 
         chart
     }
@@ -425,10 +434,11 @@ fn inject_tooltips(svg: &str, points: &[(i32, i32, String)]) -> String {
         result.push_str("<g class=\"ironpad-tooltips\">");
         for (px, py, label) in points {
             let escaped = xml_escape(label);
-            result.push_str(&format!(
+            let _ = write!(
+                result,
                 "<circle cx=\"{px}\" cy=\"{py}\" r=\"8\" fill=\"transparent\" stroke=\"none\">\
                  <title>{escaped}</title></circle>"
-            ));
+            );
         }
         result.push_str("</g></svg>");
         result

@@ -15,6 +15,8 @@ use tracing::{debug, info, warn};
 pub async fn optimize_wasm(wasm_bytes: &[u8], work_dir: &Path) -> Vec<u8> {
     match try_optimize(wasm_bytes, work_dir).await {
         Ok(optimized) => {
+            // WASM blob sizes are always well within i64 range.
+            #[allow(clippy::cast_possible_wrap)]
             let saved = wasm_bytes.len() as i64 - optimized.len() as i64;
             info!(
                 original_size = wasm_bytes.len(),

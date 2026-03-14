@@ -3,6 +3,7 @@
 /// Users can view source code, run cells, and fork the notebook, but cannot
 /// edit, add, delete, or reorder cells.
 use std::collections::HashMap;
+use std::fmt::Write;
 
 use leptos::prelude::*;
 
@@ -18,7 +19,7 @@ use crate::server_fns::compile_cell;
 
 // ── Display panels ──────────────────────────────────────────────────────────
 
-/// Display panel types matching ironpad-cell's DisplayPanel enum.
+/// Display panel types matching ironpad-cell's `DisplayPanel` enum.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 enum DisplayPanel {
     Text(String),
@@ -50,6 +51,7 @@ struct CellOutputData {
 
 /// Read-only notebook view. Displays cells (code + markdown), supports
 /// execution, and provides a fork button to clone the notebook.
+#[allow(clippy::needless_pass_by_value)]
 #[component]
 pub fn ViewOnlyNotebook(
     notebook: IronpadNotebook,
@@ -196,6 +198,7 @@ pub fn ViewOnlyNotebook(
 // ── ViewOnlyCell ────────────────────────────────────────────────────────────
 
 /// Dispatches rendering to the correct sub-component based on cell type.
+#[allow(clippy::implicit_hasher)]
 #[component]
 fn ViewOnlyCell(
     cell: IronpadCell,
@@ -231,6 +234,8 @@ fn ViewOnlyCell(
 // ── ViewOnlyCodeCell ────────────────────────────────────────────────────────
 
 /// Renders a code cell with a read-only Monaco editor, run button, and output area.
+#[allow(clippy::implicit_hasher)]
+#[allow(unused_variables)] // Parameters used only in hydrate cfg.
 #[component]
 fn ViewOnlyCodeCell(
     cell: IronpadCell,
@@ -244,9 +249,9 @@ fn ViewOnlyCodeCell(
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let all_cells = StoredValue::new(all_cells);
-    let _shared_cargo_toml = StoredValue::new(shared_cargo_toml);
-    let _shared_source = StoredValue::new(shared_source);
-    let _notebook_id = StoredValue::new(notebook_id);
+    let stored_cargo_toml = StoredValue::new(shared_cargo_toml);
+    let stored_source = StoredValue::new(shared_source);
+    let stored_notebook_id = StoredValue::new(notebook_id);
 
     let compiling = RwSignal::new(false);
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
@@ -280,14 +285,14 @@ fn ViewOnlyCodeCell(
         let queue = run_all_queue.get();
         let cid = cell_id_for_queue.get_value();
 
-        if queue.first().map(|id| id == &cid).unwrap_or(false) && !compiling.get_untracked() {
+        if queue.first().is_some_and(|id| id == &cid) && !compiling.get_untracked() {
             run_trigger.update(|g| *g += 1);
         }
     });
 
     // ── Compile + execute flow, driven by `run_trigger` ─────────────────
 
-    let _cell_id_for_exec = StoredValue::new(cell.with_value(|c| c.id.clone()));
+    let cell_id_for_exec = StoredValue::new(cell.with_value(|c| c.id.clone()));
 
     Effect::new(move || {
         let gen = run_trigger.get();
@@ -295,6 +300,7 @@ fn ViewOnlyCodeCell(
             return;
         }
 
+        #[allow(clippy::needless_return)] // Guard is needed in hydrate cfg.
         if compiling.get_untracked() {
             return;
         }
@@ -306,7 +312,7 @@ fn ViewOnlyCodeCell(
 
             leptos::task::spawn_local(async move {
                 let cell_data = cell.get_value();
-                let cell_id = _cell_id_for_exec.get_value();
+                let cell_id = cell_id_for_exec.get_value();
                 let cells = all_cells.get_value();
                 let my_idx = cells.iter().position(|c| c.id == cell_data.id).unwrap_or(0);
 
@@ -332,20 +338,22 @@ fn ViewOnlyCodeCell(
 
                 // CellInputs wire format: [count: u32 LE][len0: u32 LE][bytes0]...
                 let mut input_buf = Vec::new();
+                #[allow(clippy::cast_possible_truncation)]
                 input_buf.extend_from_slice(&(all_output_bytes.len() as u32).to_le_bytes());
                 for output in &all_output_bytes {
+                    #[allow(clippy::cast_possible_truncation)]
                     input_buf.extend_from_slice(&(output.len() as u32).to_le_bytes());
                     input_buf.extend_from_slice(output);
                 }
 
                 let request = CompileRequest {
-                    notebook_id: _notebook_id.get_value(),
+                    notebook_id: stored_notebook_id.get_value(),
                     cell_id: cell_data.id.clone(),
                     source: cell_data.source.clone(),
                     cargo_toml: cell_data.cargo_toml.clone().unwrap_or_default(),
                     previous_cell_types: types,
-                    shared_cargo_toml: _shared_cargo_toml.get_value(),
-                    shared_source: _shared_source.get_value(),
+                    shared_cargo_toml: stored_cargo_toml.get_value(),
+                    shared_source: stored_source.get_value(),
                     force: force_recompile.get_untracked(),
                 };
 
@@ -423,7 +431,7 @@ fn ViewOnlyCodeCell(
                     run_all_queue.set(vec![]);
                 } else {
                     run_all_queue.update(|q| {
-                        if q.first().map(|id| id == &cell_id).unwrap_or(false) {
+                        if q.first().is_some_and(|id| id == &cell_id) {
                             q.remove(0);
                         }
                     });
@@ -524,6 +532,7 @@ fn ViewOnlyMarkdownCell(#[prop(into)] source: String) -> impl IntoView {
 // ── ViewOnlyOutput ──────────────────────────────────────────────────────────
 
 /// Renders execution output panels (text, HTML, SVG) and timing metadata.
+#[allow(clippy::implicit_hasher)]
 #[component]
 fn ViewOnlyOutput(
     result: ExecutionResult,
@@ -614,13 +623,13 @@ fn ViewOnlyOutput(
 fn render_table_html(headers: &[String], rows: &[Vec<String>]) -> String {
     let mut html = String::from("<table class=\"ironpad-output-table\"><thead><tr>");
     for h in headers {
-        html.push_str(&format!("<th>{}</th>", html_escape(h)));
+        let _ = write!(html, "<th>{}</th>", html_escape(h));
     }
     html.push_str("</tr></thead><tbody>");
     for row in rows {
         html.push_str("<tr>");
         for cell in row {
-            html.push_str(&format!("<td>{}</td>", html_escape(cell)));
+            let _ = write!(html, "<td>{}</td>", html_escape(cell));
         }
         html.push_str("</tr>");
     }
@@ -641,6 +650,7 @@ fn render_table_tsv(headers: &[String], rows: &[Vec<String>]) -> String {
 // ── ViewOnlyInteractiveWidget ────────────────────────────────────────────────
 
 /// Renders an interactive widget in read-only mode (shows current/default value).
+#[allow(clippy::implicit_hasher)]
 #[component]
 fn ViewOnlyInteractiveWidget(
     #[prop(into)] kind: String,
@@ -660,10 +670,22 @@ fn ViewOnlyInteractiveWidget(
 
     let content = match kind.as_str() {
         "slider" | "number" => {
-            let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let min = cfg.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let max = cfg.get("max").and_then(|v| v.as_f64()).unwrap_or(100.0);
-            let step = cfg.get("step").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            let default = cfg
+                .get("default")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            let min = cfg
+                .get("min")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            let max = cfg
+                .get("max")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(100.0);
+            let step = cfg
+                .get("step")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(1.0);
             let label_text = if label.is_empty() {
                 kind.clone()
             } else {
@@ -767,7 +789,7 @@ fn ViewOnlyInteractiveWidget(
         "checkbox" | "switch" => {
             let default = cfg
                 .get("default")
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
 
             let checked = RwSignal::new(default);
@@ -897,27 +919,34 @@ fn ViewOnlyInteractiveWidget(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
-            let initial = cfg.get("initial").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let initial = cfg
+                .get("initial")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
             let pct = initial.clamp(0.0, 100.0);
             let width_style = format!("width: {pct}%");
             let label_text = if label.is_empty() {
                 String::new()
             } else {
-                label.to_owned()
+                label.clone()
             };
 
             view! {
                 <div class="ironpad-interactive-widget">
-                    {if !label_text.is_empty() {
-                        Some(view! { <span class="ironpad-widget-label">{label_text}</span> })
-                    } else {
+                    {if label_text.is_empty() {
                         None
+                    } else {
+                        Some(view! { <span class="ironpad-widget-label">{label_text}</span> })
                     }}
                     <div class="ironpad-progress" data-progress-id={id}>
                         <div class="ironpad-progress-bar">
                             <div class="ironpad-progress-fill" style={width_style}></div>
                         </div>
-                        <span class="ironpad-progress-value">{format!("{}%", pct as u32)}</span>
+                        <span class="ironpad-progress-value">{
+                            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                            let pct_int = pct as u32;
+                            format!("{pct_int}%")
+                        }</span>
                     </div>
                 </div>
             }

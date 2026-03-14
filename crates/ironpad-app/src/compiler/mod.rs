@@ -330,7 +330,7 @@ mod e2e_tests {
     // ── Successful compilation ──────────────────────────────────────────
 
     #[tokio::test]
-    #[ignore] // Slow: invokes `cargo build --target wasm32-unknown-unknown`.
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_trivial_cell_produces_valid_wasm_blob() {
         let cache_dir = tempdir();
         let cell_path = ironpad_cell_path();
@@ -397,7 +397,7 @@ mod e2e_tests {
     // ── Compilation failure produces diagnostics ────────────────────────
 
     #[tokio::test]
-    #[ignore] // Slow: invokes `cargo build --target wasm32-unknown-unknown`.
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_bad_code_returns_diagnostics() {
         let cache_dir = tempdir();
         let cell_path = ironpad_cell_path();
@@ -449,7 +449,7 @@ mod e2e_tests {
     // ── Full pipeline: compile → cache → cache hit ─────────────────────
 
     #[tokio::test]
-    #[ignore] // Slow: invokes `cargo build --target wasm32-unknown-unknown`.
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_and_cache_round_trip() {
         let cache_dir = tempdir();
         let cell_path = ironpad_cell_path();

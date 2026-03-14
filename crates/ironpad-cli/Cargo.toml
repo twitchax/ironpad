@@ -21,3 +21,6 @@ uuid.workspace = true
 tokio-tungstenite.workspace = true
 libc = "0.2"
 anyhow.workspace = true
+
+[lints]
+workspace = true

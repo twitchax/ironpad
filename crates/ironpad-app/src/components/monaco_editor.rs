@@ -193,6 +193,7 @@ impl MonacoEditorHandle {
 /// `public/monaco/init.js`; the editor is only created client-side
 /// (SSR renders an empty container `<div>`).
 #[component]
+#[allow(clippy::needless_pass_by_value)]
 pub fn MonacoEditor(
     /// Initial text content of the editor.
     #[prop(into)]
@@ -220,7 +221,6 @@ pub fn MonacoEditor(
 
     #[cfg(feature = "hydrate")]
     {
-        use std::ops::Deref;
         use wasm_bindgen::prelude::*;
 
         let iv = initial_value.clone();
@@ -255,7 +255,7 @@ pub fn MonacoEditor(
             };
 
             // Create the editor via the JS bridge.
-            let el: &web_sys::HtmlElement = container.deref();
+            let el: &web_sys::HtmlElement = &container;
             let id = js::create(el, &iv, &lang, &on_change_fn);
             editor_id.set(Some(id));
 

@@ -14,7 +14,7 @@ use crate::ipc::{IpcRequest, IpcResponse};
 #[derive(Parser)]
 #[command(name = "ironpad-cli", about = "CLI for ironpad agent collaboration")]
 struct Cli {
-    /// Ironpad server URL (e.g. ws://localhost:3111)
+    /// Ironpad server URL (e.g. `ws://localhost:3111`)
     #[arg(long, env = "IRONPAD_HOST")]
     host: Option<String>,
 
@@ -326,7 +326,7 @@ async fn fetch_cell_version(cell_id: &str) -> u64 {
     resp.data
         .as_ref()
         .and_then(|d| d.get("version"))
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0)
 }
 
@@ -397,14 +397,11 @@ fn print_response(response: &IpcResponse) {
 async fn send_ipc(command: &str, args: serde_json::Value) -> IpcResponse {
     let sock = daemon::socket_path();
 
-    let stream = match UnixStream::connect(&sock).await {
-        Ok(s) => s,
-        Err(_) => {
-            return IpcResponse::error_with_code(
-                "daemon is not running (cannot connect to socket)",
-                "connection_error",
-            );
-        }
+    let Ok(stream) = UnixStream::connect(&sock).await else {
+        return IpcResponse::error_with_code(
+            "daemon is not running (cannot connect to socket)",
+            "connection_error",
+        );
     };
 
     let (reader, mut writer) = stream.into_split();

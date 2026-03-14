@@ -146,7 +146,9 @@ fn ErrorDiagnosticItem(diagnostic: Diagnostic) -> impl IntoView {
             <div class="ironpad-error-diag-message">{diagnostic.message.clone()}</div>
 
             // Source spans with line numbers
-            {if !spans.is_empty() {
+            {if spans.is_empty() {
+                view! { <span /> }.into_any()
+            } else {
                 view! {
                     <div class="ironpad-error-diag-spans">
                         <For
@@ -158,8 +160,6 @@ fn ErrorDiagnosticItem(diagnostic: Diagnostic) -> impl IntoView {
                         </For>
                     </div>
                 }.into_any()
-            } else {
-                view! { <span /> }.into_any()
             }}
         </div>
     }

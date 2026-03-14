@@ -190,10 +190,9 @@ pub fn check_permission(permissions: &Permissions, message: &MessageKind) -> boo
             | Mutation::CellReorder { .. }
             | Mutation::NotebookUpdateMeta { .. } => permissions.write,
         },
-        // Events and responses flow from the model to clients — always allowed.
-        MessageKind::Event(_) | MessageKind::Response(_) => true,
-        // Control messages are handled by the relay layer, not permission-gated.
-        MessageKind::Control(_) => true,
+        // Events, responses, and control messages are always allowed — they
+        // flow from the model/relay to clients and are not permission-gated.
+        MessageKind::Event(_) | MessageKind::Response(_) | MessageKind::Control(_) => true,
     }
 }
 

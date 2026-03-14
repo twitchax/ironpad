@@ -7,6 +7,7 @@ use thaw::{Skeleton, SkeletonItem};
 /// "Add Cell" buttons (Code / Markdown), rendered between cells and at the end
 /// of the list.
 #[component]
+#[allow(clippy::needless_pass_by_value)]
 pub(super) fn AddCellButton(
     after_cell_id: Option<String>,
     on_add: Callback<(Option<String>, CellType)>,

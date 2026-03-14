@@ -27,12 +27,13 @@ pub fn daemon_dir() -> PathBuf {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    std::env::var("HOME").map_or_else(
+        |_| {
             eprintln!("error: HOME environment variable is not set");
             std::process::exit(1);
-        })
+        },
+        PathBuf::from,
+    )
 }
 
 pub fn socket_path() -> PathBuf {
@@ -46,7 +47,7 @@ pub fn pid_path() -> PathBuf {
 // ── Daemon state ────────────────────────────────────────────────────────────
 
 struct DaemonState {
-    /// Cached notebook (populated on connect via NotebookGet query).
+    /// Cached notebook (populated on connect via `NotebookGet` query).
     notebook: RwLock<Option<IronpadNotebook>>,
     /// Pending request-response pairs keyed by message ID.
     pending: RwLock<HashMap<String, oneshot::Sender<String>>>,
@@ -254,13 +255,13 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
         } => {
             if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == *cell_id) {
                 if let Some(src) = source {
-                    cell.source = src.clone();
+                    cell.source.clone_from(src);
                 }
                 if let Some(ct) = cargo_toml {
-                    cell.cargo_toml = ct.clone();
+                    cell.cargo_toml.clone_from(ct);
                 }
                 if let Some(lbl) = label {
-                    cell.label = lbl.clone();
+                    cell.label.clone_from(lbl);
                 }
                 cell.version = *version;
             }
@@ -286,13 +287,13 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             shared_source,
         } => {
             if let Some(t) = title {
-                nb.title = t.clone();
+                nb.title.clone_from(t);
             }
             if let Some(sct) = shared_cargo_toml {
-                nb.shared_cargo_toml = sct.clone();
+                nb.shared_cargo_toml.clone_from(sct);
             }
             if let Some(ss) = shared_source {
-                nb.shared_source = ss.clone();
+                nb.shared_source.clone_from(ss);
             }
         }
         // Compilation/execution events don't affect the notebook structure.
@@ -305,7 +306,9 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
 
 fn renumber(cells: &mut [ironpad_common::IronpadCell]) {
     for (i, cell) in cells.iter_mut().enumerate() {
-        cell.order = i as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let order = i as u32;
+        cell.order = order;
     }
 }
 
@@ -336,7 +339,9 @@ async fn handle_ipc_request(line: &str, state: &DaemonState) -> IpcResponse {
         "notebook.get" => {
             let nb = state.notebook.read().await;
             match nb.as_ref() {
-                Some(notebook) => IpcResponse::success(serde_json::to_value(notebook).unwrap()),
+                Some(notebook) => IpcResponse::success(
+                    serde_json::to_value(notebook).expect("notebook serialization"),
+                ),
                 None => IpcResponse::error("no notebook cached"),
             }
         }
@@ -373,7 +378,9 @@ async fn handle_ipc_request(line: &str, state: &DaemonState) -> IpcResponse {
                 .as_ref()
                 .and_then(|nb| nb.cells.iter().find(|c| c.id == cell_id))
             {
-                Some(cell) => IpcResponse::success(serde_json::to_value(cell).unwrap()),
+                Some(cell) => {
+                    IpcResponse::success(serde_json::to_value(cell).expect("cell serialization"))
+                }
                 None => IpcResponse::error_with_code("cell not found", "CellNotFound"),
             }
         }
@@ -435,7 +442,7 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
     }
 }
 
-/// Translate an IPC command name + args into a protocol MessageKind.
+/// Translate an IPC command name + args into a protocol `MessageKind`.
 fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
     match req.command.as_str() {
         "cells.add" => {
@@ -501,7 +508,7 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
             let version = req
                 .args
                 .get("version")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .ok_or("missing version (required for optimistic concurrency)")?;
 
             Ok(MessageKind::Mutation(protocol::Mutation::CellUpdate {
@@ -522,7 +529,7 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
             let version = req
                 .args
                 .get("version")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .ok_or("missing version (required for optimistic concurrency)")?;
 
             Ok(MessageKind::Mutation(protocol::Mutation::CellDelete {
@@ -549,14 +556,14 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
 fn translate_response(msg: protocol::Message) -> IpcResponse {
     match msg.kind {
         MessageKind::Response(response) => match response {
-            protocol::Response::Notebook { notebook } => {
-                IpcResponse::success(serde_json::to_value(notebook).unwrap())
-            }
+            protocol::Response::Notebook { notebook } => IpcResponse::success(
+                serde_json::to_value(notebook).expect("notebook serialization"),
+            ),
             protocol::Response::Cell { cell } => {
-                IpcResponse::success(serde_json::to_value(cell).unwrap())
+                IpcResponse::success(serde_json::to_value(cell).expect("cell serialization"))
             }
             protocol::Response::CellsList { cells } => {
-                IpcResponse::success(serde_json::to_value(cells).unwrap())
+                IpcResponse::success(serde_json::to_value(cells).expect("cells serialization"))
             }
             protocol::Response::SessionStatus {
                 session_id,
@@ -566,14 +573,14 @@ fn translate_response(msg: protocol::Message) -> IpcResponse {
                 "connected_clients": connected_clients,
             })),
             protocol::Response::MutationOk { detail } => {
-                IpcResponse::success(serde_json::to_value(detail).unwrap())
+                IpcResponse::success(serde_json::to_value(detail).expect("detail serialization"))
             }
             protocol::Response::Error { code, message } => {
                 IpcResponse::error_with_code(message, format!("{code:?}"))
             }
         },
         MessageKind::Event(envelope) => {
-            IpcResponse::success(serde_json::to_value(envelope).unwrap())
+            IpcResponse::success(serde_json::to_value(envelope).expect("envelope serialization"))
         }
         _ => IpcResponse::error("unexpected response type"),
     }

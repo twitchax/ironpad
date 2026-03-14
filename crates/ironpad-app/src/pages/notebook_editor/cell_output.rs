@@ -62,21 +62,25 @@ pub(super) fn CompileResultPanel(
                         .filter(|d| d.severity == Severity::Warning)
                         .collect();
 
+                    // Precision loss acceptable for display sizing.
+                    #[allow(clippy::cast_precision_loss)]
+                    let summary = format!(
+                        "✓ Compiled ({:.1} KB, {time:.0}ms{})",
+                        blob_size as f64 / 1024.0,
+                        if cached { ", cached" } else { "" },
+                    );
+
                     view! {
                         <div class="ironpad-compile-result ironpad-compile-result--success">
                             <div class="ironpad-compile-result-summary">
-                                {format!(
-                                    "✓ Compiled ({:.1} KB, {time:.0}ms{})",
-                                    blob_size as f64 / 1024.0,
-                                    if cached { ", cached" } else { "" },
-                                )}
+                                {summary}
                             </div>
-                            {if !warnings.is_empty() {
+                            {if warnings.is_empty() {
+                                view! { <div /> }.into_any()
+                            } else {
                                 view! {
                                     <ErrorPanel diagnostics=warnings />
                                 }.into_any()
-                            } else {
-                                view! { <div /> }.into_any()
                             }}
                         </div>
                     }.into_any()
@@ -176,7 +180,9 @@ pub(super) fn CellOutputPanel(
                         </span>
                     </div>
 
-                    {if !output_collapsed.get_untracked() {
+                    {if output_collapsed.get_untracked() {
+                        view! { <div /> }.into_any()
+                    } else {
                         let output_bytes = output_bytes.clone();
 
                         view! {
@@ -246,7 +252,9 @@ pub(super) fn CellOutputPanel(
                                 }).collect::<Vec<_>>()}
 
                                 // Raw bytes hex dump section.
-                                {if !output_bytes.is_empty() {
+                                {if output_bytes.is_empty() {
+                                    view! { <div /> }.into_any()
+                                } else {
                                     let hex = format_hex_dump(&output_bytes);
                                     view! {
                                         <details class="ironpad-output-bytes">
@@ -256,13 +264,9 @@ pub(super) fn CellOutputPanel(
                                             <pre class="ironpad-output-hex-dump">{hex}</pre>
                                         </details>
                                     }.into_any()
-                                } else {
-                                    view! { <div /> }.into_any()
                                 }}
                             </div>
                         }.into_any()
-                    } else {
-                        view! { <div /> }.into_any()
                     }}
                 </div>
             }.into_any()
@@ -295,7 +299,7 @@ fn bincode_encode_string(value: &str) -> Vec<u8> {
 #[cfg(feature = "hydrate")]
 fn update_cell_output(
     new_bytes: Vec<u8>,
-    cell_id: &Option<String>,
+    cell_id: Option<&String>,
     widget_ctx: Option<WidgetContext>,
 ) {
     let Some(cid) = cell_id else { return };
@@ -350,16 +354,29 @@ fn InteractiveWidget(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn render_slider(
     cfg: &serde_json::Value,
     label: &str,
     cell_id: Option<String>,
     widget_ctx: Option<WidgetContext>,
 ) -> impl IntoView {
-    let min = cfg.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let max = cfg.get("max").and_then(|v| v.as_f64()).unwrap_or(100.0);
-    let step = cfg.get("step").and_then(|v| v.as_f64()).unwrap_or(1.0);
-    let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(min);
+    let min = cfg
+        .get("min")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let max = cfg
+        .get("max")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(100.0);
+    let step = cfg
+        .get("step")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(1.0);
+    let default = cfg
+        .get("default")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(min);
     let label_text = if label.is_empty() {
         String::new()
     } else {
@@ -376,7 +393,7 @@ fn render_slider(
             value.set(new_val.clone());
             if let Ok(f) = new_val.parse::<f64>() {
                 let bytes = bincode_encode_f64(f);
-                update_cell_output(bytes, &cell_id, widget_ctx);
+                update_cell_output(bytes, cell_id.as_ref(), widget_ctx);
             }
         }
     };
@@ -388,10 +405,10 @@ fn render_slider(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if !label_text.is_empty() {
-                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
-            } else {
+            {if label_text.is_empty() {
                 view! { <span /> }.into_any()
+            } else {
+                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
             }}
             <input
                 type="range"
@@ -406,6 +423,7 @@ fn render_slider(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn render_dropdown(
     cfg: &serde_json::Value,
     label: &str,
@@ -441,7 +459,7 @@ fn render_dropdown(
             let new_val = leptos::prelude::event_target_value(&ev);
             value.set(new_val.clone());
             let bytes = bincode_encode_string(&new_val);
-            update_cell_output(bytes, &cell_id, widget_ctx);
+            update_cell_output(bytes, cell_id.as_ref(), widget_ctx);
         }
     };
 
@@ -451,10 +469,10 @@ fn render_dropdown(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if !label_text.is_empty() {
-                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
-            } else {
+            {if label_text.is_empty() {
                 view! { <span /> }.into_any()
+            } else {
+                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
             }}
             <select
                 prop:value=move || value.get()
@@ -474,6 +492,7 @@ fn render_dropdown(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn render_checkbox(
     cfg: &serde_json::Value,
     label: &str,
@@ -482,7 +501,7 @@ fn render_checkbox(
 ) -> impl IntoView {
     let default = cfg
         .get("default")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let label_text = label.to_owned();
 
@@ -500,7 +519,7 @@ fn render_checkbox(
                 let new_val = input.checked();
                 checked.set(new_val);
                 let bytes = bincode_encode_bool(new_val);
-                update_cell_output(bytes, &cell_id, widget_ctx);
+                update_cell_output(bytes, cell_id.as_ref(), widget_ctx);
             }
         }
     };
@@ -523,6 +542,7 @@ fn render_checkbox(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn render_text_input(
     cfg: &serde_json::Value,
     label: &str,
@@ -554,7 +574,7 @@ fn render_text_input(
             let new_val = leptos::prelude::event_target_value(&ev);
             value.set(new_val.clone());
             let bytes = bincode_encode_string(&new_val);
-            update_cell_output(bytes, &cell_id, widget_ctx);
+            update_cell_output(bytes, cell_id.as_ref(), widget_ctx);
         }
     };
 
@@ -564,10 +584,10 @@ fn render_text_input(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if !label_text.is_empty() {
-                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
-            } else {
+            {if label_text.is_empty() {
                 view! { <span /> }.into_any()
+            } else {
+                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
             }}
             <input
                 type="text"
@@ -579,16 +599,29 @@ fn render_text_input(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn render_number(
     cfg: &serde_json::Value,
     label: &str,
     cell_id: Option<String>,
     widget_ctx: Option<WidgetContext>,
 ) -> impl IntoView {
-    let min = cfg.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let max = cfg.get("max").and_then(|v| v.as_f64()).unwrap_or(100.0);
-    let step = cfg.get("step").and_then(|v| v.as_f64()).unwrap_or(1.0);
-    let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(min);
+    let min = cfg
+        .get("min")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let max = cfg
+        .get("max")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(100.0);
+    let step = cfg
+        .get("step")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(1.0);
+    let default = cfg
+        .get("default")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(min);
     let label_text = if label.is_empty() {
         String::new()
     } else {
@@ -605,7 +638,7 @@ fn render_number(
             value.set(new_val.clone());
             if let Ok(f) = new_val.parse::<f64>() {
                 let bytes = bincode_encode_f64(f);
-                update_cell_output(bytes, &cell_id, widget_ctx);
+                update_cell_output(bytes, cell_id.as_ref(), widget_ctx);
             }
         }
     };
@@ -616,10 +649,10 @@ fn render_number(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if !label_text.is_empty() {
-                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
-            } else {
+            {if label_text.is_empty() {
                 view! { <span /> }.into_any()
+            } else {
+                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
             }}
             <input
                 type="number"
@@ -633,6 +666,7 @@ fn render_number(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn render_switch(
     cfg: &serde_json::Value,
     label: &str,
@@ -641,7 +675,7 @@ fn render_switch(
 ) -> impl IntoView {
     let default = cfg
         .get("default")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let label_text = label.to_owned();
 
@@ -659,7 +693,7 @@ fn render_switch(
                 let new_val = input.checked();
                 checked.set(new_val);
                 let bytes = bincode_encode_bool(new_val);
-                update_cell_output(bytes, &cell_id, widget_ctx);
+                update_cell_output(bytes, cell_id.as_ref(), widget_ctx);
             }
         }
     };
@@ -683,6 +717,7 @@ fn render_switch(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn render_button(
     _cfg: &serde_json::Value,
     label: &str,
@@ -738,8 +773,14 @@ fn render_progress(cfg: &serde_json::Value, label: &str) -> impl IntoView {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_owned();
-    let initial = cfg.get("initial").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let initial = cfg
+        .get("initial")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
     let pct = initial.clamp(0.0, 100.0);
+    // Cast is safe: pct is clamped to [0.0, 100.0].
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let pct_int = pct as u32;
     let width_style = format!("width: {pct}%");
     let label_text = if label.is_empty() {
         String::new()
@@ -749,16 +790,16 @@ fn render_progress(cfg: &serde_json::Value, label: &str) -> impl IntoView {
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if !label_text.is_empty() {
-                Some(view! { <span class="ironpad-widget-label">{label_text}</span> })
-            } else {
+            {if label_text.is_empty() {
                 None
+            } else {
+                Some(view! { <span class="ironpad-widget-label">{label_text}</span> })
             }}
             <div class="ironpad-progress" data-progress-id={id}>
                 <div class="ironpad-progress-bar">
                     <div class="ironpad-progress-fill" style={width_style}></div>
                 </div>
-                <span class="ironpad-progress-value">{format!("{}%", pct as u32)}</span>
+                <span class="ironpad-progress-value">{format!("{pct_int}%")}</span>
             </div>
         </div>
     }

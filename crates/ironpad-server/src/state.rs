@@ -34,11 +34,11 @@ impl FromRef<AppState> for LeptosOptions {
 #[derive(Clone, Default)]
 pub struct WsState {
     pub sessions: SessionStore,
-    /// notebook_id → host channel sender.
+    /// `notebook_id` → host channel sender.
     hosts: Arc<RwLock<HashMap<String, HostHandle>>>,
-    /// session_id → guest channel senders.
+    /// `session_id` → guest channel senders.
     guests: Arc<RwLock<HashMap<String, Vec<GuestHandle>>>>,
-    /// Pending query message_id → guest client_id (for routing responses).
+    /// Pending query `message_id` → guest `client_id` (for routing responses).
     pending_queries: Arc<RwLock<HashMap<String, String>>>,
 }
 
@@ -84,7 +84,7 @@ impl WsState {
         }
     }
 
-    /// Remove the host for a notebook. Returns the connection_id if found.
+    /// Remove the host for a notebook. Returns the `connection_id` if found.
     pub async fn unregister_host(&self, notebook_id: &str) -> Option<String> {
         self.hosts
             .write()
@@ -157,7 +157,7 @@ impl WsState {
         }
     }
 
-    /// Send a JSON message to a specific guest by client_id.
+    /// Send a JSON message to a specific guest by `client_id`.
     pub async fn send_to_guest(&self, client_id: &str, message: &str) -> bool {
         let guests = self.guests.read().await;
         for list in guests.values() {
@@ -185,7 +185,7 @@ impl WsState {
             .insert(message_id.to_string(), client_id.to_string());
     }
 
-    /// Resolve a pending query, returning the client_id that sent it.
+    /// Resolve a pending query, returning the `client_id` that sent it.
     pub async fn resolve_query(&self, message_id: &str) -> Option<String> {
         self.pending_queries.write().await.remove(message_id)
     }

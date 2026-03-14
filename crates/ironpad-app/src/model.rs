@@ -14,6 +14,8 @@ use leptos::prelude::*;
 // ── Error type ──────────────────────────────────────────────────────────────
 
 /// Error returned by model operations.
+// Fields are used via `Debug` formatting.
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct ModelError {
     pub(crate) code: ErrorCode,
@@ -111,6 +113,7 @@ impl NotebookModel {
     }
 
     /// Read-only queries against the notebook model.
+    #[allow(dead_code)] // Pub(crate) API for future/conditional use.
     pub(crate) fn query(&self, query: Query) -> Result<Response, ModelError> {
         match query {
             Query::NotebookGet => {
@@ -157,11 +160,13 @@ impl NotebookModel {
 
     /// Reactive signal that bumps when new events are pushed.
     /// The WebSocket bridge watches this to know when to drain.
+    #[allow(dead_code)] // Pub(crate) API for future/conditional use.
     pub(crate) fn event_generation(&self) -> Signal<u64> {
         self.event_generation.into()
     }
 
     /// Drain all pending events (untracked — won't re-trigger watchers).
+    #[allow(dead_code)] // Pub(crate) API for future/conditional use.
     pub(crate) fn drain_events(&self) -> Vec<EventEnvelope> {
         let mut events = Vec::new();
         self.pending_events.update(|e| {
@@ -226,6 +231,7 @@ impl NotebookModel {
 
     // ── Mutation implementations ────────────────────────────────────────
 
+    #[allow(clippy::unnecessary_wraps)] // Consistent with other mutation methods.
     fn cell_add(
         &self,
         new_cell: NewCell,
@@ -286,6 +292,7 @@ impl NotebookModel {
         ))
     }
 
+    #[allow(clippy::option_option)] // None = unchanged, Some(None) = clear, Some(Some(v)) = set.
     fn cell_update(
         &self,
         cell_id: String,
@@ -327,13 +334,13 @@ impl NotebookModel {
                 return;
             };
             if let Some(ref src) = source {
-                cell.source = src.clone();
+                cell.source.clone_from(src);
             }
             if let Some(ref ct) = cargo_toml {
-                cell.cargo_toml = ct.clone();
+                cell.cargo_toml.clone_from(ct);
             }
             if let Some(ref lbl) = label {
-                cell.label = lbl.clone();
+                cell.label.clone_from(lbl);
             }
             cell.version = new_version;
         });
@@ -401,6 +408,7 @@ impl NotebookModel {
         ))
     }
 
+    #[allow(clippy::unnecessary_wraps)] // Consistent with other mutation methods.
     fn cell_reorder(&self, cell_ids: Vec<String>) -> Result<(MutationResult, Event), ModelError> {
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
@@ -413,7 +421,7 @@ impl NotebookModel {
             // Append any cells not in cell_ids (shouldn't happen, but safe).
             reordered.append(&mut nb.cells);
             for (i, c) in reordered.iter_mut().enumerate() {
-                c.order = i as u32;
+                c.order = u32::try_from(i).unwrap_or(u32::MAX);
             }
             nb.cells = reordered;
         });
@@ -426,6 +434,8 @@ impl NotebookModel {
         ))
     }
 
+    #[allow(clippy::unnecessary_wraps)] // Consistent with other mutation methods.
+    #[allow(clippy::option_option)] // None = unchanged, Some(None) = clear, Some(Some(v)) = set.
     fn notebook_update_meta(
         &self,
         title: Option<String>,
@@ -435,13 +445,13 @@ impl NotebookModel {
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
             if let Some(ref t) = title {
-                nb.title = t.clone();
+                nb.title.clone_from(t);
             }
             if let Some(ref sct) = shared_cargo_toml {
-                nb.shared_cargo_toml = sct.clone();
+                nb.shared_cargo_toml.clone_from(sct);
             }
             if let Some(ref ss) = shared_source {
-                nb.shared_source = ss.clone();
+                nb.shared_source.clone_from(ss);
             }
         });
 
@@ -464,6 +474,7 @@ impl NotebookModel {
 
 /// Generate a new cell ID. Uses UUID v4 in the browser, a sequential
 /// placeholder during SSR.
+#[allow(clippy::used_underscore_binding)] // Underscore needed: only used in non-hydrate cfg.
 fn generate_cell_id(_cell_count: usize) -> String {
     #[cfg(feature = "hydrate")]
     {
@@ -478,7 +489,7 @@ fn generate_cell_id(_cell_count: usize) -> String {
 /// Renumber all cells' `order` fields to match their position in the vec.
 fn renumber(cells: &mut [IronpadCell]) {
     for (i, cell) in cells.iter_mut().enumerate() {
-        cell.order = i as u32;
+        cell.order = u32::try_from(i).unwrap_or(u32::MAX);
     }
 }
 

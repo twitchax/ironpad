@@ -24,3 +24,6 @@ plotters = { version = "0.3", default-features = false, features = [
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[lints]
+workspace = true

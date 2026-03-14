@@ -30,6 +30,7 @@ pub fn render_markdown(source: &str) -> String {
 /// - **Edit mode**: Monaco editor. Escape saves changes and
 ///   switches back to preview mode.
 #[component]
+#[allow(clippy::needless_pass_by_value)]
 pub fn MarkdownCell(
     /// The markdown source text.
     #[prop(into)]

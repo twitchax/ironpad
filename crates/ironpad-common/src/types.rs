@@ -126,7 +126,7 @@ pub struct CellManifest {
 /// A complete, self-contained notebook with embedded cell content.
 ///
 /// Carries everything needed to render or fork a notebook
-/// in a single value. Used for IndexedDB storage and view-only/shared pages.
+/// in a single value. Used for `IndexedDB` storage and view-only/shared pages.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IronpadNotebook {
     pub version: u32,

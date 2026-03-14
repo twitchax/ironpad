@@ -12,3 +12,6 @@ leptos = { workspace = true, features = ["hydrate"] }
 
 console_error_panic_hook.workspace = true
 wasm-bindgen.workspace = true
+
+[lints]
+workspace = true

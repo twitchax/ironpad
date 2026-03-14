@@ -169,6 +169,8 @@ mod tests {
     }
 
     #[test]
+    // Single-char names are idiomatic for hash-comparison test fixtures.
+    #[allow(clippy::many_single_char_names)]
     fn hash_changes_when_previous_types_change() {
         let s = "let x = 1;";
         let c = "[dependencies]";
@@ -189,6 +191,8 @@ mod tests {
     }
 
     #[test]
+    // Single-char names are idiomatic for hash-comparison test fixtures.
+    #[allow(clippy::many_single_char_names)]
     fn hash_changes_when_shared_cargo_toml_changes() {
         let s = "let x = 1;";
         let c = "[dependencies]";

@@ -138,12 +138,20 @@ impl CellInputs {
 
         let mut offset = 0;
 
-        let count = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let count = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("wire format header must contain a 4-byte count"),
+        ) as usize;
         offset += 4;
 
         let mut data = Vec::with_capacity(count);
         for _ in 0..count {
-            let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(
+                bytes[offset..offset + 4]
+                    .try_into()
+                    .expect("wire format segment must contain a 4-byte length prefix"),
+            ) as usize;
             offset += 4;
             data.push(bytes[offset..offset + len].to_vec());
             offset += len;
@@ -154,6 +162,7 @@ impl CellInputs {
 
     /// Encode a list of output byte slices into the wire format.
     /// This is used by the frontend to package all previous cell outputs.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn serialize(outputs: &[&[u8]]) -> Vec<u8> {
         let total_len = 4 + outputs.iter().map(|o| 4 + o.len()).sum::<usize>();
         let mut buf = Vec::with_capacity(total_len);
@@ -416,7 +425,7 @@ impl From<&str> for CellOutput {
 }
 
 impl From<()> for CellOutput {
-    fn from(_: ()) -> Self {
+    fn from((): ()) -> Self {
         Self::empty()
     }
 }

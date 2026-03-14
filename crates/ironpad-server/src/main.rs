@@ -32,7 +32,7 @@ async fn main() {
     tracing::info!(cache_dir = %config.cache_dir.display(), "cache directory");
     tracing::info!(ironpad_cell_path = %config.ironpad_cell_path.display(), "ironpad-cell crate path");
 
-    let conf = get_configuration(None).unwrap();
+    let conf = get_configuration(None).expect("leptos configuration");
     let leptos_options = conf.leptos_options;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
@@ -73,8 +73,10 @@ async fn main() {
         .with_state(app_state);
 
     tracing::info!("listening on http://{}", &addr);
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect("TCP bind");
     axum::serve(listener, app.into_make_service())
         .await
-        .unwrap();
+        .expect("server");
 }

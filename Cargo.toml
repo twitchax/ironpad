@@ -96,3 +96,24 @@ bin-features = []
 bin-default-features = false
 lib-features = []
 lib-default-features = false
+
+# ── Workspace Lints ───────────────────────────────────────────────────────────
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Style preferences — not bugs, just noisy.
+module_name_repetitions = "allow"
+wildcard_imports = "allow"
+
+# Doc lints — impractical to retroactively document every fallible/panicking fn.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# must_use everywhere has diminishing returns for an application crate.
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+
+# Subjective complexity lints — some functions are legitimately long or bool-heavy.
+too_many_lines = "allow"
+struct_excessive_bools = "allow"

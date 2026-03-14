@@ -150,7 +150,7 @@ impl Dropdown {
     /// Override the default selected value.
     #[must_use]
     pub fn default_value(mut self, value: &str) -> Self {
-        self.default = value.to_owned();
+        value.clone_into(&mut self.default);
         self
     }
 
@@ -296,7 +296,7 @@ impl TextInput {
     /// Override the default text value.
     #[must_use]
     pub fn default_value(mut self, value: &str) -> Self {
-        self.default = value.to_owned();
+        value.clone_into(&mut self.default);
         self
     }
 

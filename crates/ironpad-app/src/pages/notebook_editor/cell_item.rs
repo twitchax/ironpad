@@ -22,6 +22,7 @@ use super::state::{persist_notebook, CellStatus, NotebookState};
 /// a header with order badge, editable label, status placeholder, run button,
 /// and menu button. The cell body is collapsible.
 #[component]
+#[allow(clippy::needless_pass_by_value)]
 pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let state = expect_context::<NotebookState>();
     let model = expect_context::<NotebookModel>();
@@ -280,22 +281,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_boundary = StoredValue::new(cell.id.clone());
     let is_first = Signal::derive(move || {
         let cid = cell_id_for_boundary.get_value();
-        state
-            .cells
-            .get()
-            .first()
-            .map(|c| c.id == cid)
-            .unwrap_or(true)
+        state.cells.get().first().is_none_or(|c| c.id == cid)
     });
 
     let is_last = Signal::derive(move || {
         let cid = cell_id_for_boundary.get_value();
-        state
-            .cells
-            .get()
-            .last()
-            .map(|c| c.id == cid)
-            .unwrap_or(true)
+        state.cells.get().last().is_none_or(|c| c.id == cid)
     });
 
     // ── Run cell action (compile flow) ──────────────────────────────────
@@ -322,7 +313,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // Markdown cells skip compilation — advance the queue immediately.
                 if is_markdown {
                     state.run_all_queue.update(|q| {
-                        if q.first().map(|id| id == &cid).unwrap_or(false) {
+                        if q.first().is_some_and(|id| id == &cid) {
                             q.remove(0);
                         }
                     });
@@ -424,7 +415,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
         // Collect previous Code cell outputs for the I/O pipeline.
         // Markdown cells are skipped — they produce no output.
-        let (_input_bytes, previous_cell_types) = {
+        let (input_bytes, previous_cell_types) = {
             let cells = state.cells.get_untracked();
             let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
             let outputs = state.cell_outputs.get_untracked();
@@ -452,8 +443,16 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // Serialize using CellInputs wire format (length-prefixed):
                 // [u32 LE: count][u32 LE: len0][bytes0...][u32 LE: len1][bytes1...]...
                 let mut buf = Vec::new();
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "cell count and output sizes are safely within u32 range"
+                )]
                 buf.extend_from_slice(&(all_outputs.len() as u32).to_le_bytes());
                 for output in &all_outputs {
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "cell output sizes are safely within u32 range"
+                    )]
                     buf.extend_from_slice(&(output.len() as u32).to_le_bytes());
                     buf.extend_from_slice(output);
                 }
@@ -461,6 +460,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 (buf, types)
             }
         };
+
+        // Used inside #[cfg(feature = "hydrate")] below.
+        let _ = &input_bytes;
 
         // Invalidate downstream Code cells' cached outputs (this cell and all after it).
         {
@@ -548,7 +550,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         let exec_start = js_sys::Date::now();
                                         match executor::execute_cell(
                                             &cell_id_for_exec,
-                                            &_input_bytes,
+                                            &input_bytes,
                                         )
                                         .await
                                         {
@@ -591,8 +593,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                                 // Advance run-all queue on success.
                                                 state.run_all_queue.update(|q| {
                                                     if q.first()
-                                                        .map(|id| id == &cell_id_for_exec)
-                                                        .unwrap_or(false)
+                                                        .is_some_and(|id| id == &cell_id_for_exec)
                                                     {
                                                         q.remove(0);
                                                     }
@@ -632,7 +633,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
                             // Advance run-all queue (SSR path).
                             state.run_all_queue.update(|q| {
-                                if q.first().map(|id| id == &cell_id_for_exec).unwrap_or(false) {
+                                if q.first().is_some_and(|id| id == &cell_id_for_exec) {
                                     q.remove(0);
                                 }
                             });
@@ -799,7 +800,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         outputs
                             .get(&c.id)
                             .and_then(|d| d.type_tag.as_deref())
-                            .map(|t| t.to_string())
+                            .map(ToString::to_string)
                     })
                     .unwrap_or_else(|| "unknown".to_string());
 
@@ -1183,7 +1184,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         }
                     }}
 
-                    {if !is_markdown {
+                    {if is_markdown {
+                        view! {
+                            <Tag size=TagSize::ExtraSmall class="ironpad-cell-type-badge ironpad-cell-type-badge--markdown">
+                                "📝 markdown"
+                            </Tag>
+                        }.into_any()
+                    } else {
                         view! {
                             <Tag
                                 size=TagSize::ExtraSmall
@@ -1214,12 +1221,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Error => "✕ error".to_string(),
                                     }
                                 }}
-                            </Tag>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <Tag size=TagSize::ExtraSmall class="ironpad-cell-type-badge ironpad-cell-type-badge--markdown">
-                                "📝 markdown"
                             </Tag>
                         }.into_any()
                     }}
@@ -1311,7 +1312,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             } else {
                 view! { <span /> }.into_any()
             }}
-            {if !is_markdown {
+            {if is_markdown {
+                view! { <span /> }.into_any()
+            } else {
                 view! {
                     <button
                         class="ironpad-side-btn"
@@ -1346,8 +1349,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         "⚙"
                     </button>
                 }.into_any()
-            } else {
-                view! { <span /> }.into_any()
             }}
 
             <div class="ironpad-cell-menu-wrapper">
@@ -1396,7 +1397,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             >
                                 "⧉ Duplicate"
                             </button>
-                            {if !is_markdown {
+                            {if is_markdown {
+                                view! { <span /> }.into_any()
+                            } else {
                                 view! {
                                     <button
                                         class="ironpad-cell-menu-item"
@@ -1405,8 +1408,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         "▶▶ Run All Below"
                                     </button>
                                 }.into_any()
-                            } else {
-                                view! { <span /> }.into_any()
                             }}
                             <div class="ironpad-cell-menu-divider" />
                             <button

@@ -33,7 +33,7 @@ pub(super) struct CellOutputData {
 /// Reactive state for the notebook editor, shared among child components.
 #[derive(Clone, Copy)]
 pub(crate) struct NotebookState {
-    /// The full notebook loaded from IndexedDB.
+    /// The full notebook loaded from `IndexedDB`.
     pub(super) notebook: RwSignal<Option<IronpadNotebook>>,
     /// The notebook UUID string (from the URL).
     pub(crate) notebook_id: RwSignal<String>,
@@ -76,7 +76,7 @@ pub(crate) struct NotebookState {
 
 // ── Notebook state helpers ──────────────────────────────────────────────────
 
-/// Persists the current notebook to IndexedDB (client-only).
+/// Persists the current notebook to `IndexedDB` (client-only).
 #[allow(unused_variables)]
 pub(crate) fn persist_notebook(state: &NotebookState) {
     #[cfg(feature = "hydrate")]

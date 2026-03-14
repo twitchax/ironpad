@@ -195,9 +195,8 @@ pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, Serve
         .join("notebooks")
         .join("index.json");
 
-    let json = match tokio::fs::read_to_string(&index_path).await {
-        Ok(json) => json,
-        Err(_) => return Ok(vec![]),
+    let Ok(json) = tokio::fs::read_to_string(&index_path).await else {
+        return Ok(vec![]);
     };
 
     let index: PublicNotebookIndex = serde_json::from_str(&json)

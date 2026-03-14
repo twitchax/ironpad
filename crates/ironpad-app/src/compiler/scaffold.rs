@@ -3,6 +3,7 @@
 //! Given a cell's source code and Cargo.toml, this module writes a complete
 //! micro-crate to disk that can be compiled to WASM with `cargo build`.
 
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -319,6 +320,8 @@ pub fn generate_lib_rs(
         .filter(|(_, tag)| !tag.is_empty())
         .map(|(i, tag)| (i, tag.as_str()))
         .collect();
+    // Cell count is always small (< 100), so truncation is not a concern.
+    #[allow(clippy::cast_possible_truncation)]
     let typed_count = typed_cells.len() as u32;
 
     let async_kw = if is_async { "async " } else { "" };
@@ -349,19 +352,21 @@ console_error_panic_hook::set_once();\n",
         code.push_str("let __ironpad_inputs__ = CellInputs::from_raw(unsafe { std::slice::from_raw_parts(input_ptr, input_len) });\n");
 
         for &(i, tag) in &typed_cells {
-            code.push_str(&format!(
-                "let cell{i}: {tag} = __ironpad_inputs__.get({i}).deserialize().unwrap_or_else(|e| panic!(\"failed to deserialize cell{i} as `{tag}` (input {{}} bytes): {{e}}\", __ironpad_inputs__.get({i}).raw().len()));\n"
-            ));
+            let _ = writeln!(
+                code,
+                "let cell{i}: {tag} = __ironpad_inputs__.get({i}).deserialize().unwrap_or_else(|e| panic!(\"failed to deserialize cell{i} as `{tag}` (input {{}} bytes): {{e}}\", __ironpad_inputs__.get({i}).raw().len()));"
+            );
         }
 
         // `last` references the last cell with a type tag.
         if let Some(&(last_idx, _)) = typed_cells.last() {
-            code.push_str(&format!("let last = &cell{last_idx};\n"));
+            let _ = writeln!(code, "let last = &cell{last_idx};");
         }
     }
 
     if is_async {
-        code.push_str(&format!(
+        let _ = write!(
+            code,
             "\
 let __ironpad_output__: CellOutput = (async {{
 {source}
@@ -370,9 +375,10 @@ let result: CellResult = __ironpad_output__.into();
 Box::into_raw(Box::new(result)) as u32
 }}
 "
-        ));
+        );
     } else {
-        code.push_str(&format!(
+        let _ = write!(
+            code,
             "\
 let __ironpad_output__: CellOutput = ({{
 {source}
@@ -381,7 +387,7 @@ let result: CellResult = __ironpad_output__.into();
 Box::into_raw(Box::new(result)) as u32
 }}
 "
-        ));
+        );
     }
 
     // Preamble: 6 base (includes panic hook) + 1 if shared_source + optional (2 ptr reconstruction + 1 inputs) + cell decls + last.
@@ -390,7 +396,7 @@ Box::into_raw(Box::new(result)) as u32
         + shared_lines
         + if has_any_prev { 3 } else { 0 }
         + typed_count
-        + if typed_count > 0 { 1 } else { 0 };
+        + u32::from(typed_count > 0);
 
     (code, preamble_lines, is_async)
 }
