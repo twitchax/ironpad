@@ -137,8 +137,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
                                     "Cell {}",
                                     state.notebook.with_untracked(|nb| nb
                                         .as_ref()
-                                        .map(|n| n.cells.len())
-                                        .unwrap_or(0))
+                                        .map_or(0, |n| n.cells.len()))
                                 ),
                                 cargo_toml: None,
                             },
@@ -283,7 +282,7 @@ fn NotebookContent() -> impl IntoView {
                         "Cell {}",
                         state
                             .notebook
-                            .with_untracked(|nb| nb.as_ref().map(|n| n.cells.len()).unwrap_or(0))
+                            .with_untracked(|nb| nb.as_ref().map_or(0, |n| n.cells.len()))
                     ),
                     cargo_toml: None,
                 },
@@ -360,7 +359,7 @@ fn NotebookContent() -> impl IntoView {
 
             let sortable_class =
                 js_sys::Reflect::get(&web_sys::window().unwrap(), &"Sortable".into()).ok();
-            let Some(sortable_class) = sortable_class.filter(|v| v.is_function()) else {
+            let Some(sortable_class) = sortable_class.filter(JsValue::is_function) else {
                 return;
             };
 
@@ -375,10 +374,13 @@ fn NotebookContent() -> impl IntoView {
             );
 
             let on_end = Closure::<dyn Fn(JsValue)>::new(move |evt: JsValue| {
+                // JS indices are non-negative integers that fit in usize.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let old_index = js_sys::Reflect::get(&evt, &"oldIndex".into())
                     .ok()
                     .and_then(|v| v.as_f64())
                     .map(|v| v as usize);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let new_index = js_sys::Reflect::get(&evt, &"newIndex".into())
                     .ok()
                     .and_then(|v| v.as_f64())
@@ -416,7 +418,7 @@ fn NotebookContent() -> impl IntoView {
 
             let create_fn = js_sys::Reflect::get(&sortable_class, &"create".into())
                 .ok()
-                .filter(|v| v.is_function());
+                .filter(JsValue::is_function);
             if let Some(create_fn) = create_fn {
                 let create_fn: js_sys::Function = create_fn.unchecked_into();
                 let _ = create_fn.call2(&sortable_class, &el, &options);
@@ -480,7 +482,8 @@ fn NotebookContent() -> impl IntoView {
                         "☰"
                     </button>
                     {move || {
-                        let _navigate = navigate.clone();
+                        let navigate = navigate.clone();
+                        let _ = &navigate; // Used inside #[cfg(feature = "hydrate")] below.
                         if hamburger_open.get() {
                             view! {
                                 <div class="ironpad-toolbar-dropdown-menu">
@@ -511,7 +514,7 @@ fn NotebookContent() -> impl IntoView {
                                                                             </Toast>
                                                                         }
                                                                     },
-                                                                    Default::default(),
+                                                                    thaw::ToastOptions::default(),
                                                                 );
                                                                 return;
                                                             }
@@ -576,7 +579,7 @@ fn NotebookContent() -> impl IntoView {
                                                                         </Toast>
                                                                     }
                                                                 },
-                                                                Default::default(),
+                                                                thaw::ToastOptions::default(),
                                                             );
                                                         }
                                                     }
@@ -606,6 +609,37 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         "📄 Export HTML"
                                     </button>
+                                    // Download .ironpad
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item"
+                                        on:click=move |_| {
+                                            hamburger_open.set(false);
+                                            #[cfg(feature = "hydrate")]
+                                            {
+                                                let nb_id = state.notebook_id.get_untracked();
+                                                let title = state.notebook.with_untracked(|nb| {
+                                                    nb.as_ref().map_or_else(
+                                                        || "notebook".to_string(),
+                                                        |n| n.title.clone(),
+                                                    )
+                                                });
+                                                leptos::task::spawn_local(async move {
+                                                    if let Some(json) =
+                                                        crate::storage::client::export_notebook(
+                                                            &nb_id,
+                                                        )
+                                                        .await
+                                                    {
+                                                        export::trigger_ironpad_download(
+                                                            &json, &title,
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    >
+                                        "📥 Download .ironpad"
+                                    </button>
                                     // Delete
                                     <button
                                         class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
@@ -621,7 +655,7 @@ fn NotebookContent() -> impl IntoView {
                                                     )
                                                     .unwrap_or(false);
                                                 if confirmed {
-                                                    let navigate = _navigate.clone();
+                                                    let navigate = navigate.clone();
                                                     leptos::task::spawn_local(async move {
                                                         crate::storage::client::delete_notebook(&id)
                                                             .await;

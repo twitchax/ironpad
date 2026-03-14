@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 #[cfg(feature = "hydrate")]
 use std::collections::HashMap;
 
@@ -9,7 +11,7 @@ use crate::components::markdown_cell::render_markdown;
 
 // ── Display panels ──────────────────────────────────────────────────────────
 
-/// Display panel types matching ironpad-cell's DisplayPanel enum.
+/// Display panel types matching `ironpad-cell`'s `DisplayPanel` enum.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) enum DisplayPanel {
     Text(String),
@@ -30,7 +32,7 @@ pub(super) enum DisplayPanel {
 // ── Export HTML helpers ─────────────────────────────────────────────────────
 
 #[cfg(feature = "hydrate")]
-const EXPORT_CSS: &str = r#"
+const EXPORT_CSS: &str = r"
 :root { color-scheme: dark; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -101,7 +103,7 @@ pre.code-block {
     margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #3a3a5c;
     font-size: 0.75rem; color: #666; text-align: center;
 }
-"#;
+";
 
 /// Build a self-contained HTML document from a notebook and its cached display texts.
 #[cfg(feature = "hydrate")]
@@ -115,31 +117,34 @@ pub(super) fn build_export_html(
     html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
     html.push_str("<meta charset=\"UTF-8\">\n");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
-    html.push_str(&format!("<title>{}</title>\n", html_escape(&nb.title)));
+    let _ = writeln!(html, "<title>{}</title>", html_escape(&nb.title));
     html.push_str("<style>\n");
     html.push_str(EXPORT_CSS);
     html.push_str("</style>\n</head>\n<body>\n");
 
     // Title.
-    html.push_str(&format!(
-        "<h1 class=\"notebook-title\">{}</h1>\n",
+    let _ = writeln!(
+        html,
+        "<h1 class=\"notebook-title\">{}</h1>",
         html_escape(&nb.title)
-    ));
+    );
 
     // Cells.
     for cell in &nb.cells {
         html.push_str("<div class=\"cell\">\n");
-        html.push_str(&format!(
-            "<div class=\"cell-label\">{}</div>\n",
+        let _ = writeln!(
+            html,
+            "<div class=\"cell-label\">{}</div>",
             html_escape(&cell.label)
-        ));
+        );
 
         match cell.cell_type {
             CellType::Code => {
-                html.push_str(&format!(
-                    "<pre class=\"code-block\"><code>{}</code></pre>\n",
+                let _ = writeln!(
+                    html,
+                    "<pre class=\"code-block\"><code>{}</code></pre>",
                     html_escape(&cell.source)
-                ));
+                );
 
                 // Include cached output if available.
                 if let Some(display_json) = display_texts.get(&cell.id) {
@@ -149,39 +154,33 @@ pub(super) fn build_export_html(
                         for panel in &panels {
                             match panel {
                                 DisplayPanel::Text(text) => {
-                                    html.push_str(&format!("<pre>{}</pre>\n", html_escape(text)));
+                                    let _ = writeln!(html, "<pre>{}</pre>", html_escape(text));
                                 }
                                 DisplayPanel::Html(h) => {
-                                    html.push_str(&format!(
-                                        "<div class=\"output-html\">{h}</div>\n"
-                                    ));
+                                    let _ = writeln!(html, "<div class=\"output-html\">{h}</div>");
                                 }
                                 DisplayPanel::Svg(s) => {
-                                    html.push_str(&format!(
-                                        "<div class=\"output-svg\">{s}</div>\n"
-                                    ));
+                                    let _ = writeln!(html, "<div class=\"output-svg\">{s}</div>");
                                 }
                                 DisplayPanel::Markdown(md) => {
                                     let rendered = render_markdown(md);
-                                    html.push_str(&format!(
-                                        "<div class=\"ironpad-markdown-cell-preview\">{rendered}</div>\n"
-                                    ));
+                                    let _ = writeln!(
+                                        html,
+                                        "<div class=\"ironpad-markdown-cell-preview\">{rendered}</div>"
+                                    );
                                 }
                                 DisplayPanel::Table { headers, rows } => {
                                     html.push_str(
                                         "<table class=\"ironpad-output-table\"><thead><tr>",
                                     );
                                     for h in headers {
-                                        html.push_str(&format!("<th>{}</th>", html_escape(h)));
+                                        let _ = write!(html, "<th>{}</th>", html_escape(h));
                                     }
                                     html.push_str("</tr></thead><tbody>");
                                     for row in rows {
                                         html.push_str("<tr>");
                                         for cell in row {
-                                            html.push_str(&format!(
-                                                "<td>{}</td>",
-                                                html_escape(cell)
-                                            ));
+                                            let _ = write!(html, "<td>{}</td>", html_escape(cell));
                                         }
                                         html.push_str("</tr>");
                                     }
@@ -198,9 +197,7 @@ pub(super) fn build_export_html(
             }
             CellType::Markdown => {
                 let rendered = render_markdown(&cell.source);
-                html.push_str(&format!(
-                    "<div class=\"markdown-content\">{rendered}</div>\n"
-                ));
+                let _ = writeln!(html, "<div class=\"markdown-content\">{rendered}</div>");
             }
         }
 
@@ -222,50 +219,58 @@ fn render_interactive_static(html: &mut String, kind: &str, config: &str) {
 
     match kind {
         "slider" | "number" => {
-            let default = cfg.get("default").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let default = cfg
+                .get("default")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
             let label_text = if label.is_empty() {
                 kind.to_owned()
             } else {
                 label.to_owned()
             };
-            html.push_str(&format!(
-                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {default}</div>\n",
+            let _ = writeln!(
+                html,
+                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {default}</div>",
                 html_escape(&label_text)
-            ));
+            );
         }
         "dropdown" => {
             let default = cfg.get("default").and_then(|v| v.as_str()).unwrap_or("");
             let label_text = if label.is_empty() { "dropdown" } else { label };
-            html.push_str(&format!(
-                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {}</div>\n",
+            let _ = writeln!(
+                html,
+                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {}</div>",
                 html_escape(label_text),
                 html_escape(default)
-            ));
+            );
         }
         "checkbox" | "switch" => {
             let default = cfg
                 .get("default")
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             let icon = if default { "☑" } else { "☐" };
-            html.push_str(&format!(
-                "<div class=\"ironpad-interactive-static\">{icon} {}</div>\n",
+            let _ = writeln!(
+                html,
+                "<div class=\"ironpad-interactive-static\">{icon} {}</div>",
                 html_escape(label)
-            ));
+            );
         }
         "text_input" => {
             let default = cfg.get("default").and_then(|v| v.as_str()).unwrap_or("");
             let label_text = if label.is_empty() { "text" } else { label };
-            html.push_str(&format!(
-                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {}</div>\n",
+            let _ = writeln!(
+                html,
+                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {}</div>",
                 html_escape(label_text),
                 html_escape(default)
-            ));
+            );
         }
         _ => {
-            html.push_str(&format!(
-                "<div class=\"ironpad-interactive-static\">[{kind} widget]</div>\n"
-            ));
+            let _ = writeln!(
+                html,
+                "<div class=\"ironpad-interactive-static\">[{kind} widget]</div>"
+            );
         }
     }
 }
@@ -282,13 +287,13 @@ fn html_escape(s: &str) -> String {
 pub(super) fn render_table_html(headers: &[String], rows: &[Vec<String>]) -> String {
     let mut html = String::from("<table class=\"ironpad-output-table\"><thead><tr>");
     for h in headers {
-        html.push_str(&format!("<th>{}</th>", html_escape(h)));
+        let _ = write!(html, "<th>{}</th>", html_escape(h));
     }
     html.push_str("</tr></thead><tbody>");
     for row in rows {
         html.push_str("<tr>");
         for cell in row {
-            html.push_str(&format!("<td>{}</td>", html_escape(cell)));
+            let _ = write!(html, "<td>{}</td>", html_escape(cell));
         }
         html.push_str("</tr>");
     }
@@ -306,35 +311,31 @@ pub(super) fn render_table_tsv(headers: &[String], rows: &[Vec<String>]) -> Stri
     tsv
 }
 
-/// Trigger a browser file download from an HTML string.
+/// Trigger a browser file download with the given content, MIME type, and filename.
 #[cfg(feature = "hydrate")]
-pub(super) fn trigger_html_download(html_content: &str, title: &str) {
+fn trigger_download(content: &str, mime_type: &str, filename: &str) {
     use wasm_bindgen::JsCast;
 
-    let window = match web_sys::window() {
-        Some(w) => w,
-        None => return,
+    let Some(window) = web_sys::window() else {
+        return;
     };
-    let document = match window.document() {
-        Some(d) => d,
-        None => return,
+    let Some(document) = window.document() else {
+        return;
     };
 
-    // Build a Blob from the HTML string.
+    // Build a Blob from the content string.
     let parts = js_sys::Array::new();
-    parts.push(&wasm_bindgen::JsValue::from_str(html_content));
+    parts.push(&wasm_bindgen::JsValue::from_str(content));
 
     let opts = web_sys::BlobPropertyBag::new();
-    opts.set_type("text/html;charset=utf-8");
+    opts.set_type(mime_type);
 
-    let blob = match web_sys::Blob::new_with_str_sequence_and_options(&parts, &opts) {
-        Ok(b) => b,
-        Err(_) => return,
+    let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &opts) else {
+        return;
     };
 
-    let url = match web_sys::Url::create_object_url_with_blob(&blob) {
-        Ok(u) => u,
-        Err(_) => return,
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
     };
 
     // Create a temporary <a> element to trigger the download.
@@ -348,18 +349,7 @@ pub(super) fn trigger_html_download(html_content: &str, title: &str) {
     };
 
     anchor.set_href(&url);
-    let filename = format!(
-        "{}.html",
-        title
-            .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            })
-            .collect::<String>()
-    );
-    anchor.set_download(&filename);
+    anchor.set_download(filename);
     anchor.set_attribute("style", "display:none").ok();
 
     if let Some(body) = document.body() {
@@ -369,4 +359,32 @@ pub(super) fn trigger_html_download(html_content: &str, title: &str) {
     }
 
     let _ = web_sys::Url::revoke_object_url(&url);
+}
+
+/// Sanitize a title for use as a filename, replacing non-alphanumeric characters with dashes.
+fn sanitize_filename(title: &str) -> String {
+    title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Trigger a browser file download from an HTML string.
+#[cfg(feature = "hydrate")]
+pub(super) fn trigger_html_download(html_content: &str, title: &str) {
+    let filename = format!("{}.html", sanitize_filename(title));
+    trigger_download(html_content, "text/html;charset=utf-8", &filename);
+}
+
+/// Trigger a browser file download from a JSON string with `.ironpad` extension.
+#[cfg(feature = "hydrate")]
+pub(super) fn trigger_ironpad_download(json_content: &str, title: &str) {
+    let filename = format!("{}.ironpad", sanitize_filename(title));
+    trigger_download(json_content, "application/json;charset=utf-8", &filename);
 }

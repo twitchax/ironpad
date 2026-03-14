@@ -4,6 +4,8 @@ use leptos_router::hooks::use_navigate;
 #[cfg(feature = "hydrate")]
 use leptos_router::NavigateOptions;
 use thaw::{Button, ButtonAppearance, Card, CardHeader, Skeleton, SkeletonItem};
+#[cfg(feature = "hydrate")]
+use thaw::{Toast, ToastBody, ToastTitle, ToasterInjection};
 
 use crate::components::app_layout::LayoutContext;
 use crate::server_fns::list_public_notebooks;
@@ -50,7 +52,7 @@ pub fn HomePage() -> impl IntoView {
 
     // Load public notebooks (participates in SSR).
 
-    let public_resource = Resource::new(|| (), |_| list_public_notebooks());
+    let public_resource = Resource::new(|| (), |()| list_public_notebooks());
 
     // Private notebooks (IndexedDB, client-only).
 
@@ -86,16 +88,34 @@ pub fn HomePage() -> impl IntoView {
         }
     };
 
+    // Import notebook from file (IndexedDB, client-only).
+
+    let on_import = move |_| {
+        let _ = &private_notebooks;
+        #[cfg(feature = "hydrate")]
+        {
+            import_notebook_from_file(private_notebooks);
+        }
+    };
+
     view! {
         <div class="ironpad-home">
             <div class="ironpad-home-header">
                 <h1>"Notebooks"</h1>
-                <Button
-                    appearance=ButtonAppearance::Primary
-                    on_click=on_create
-                >
-                    "+ New Notebook"
-                </Button>
+                <div class="ironpad-home-actions">
+                    <Button
+                        appearance=ButtonAppearance::Primary
+                        on_click=on_create
+                    >
+                        "+ New Notebook"
+                    </Button>
+                    <Button
+                        appearance=ButtonAppearance::Subtle
+                        on_click=on_import
+                    >
+                        "📥 Import Notebook"
+                    </Button>
+                </div>
             </div>
 
             <div class="ironpad-home-toolbar">
@@ -305,7 +325,9 @@ fn NotebookCard(
                                 <p class="ironpad-notebook-card-description">{description}</p>
                                 <div class="ironpad-notebook-card-meta">
                                     <span class="ironpad-notebook-card-cells">{cell_text}</span>
-                                    {if !tags.is_empty() {
+                                    {if tags.is_empty() {
+                                        None
+                                    } else {
                                         Some(view! {
                                             <div class="ironpad-notebook-card-tags">
                                                 {tags.into_iter().map(|tag| {
@@ -313,8 +335,6 @@ fn NotebookCard(
                                                 }).collect::<Vec<_>>()}
                                             </div>
                                         })
-                                    } else {
-                                        None
                                     }}
                                 </div>
                             </div>
@@ -338,4 +358,145 @@ fn NotebookCardSkeleton() -> impl IntoView {
             <SkeletonItem class="ironpad-skeleton-meta" />
         </Skeleton>
     }
+}
+
+// ── Notebook import ─────────────────────────────────────────────────────────
+
+/// Opens a file picker, reads the selected `.ironpad`/`.json` file, validates
+/// it, imports it via `storage.js`, and refreshes the notebook list.
+#[cfg(feature = "hydrate")]
+fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>) {
+    use std::time::Duration;
+
+    use thaw::{ToastIntent, ToastOptions};
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+
+    // Create a hidden <input type="file"> element.
+    let Ok(input_el) = document.create_element("input") else {
+        return;
+    };
+    let Ok(input) = input_el.dyn_into::<web_sys::HtmlInputElement>() else {
+        return;
+    };
+    input.set_type("file");
+    input.set_accept(".ironpad,.json");
+    input.set_attribute("style", "display:none").ok();
+
+    // Attach to the DOM so it can fire events.
+    if let Some(body) = document.body() {
+        let _ = body.append_child(&input);
+    }
+
+    // Listen for file selection.
+    let input_clone = input.clone();
+    let on_change = Closure::<dyn Fn()>::new(move || {
+        let Some(files) = input_clone.files() else {
+            return;
+        };
+        let Some(file) = files.get(0) else {
+            return;
+        };
+
+        let Ok(reader) = web_sys::FileReader::new() else {
+            return;
+        };
+
+        let reader_clone = reader.clone();
+        let input_ref = input_clone.clone();
+        let on_load = Closure::<dyn Fn()>::new(move || {
+            let Some(result) = reader_clone.result().ok() else {
+                return;
+            };
+            let Some(text) = result.as_string() else {
+                return;
+            };
+
+            // Remove the hidden input from the DOM.
+            if let Some(parent) = input_ref.parent_node() {
+                let _ = parent.remove_child(&input_ref);
+            }
+
+            // Validate the JSON before importing.
+            if let Err(msg) = crate::storage::validate::validate_notebook_json(&text) {
+                let toaster = ToasterInjection::expect_context();
+                toaster.dispatch_toast(
+                    move || {
+                        view! {
+                            <Toast>
+                                <ToastTitle>"Import Failed"</ToastTitle>
+                                <ToastBody>{msg.clone()}</ToastBody>
+                            </Toast>
+                        }
+                    },
+                    ToastOptions::default()
+                        .with_intent(ToastIntent::Error)
+                        .with_timeout(Duration::from_secs(5)),
+                );
+                return;
+            }
+
+            // Import and refresh the notebook list.
+            leptos::task::spawn_local(async move {
+                let toaster = ToasterInjection::expect_context();
+                match crate::storage::client::import_notebook(&text).await {
+                    Some(nb) => {
+                        let title = nb.title.clone();
+                        let nbs = crate::storage::client::list_notebooks().await;
+                        private_notebooks.set(nbs);
+                        toaster.dispatch_toast(
+                            move || {
+                                view! {
+                                    <Toast>
+                                        <ToastTitle>"Notebook Imported"</ToastTitle>
+                                        <ToastBody>
+                                            {format!("\"{title}\" has been added to your notebooks.")}
+                                        </ToastBody>
+                                    </Toast>
+                                }
+                            },
+                            ToastOptions::default()
+                                .with_intent(ToastIntent::Success)
+                                .with_timeout(Duration::from_secs(3)),
+                        );
+                    }
+                    None => {
+                        toaster.dispatch_toast(
+                            move || {
+                                view! {
+                                    <Toast>
+                                        <ToastTitle>"Import Failed"</ToastTitle>
+                                        <ToastBody>
+                                            "Failed to import the notebook. The file may be corrupted."
+                                        </ToastBody>
+                                    </Toast>
+                                }
+                            },
+                            ToastOptions::default()
+                                .with_intent(ToastIntent::Error)
+                                .with_timeout(Duration::from_secs(5)),
+                        );
+                    }
+                }
+            });
+        });
+
+        reader.set_onload(Some(on_load.as_ref().unchecked_ref()));
+        on_load.forget();
+
+        let _ = reader.read_as_text(&file);
+    });
+
+    input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    on_change.forget();
+
+    // Trigger the file picker.
+    input.click();
 }

@@ -1,4 +1,4 @@
-//! Client-side storage layer backed by IndexedDB.
+//! Client-side storage layer backed by `IndexedDB`.
 //!
 //! This module provides Rust wrappers around the `window.IronpadStorage` JavaScript
 //! API (defined in `public/storage.js`). All functions are async and only available
@@ -6,3 +6,6 @@
 
 #[cfg(feature = "hydrate")]
 pub mod client;
+
+#[cfg(any(feature = "hydrate", feature = "ssr"))]
+pub mod validate;

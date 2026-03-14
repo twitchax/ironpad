@@ -407,6 +407,12 @@ a:focus-visible {
     color: var(--ip-text-primary);
 }
 
+.ironpad-home-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
 .ironpad-home-toolbar {
     display: flex;
     flex-wrap: wrap;
