@@ -37,6 +37,7 @@ pub(super) fn CompileResultPanel(
     cell_status: RwSignal<CellStatus>,
     last_compile: RwSignal<Option<CompileResponse>>,
     compile_time_ms: RwSignal<Option<f64>>,
+    execution_result: RwSignal<Option<ExecutionResult>>,
 ) -> impl IntoView {
     view! {
         {move || {
@@ -62,11 +63,17 @@ pub(super) fn CompileResultPanel(
                         .filter(|d| d.severity == Severity::Warning)
                         .collect();
 
+                    let runtime_ms = execution_result.get().map(|r| r.execution_time_ms);
+
                     // Precision loss acceptable for display sizing.
                     #[allow(clippy::cast_precision_loss)]
                     let summary = format!(
-                        "✓ Compiled ({:.1} KB, {time:.0}ms{})",
+                        "✓ Compiled ({:.1} KB, {time:.0}ms compile{}{})",
                         blob_size as f64 / 1024.0,
+                        match runtime_ms {
+                            Some(r) => format!(", {r:.0}ms runtime"),
+                            None => String::new(),
+                        },
                         if cached { ", cached" } else { "" },
                     );
 

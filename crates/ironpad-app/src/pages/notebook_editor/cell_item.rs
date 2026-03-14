@@ -1221,9 +1221,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Compiling => "◐ compiling…".to_string(),
                                         CellStatus::Running => "◐ running…".to_string(),
                                         CellStatus::Success => {
-                                            match compile_time_ms.get() {
-                                                Some(ms) => format!("✓ {ms:.0}ms"),
-                                                None => "✓ done".to_string(),
+                                            let compile = compile_time_ms.get();
+                                            let runtime = execution_result.get().map(|r| r.execution_time_ms);
+                                            match (compile, runtime) {
+                                                (Some(c), Some(r)) => format!("✓ {c:.0}+{r:.0}ms"),
+                                                (Some(c), None) => format!("✓ {c:.0}ms"),
+                                                _ => "✓ done".to_string(),
                                             }
                                         }
                                         CellStatus::Error => "✕ error".to_string(),
@@ -1294,6 +1297,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         cell_status=cell_status
                         last_compile=last_compile
                         compile_time_ms=compile_time_ms
+                        execution_result=execution_result
                     />
 
                     // ── Execution output panel ──────────────────────────────────
