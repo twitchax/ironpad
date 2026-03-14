@@ -76,20 +76,20 @@ Update Mandelbrot and Julia set notebooks to use `rayon::par_iter()` for pixel c
 
 ## Compile-Time Impact
 
-| Flag | Compile Time | Runtime Impact | Binary Size |
-|---|---|---|---|
-| `+atomics` | ~5-10% slower codegen | ~2-10% overhead (atomic ops) | Slightly larger |
-| `+bulk-memory` | Negligible | **Faster** (native `memory.copy`/`memory.fill`) | Neutral |
-| `+mutable-globals` | Negligible | Negligible | Negligible |
-| `-Zbuild-std` | **+30-60s** (first build, cached after) | N/A | N/A |
+| Flag               | Compile Time                            | Runtime Impact                                  | Binary Size     |
+| ------------------ | --------------------------------------- | ----------------------------------------------- | --------------- |
+| `+atomics`         | ~5-10% slower codegen                   | ~2-10% overhead (atomic ops)                    | Slightly larger |
+| `+bulk-memory`     | Negligible                              | **Faster** (native `memory.copy`/`memory.fill`) | Neutral         |
+| `+mutable-globals` | Negligible                              | Negligible                                      | Negligible      |
+| `-Zbuild-std`      | **+30-60s** (first build, cached after) | N/A                                             | N/A             |
 
 **With conditional detection**: Normal cells are completely unaffected. Only cells with `rayon` in their deps pay the cost.
 
-| Scenario | Current (~3-8s) | With Atomics (rayon cell) |
-|---|---|---|
-| Cold (first cell, std rebuild) | ~3-8s | ~35-65s (one-time) |
-| Warm (std cached, cell miss) | ~3-8s | ~3.5-9s (+5-10%) |
-| Hot (cache hit) | ~0s | ~0s (unchanged) |
+| Scenario                       | Current (~3-8s) | With Atomics (rayon cell) |
+| ------------------------------ | --------------- | ------------------------- |
+| Cold (first cell, std rebuild) | ~3-8s           | ~35-65s (one-time)        |
+| Warm (std cached, cell miss)   | ~3-8s           | ~3.5-9s (+5-10%)          |
+| Hot (cache hit)                | ~0s             | ~0s (unchanged)           |
 
 ---
 
@@ -113,13 +113,13 @@ Update Mandelbrot and Julia set notebooks to use `rayon::par_iter()` for pixel c
 
 ## Code References
 
-| File | Relevance |
-|---|---|
-| `crates/ironpad-server/src/main.rs` | Add COOP/COEP middleware (~line 61-73) |
-| `crates/ironpad-cell/src/lib.rs` | Add rayon prelude exports (lines 44-72) |
-| `crates/ironpad-cell/Cargo.toml` | Add wasm-bindgen-rayon dependency |
-| `crates/ironpad-app/src/compiler/scaffold.rs` | Detect rayon in deps, `merge_dependencies()` (line 162) |
-| `crates/ironpad-app/src/compiler/build.rs` | Conditionally set RUSTFLAGS (lines 63-74) |
-| `crates/ironpad-app/src/compiler/cache.rs` | Include atomics flag in cache key |
-| `crates/ironpad-app/src/compiler/optimize.rs` | Verify wasm-opt compat with atomics |
-| `public/executor-worker.js` | Call `initThreadPool()` after WASM load (future, from PRD-0013) |
+| File                                          | Relevance                                                       |
+| --------------------------------------------- | --------------------------------------------------------------- |
+| `crates/ironpad-server/src/main.rs`           | Add COOP/COEP middleware (~line 61-73)                          |
+| `crates/ironpad-cell/src/lib.rs`              | Add rayon prelude exports (lines 44-72)                         |
+| `crates/ironpad-cell/Cargo.toml`              | Add wasm-bindgen-rayon dependency                               |
+| `crates/ironpad-app/src/compiler/scaffold.rs` | Detect rayon in deps, `merge_dependencies()` (line 162)         |
+| `crates/ironpad-app/src/compiler/build.rs`    | Conditionally set RUSTFLAGS (lines 63-74)                       |
+| `crates/ironpad-app/src/compiler/cache.rs`    | Include atomics flag in cache key                               |
+| `crates/ironpad-app/src/compiler/optimize.rs` | Verify wasm-opt compat with atomics                             |
+| `public/executor-worker.js`                   | Call `initThreadPool()` after WASM load (future, from PRD-0013) |
