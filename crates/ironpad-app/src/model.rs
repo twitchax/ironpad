@@ -494,8 +494,9 @@ fn renumber(cells: &mut [IronpadCell]) {
 }
 
 /// Default `Cargo.toml` template for a new code cell.
+/// Dependencies (e.g. `ironpad-cell`) come from the notebook's shared Cargo.toml.
 fn default_cell_cargo_toml(cell_id: &str) -> String {
     format!(
-        "[package]\nname = \"{cell_id}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+        "[package]\nname = \"{cell_id}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n"
     )
 }

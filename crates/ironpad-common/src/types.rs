@@ -141,6 +141,17 @@ pub struct IronpadNotebook {
     pub cells: Vec<IronpadCell>,
 }
 
+/// Default shared `Cargo.toml` for new notebooks. Provides `ironpad-cell`
+/// and relaxed release-profile settings so cells compile quickly.
+pub const DEFAULT_SHARED_CARGO_TOML: &str = "\
+[dependencies]\n\
+ironpad-cell = \"0.1\"\n\
+\n\
+[profile.release]\n\
+opt-level = 1\n\
+lto = false\n\
+codegen-units = 16\n";
+
 impl IronpadNotebook {
     /// Creates a new empty notebook with the given title.
     pub fn new(title: &str) -> Self {
@@ -151,7 +162,7 @@ impl IronpadNotebook {
             title: title.to_string(),
             created_at: now,
             updated_at: now,
-            shared_cargo_toml: None,
+            shared_cargo_toml: Some(DEFAULT_SHARED_CARGO_TOML.to_string()),
             shared_source: None,
             cells: Vec::new(),
         }
