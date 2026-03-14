@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Progress Bar Demo \u23f3\n\nThis notebook demonstrates the **progress bar** widget with real-time updates.\n\n- **Cell 1** creates a progress bar at 25%.\n- **Cell 2** adds a button that bumps the bar to 75% on click.\n\nThe progress bar outputs its ID so downstream cells can update it via `ProgressHandle`.",
+      "source": "# Progress Bar Demo ⏳\n\nThis notebook demonstrates the **progress bar** widget with real-time updates.\n\n- **Cell 1** creates a progress bar at 25%.\n- **Cell 2** adds a button that bumps the bar to 75% on click.\n\nThe progress bar outputs its ID so downstream cells can update it via `ProgressHandle`.",
       "cargo_toml": null
     },
     {
@@ -20,7 +20,7 @@
       "label": "Progress Bar",
       "cell_type": "Code",
       "source": "ui::progress_bar()\n    .label(\"Download Progress\")\n    .initial(25.0)\n",
-      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+      "cargo_toml": null
     },
     {
       "id": "cell_2",
@@ -28,7 +28,7 @@
       "label": "Update Progress",
       "cell_type": "Code",
       "source": "// cell1 is the progress bar ID (String) from the previous code cell.\nlet handle = ProgressHandle::new(cell1);\nhandle.update(75.0);\n\nui::button(\"Run Task \\u{25b6}\")\n",
-      "cargo_toml": "[package]\nname = \"cell_2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+      "cargo_toml": null
     },
     {
       "id": "cell_3",

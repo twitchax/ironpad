@@ -20,7 +20,7 @@
       "label": "HTTP GET",
       "cell_type": "Code",
       "source": "// Fetch JSON from a public API\nlet response = ironpad_cell::http::get(\"https://httpbin.org/get\").await.unwrap();\n\n// Return the raw JSON string so downstream cells can parse it\nresponse\n",
-      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+      "cargo_toml": null
     },
     {
       "id": "cell_2",
@@ -36,7 +36,7 @@
       "label": "JSON Parse",
       "cell_type": "Code",
       "source": "use serde_json::Value;\n\n// Parse raw JSON\nlet data: Value = serde_json::from_str(&cell1).unwrap();\n\n// Extract fields\nlet origin = data[\"origin\"].as_str().unwrap_or(\"unknown\");\nlet url = data[\"url\"].as_str().unwrap_or(\"unknown\");\n\nHtml(format!(\n    \"<table style='border-collapse:collapse; width:100%;'>\n        <tr><th style='border:1px solid #0f3460; padding:8px; text-align:left; background:#1a1a2e;'>Field</th>\n            <th style='border:1px solid #0f3460; padding:8px; text-align:left; background:#1a1a2e;'>Value</th></tr>\n        <tr><td style='border:1px solid #0f3460; padding:8px;'>Origin IP</td>\n            <td style='border:1px solid #0f3460; padding:8px;'>{origin}</td></tr>\n        <tr><td style='border:1px solid #0f3460; padding:8px;'>URL</td>\n            <td style='border:1px solid #0f3460; padding:8px;'>{url}</td></tr>\n    </table>\"\n))\n",
-      "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+      "cargo_toml": null
     }
   ]
 }

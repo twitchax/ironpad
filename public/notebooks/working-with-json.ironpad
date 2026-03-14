@@ -20,7 +20,7 @@
       "label": "Basic JSON",
       "cell_type": "Code",
       "source": "use serde_json::json;\n\n// Create a JSON value and display it with syntax highlighting\nlet data = json!({\n    \"name\": \"ironpad\",\n    \"version\": \"0.1.0\",\n    \"features\": [\"wasm\", \"notebooks\", \"charts\"],\n    \"stats\": {\n        \"cells_compiled\": 42,\n        \"tests_passing\": 190,\n        \"is_awesome\": true\n    }\n});\n\nJson(data)\n",
-      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+      "cargo_toml": null
     },
     {
       "id": "cell_2",
@@ -36,7 +36,7 @@
       "label": "Parse Example",
       "cell_type": "Code",
       "source": "let raw = r#\"{\n  \"users\": [\n    { \"id\": 1, \"name\": \"Alice\", \"active\": true },\n    { \"id\": 2, \"name\": \"Bob\", \"active\": false },\n    { \"id\": 3, \"name\": \"Charlie\", \"active\": true }\n  ],\n  \"total\": 3,\n  \"page\": null\n}\"#;\n\n// Parse and display — notice colors for each JSON type:\n// • keys in red\n// • strings in green\n// • numbers in blue\n// • booleans/null in purple\nlet json: Json = raw.parse().unwrap();\njson\n",
-      "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+      "cargo_toml": null
     },
     {
       "id": "cell_4",
@@ -52,7 +52,7 @@
       "label": "Fetch & Display",
       "cell_type": "Code",
       "source": "// Fetch a JSON API and display the response\nlet response = ironpad_cell::http::get(\"https://httpbin.org/get\").await.unwrap();\nlet value: serde_json::Value = serde_json::from_str(&response).unwrap();\n\nJson(value)\n",
-      "cargo_toml": "[package]\nname = \"cell_5\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+      "cargo_toml": null
     },
     {
       "id": "cell_6",
@@ -68,7 +68,7 @@
       "label": "Struct to JSON",
       "cell_type": "Code",
       "source": "use serde_json;\n\n#[derive(Serialize)]\nstruct Project {\n    name: String,\n    language: String,\n    stars: u64,\n    topics: Vec<String>,\n}\n\nlet projects = vec![\n    Project {\n        name: \"ironpad\".into(),\n        language: \"Rust\".into(),\n        stars: 128,\n        topics: vec![\"wasm\".into(), \"notebook\".into()],\n    },\n    Project {\n        name: \"plotters\".into(),\n        language: \"Rust\".into(),\n        stars: 4200,\n        topics: vec![\"visualization\".into(), \"svg\".into()],\n    },\n];\n\nJson(serde_json::to_value(&projects).unwrap())\n",
-      "cargo_toml": "[package]\nname = \"cell_7\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+      "cargo_toml": null
     }
   ]
 }
