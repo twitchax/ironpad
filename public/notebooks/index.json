@@ -109,6 +109,150 @@
         "widgets",
         "interactive"
       ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000101",
+      "title": "Mandelbrot Set",
+      "description": "Zoom into the infinite complexity of the Mandelbrot fractal rendered as a color-mapped SVG.",
+      "filename": "mandelbrot.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "fractal",
+        "visualization",
+        "math"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000102",
+      "title": "Julia Sets",
+      "description": "Explore the family of Julia set fractals by varying the complex constant parameter.",
+      "filename": "julia-set.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "fractal",
+        "visualization",
+        "math"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000103",
+      "title": "Sierpinski Triangle",
+      "description": "Recursively subdivide a triangle to produce the classic Sierpinski fractal pattern.",
+      "filename": "sierpinski.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "fractal",
+        "visualization",
+        "recursion"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000104",
+      "title": "Conway's Game of Life",
+      "description": "Simulate emergent behavior with Conway's cellular automaton on a 2D grid.",
+      "filename": "game-of-life.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "cellular-automata",
+        "simulation",
+        "visualization"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000105",
+      "title": "Rule 110",
+      "description": "Run the Turing-complete Rule 110 elementary cellular automaton and visualize its evolution.",
+      "filename": "rule-110.ironpad",
+      "cell_count": 3,
+      "tags": [
+        "cellular-automata",
+        "simulation",
+        "visualization"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000106",
+      "title": "Langton's Ant",
+      "description": "Watch Langton's Ant traverse a grid, producing surprising order from simple turn rules.",
+      "filename": "langtons-ant.ironpad",
+      "cell_count": 3,
+      "tags": [
+        "cellular-automata",
+        "simulation",
+        "visualization"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000107",
+      "title": "N-Body Gravity Simulation",
+      "description": "Simulate gravitational interactions between bodies using Newtonian mechanics.",
+      "filename": "n-body.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "physics",
+        "simulation",
+        "visualization"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000108",
+      "title": "Double Pendulum",
+      "description": "Model chaotic motion with a double pendulum and trace its unpredictable trajectory.",
+      "filename": "double-pendulum.ironpad",
+      "cell_count": 5,
+      "tags": [
+        "physics",
+        "simulation",
+        "chaos"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000109",
+      "title": "Wave Equation",
+      "description": "Solve the 1D wave equation numerically and animate propagating wave pulses.",
+      "filename": "wave-equation.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "physics",
+        "simulation",
+        "math"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000110",
+      "title": "Ray Marching",
+      "description": "Render 3D scenes by marching rays through signed distance fields.",
+      "filename": "ray-marching.ironpad",
+      "cell_count": 4,
+      "tags": [
+        "creative-coding",
+        "3d",
+        "visualization"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000111",
+      "title": "Particle System",
+      "description": "Spawn, animate, and render thousands of particles with configurable physics.",
+      "filename": "particle-system.ironpad",
+      "cell_count": 5,
+      "tags": [
+        "creative-coding",
+        "simulation",
+        "visualization"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000112",
+      "title": "Maze Generator",
+      "description": "Generate and solve random mazes using recursive backtracking.",
+      "filename": "maze-generator.ironpad",
+      "cell_count": 5,
+      "tags": [
+        "creative-coding",
+        "algorithm",
+        "visualization"
+      ]
     }
   ]
 }

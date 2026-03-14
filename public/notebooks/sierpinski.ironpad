@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000103",
+  "title": "Sierpinski Triangle",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z",
+  "shared_cargo_toml": "[dependencies]\nplotters = \"0.3\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "# Sierpinski Triangle \ud83d\udd3a\n\nThe **Sierpinski triangle** is a fractal that emerges from a surprisingly simple random process called the **chaos game**.\n\n## The Chaos Game\n\n1. Pick three vertices of an equilateral triangle\n2. Start at any point in the plane\n3. Repeat:\n   - Randomly choose one of the three vertices\n   - Move **halfway** toward that vertex\n   - Plot your new position\n\nDespite the randomness, the plotted points converge to a self-similar fractal \u2014 the Sierpinski triangle \u2014 with Hausdorff dimension log(3)/log(2) \u2248 1.585.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Chaos Game",
+      "cell_type": "Code",
+      "source": "// Vertices of an equilateral triangle (apex at top in Cartesian coords)\nlet h = 3.0_f64.sqrt() / 2.0;\nlet vertices: [(f64, f64); 3] = [\n    (0.5, h),   // top\n    (0.0, 0.0), // bottom-left\n    (1.0, 0.0), // bottom-right\n];\n\n// Deterministic PRNG (LCG) \u2014 no external crate needed\nstruct Rng(u64);\nimpl Rng {\n    fn next_vertex(&mut self) -> usize {\n        self.0 = self.0\n            .wrapping_mul(6_364_136_223_846_793_005)\n            .wrapping_add(1_442_695_040_888_963_407);\n        ((self.0 >> 33) % 3) as usize\n    }\n}\nlet mut rng = Rng(42);\n\n// Start at the centroid\nlet mut x = (vertices[0].0 + vertices[1].0 + vertices[2].0) / 3.0;\nlet mut y = (vertices[0].1 + vertices[1].1 + vertices[2].1) / 3.0;\n\n// Run the chaos game: pick a random vertex, move halfway toward it\nlet num_points = 50_000_usize;\nlet mut points = Vec::with_capacity(num_points);\nfor _ in 0..num_points {\n    let v = vertices[rng.next_vertex()];\n    x = (x + v.0) / 2.0;\n    y = (y + v.1) / 2.0;\n    points.push((x, y));\n}\n\npoints\n",
+      "cargo_toml": "[package]\nname = \"cell_1\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Render Fractal",
+      "cell_type": "Code",
+      "source": "use plotters::prelude::*;\n\n// Receive the chaos game points from the previous cell\nlet points: Vec<(f64, f64)> = cell1;\nlet y_max = 3.0_f64.sqrt() / 2.0;\n\nlet mut svg_buf = String::new();\n{\n    let root = SVGBackend::with_string(&mut svg_buf, (700, 700))\n        .into_drawing_area();\n    root.fill(&RGBColor(10, 10, 20)).unwrap();\n\n    let mut chart = ChartBuilder::on(&root)\n        .margin(15)\n        .build_cartesian_2d(-0.05_f64..1.05, -0.05_f64..(y_max + 0.05))\n        .unwrap();\n\n    chart\n        .configure_mesh()\n        .disable_mesh()\n        .draw()\n        .unwrap();\n\n    chart\n        .draw_series(\n            points.iter().map(|&(x, y)| {\n                Circle::new((x, y), 1, RGBColor(50, 205, 50).filled())\n            }),\n        )\n        .unwrap();\n\n    root.present().unwrap();\n}\n\nSvg(svg_buf)\n",
+      "cargo_toml": "[package]\nname = \"cell_2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Why Chaos Produces Order",
+      "cell_type": "Markdown",
+      "source": "## \ud83c\udfb2 Why Does Chaos Produce Order?\n\nThe chaos game works because of **iterated function systems** (IFS). Each \"move halfway to a vertex\" is a contraction mapping that shrinks the plane by a factor of 2. The Sierpinski triangle is the unique *attractor* of these three contractions \u2014 regardless of the starting point, the orbit converges to the same fractal.\n\n### Variations to Try\n\n- **Different ratios**: Move 1/3 of the way instead of 1/2 \u2014 what happens?\n- **More vertices**: Use 4 vertices (square) with the constraint that you can't pick the same vertex twice in a row\n- **Weighted randomness**: Make one vertex more likely than the others \u2014 the triangle becomes asymmetric\n\nThe chaos game reveals a deep connection between randomness and deterministic geometry: the fractal is encoded in the *rules*, not the *randomness*.",
+      "cargo_toml": null
+    }
+  ]
+}
