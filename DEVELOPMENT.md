@@ -56,14 +56,14 @@ cargo make uat
 
 ironpad is a Cargo workspace with 6 crates:
 
-| Crate                | Role                                                                                                                     |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **ironpad-app**      | Core crate — compiler pipeline, Leptos UI components, notebook model, session management, client-side storage            |
-| **ironpad-server**   | Axum HTTP server — Leptos SSR, WebSocket relay for agent collaboration, session/token management                         |
-| **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos)                                                        |
-| **ironpad-common**   | Shared types: `CompileRequest`, `IronpadNotebook`, `Diagnostic`, `AppConfig`, collaboration protocol (`protocol.rs`)     |
-| **ironpad-cell**     | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports                 |
-| **ironpad-cli**      | CLI daemon + agent commands for programmatic notebook interaction via WebSocket                                           |
+| Crate                | Role                                                                                                                 |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **ironpad-app**      | Core crate — compiler pipeline, Leptos UI components, notebook model, session management, client-side storage        |
+| **ironpad-server**   | Axum HTTP server — Leptos SSR, WebSocket relay for agent collaboration, session/token management                     |
+| **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos)                                                    |
+| **ironpad-common**   | Shared types: `CompileRequest`, `IronpadNotebook`, `Diagnostic`, `AppConfig`, collaboration protocol (`protocol.rs`) |
+| **ironpad-cell**     | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports             |
+| **ironpad-cli**      | CLI daemon + agent commands for programmatic notebook interaction via WebSocket                                      |
 
 ```
 crates/
@@ -158,29 +158,49 @@ cargo make build-cli
 
 ### WebSocket Routes
 
-| Route | Purpose |
-|-------|---------|
+| Route                           | Purpose                          |
+| ------------------------------- | -------------------------------- |
 | `GET /ws/host?notebook_id=<id>` | Browser connects as session host |
-| `GET /ws/connect?token=<token>` | CLI connects as session guest |
+| `GET /ws/connect?token=<token>` | CLI connects as session guest    |
 
 ### CLI Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `IRONPAD_HOST` | Server WebSocket URL (e.g. `ws://localhost:3111`) |
-| `IRONPAD_TOKEN` | Session token |
+| Variable        | Purpose                                           |
+| --------------- | ------------------------------------------------- |
+| `IRONPAD_HOST`  | Server WebSocket URL (e.g. `ws://localhost:3111`) |
+| `IRONPAD_TOKEN` | Session token                                     |
 
 ---
 
 ## TODO / Future Ideas
 
-- **CI / code coverage / docker**: Set up CI pipeline with GitHub Actions, code coverage reporting, and Docker image publishing
-- **Publish to fly.io**: Deploy to fly.io for easy public access and sharing
+- **Background thread for running**: Offload cell execution to a Web Worker to keep UI responsive?
+- On the public notebook page, allow for collapsed results.
+- On both notebook edit and view (and the public page), give the output a max-height and make it scrollable if it exceeds that height (big arrays, e.g.).
+- Add a tooltip for copiling v. running.  Right now, it shows "compiling..." while running the cell.
+- Make mandelbrrot and julia sets more fine-grained, and add a progress bar for them.  Also, make them render to the Canvas type.
+- Should some of the other code examples also be rendering to Canvas?  It would be a more consistent experience, and allow for more complex visualizations.
+- Sierpinski triangle fails on cell[2] because `cell1` is not available.  For some reason, cell[1]'s output is available as `cell0`, which is incorrect.
+- A cell's individual cargo.toml seems not to do anything?  When it does, let's move _everything_ we can to shared for all public notebooks, and make this the default for new notebooks.
+```toml
+[package]
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ironpad-cell = "0.1"
+
+[profile.release]
+opt-level = 1
+lto = false
+codegen-units = 16
+```
+- UI cleanup.
+- CI cleanup.
+
 - **Notebook tagging/filtering**: Tags on notebooks for organization, search/filter on home page
 - **LSP integration**: Full rust-analyzer completions in Monaco (per-cell analysis)
 - **Collaboration**: Real-time multi-user editing via WebSocket
-- Button to download / upload notebooks as JSON files (sharing already exists, but that requires persistent server).
-- Notebook with a bunch of cool mandelbrot zooms, cellular automata, physics simulations, etc. to show off capabilities.
-- Pedantic clippy / unwrap / unnecessary Box / Arc pass.
-- UI cleanup.
-- CI cleanup.

@@ -64,6 +64,7 @@ pub mod prelude {
 
     pub use console_error_panic_hook;
 
+    pub use crate::canvas::Canvas;
     pub use crate::plot::Plot;
     pub use crate::ui;
     pub use crate::ui::ProgressHandle;
@@ -77,6 +78,7 @@ pub mod prelude {
     pub use super::http;
 }
 
+pub mod canvas;
 pub mod plot;
 pub mod ui;
 
@@ -261,8 +263,29 @@ impl Table {
 pub struct Md(pub String);
 
 /// JSON content for syntax-highlighted display output.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+///
+/// Custom `Serialize`/`Deserialize` impls encode the inner `serde_json::Value`
+/// as a JSON string. This is necessary because `serde_json::Value::Deserialize`
+/// calls `deserialize_any`, which is incompatible with non-self-describing
+/// formats like bincode. Encoding as a JSON string ensures correct round-trip
+/// through any serde-compatible format.
+#[derive(Clone, Debug)]
 pub struct Json(pub serde_json::Value);
+
+impl serde::Serialize for Json {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let json_str = serde_json::to_string(&self.0).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&json_str)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Json {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let json_str = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let value = serde_json::from_str(&json_str).map_err(serde::de::Error::custom)?;
+        Ok(Json(value))
+    }
+}
 
 impl std::str::FromStr for Json {
     type Err = serde_json::Error;
@@ -507,6 +530,19 @@ impl From<Json> for CellOutput {
     }
 }
 
+impl From<canvas::Canvas> for CellOutput {
+    fn from(value: canvas::Canvas) -> Self {
+        let html = value.to_html();
+        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
+            .expect("serialization of Canvas cannot fail");
+        Self {
+            bytes,
+            panels: vec![DisplayPanel::Html(html)],
+            type_tag: Some("Canvas".into()),
+        }
+    }
+}
+
 // ── IntoPanels trait ─────────────────────────────────────────────────────────
 
 /// Trait for types that can produce display panels.
@@ -573,6 +609,12 @@ impl IntoPanels for Md {
 impl IntoPanels for Json {
     fn into_panels(&self) -> Vec<DisplayPanel> {
         vec![DisplayPanel::Html(render_json_html(&self.0))]
+    }
+}
+
+impl IntoPanels for canvas::Canvas {
+    fn into_panels(&self) -> Vec<DisplayPanel> {
+        vec![DisplayPanel::Html(self.to_html())]
     }
 }
 
@@ -650,6 +692,12 @@ impl TypeTag for Md {
 impl TypeTag for Json {
     fn type_tag() -> String {
         "Json".into()
+    }
+}
+
+impl TypeTag for canvas::Canvas {
+    fn type_tag() -> String {
+        "Canvas".into()
     }
 }
 
@@ -952,6 +1000,36 @@ mod tests {
         let input = CellInput::new(bytes);
         let decoded: Vec<i32> = input.deserialize().expect("deserialize");
         assert_eq!(decoded, data);
+
+        unsafe {
+            drop(Vec::from_raw_parts(
+                result.output_ptr,
+                result.output_len,
+                result.output_len,
+            ));
+        }
+    }
+
+    #[test]
+    fn round_trip_json() {
+        let original = Json(serde_json::json!({
+            "name": "ironpad",
+            "count": 42,
+            "active": true,
+            "tags": ["wasm", "rust"],
+            "nested": { "key": null }
+        }));
+
+        let output: CellOutput = original.clone().into();
+        let result: CellResult = output.into();
+
+        assert!(!result.output_ptr.is_null());
+        assert!(result.output_len > 0);
+
+        let bytes = unsafe { std::slice::from_raw_parts(result.output_ptr, result.output_len) };
+        let input = CellInput::new(bytes);
+        let decoded: Json = input.deserialize().expect("Json bincode round-trip");
+        assert_eq!(decoded.0, original.0);
 
         unsafe {
             drop(Vec::from_raw_parts(

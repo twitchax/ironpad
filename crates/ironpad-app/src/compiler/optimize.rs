@@ -8,7 +8,10 @@ use std::path::Path;
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
-/// Attempt to optimize a WASM blob in-place using `wasm-opt -Oz`.
+/// Attempt to optimize a WASM blob in-place using `wasm-opt -O3`.
+///
+/// Uses `-O3` (runtime performance) rather than `-Oz` (size) because cell
+/// execution speed matters more than shaving a few KB off download size.
 ///
 /// Returns the (possibly optimized) bytes. If `wasm-opt` is unavailable
 /// or fails, returns the original bytes unchanged.
@@ -40,7 +43,7 @@ async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path) -> Result<Vec<u8>> {
     tokio::fs::write(&input_path, wasm_bytes).await?;
 
     let output = tokio::process::Command::new("wasm-opt")
-        .arg("-Oz")
+        .arg("-O3")
         .arg("--debuginfo")
         .arg(&input_path)
         .arg("-o")
