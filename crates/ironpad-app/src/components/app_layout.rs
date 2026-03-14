@@ -237,7 +237,7 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                         }
                     }
                 >
-                    "🌙"
+                    "☾"
                 </button>
                 <button
                     class=move || if is_light_theme.get() { "ironpad-theme-toggle-segment ironpad-theme-toggle-segment--active" } else { "ironpad-theme-toggle-segment" }
@@ -279,7 +279,7 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                         }
                     }
                 >
-                    "☀"
+                    "☼"
                 </button>
             </div>
             {move || ctx.show_save_button.get().then(|| {

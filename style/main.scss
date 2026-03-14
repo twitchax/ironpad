@@ -1015,6 +1015,16 @@ a:focus-visible {
     border-color: rgba(255, 255, 255, 0.12);
 }
 
+.ironpad-side-btn--cancel {
+    color: #e06c75;
+}
+
+.ironpad-side-btn--cancel:hover {
+    color: #fff;
+    background: rgba(224, 108, 117, 0.25);
+    border-color: rgba(224, 108, 117, 0.4);
+}
+
 /* ── Cell tab bar ───────────────────────────────────────────────────── */
 
 .ironpad-cell-tabs {

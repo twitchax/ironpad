@@ -149,17 +149,17 @@ pub fn ViewOnlyNotebook(
                     on:click=run_all_action
                     disabled=move || running_all.get()
                 >
-                    {move || if running_all.get() { "⏳ Running…" } else { "▶▶ Run All" }}
+                    {move || if running_all.get() { "◐ Running…" } else { "▶▶ Run All" }}
                 </button>
                 <button class="fork-button" on:click=fork_action>
-                    {"🍴 "}{fork_label_clone}
+                    {"↳ "}{fork_label_clone}
                 </button>
                 <button
                     class={move || if force_recompile.get() { "force-recompile-button active" } else { "force-recompile-button" }}
                     on:click=move |_| force_recompile.update(|v| *v = !*v)
                     title="Bypass WASM cache and force fresh compilation"
                 >
-                    {move || if force_recompile.get() { "🔄 Force Recompile ✓" } else { "🔄 Force Recompile" }}
+                    {move || if force_recompile.get() { "↻ Force Recompile ✓" } else { "↻ Force Recompile" }}
                 </button>
             </div>
             <div class="view-only-cells">
@@ -460,9 +460,9 @@ fn ViewOnlyCodeCell(
     // Button text depends on compiling/queued state.
     let button_text = Signal::derive(move || {
         if compiling.get() {
-            "⏳ Compiling…"
+            "◐ Compiling…"
         } else if queued.get() {
-            "⏳ Queued"
+            "◐ Queued"
         } else {
             "▶ Run"
         }

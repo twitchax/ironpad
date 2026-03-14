@@ -587,7 +587,7 @@ fn NotebookContent() -> impl IntoView {
                                             }
                                         }
                                     >
-                                        "🔗 Share"
+                                        "↗ Share"
                                     </button>
                                     // Export HTML
                                     <button
@@ -607,7 +607,7 @@ fn NotebookContent() -> impl IntoView {
                                             }
                                         }
                                     >
-                                        "📄 Export HTML"
+                                        "⊞ Export HTML"
                                     </button>
                                     // Download .ironpad
                                     <button
@@ -638,7 +638,7 @@ fn NotebookContent() -> impl IntoView {
                                             }
                                         }
                                     >
-                                        "📥 Download .ironpad"
+                                        "↓ Download .ironpad"
                                     </button>
                                     // Delete
                                     <button
@@ -665,7 +665,7 @@ fn NotebookContent() -> impl IntoView {
                                             }
                                         }
                                     >
-                                        "🗑 Delete"
+                                        "╳ Delete"
                                     </button>
                                 </div>
                             }
@@ -700,9 +700,9 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         {move || {
                                             if shared_deps_open.get() {
-                                                "📦 Hide Shared Deps"
+                                                "⬡ Hide Shared Deps"
                                             } else {
-                                                "📦 Shared Deps"
+                                                "⬡ Shared Deps"
                                             }
                                         }}
                                     </button>
@@ -715,9 +715,9 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         {move || {
                                             if shared_source_open.get() {
-                                                "🔧 Hide Shared Source"
+                                                "✎ Hide Shared Source"
                                             } else {
-                                                "🔧 Shared Source"
+                                                "✎ Shared Source"
                                             }
                                         }}
                                     </button>
@@ -729,9 +729,9 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         {move || {
                                             if state.force_recompile.get() {
-                                                "🔄 Force Recompile ✓"
+                                                "↻ Force Recompile ✓"
                                             } else {
-                                                "🔄 Force Recompile"
+                                                "↻ Force Recompile"
                                             }
                                         }}
                                     </button>
@@ -798,14 +798,14 @@ fn NotebookContent() -> impl IntoView {
                 title="Edit mode"
                 on:click=move |_| state.is_view_mode.set(false)
             >
-                "✏️"
+                "✎"
             </button>
             <button
                 class=move || if state.is_view_mode.get() { "ironpad-mode-toggle-segment ironpad-mode-toggle-segment--active" } else { "ironpad-mode-toggle-segment" }
                 title="View mode"
                 on:click=move |_| state.is_view_mode.set(true)
             >
-                "👁"
+                "◉"
             </button>
         </div>
     }

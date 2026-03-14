@@ -77,7 +77,7 @@ pub(super) fn SharedDepsPanel() -> impl IntoView {
         <Card class="ironpad-shared-deps">
             <CardHeader>
                 <div class="ironpad-shared-deps-header">
-                    <span class="ironpad-shared-deps-title">"📦 Shared Dependencies (Cargo.toml)"</span>
+                    <span class="ironpad-shared-deps-title">"⬡ Shared Dependencies (Cargo.toml)"</span>
                     <Button
                         appearance=ButtonAppearance::Primary
                         on_click=on_save

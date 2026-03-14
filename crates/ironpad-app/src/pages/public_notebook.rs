@@ -17,7 +17,7 @@ pub fn PublicNotebookPage() -> impl IntoView {
     // Reset layout context for public notebook.
     let ctx = expect_context::<LayoutContext>();
     ctx.notebook_title
-        .set(Some(format!("📓 {}", filename.replace(".ironpad", ""))));
+        .set(Some(format!("◇ {}", filename.replace(".ironpad", ""))));
     ctx.show_save_button.set(false);
 
     let notebook_resource = Resource::new(move || filename.clone(), get_public_notebook);
@@ -40,7 +40,7 @@ pub fn PublicNotebookPage() -> impl IntoView {
 
                         Err(e) => view! {
                             <div class="ironpad-error-boundary">
-                                <div class="ironpad-error-boundary-icon">"⚠"</div>
+                                <div class="ironpad-error-boundary-icon">"△"</div>
                                 <p class="ironpad-error-boundary-message">
                                     {format!("Failed to load public notebook: {e}")}
                                 </p>

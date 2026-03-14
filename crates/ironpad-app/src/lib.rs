@@ -43,8 +43,8 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <script src="/monaco/languages.js"></script>
                 <script src="/monaco/bridge.js"></script>
 
-                // WASM cell executor.
-                <script src="/executor.js"></script>
+                // WASM cell executor (Web Worker bridge — delegates to executor-worker.js).
+                <script src="/executor-bridge.js"></script>
 
                 // IndexedDB notebook storage.
                 <script src="/storage.js"></script>

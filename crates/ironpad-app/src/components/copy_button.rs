@@ -43,7 +43,7 @@ pub fn CopyButton(
             on:click=on_click
             title="Copy to clipboard"
         >
-            <span class="ironpad-copy-btn__icon">"📋"</span>
+            <span class="ironpad-copy-btn__icon">"⧉"</span>
             <span class=move || {
                 if copied.get() {
                     "ironpad-copy-btn__feedback ironpad-copy-btn__feedback--visible"

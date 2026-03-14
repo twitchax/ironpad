@@ -73,7 +73,7 @@ pub(super) fn SharedSourcePanel() -> impl IntoView {
         <Card class="ironpad-shared-source-panel">
             <CardHeader>
                 <div class="ironpad-shared-deps-header">
-                    <span class="ironpad-shared-deps-title">"🔧 Shared Source (shared.rs)"</span>
+                    <span class="ironpad-shared-deps-title">"✎ Shared Source (shared.rs)"</span>
                     <Button
                         appearance=ButtonAppearance::Primary
                         on_click=on_save

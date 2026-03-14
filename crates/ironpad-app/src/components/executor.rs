@@ -1,8 +1,8 @@
 // ── WASM executor bindings ──────────────────────────────────────────────────
 //
-// The JS-side executor (`public/executor.js`) manages WASM module loading,
-// caching, and execution.  These bindings provide a type-safe Rust API over
-// the JS bridge for use from Leptos components.
+// The JS-side executor bridge (`public/executor-bridge.js`) delegates WASM
+// module loading and execution to a Web Worker.  These bindings provide a
+// type-safe Rust API over the bridge for use from Leptos components.
 
 // ── JS interop (client-side only) ───────────────────────────────────────────
 
@@ -38,6 +38,11 @@ mod js {
         /// Check whether a cell has a module loaded with the given hash.
         #[wasm_bindgen(js_namespace = IronpadExecutor, js_name = "isLoaded")]
         pub fn is_loaded(cell_id: &str, hash: &str) -> bool;
+
+        /// Terminate the running Web Worker, aborting any in-flight execution.
+        /// A fresh Worker is automatically respawned by the bridge.
+        #[wasm_bindgen(js_namespace = IronpadExecutor)]
+        pub fn terminate();
     }
 }
 
@@ -59,7 +64,7 @@ pub fn hash_wasm_blob(bytes: &[u8]) -> String {
 
 /// Verify that the executor JS module is available on `window`.
 ///
-/// The executor auto-initialises when `executor.js` loads, so this is
+/// The executor auto-initialises when `executor-bridge.js` loads, so this is
 /// primarily a diagnostic check.  Returns `Err` if the global is missing.
 #[cfg(feature = "hydrate")]
 pub fn init_executor() -> Result<(), String> {
@@ -72,6 +77,15 @@ pub fn init_executor() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Terminate the executor's Web Worker, cancelling any running cell.
+///
+/// The bridge rejects pending Promises with `AbortError` and respawns a
+/// fresh Worker.  Previously-loaded blobs must be re-loaded.
+#[cfg(feature = "hydrate")]
+pub fn terminate_executor() {
+    js::terminate();
 }
 
 /// Load a compiled WASM blob into the executor's cache.

@@ -33,7 +33,7 @@ pub fn SharedNotebookPage() -> impl IntoView {
                 match notebook_resource.await {
                     Ok(notebook) => {
                         // Update title with the actual notebook title.
-                        ctx.notebook_title.set(Some(format!("🔗 {}", notebook.title)));
+                        ctx.notebook_title.set(Some(format!("↗ {}", notebook.title)));
 
                         view! {
                             <ViewOnlyNotebook notebook fork_label="Fork to Private".to_string() />
@@ -42,7 +42,7 @@ pub fn SharedNotebookPage() -> impl IntoView {
 
                     Err(e) => view! {
                         <div class="ironpad-error-boundary">
-                            <div class="ironpad-error-boundary-icon">"⚠"</div>
+                            <div class="ironpad-error-boundary-icon">"△"</div>
                             <p class="ironpad-error-boundary-message">
                                 {format!("Shared notebook not found or expired: {e}")}
                             </p>

@@ -113,7 +113,7 @@ pub fn HomePage() -> impl IntoView {
                         appearance=ButtonAppearance::Subtle
                         on_click=on_import
                     >
-                        "📥 Import Notebook"
+                        "↓ Import Notebook"
                     </Button>
                 </div>
             </div>
@@ -133,11 +133,11 @@ pub fn HomePage() -> impl IntoView {
                     <button
                         class=move || if filter_mode.get() == FilterMode::Private { "ironpad-chip active" } else { "ironpad-chip" }
                         on:click=move |_| filter_mode.set(FilterMode::Private)
-                    >"🔒 Private"</button>
+                    >"◆ Private"</button>
                     <button
                         class=move || if filter_mode.get() == FilterMode::Public { "ironpad-chip active" } else { "ironpad-chip" }
                         on:click=move |_| filter_mode.set(FilterMode::Public)
-                    >"🌐 Public"</button>
+                    >"◇ Public"</button>
                 </div>
             </div>
 
@@ -285,7 +285,7 @@ fn NotebookCard(
                     <a href=href class="ironpad-notebook-card-link">
                         <Card class="ironpad-notebook-card">
                             <CardHeader>
-                                <span class="ironpad-notebook-badge private">"🔒"</span>
+                                <span class="ironpad-notebook-badge private">"◆"</span>
                                 <span class="ironpad-notebook-card-title">{title}</span>
                             </CardHeader>
                             <div class="ironpad-notebook-card-body">
@@ -295,7 +295,7 @@ fn NotebookCard(
                         </Card>
                     </a>
                     <button class="ironpad-delete-btn" on:click=on_delete title="Delete notebook">
-                        "🗑"
+                        "╳"
                     </button>
                 </div>
             }
@@ -318,7 +318,7 @@ fn NotebookCard(
                     <a href=href class="ironpad-notebook-card-link">
                         <Card class="ironpad-notebook-card">
                             <CardHeader>
-                                <span class="ironpad-notebook-badge public">"🌐"</span>
+                                <span class="ironpad-notebook-badge public">"◇"</span>
                                 <span class="ironpad-notebook-card-title">{title}</span>
                             </CardHeader>
                             <div class="ironpad-notebook-card-body">

@@ -610,16 +610,22 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                 };
 
                             if let Some(err_msg) = exec_err {
-                                execution_result.set(Some(ExecutionResult {
-                                    display_text: Some(err_msg),
-                                    output_bytes: vec![],
-                                    execution_time_ms: 0.0,
-                                    type_tag: None,
-                                }));
-                                cell_status.set(CellStatus::Error);
+                                // AbortError means the user cancelled via terminate().
+                                if err_msg.contains("AbortError") {
+                                    cell_status.set(CellStatus::Idle);
+                                    state.run_all_queue.set(vec![]);
+                                } else {
+                                    execution_result.set(Some(ExecutionResult {
+                                        display_text: Some(err_msg),
+                                        output_bytes: vec![],
+                                        execution_time_ms: 0.0,
+                                        type_tag: None,
+                                    }));
+                                    cell_status.set(CellStatus::Error);
 
-                                // Stop run-all on execution error.
-                                state.run_all_queue.set(vec![]);
+                                    // Stop run-all on execution error.
+                                    state.run_all_queue.set(vec![]);
+                                }
                             }
                         }
 
@@ -1189,7 +1195,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     {if is_markdown {
                         view! {
                             <Tag size=TagSize::ExtraSmall class="ironpad-cell-type-badge ironpad-cell-type-badge--markdown">
-                                "📝 markdown"
+                                "¶ markdown"
                             </Tag>
                         }.into_any()
                     } else {
@@ -1305,7 +1311,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
         // ── Side action buttons ─────────────────────────────────────────
         <div class="ironpad-cell-side-actions">
-            {if !is_markdown && !state.is_view_mode.get() {
+            {move || if !is_markdown && !state.is_view_mode.get() {
                 view! {
                     <div class="ironpad-drag-handle" title="Drag to reorder">
                         "⠿"
@@ -1319,16 +1325,33 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             } else {
                 view! {
                     <button
-                        class="ironpad-side-btn"
-                        title="Run cell"
+                        class=Signal::derive(move || {
+                            if matches!(cell_status.get(), CellStatus::Compiling | CellStatus::Running) {
+                                "ironpad-side-btn ironpad-side-btn--cancel"
+                            } else {
+                                "ironpad-side-btn"
+                            }
+                        })
+                        title=Signal::derive(move || {
+                            if matches!(cell_status.get(), CellStatus::Compiling | CellStatus::Running) {
+                                "Cancel execution"
+                            } else {
+                                "Run cell"
+                            }
+                        })
                         on:click=move |ev: leptos::ev::MouseEvent| {
                             ev.stop_propagation();
-                            run_trigger.update(|g| *g += 1);
+                            if matches!(cell_status.get_untracked(), CellStatus::Compiling | CellStatus::Running) {
+                                #[cfg(feature = "hydrate")]
+                                crate::components::executor::terminate_executor();
+                            } else {
+                                run_trigger.update(|g| *g += 1);
+                            }
                         }
                     >
                         {move || {
                             if matches!(cell_status.get(), CellStatus::Compiling | CellStatus::Running) {
-                                "⏳"
+                                "⏹"
                             } else {
                                 "▶"
                             }
@@ -1416,7 +1439,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                 class="ironpad-cell-menu-item ironpad-cell-menu-item--danger"
                                 on:click=on_delete_confirmed
                             >
-                                "🗑 Delete"
+                                "╳ Delete"
                             </button>
                         </div>
                     }.into_any()
