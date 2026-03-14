@@ -318,18 +318,18 @@ fn ViewOnlyCodeCell(
 
                 // Compute previous cell types and serialized input bytes.
                 let outputs = cell_outputs.get_untracked();
-                let prev_code_cells: Vec<&IronpadCell> = cells[..my_idx]
-                    .iter()
-                    .filter(|c| c.cell_type == CellType::Code)
-                    .collect();
-
                 let mut all_output_bytes: Vec<&[u8]> = Vec::new();
                 let mut types: Vec<String> = Vec::new();
 
-                for c in &prev_code_cells {
-                    if let Some(data) = outputs.get(&c.id) {
-                        all_output_bytes.push(&data.bytes);
-                        types.push(data.type_tag.clone().unwrap_or_default());
+                for c in &cells[..my_idx] {
+                    if c.cell_type == CellType::Code {
+                        if let Some(data) = outputs.get(&c.id) {
+                            all_output_bytes.push(&data.bytes);
+                            types.push(data.type_tag.clone().unwrap_or_default());
+                        } else {
+                            all_output_bytes.push(&[]);
+                            types.push(String::new());
+                        }
                     } else {
                         all_output_bytes.push(&[]);
                         types.push(String::new());

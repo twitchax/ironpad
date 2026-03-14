@@ -27,7 +27,7 @@
       "order": 2,
       "label": "Update Progress",
       "cell_type": "Code",
-      "source": "// cell0 is the progress bar ID (String) from the previous code cell.\nlet handle = ProgressHandle::new(cell0);\nhandle.update(75.0);\n\nui::button(\"Run Task \\u{25b6}\")\n",
+      "source": "// cell1 is the progress bar ID (String) from the previous code cell.\nlet handle = ProgressHandle::new(cell1);\nhandle.update(75.0);\n\nui::button(\"Run Task \\u{25b6}\")\n",
       "cargo_toml": "[package]\nname = \"cell_2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
     },
     {

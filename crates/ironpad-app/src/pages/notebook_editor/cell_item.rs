@@ -413,8 +413,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             }
         }
 
-        // Collect previous Code cell outputs for the I/O pipeline.
-        // Markdown cells are skipped — they produce no output.
+        // Collect previous cell outputs for the I/O pipeline.
+        // All cells are included so that cellN indices match absolute notebook position.
+        // Markdown cells get empty bytes/type so the scaffold filters them out.
         let (input_bytes, previous_cell_types) = {
             let cells = state.cells.get_untracked();
             let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
@@ -423,17 +424,18 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             if my_idx == 0 {
                 (vec![], vec![])
             } else {
-                let prev_code_cells: Vec<&CellManifest> = cells[..my_idx]
-                    .iter()
-                    .filter(|c| c.cell_type == CellType::Code)
-                    .collect();
                 let mut all_outputs: Vec<&[u8]> = Vec::new();
                 let mut types: Vec<String> = Vec::new();
 
-                for c in &prev_code_cells {
-                    if let Some(data) = outputs.get(&c.id) {
-                        all_outputs.push(&data.bytes);
-                        types.push(data.type_tag.clone().unwrap_or_default());
+                for c in &cells[..my_idx] {
+                    if c.cell_type == CellType::Code {
+                        if let Some(data) = outputs.get(&c.id) {
+                            all_outputs.push(&data.bytes);
+                            types.push(data.type_tag.clone().unwrap_or_default());
+                        } else {
+                            all_outputs.push(&[]);
+                            types.push(String::new());
+                        }
                     } else {
                         all_outputs.push(&[]);
                         types.push(String::new());

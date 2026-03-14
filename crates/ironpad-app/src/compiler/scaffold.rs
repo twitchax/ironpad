@@ -601,6 +601,25 @@ serde = { version = "1", features = ["derive"] }
         assert_eq!(lines[preamble as usize].trim(), "// user code here");
     }
 
+    #[test]
+    fn generate_lib_rs_with_markdown_gaps() {
+        // Simulates absolute-index semantics: Markdown cells at indices 0 and 2
+        // produce empty type strings; Code cells at indices 1 and 3 have types.
+        let types: Vec<String> = vec![String::new(), "u32".into(), String::new(), "String".into()];
+        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
+
+        // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
+        assert_eq!(preamble, 12);
+        assert!(!lib_rs.contains("let cell0:"));
+        assert!(lib_rs.contains("let cell1: u32 = __ironpad_inputs__.get(1).deserialize()"));
+        assert!(!lib_rs.contains("let cell2:"));
+        assert!(lib_rs.contains("let cell3: String = __ironpad_inputs__.get(3).deserialize()"));
+        assert!(lib_rs.contains("let last = &cell3;"));
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+    }
+
     // ── scaffold_micro_crate (integration) ──────────────────────────────
 
     #[test]

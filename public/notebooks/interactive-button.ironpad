@@ -35,7 +35,7 @@
       "order": 3,
       "label": "Result",
       "cell_type": "Code",
-      "source": "let value = cell0;\nlet squared = value * value;\nlet cubed = value * value * value;\n\nMd(format!(\n    \"## Results for {value:.0}\\n\\n\\\n     | Operation | Result |\\n\\\n     |---|---:|\\n\\\n     | **Square** | {squared:.0} |\\n\\\n     | **Cube** | {cubed:.0} |\\n\\\n     | **Square root** | {sr:.4} |\",\n    sr = value.sqrt(),\n))\n",
+      "source": "let value = cell1;\nlet squared = value * value;\nlet cubed = value * value * value;\n\nMd(format!(\n    \"## Results for {value:.0}\\n\\n\\\n     | Operation | Result |\\n\\\n     |---|---:|\\n\\\n     | **Square** | {squared:.0} |\\n\\\n     | **Cube** | {cubed:.0} |\\n\\\n     | **Square root** | {sr:.4} |\",\n    sr = value.sqrt(),\n))\n",
       "cargo_toml": "[package]\nname = \"cell_3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nironpad-cell = \"0.1\"\n"
     }
   ]
