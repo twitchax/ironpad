@@ -197,25 +197,27 @@
     {
       "id": "00000000-0000-0000-0000-000000000108",
       "title": "Double Pendulum",
-      "description": "Model chaotic motion with a double pendulum and trace its unpredictable trajectory.",
+      "description": "Model chaotic motion with a live double pendulum simulation using the Simulation trait.",
       "filename": "double-pendulum.ironpad",
-      "cell_count": 5,
+      "cell_count": 2,
       "tags": [
         "physics",
         "simulation",
-        "chaos"
+        "chaos",
+        "live-simulation"
       ]
     },
     {
       "id": "00000000-0000-0000-0000-000000000109",
       "title": "Wave Equation",
-      "description": "Solve the 1D wave equation numerically and animate propagating wave pulses.",
+      "description": "Solve the 1D wave equation and animate propagating wave pulses using the Animation type.",
       "filename": "wave-equation.ironpad",
-      "cell_count": 4,
+      "cell_count": 3,
       "tags": [
         "physics",
         "simulation",
-        "math"
+        "math",
+        "animation"
       ]
     },
     {

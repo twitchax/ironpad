@@ -141,6 +141,16 @@ impl Canvas {
         self.height
     }
 
+    /// Raw RGB pixel bytes (flat, row-major).
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// Consume the canvas and return the raw RGB pixel bytes.
+    pub fn into_pixels(self) -> Vec<u8> {
+        self.pixels
+    }
+
     /// Encode the pixel buffer as a 24-bit BMP (top-down, no compression).
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub fn to_bmp(&self) -> Vec<u8> {
@@ -194,6 +204,36 @@ impl Canvas {
              style=\"image-rendering: pixelated;\" />",
             self.width, self.height
         )
+    }
+}
+
+// ── Animation ────────────────────────────────────────────────────────────────
+
+/// A sequence of [`Canvas`] frames with a target frame rate.
+///
+/// On conversion to [`CellOutput`](crate::CellOutput), all frames' raw RGB
+/// bytes are concatenated and base64-encoded into a single
+/// [`DisplayPanel::Animation`](crate::DisplayPanel::Animation).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Animation {
+    frames: Vec<Canvas>,
+    fps: u32,
+}
+
+impl Animation {
+    /// Create a new animation from a list of frames and a target FPS.
+    pub fn new(frames: Vec<Canvas>, fps: u32) -> Self {
+        Self { frames, fps }
+    }
+
+    /// The animation frames.
+    pub fn frames(&self) -> &[Canvas] {
+        &self.frames
+    }
+
+    /// Target frames per second.
+    pub fn fps(&self) -> u32 {
+        self.fps
     }
 }
 
@@ -346,5 +386,29 @@ mod tests {
         assert_eq!(decoded.height(), c.height());
         assert_eq!(decoded.get_pixel(1, 1), (200, 100, 50));
         assert_eq!(decoded.get_pixel(0, 0), (0, 0, 0));
+    }
+
+    #[test]
+    fn pixels_accessor() {
+        let mut c = Canvas::new(1, 2);
+        c.set_pixel(0, 0, (10, 20, 30));
+        c.set_pixel(0, 1, (40, 50, 60));
+        assert_eq!(c.pixels(), &[10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn into_pixels_consumes() {
+        let mut c = Canvas::new(1, 1);
+        c.set_pixel(0, 0, (7, 8, 9));
+        let v = c.into_pixels();
+        assert_eq!(v, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn animation_accessors() {
+        let f = Canvas::new(2, 2);
+        let anim = Animation::new(vec![f.clone(), f], 12);
+        assert_eq!(anim.fps(), 12);
+        assert_eq!(anim.frames().len(), 2);
     }
 }

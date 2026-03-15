@@ -34,6 +34,21 @@ pub(super) enum DisplayPanel {
         width: u32,
         height: u32,
     },
+    /// Multi-frame animation (base64-encoded concatenated RGB bytes).
+    Animation {
+        width: u32,
+        height: u32,
+        fps: u32,
+        frame_count: u32,
+        data: String,
+    },
+    /// Live simulation placeholder (base64-encoded first-frame RGB bytes).
+    Simulation {
+        width: u32,
+        height: u32,
+        fps: u32,
+        first_frame_data: String,
+    },
 }
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
@@ -210,6 +225,30 @@ pub(super) fn build_export_html(
                                          <img src=\"data:{mime_type};base64,{base64_data}\" \
                                          width=\"{width}\" height=\"{height}\" \
                                          style=\"image-rendering: pixelated;\" />\
+                                         </div>"
+                                    );
+                                }
+                                DisplayPanel::Animation {
+                                    width,
+                                    height,
+                                    fps,
+                                    frame_count,
+                                    ..
+                                } => {
+                                    let _ = writeln!(
+                                        html,
+                                        "<div class=\"output-html\">\
+                                         <em>Animation: {frame_count} frames at {fps} fps ({width}×{height})</em>\
+                                         </div>"
+                                    );
+                                }
+                                DisplayPanel::Simulation {
+                                    width, height, fps, ..
+                                } => {
+                                    let _ = writeln!(
+                                        html,
+                                        "<div class=\"output-html\">\
+                                         <em>Simulation at {fps} fps ({width}×{height})</em>\
                                          </div>"
                                     );
                                 }

@@ -64,14 +64,14 @@ pub mod prelude {
 
     pub use console_error_panic_hook;
 
-    pub use crate::canvas::Canvas;
+    pub use crate::canvas::{Animation, Canvas};
     pub use crate::plot::Plot;
     pub use crate::ui;
     pub use crate::ui::ProgressHandle;
     pub use crate::{host_message, host_message_json};
     pub use crate::{
         CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Json, Md,
-        Svg, Table, TypeTag,
+        Simulation, SimulationMeta, Svg, Table, TickResult, TypeTag,
     };
 
     #[cfg(target_arch = "wasm32")]
@@ -233,6 +233,21 @@ pub enum DisplayPanel {
         base64_data: String,
         width: u32,
         height: u32,
+    },
+    /// Multi-frame animation (base64-encoded concatenated RGB bytes).
+    Animation {
+        width: u32,
+        height: u32,
+        fps: u32,
+        frame_count: u32,
+        data: String,
+    },
+    /// Live simulation placeholder (base64-encoded first-frame RGB bytes).
+    Simulation {
+        width: u32,
+        height: u32,
+        fps: u32,
+        first_frame_data: String,
     },
 }
 
@@ -560,6 +575,34 @@ impl From<canvas::Canvas> for CellOutput {
     }
 }
 
+impl From<canvas::Animation> for CellOutput {
+    fn from(value: canvas::Animation) -> Self {
+        let panels = value.into_panels();
+        Self {
+            bytes: vec![],
+            panels,
+            type_tag: Some("Animation".into()),
+        }
+    }
+}
+
+impl From<SimulationMeta> for CellOutput {
+    fn from(meta: SimulationMeta) -> Self {
+        let rgb_data = canvas::base64_encode(meta.first_frame.pixels());
+        let panels = vec![DisplayPanel::Simulation {
+            width: meta.width,
+            height: meta.height,
+            fps: meta.fps,
+            first_frame_data: rgb_data,
+        }];
+        Self {
+            bytes: vec![],
+            panels,
+            type_tag: Some("Simulation".into()),
+        }
+    }
+}
+
 // ── IntoPanels trait ─────────────────────────────────────────────────────────
 
 /// Trait for types that can produce display panels.
@@ -632,6 +675,30 @@ impl IntoPanels for Json {
 impl IntoPanels for canvas::Canvas {
     fn into_panels(&self) -> Vec<DisplayPanel> {
         vec![DisplayPanel::Html(self.to_html())]
+    }
+}
+
+impl IntoPanels for canvas::Animation {
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)]
+    fn into_panels(&self) -> Vec<DisplayPanel> {
+        let (w, h) = if let Some(f) = self.frames().first() {
+            (f.width(), f.height())
+        } else {
+            return vec![];
+        };
+        let mut rgb_bytes = Vec::with_capacity(self.frames().len() * (w * h * 3) as usize);
+        for frame in self.frames() {
+            rgb_bytes.extend_from_slice(frame.pixels());
+        }
+        let data = canvas::base64_encode(&rgb_bytes);
+        vec![DisplayPanel::Animation {
+            width: w,
+            height: h,
+            fps: self.fps(),
+            frame_count: self.frames().len() as u32,
+            data,
+        }]
     }
 }
 
@@ -718,6 +785,12 @@ impl TypeTag for canvas::Canvas {
     }
 }
 
+impl TypeTag for canvas::Animation {
+    fn type_tag() -> String {
+        "Animation".into()
+    }
+}
+
 impl TypeTag for CellOutput {
     fn type_tag() -> String {
         "CellOutput".into()
@@ -727,6 +800,59 @@ impl TypeTag for CellOutput {
 impl TypeTag for () {
     fn type_tag() -> String {
         "()".into()
+    }
+}
+
+// ── Simulation ──────────────────────────────────────────────────────────────
+
+/// Trait for live simulations that produce frames on each tick.
+///
+/// Implement this on your simulation state to enable interactive playback in
+/// the notebook.  The runtime calls [`init`](Simulation::init) once, then
+/// [`tick`](Simulation::tick) repeatedly at the target [`fps`](Simulation::fps).
+pub trait Simulation: Sized + 'static {
+    /// Create the initial simulation state.
+    fn init() -> Self;
+    /// Advance the simulation by one frame and return the canvas to display.
+    fn tick(&mut self) -> canvas::Canvas;
+    /// Target frames per second (default: 30).
+    fn fps() -> u32 {
+        30
+    }
+}
+
+/// Metadata emitted by the scaffold for a [`Simulation`] cell.
+pub struct SimulationMeta {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub first_frame: canvas::Canvas,
+}
+
+/// FFI-safe return type for the `cell_tick` export.
+#[repr(C)]
+pub struct TickResult {
+    pub rgb_ptr: *mut u8,
+    pub rgb_len: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl From<canvas::Canvas> for TickResult {
+    fn from(canvas: canvas::Canvas) -> Self {
+        let width = canvas.width();
+        let height = canvas.height();
+        let rgb = canvas.into_pixels();
+        let mut boxed = rgb.into_boxed_slice();
+        let ptr = boxed.as_mut_ptr();
+        let len = boxed.len();
+        std::mem::forget(boxed);
+        TickResult {
+            rgb_ptr: ptr,
+            rgb_len: len,
+            width,
+            height,
+        }
     }
 }
 
@@ -2201,5 +2327,111 @@ mod tests {
         // Should not panic on non-wasm targets.
         host_message("{\"type\":\"test\"}");
         host_message_json(&serde_json::json!({"type": "test", "value": 42}));
+    }
+
+    // ── Animation ───────────────────────────────────────────────────────
+
+    #[test]
+    fn animation_new_and_accessors() {
+        let f1 = canvas::Canvas::new(2, 2);
+        let f2 = canvas::Canvas::new(2, 2);
+        let anim = canvas::Animation::new(vec![f1, f2], 10);
+        assert_eq!(anim.fps(), 10);
+        assert_eq!(anim.frames().len(), 2);
+        assert_eq!(anim.frames()[0].width(), 2);
+    }
+
+    #[test]
+    fn animation_empty_frames_yields_empty_panels() {
+        let anim = canvas::Animation::new(vec![], 24);
+        let panels = anim.into_panels();
+        assert!(panels.is_empty());
+    }
+
+    #[test]
+    fn animation_into_panels_correct_variant() {
+        let mut f = canvas::Canvas::new(3, 2);
+        f.set_pixel(0, 0, (255, 0, 0));
+        let anim = canvas::Animation::new(vec![f.clone(), f], 15);
+        let panels = anim.into_panels();
+        assert_eq!(panels.len(), 1);
+        match &panels[0] {
+            DisplayPanel::Animation {
+                width,
+                height,
+                fps,
+                frame_count,
+                data,
+            } => {
+                assert_eq!(*width, 3);
+                assert_eq!(*height, 2);
+                assert_eq!(*fps, 15);
+                assert_eq!(*frame_count, 2);
+                assert!(!data.is_empty());
+            }
+            other => panic!("expected Animation panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn animation_from_cell_output() {
+        let f = canvas::Canvas::new(2, 2);
+        let anim = canvas::Animation::new(vec![f], 30);
+        let output = CellOutput::from(anim);
+        assert_eq!(output.type_tag.as_deref(), Some("Animation"));
+        assert!(output.bytes.is_empty());
+        assert_eq!(output.panels.len(), 1);
+    }
+
+    #[test]
+    fn animation_type_tag() {
+        assert_eq!(canvas::Animation::type_tag(), "Animation");
+    }
+
+    // ── Simulation / TickResult ─────────────────────────────────────────
+
+    #[test]
+    fn simulation_meta_into_cell_output() {
+        let frame = canvas::Canvas::new(4, 3);
+        let meta = SimulationMeta {
+            width: 4,
+            height: 3,
+            fps: 60,
+            first_frame: frame,
+        };
+        let output = CellOutput::from(meta);
+        assert_eq!(output.type_tag.as_deref(), Some("Simulation"));
+        assert!(output.bytes.is_empty());
+        assert_eq!(output.panels.len(), 1);
+        match &output.panels[0] {
+            DisplayPanel::Simulation {
+                width,
+                height,
+                fps,
+                first_frame_data,
+            } => {
+                assert_eq!(*width, 4);
+                assert_eq!(*height, 3);
+                assert_eq!(*fps, 60);
+                assert!(!first_frame_data.is_empty());
+            }
+            other => panic!("expected Simulation panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_result_from_canvas() {
+        let mut c = canvas::Canvas::new(2, 2);
+        c.set_pixel(0, 0, (255, 128, 64));
+        let tr = TickResult::from(c);
+        assert_eq!(tr.width, 2);
+        assert_eq!(tr.height, 2);
+        assert_eq!(tr.rgb_len, 2 * 2 * 3);
+        assert!(!tr.rgb_ptr.is_null());
+
+        // Clean up leaked memory.
+        unsafe {
+            drop(Vec::from_raw_parts(tr.rgb_ptr, tr.rgb_len, tr.rgb_len));
+        }
     }
 }

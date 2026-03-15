@@ -11,6 +11,7 @@ use leptos::prelude::*;
 use ironpad_common::CompileRequest;
 use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 
+use crate::components::animation_canvas::{AnimationCanvas, SimulationCanvas};
 use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
@@ -41,6 +42,21 @@ enum DisplayPanel {
         base64_data: String,
         width: u32,
         height: u32,
+    },
+    /// Multi-frame animation (base64-encoded concatenated RGB bytes).
+    Animation {
+        width: u32,
+        height: u32,
+        fps: u32,
+        frame_count: u32,
+        data: String,
+    },
+    /// Live simulation placeholder (base64-encoded first-frame RGB bytes).
+    Simulation {
+        width: u32,
+        height: u32,
+        fps: u32,
+        first_frame_data: String,
     },
 }
 
@@ -735,6 +751,21 @@ fn ViewOnlyOutput(
                                         height=height
                                         style="image-rendering: pixelated;"
                                     />
+                                </div>
+                            }.into_any()
+                        },
+                        DisplayPanel::Animation { width, height, fps, frame_count, data } => {
+                            view! {
+                                <div class="view-only-output-display">
+                                    <AnimationCanvas width=width height=height fps=fps frame_count=frame_count data=data />
+                                </div>
+                            }.into_any()
+                        },
+                        DisplayPanel::Simulation { width, height, fps, first_frame_data } => {
+                            let cid = cell_id.clone();
+                            view! {
+                                <div class="view-only-output-display">
+                                    <SimulationCanvas width=width height=height fps=fps first_frame_data=first_frame_data cell_id=cid />
                                 </div>
                             }.into_any()
                         },

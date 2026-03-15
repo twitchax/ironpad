@@ -2688,3 +2688,55 @@ samp,
     padding-top: 12px;
     border-top: 1px solid var(--ip-border);
 }
+
+// ── Animation / Simulation canvas ───────────────────────────────────────────
+
+.animation-canvas-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+
+    canvas {
+        border-radius: var(--ip-radius-sm, 4px);
+        max-width: 100%;
+        height: auto;
+    }
+}
+
+.animation-controls {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+}
+
+.animation-control-btn {
+    background: transparent;
+    border: 1px solid var(--ip-border, rgba(255, 255, 255, 0.12));
+    color: var(--ip-text-secondary, #b0b0b0);
+    padding: 4px 12px;
+    border-radius: var(--ip-radius-sm, 4px);
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+
+    &:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--ip-text-primary, #e0e0e0);
+        border-color: var(--ip-border-hover, rgba(255, 255, 255, 0.2));
+    }
+}
+
+.animation-frame-counter {
+    font-family: var(--ip-font-mono, monospace);
+    font-size: 0.75rem;
+    color: var(--ip-text-tertiary, #888);
+}
+
+.animation-fps-display {
+    font-family: var(--ip-font-mono, monospace);
+    font-size: 0.75rem;
+    color: var(--ip-text-tertiary, #888);
+}

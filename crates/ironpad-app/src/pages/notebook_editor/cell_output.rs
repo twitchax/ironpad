@@ -5,6 +5,7 @@ use ironpad_common::CellType;
 use ironpad_common::{CellManifest, CompileResponse, Diagnostic, ExecutionResult, Severity};
 use leptos::prelude::*;
 
+use crate::components::animation_canvas::{AnimationCanvas, SimulationCanvas};
 use crate::components::copy_button::CopyButton;
 use crate::components::error_panel::ErrorPanel;
 use crate::components::markdown_cell::render_markdown;
@@ -333,6 +334,21 @@ pub(super) fn CellOutputPanel(
                                                         height=height
                                                         style="image-rendering: pixelated;"
                                                     />
+                                                </div>
+                                            }.into_any()
+                                        },
+                                        DisplayPanel::Animation { width, height, fps, frame_count, data } => {
+                                            view! {
+                                                <div class="ironpad-output-display">
+                                                    <AnimationCanvas width=width height=height fps=fps frame_count=frame_count data=data />
+                                                </div>
+                                            }.into_any()
+                                        },
+                                        DisplayPanel::Simulation { width, height, fps, first_frame_data } => {
+                                            let cid = cell_id.clone().unwrap_or_default();
+                                            view! {
+                                                <div class="ironpad-output-display">
+                                                    <SimulationCanvas width=width height=height fps=fps first_frame_data=first_frame_data cell_id=cid />
                                                 </div>
                                             }.into_any()
                                         },

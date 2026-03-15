@@ -57,7 +57,7 @@ executor._dispatchHostMessage = function (cellId, ptr, len) {
 // ── Command handler ─────────────────────────────────────────────────────────
 //
 // Protocol:
-//   Incoming:  { type: "loadBlob"|"execute"|"unload", id?, cellId, ... }
+//   Incoming:  { type: "loadBlob"|"execute"|"tick"|"unload", id?, cellId, ... }
 //   Outgoing:  { type: "result"|"error", id, value?|error? }
 //              { type: "hostMessage", cellId, messageJson }
 
@@ -82,6 +82,22 @@ self.onmessage = async function (e) {
       // Transfer outputBytes buffer for zero-copy when possible.
       var transfer = result.outputBytes && result.outputBytes.buffer.byteLength > 0
         ? [result.outputBytes.buffer]
+        : [];
+      self.postMessage({ type: "result", id: msg.id, value: result }, transfer);
+    } catch (err) {
+      var errorMsg = err.message || String(err);
+      if (_lastPanicMessage) {
+        errorMsg = _lastPanicMessage;
+        _lastPanicMessage = null;
+      }
+      self.postMessage({ type: "error", id: msg.id, error: errorMsg });
+    }
+  } else if (msg.type === "tick") {
+    try {
+      var result = await executor.tick(msg.cellId);
+      // Transfer rgbBytes buffer for zero-copy when possible.
+      var transfer = result.rgbBytes && result.rgbBytes.buffer.byteLength > 0
+        ? [result.rgbBytes.buffer]
         : [];
       self.postMessage({ type: "result", id: msg.id, value: result }, transfer);
     } catch (err) {

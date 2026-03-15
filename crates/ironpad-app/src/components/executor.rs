@@ -39,6 +39,11 @@ mod js {
         #[wasm_bindgen(js_namespace = IronpadExecutor, js_name = "isLoaded")]
         pub fn is_loaded(cell_id: &str, hash: &str) -> bool;
 
+        /// Tick a simulation cell.  Returns a
+        /// `Promise<{ width, height, rgbBytes, fallback? }>`.
+        #[wasm_bindgen(js_namespace = IronpadExecutor, catch)]
+        pub fn tick(cell_id: &str) -> Result<js_sys::Promise, JsValue>;
+
         /// Terminate the running Web Worker, aborting any in-flight execution.
         /// A fresh Worker is automatically respawned by the bridge.
         #[wasm_bindgen(js_namespace = IronpadExecutor)]
@@ -167,4 +172,67 @@ pub async fn execute_cell(cell_id: &str, input_bytes: &[u8]) -> Result<CellExecR
     let ran_on_main_thread = fallback_val.as_bool().unwrap_or(false);
 
     Ok((output_bytes, display_text, type_tag, ran_on_main_thread))
+}
+
+// ── Tick (simulation cells) ─────────────────────────────────────────────────
+
+/// Result of ticking a simulation cell: frame dimensions, RGB pixel data, and
+/// whether the tick fell back to the main thread.
+pub struct TickResult {
+    pub width: u32,
+    pub height: u32,
+    pub rgb_bytes: Vec<u8>,
+    pub fallback: bool,
+}
+
+/// Tick a simulation cell, returning one frame of pixel data.
+///
+/// The cell must have been loaded via [`load_blob`] and must export a
+/// `cell_tick` function.  The JS executor calls `cell_tick` and returns the
+/// resulting frame as `{ width, height, rgbBytes, fallback? }`.
+#[cfg(feature = "hydrate")]
+pub async fn tick_cell(cell_id: &str) -> Result<TickResult, String> {
+    let promise = js::tick(cell_id).map_err(|e| format!("{e:?}"))?;
+
+    let result = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+
+    // Extract `width` (number).
+    let width_val = js_sys::Reflect::get(&result, &"width".into()).map_err(|e| format!("{e:?}"))?;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let width = width_val
+        .as_f64()
+        .ok_or_else(|| "tick result missing `width`".to_string())? as u32;
+
+    // Extract `height` (number).
+    let height_val =
+        js_sys::Reflect::get(&result, &"height".into()).map_err(|e| format!("{e:?}"))?;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let height = height_val
+        .as_f64()
+        .ok_or_else(|| "tick result missing `height`".to_string())? as u32;
+
+    // Extract `rgbBytes` (Uint8Array).
+    let rgb_val =
+        js_sys::Reflect::get(&result, &"rgbBytes".into()).map_err(|e| format!("{e:?}"))?;
+    let rgb_bytes = js_sys::Uint8Array::new(&rgb_val).to_vec();
+
+    // Extract `fallback` (bool, default false).
+    let fallback_val =
+        js_sys::Reflect::get(&result, &"fallback".into()).map_err(|e| format!("{e:?}"))?;
+    let fallback = fallback_val.as_bool().unwrap_or(false);
+
+    Ok(TickResult {
+        width,
+        height,
+        rgb_bytes,
+        fallback,
+    })
+}
+
+#[cfg(not(feature = "hydrate"))]
+#[allow(clippy::unused_async)]
+pub async fn tick_cell(_cell_id: &str) -> Result<TickResult, String> {
+    Err("tick_cell is only available in hydrate mode".into())
 }

@@ -19,10 +19,11 @@ use std::path::{Path, PathBuf};
 ///     lib.rs
 /// ```
 ///
-/// Returns `(crate_dir, preamble_lines, is_async)`:
+/// Returns `(crate_dir, preamble_lines, is_async, is_simulation)`:
 /// - `crate_dir`: path to the micro-crate root directory
 /// - `preamble_lines`: number of lines before user code (for diagnostic mapping)
 /// - `is_async`: whether the cell wrapper is async (source contains `.await`)
+/// - `is_simulation`: whether the cell implements the `Simulation` trait
 #[allow(clippy::too_many_arguments)]
 pub fn scaffold_micro_crate(
     cache_dir: &Path,
@@ -34,7 +35,7 @@ pub fn scaffold_micro_crate(
     previous_cell_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
-) -> anyhow::Result<(PathBuf, u32, bool)> {
+) -> anyhow::Result<(PathBuf, u32, bool, bool)> {
     let crate_dir = cache_dir.join("workspaces").join(session_id).join(cell_id);
 
     let src_dir = crate_dir.join("src");
@@ -51,7 +52,7 @@ pub fn scaffold_micro_crate(
         generate_cargo_toml(cell_id, cargo_toml, &absolute_cell_path, shared_cargo_toml);
     std::fs::write(crate_dir.join("Cargo.toml"), generated_cargo_toml)?;
 
-    let (lib_rs, preamble_lines, is_async) =
+    let (lib_rs, preamble_lines, is_async, is_simulation) =
         generate_lib_rs(source, previous_cell_types, shared_source.is_some());
     std::fs::write(src_dir.join("lib.rs"), lib_rs)?;
 
@@ -59,7 +60,7 @@ pub fn scaffold_micro_crate(
         std::fs::write(src_dir.join("shared.rs"), shared)?;
     }
 
-    Ok((crate_dir, preamble_lines, is_async))
+    Ok((crate_dir, preamble_lines, is_async, is_simulation))
 }
 
 // ── Cargo.toml Generation ────────────────────────────────────────────────────
@@ -290,6 +291,33 @@ fn needs_async(source: &str) -> bool {
     source.contains(".await")
 }
 
+/// Detect whether the source implements the `Simulation` trait.
+///
+/// Scans for `impl Simulation for <Name>` and returns the struct name if found.
+/// Handles whitespace variations between tokens. Ignores commented-out lines.
+fn is_simulation(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // Skip comment lines.
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") {
+            continue;
+        }
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        for window in tokens.windows(4) {
+            if window[0] == "impl" && window[1] == "Simulation" && window[2] == "for" {
+                let name: String = window[3]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Wrap user source code in the `cell_main` wasm-bindgen entry point.
 ///
 /// Produces a `lib.rs` that:
@@ -304,14 +332,20 @@ fn needs_async(source: &str) -> bool {
 /// If the source contains `.await`, generates an async wrapper that wraps the
 /// user code in an `async` block.
 ///
-/// Returns `(generated_code, preamble_lines, is_async)` where `preamble_lines`
-/// is the number of lines before user code begins (for diagnostic line mapping)
-/// and `is_async` indicates whether the cell wrapper is async.
+/// Returns `(generated_code, preamble_lines, is_async, is_simulation)` where
+/// `preamble_lines` is the number of lines before user code begins (for diagnostic
+/// line mapping), `is_async` indicates whether the cell wrapper is async, and
+/// `is_simulation` indicates whether a `Simulation` trait impl was detected.
 pub fn generate_lib_rs(
     source: &str,
     previous_cell_types: &[String],
     has_shared_source: bool,
-) -> (String, u32, bool) {
+) -> (String, u32, bool, bool) {
+    // Simulation cells get a completely different wrapper.
+    if let Some(struct_name) = is_simulation(source) {
+        return generate_simulation_lib_rs(source, &struct_name, has_shared_source);
+    }
+
     let is_async = needs_async(source);
     let has_any_prev = !previous_cell_types.is_empty();
     let typed_cells: Vec<(usize, &str)> = previous_cell_types
@@ -398,7 +432,66 @@ Box::into_raw(Box::new(result)) as u32
         + typed_count
         + u32::from(typed_count > 0);
 
-    (code, preamble_lines, is_async)
+    (code, preamble_lines, is_async, false)
+}
+
+/// Generate the `lib.rs` wrapper for simulation cells.
+///
+/// Simulation cells produce two WASM exports: `cell_main` (initialization) and
+/// `cell_tick` (per-frame update). The user source (struct definition + trait
+/// impl) appears at module level rather than inside a function body.
+fn generate_simulation_lib_rs(
+    source: &str,
+    struct_name: &str,
+    has_shared_source: bool,
+) -> (String, u32, bool, bool) {
+    let shared_mod = if has_shared_source {
+        "mod shared;\n"
+    } else {
+        ""
+    };
+
+    let code = format!(
+        "\
+use ironpad_cell::prelude::*;
+{shared_mod}
+{source}
+
+static mut __IRONPAD_SIM__: Option<{struct_name}> = None;
+
+#[wasm_bindgen]
+pub fn cell_main(_input_ptr: u32, _input_len: u32) -> u32 {{
+console_error_panic_hook::set_once();
+let mut sim = {struct_name}::init();
+let first_frame = sim.tick();
+let meta = SimulationMeta {{
+    width: first_frame.width(),
+    height: first_frame.height(),
+    fps: {struct_name}::fps(),
+    first_frame,
+}};
+unsafe {{ __IRONPAD_SIM__ = Some(sim); }}
+let __ironpad_output__: CellOutput = meta.into();
+let result: CellResult = __ironpad_output__.into();
+Box::into_raw(Box::new(result)) as u32
+}}
+
+#[wasm_bindgen]
+pub fn cell_tick() -> u32 {{
+let sim = unsafe {{ __IRONPAD_SIM__.as_mut().unwrap() }};
+let frame = sim.tick();
+let result: TickResult = frame.into();
+Box::into_raw(Box::new(result)) as u32
+}}
+"
+    );
+
+    // Preamble: 2 base (use + blank) + 1 if shared_mod.
+    let shared_lines = u32::from(has_shared_source);
+    let preamble_lines = 2 + shared_lines;
+
+    // Simulations are always sync.
+    (code, preamble_lines, false, true)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -519,9 +612,10 @@ serde = { version = "1", features = ["derive"] }
     fn wraps_user_code_in_cell_main() {
         let source = r#"    CellOutput::text("hello")"#;
 
-        let (lib_rs, _, is_async) = generate_lib_rs(source, &[], false);
+        let (lib_rs, _, is_async, is_sim) = generate_lib_rs(source, &[], false);
 
         assert!(!is_async);
+        assert!(!is_sim);
         assert!(lib_rs.contains("use ironpad_cell::prelude::*;"));
         assert!(lib_rs.contains("#[wasm_bindgen]"));
         assert!(lib_rs.contains("pub fn cell_main("));
@@ -536,7 +630,7 @@ serde = { version = "1", features = ["derive"] }
 
     #[test]
     fn generate_lib_rs_no_previous_cells() {
-        let (lib_rs, preamble, is_async) = generate_lib_rs("    // user code here", &[], false);
+        let (lib_rs, preamble, is_async, _) = generate_lib_rs("    // user code here", &[], false);
 
         assert_eq!(preamble, 6);
         assert!(!is_async);
@@ -554,7 +648,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn generate_lib_rs_with_typed_cells() {
         let types: Vec<String> = vec!["u32".into(), "String".into()];
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
 
         // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
         assert_eq!(preamble, 12);
@@ -572,7 +666,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn generate_lib_rs_with_mixed_types() {
         let types: Vec<String> = vec!["u32".into(), String::new(), "bool".into()];
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
 
         // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
         assert_eq!(preamble, 12);
@@ -588,7 +682,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn generate_lib_rs_all_none_types() {
         let types: Vec<String> = vec![String::new(), String::new()];
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
 
         // 6 base + 3 (ptr reconstruction + inputs) + 0 typed + 0 last = 9
         assert_eq!(preamble, 9);
@@ -606,7 +700,7 @@ serde = { version = "1", features = ["derive"] }
         // Simulates absolute-index semantics: Markdown cells at indices 0 and 2
         // produce empty type strings; Code cells at indices 1 and 3 have types.
         let types: Vec<String> = vec![String::new(), "u32".into(), String::new(), "String".into()];
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
 
         // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
         assert_eq!(preamble, 12);
@@ -632,7 +726,7 @@ serde = { version = "1", features = ["derive"] }
 serde = "1"
 "#;
 
-        let (crate_dir, preamble_lines, is_async) = scaffold_micro_crate(
+        let (crate_dir, preamble_lines, is_async, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
@@ -822,7 +916,7 @@ serde = "1"
 
     #[test]
     fn generate_lib_rs_async_no_previous_cells() {
-        let (lib_rs, preamble, is_async) = generate_lib_rs("    something.await", &[], false);
+        let (lib_rs, preamble, is_async, _) = generate_lib_rs("    something.await", &[], false);
 
         assert!(is_async);
         assert_eq!(preamble, 6);
@@ -839,7 +933,7 @@ serde = "1"
     #[test]
     fn generate_lib_rs_async_with_typed_cells() {
         let types: Vec<String> = vec!["u32".into()];
-        let (lib_rs, preamble, is_async) = generate_lib_rs("    cell0.await", &types, false);
+        let (lib_rs, preamble, is_async, _) = generate_lib_rs("    cell0.await", &types, false);
 
         assert!(is_async);
         // 6 base + 3 (ptr reconstruction + inputs) + 1 typed + 1 last = 11
@@ -857,7 +951,7 @@ serde = "1"
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (_, _, is_async) = scaffold_micro_crate(
+        let (_, _, is_async, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -871,7 +965,7 @@ serde = "1"
         .unwrap();
         assert!(!is_async);
 
-        let (_, _, is_async) = scaffold_micro_crate(
+        let (_, _, is_async, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -985,7 +1079,7 @@ codegen-units = 16
     #[test]
     fn generate_lib_rs_with_unicode_source() {
         let source = "    let msg = \"こんにちは世界 🦀\";\n    CellOutput::text(msg)";
-        let (lib_rs, preamble, _) = generate_lib_rs(source, &[], false);
+        let (lib_rs, preamble, ..) = generate_lib_rs(source, &[], false);
 
         assert_eq!(preamble, 6);
         assert!(lib_rs.contains("こんにちは世界 🦀"));
@@ -1047,7 +1141,7 @@ serde = \"1\"
 
     #[test]
     fn generate_lib_rs_empty_source() {
-        let (lib_rs, preamble, is_async) = generate_lib_rs("", &[], false);
+        let (lib_rs, preamble, is_async, _) = generate_lib_rs("", &[], false);
 
         assert_eq!(preamble, 6);
         assert!(!is_async);
@@ -1060,7 +1154,7 @@ serde = \"1\"
 
     #[test]
     fn generate_lib_rs_with_shared_source() {
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &[], true);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &[], true);
 
         assert!(
             lib_rs.contains("mod shared;"),
@@ -1076,7 +1170,7 @@ serde = \"1\"
 
     #[test]
     fn generate_lib_rs_without_shared_source() {
-        let (lib_rs, preamble, _) = generate_lib_rs("    // user code here", &[], false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &[], false);
 
         assert!(
             !lib_rs.contains("mod shared;"),
@@ -1094,7 +1188,7 @@ serde = \"1\"
         let cell_path = PathBuf::from("/opt/ironpad-cell");
         let shared_src = "pub fn helper() -> u32 { 42 }";
 
-        let (crate_dir, preamble, _) = scaffold_micro_crate(
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -1125,7 +1219,7 @@ serde = \"1\"
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (crate_dir, preamble, _) = scaffold_micro_crate(
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -1145,5 +1239,118 @@ serde = \"1\"
         assert!(!lib.contains("mod shared;"));
 
         assert_eq!(preamble, 6);
+    }
+
+    // ── T-006: Simulation detection and scaffold ────────────────────────
+
+    #[test]
+    fn is_simulation_detects_impl() {
+        assert_eq!(
+            is_simulation("impl Simulation for Pendulum"),
+            Some("Pendulum".into())
+        );
+    }
+
+    #[test]
+    fn is_simulation_handles_whitespace_variations() {
+        assert_eq!(
+            is_simulation("impl  Simulation  for  MyStruct"),
+            Some("MyStruct".into())
+        );
+        assert_eq!(
+            is_simulation("  impl Simulation for Foo {"),
+            Some("Foo".into())
+        );
+    }
+
+    #[test]
+    fn is_simulation_returns_none_for_normal_code() {
+        assert_eq!(is_simulation("let x = 42;"), None);
+        assert_eq!(is_simulation("impl Display for Foo"), None);
+        assert_eq!(is_simulation("// impl Simulation for Foo"), None);
+    }
+
+    #[test]
+    fn is_simulation_multiline_source() {
+        let source = "\
+struct Wave { t: f64 }
+
+impl Simulation for Wave {
+    fn init() -> Self { Wave { t: 0.0 } }
+    fn tick(&mut self) -> Canvas { todo!() }
+}";
+        assert_eq!(is_simulation(source), Some("Wave".into()));
+    }
+
+    #[test]
+    fn generate_lib_rs_simulation_mode() {
+        let source = "\
+struct Pendulum { angle: f64 }
+
+impl Simulation for Pendulum {
+    fn init() -> Self { Pendulum { angle: 1.0 } }
+    fn tick(&mut self) -> Canvas { todo!() }
+}";
+        let (lib_rs, preamble, is_async, is_sim) = generate_lib_rs(source, &[], false);
+
+        assert!(!is_async);
+        assert!(is_sim);
+        assert_eq!(preamble, 2);
+
+        // Both exports present.
+        assert!(lib_rs.contains("pub fn cell_main("));
+        assert!(lib_rs.contains("pub fn cell_tick()"));
+
+        // Simulation-specific code.
+        assert!(lib_rs.contains("static mut __IRONPAD_SIM__: Option<Pendulum>"));
+        assert!(lib_rs.contains("Pendulum::init()"));
+        assert!(lib_rs.contains("Pendulum::fps()"));
+        assert!(lib_rs.contains("SimulationMeta"));
+        assert!(lib_rs.contains("TickResult"));
+
+        // User source present in generated code.
+        assert!(lib_rs.contains("struct Pendulum"));
+        assert!(lib_rs.contains("impl Simulation for Pendulum"));
+
+        // Should NOT contain normal expression wrapper.
+        assert!(!lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
+    }
+
+    #[test]
+    fn generate_lib_rs_simulation_preamble_count() {
+        let source = "struct S {}\nimpl Simulation for S {}";
+        let (lib_rs, preamble, ..) = generate_lib_rs(source, &[], false);
+
+        // Preamble: 2 (use + blank).
+        assert_eq!(preamble, 2);
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize], "struct S {}");
+    }
+
+    #[test]
+    fn generate_lib_rs_simulation_preamble_with_shared() {
+        let source = "struct S {}\nimpl Simulation for S {}";
+        let (lib_rs, preamble, ..) = generate_lib_rs(source, &[], true);
+
+        // Preamble: 2 base + 1 shared = 3.
+        assert_eq!(preamble, 3);
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize], "struct S {}");
+    }
+
+    #[test]
+    fn generate_lib_rs_non_simulation_regression() {
+        // Normal code should still produce the standard wrapper.
+        let source = "    CellOutput::text(\"hello\")";
+        let (lib_rs, preamble, is_async, is_sim) = generate_lib_rs(source, &[], false);
+
+        assert!(!is_async);
+        assert!(!is_sim);
+        assert_eq!(preamble, 6);
+        assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
+        assert!(!lib_rs.contains("cell_tick"));
+        assert!(!lib_rs.contains("__IRONPAD_SIM__"));
     }
 }

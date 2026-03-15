@@ -26,6 +26,18 @@
 
   var CELL_RESULT_SIZE = 24;
 
+  // ── TickResult layout ──────────────────────────────────────────────────────
+  //
+  // The cell_tick function returns a pointer to a TickResult (#[repr(C)]):
+  //   offset  0: rgb_ptr   (u32) — pointer to RGB pixel bytes
+  //   offset  4: rgb_len   (u32) — length of RGB pixel bytes
+  //   offset  8: width     (u32) — frame width in pixels
+  //   offset 12: height    (u32) — frame height in pixels
+  //
+  // Total size: 16 bytes.
+
+  var TICK_RESULT_SIZE = 16;
+
   // ── CellExecutor ───────────────────────────────────────────────────────────
 
   function CellExecutor() {
@@ -360,6 +372,123 @@
     if (useSret || retptr) dealloc(retptr, CELL_RESULT_SIZE);
 
     return { outputBytes: outputBytes, displayText: displayText, typeTag: typeTag };
+  };
+
+  // ── Tick execution ───────────────────────────────────────────────────────
+  //
+  // Simulation cells export `cell_tick()` which advances one simulation step
+  // and returns a TickResult (16 bytes) containing the RGB frame data.
+  // The WASM module stays loaded between ticks — state persists in a static.
+
+  /// Execute a single tick on a loaded simulation cell.
+  ///
+  /// Returns Promise<{ width, height, rgbBytes }>.
+  CellExecutor.prototype.tick = async function (cellId) {
+    var entry = this.modules.get(cellId);
+    if (!entry) {
+      throw new Error("Cell " + cellId + " not loaded");
+    }
+
+    if (entry.type === "bindgen") {
+      return this._tickBindgen(entry);
+    } else {
+      return this._tickRaw(entry);
+    }
+  };
+
+  // ── wasm-bindgen tick path ──────────────────────────────────────────────
+
+  CellExecutor.prototype._tickBindgen = async function (entry) {
+    var mod = entry.module;
+    var wasm = entry.wasm;
+    var memory = wasm.memory;
+    var dealloc = wasm.ironpad_dealloc;
+
+    if (!memory) throw new Error("wasm-bindgen module: missing 'memory' export");
+    if (!dealloc) throw new Error("wasm-bindgen module: missing 'ironpad_dealloc' export");
+
+    // cell_tick may be wrapped by wasm-bindgen (on mod) or a raw export (on wasm).
+    var tickFn = mod.cell_tick || wasm.cell_tick;
+    if (!tickFn) throw new Error("Module does not export cell_tick");
+
+    var resultPtr;
+    try {
+      resultPtr = await tickFn();
+    } catch (e) {
+      throw new Error("WASM tick trapped: " + e.message);
+    }
+
+    if (!resultPtr) {
+      throw new Error("cell_tick returned null");
+    }
+
+    return this._readTickResult(memory, dealloc, resultPtr, false);
+  };
+
+  // ── Legacy raw tick path ────────────────────────────────────────────────
+
+  CellExecutor.prototype._tickRaw = function (entry) {
+    var instance = entry.instance;
+    var memory = instance.exports.memory;
+    var alloc = instance.exports.ironpad_alloc;
+    var dealloc = instance.exports.ironpad_dealloc;
+    var cellTick = instance.exports.cell_tick;
+
+    if (!memory) throw new Error("raw module: missing 'memory' export");
+    if (!dealloc) throw new Error("raw module: missing 'ironpad_dealloc' export");
+    if (!cellTick) throw new Error("raw module: missing 'cell_tick' export");
+
+    // sret detection: cell_tick has 0 params (direct return) or 1 param (sret).
+    var retptr;
+    var useSret = cellTick.length === 1;
+
+    if (useSret) {
+      if (!alloc) throw new Error("raw module: missing 'ironpad_alloc' export");
+      retptr = alloc(TICK_RESULT_SIZE);
+      if (retptr === 0) {
+        throw new Error("ironpad_alloc failed for tick return struct");
+      }
+    }
+
+    try {
+      if (useSret) {
+        cellTick(retptr);
+      } else {
+        retptr = cellTick();
+        if (!retptr) {
+          throw new Error("cell_tick returned null");
+        }
+      }
+    } catch (e) {
+      if (useSret && retptr) dealloc(retptr, TICK_RESULT_SIZE);
+      throw new Error("WASM tick trapped: " + e.message);
+    }
+
+    return this._readTickResult(memory, dealloc, retptr, useSret);
+  };
+
+  // ── Shared TickResult reader ────────────────────────────────────────────
+
+  CellExecutor.prototype._readTickResult = function (
+    memory, dealloc, retptr, useSret
+  ) {
+    var view = new DataView(memory.buffer);
+    var rgbPtr = view.getUint32(retptr, true);
+    var rgbLen = view.getUint32(retptr + 4, true);
+    var width = view.getUint32(retptr + 8, true);
+    var height = view.getUint32(retptr + 12, true);
+
+    // Copy RGB bytes out of WASM memory before freeing.
+    var rgbBytes = rgbLen > 0
+      ? new Uint8Array(memory.buffer, rgbPtr, rgbLen).slice()
+      : new Uint8Array(0);
+
+    // ── Clean up WASM allocations ────────────────────────────────────────
+
+    if (rgbLen > 0) dealloc(rgbPtr, rgbLen);
+    if (useSret || retptr) dealloc(retptr, TICK_RESULT_SIZE);
+
+    return { width: width, height: height, rgbBytes: rgbBytes };
   };
 
   /// Remove a loaded cell module, freeing browser-side resources.

@@ -1,10 +1,10 @@
 ---
 id: PRD-0017
 title: "Animated Cell Output: Frame Sequences and Live Simulations"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2025-03-15
-updated: 2025-03-15
+updated: 2025-07-15
 
 principles:
 - "Two modes: precomputed frame sequences (Animation) and live tick-loop simulations (Simulation)"
@@ -52,14 +52,14 @@ acceptance_tests:
 - id: uat-008
   name: "Unit tests pass for Animation and Simulation types in ironpad-cell"
   command: cargo make test
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 # ── Phase 1: Animation (precomputed frame sequences) ──
 - id: T-001
   title: "Add Animation type to ironpad-cell"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Create `Animation` struct holding `Vec<Canvas>` + `fps: u32`.
     Implement `From<Animation> for CellOutput` and `IntoPanels for Animation`.
@@ -71,7 +71,7 @@ tasks:
 - id: T-002
   title: "Frontend rendering for DisplayPanel::Animation"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Add `Animation` variant handling in cell_output.rs and view_only_notebook.rs.
     Decode base64 RGB data, create a `<canvas>` element, use requestAnimationFrame
@@ -84,7 +84,7 @@ tasks:
 - id: T-003
   title: "Add DisplayPanel::Animation to export/deserialization"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Update the DisplayPanel enum in the frontend (export.rs or wherever it's deserialized)
     to include the Animation variant. Ensure JSON deserialization handles it correctly.
@@ -94,7 +94,7 @@ tasks:
 - id: T-004
   title: "Create animated wave equation notebook"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Convert the existing wave-equation.ironpad to use the Animation type.
     The simulation cell should precompute ~200 frames of the 1D wave equation
@@ -106,7 +106,7 @@ tasks:
 - id: T-005
   title: "Define Simulation trait in ironpad-cell"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Add a `Simulation` trait:
     ```
@@ -125,7 +125,7 @@ tasks:
 - id: T-006
   title: "Scaffold: detect Simulation trait and generate cell_tick export"
   priority: 1
-  status: todo
+  status: done
   notes: >
     In scaffold.rs `generate_lib_rs()`, detect when user source contains
     `impl Simulation for`. When detected, generate two WASM exports:
@@ -140,7 +140,7 @@ tasks:
 - id: T-007
   title: "Executor: add tick message protocol"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Add a `"tick"` message type to executor-bridge.js and executor-worker.js.
     Bridge gets a new method: `tick(cellId) -> Promise<{ width, height, rgbBytes }>`.
@@ -153,7 +153,7 @@ tasks:
 - id: T-008
   title: "Executor Rust bindings for tick"
   priority: 1
-  status: todo
+  status: done
   notes: >
     Add `tick_cell(cell_id: &str) -> Result<TickResult>` to the Rust executor
     bindings. TickResult contains width, height, and RGB bytes.
@@ -162,7 +162,7 @@ tasks:
 - id: T-009
   title: "Frontend rendering for DisplayPanel::Simulation"
   priority: 1
-  status: todo
+  status: done
   notes: >
     When a cell returns DisplayPanel::Simulation, render a `<canvas>` element
     with a requestAnimationFrame loop that calls `tick_cell()` each frame.
@@ -177,7 +177,7 @@ tasks:
 - id: T-010
   title: "Create live double pendulum notebook"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Create or convert double-pendulum.ironpad to use the Simulation trait.
     The struct holds angles, angular velocities, and a trail buffer.
@@ -191,7 +191,7 @@ tasks:
 - id: T-011
   title: "Simulation main-thread fallback support"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Ensure the main-thread fallback path (executor-bridge.js) also supports
     tick messages. If the initial cell_main fell back to main thread, ticks
@@ -202,7 +202,7 @@ tasks:
 - id: T-012
   title: "Cleanup: stop simulation on cell re-execution or unmount"
   priority: 2
-  status: todo
+  status: done
   notes: >
     Ensure the rAF loop is cancelled when the cell is re-executed, the notebook
     is closed, or the component unmounts. Prevent multiple simultaneous loops.
@@ -412,5 +412,25 @@ The `Simulation` panel creates a `<canvas>`, starts a `requestAnimationFrame` lo
 # History
 
 (Entries appended during implementation go below this line.)
+
+## 2025-07-15 — Batch Execution (T-001 through T-012)
+- **Tasks completed**: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012
+- **Changes**:
+  - T-001: Added `Animation` struct (`Vec<Canvas>` + fps) to `ironpad-cell/src/canvas.rs`, `DisplayPanel::Animation` variant, `From<Animation>`, `IntoPanels`, `TypeTag` impls, unit tests
+  - T-002: `AnimationCanvas` component in new `animation_canvas.rs` — decodes base64 RGB, expands to RGBA, drives rAF loop at target fps, play/pause + frame counter
+  - T-003: Added `Animation` and `Simulation` variants to duplicated `DisplayPanel` enums in `export.rs` and `view_only_notebook.rs`
+  - T-004: Converted `wave-equation.ironpad` from plotters SVG to Canvas-based Animation (200 frames, 600×300, 30fps, dual Gaussian pulses)
+  - T-005: Added `Simulation` trait, `SimulationMeta`, `TickResult` FFI struct, `DisplayPanel::Simulation` variant, `From<SimulationMeta>` impl
+  - T-006: Scaffold `is_simulation()` detection + `generate_simulation_lib_rs()` producing `cell_main` + `cell_tick` WASM exports with `static mut` state storage; 8 unit tests
+  - T-007: JS tick protocol — `CellExecutor.tick()` in worker-executor.js, `"tick"` message handler in executor-worker.js, `BridgeExecutor.tick()` in executor-bridge.js
+  - T-008: Rust `tick_cell()` binding + `TickResult` struct in `executor.rs`
+  - T-009: `SimulationCanvas` component — draws first frame, drives rAF loop calling `tick_cell()`, play/pause/step + frame counter + fps display
+  - T-010: Created `double-pendulum.ironpad` — `Simulation` trait impl with RK4 integration, 450×450 canvas, fading trail, 60fps
+  - T-011: Main-thread fallback for tick in executor-bridge.js (reuses existing fallback pattern)
+  - T-012: `on_cleanup` cancellation of rAF loops, `tick_in_flight` guard for simulation
+- **Test results**: 327 passed, 3 skipped — all green
+- **UATs verified**: uat-008 (unit tests pass)
+- **UATs deferred**: uat-001 through uat-007 require browser testing (manual or Playwright)
+- **Constitution compliance**: No violations
 
 ---

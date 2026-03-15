@@ -194,6 +194,41 @@
     });
   };
 
+  /// Execute a single tick on a loaded simulation cell.
+  ///
+  /// Returns Promise<{ width, height, rgbBytes, fallback? }>.
+  /// If the worker tick fails, automatically retries on the main thread
+  /// and marks the result with `fallback: true`.
+  BridgeExecutor.prototype.tick = function (cellId) {
+    var self = this;
+
+    return this._postRequest({
+      type: "tick",
+      cellId: cellId,
+    }).catch(async function (workerError) {
+      // Worker tick failed — fall back to main-thread execution.
+      console.warn(
+        "ironpad: worker tick failed for " + cellId +
+        ", retrying on main thread. Worker error: " + workerError.message
+      );
+
+      var exec = await self._ensureMainExecutor();
+      var blob = self._blobCache.get(cellId);
+
+      if (!blob) throw workerError; // No cached blob — can't fall back.
+
+      if (!exec.isLoaded(cellId, blob.hash)) {
+        await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
+      }
+
+      if (!exec.tick) throw workerError; // Main-thread executor doesn't support tick.
+
+      var result = await exec.tick(cellId);
+      result.fallback = true;
+      return result;
+    });
+  };
+
   /// Remove a loaded cell module.  Fire-and-forget (no response expected).
   BridgeExecutor.prototype.unload = function (cellId) {
     this._loadedCache.delete(cellId);

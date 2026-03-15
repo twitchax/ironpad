@@ -1,3 +1,4 @@
+pub mod animation_canvas;
 pub mod app_layout;
 pub mod copy_button;
 pub mod error_panel;

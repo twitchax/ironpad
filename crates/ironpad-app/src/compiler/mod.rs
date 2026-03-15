@@ -25,7 +25,7 @@ mod pipeline_tests {
         let source = "    CellOutput::text(\"hello\")";
         let cargo_toml = "[dependencies]\nserde = \"1\"";
 
-        let (crate_dir, _preamble_lines, _is_async) = scaffold_micro_crate(
+        let (crate_dir, _preamble_lines, _is_async, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "sess-1",
@@ -152,7 +152,7 @@ mod pipeline_tests {
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (dir, preamble_lines, _) =
+        let (dir, preamble_lines, ..) =
             scaffold_micro_crate(&tmp, &cell_path, "s", "c", user_code, "", &[], None, None)
                 .unwrap();
         let lib = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
@@ -202,7 +202,7 @@ mod pipeline_tests {
         // Step 2: Scaffold the micro-crate.
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let (crate_dir, preamble_lines, _) = scaffold_micro_crate(
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session",
@@ -244,7 +244,7 @@ mod pipeline_tests {
     fn scaffold_generates_typed_cell_bindings() {
         // With two typed previous cells.
         let types: Vec<String> = vec!["u32".into(), "String".into()];
-        let (code, preamble, _) = generate_lib_rs("    let x = cell0 + 1;", &types, false);
+        let (code, preamble, ..) = generate_lib_rs("    let x = cell0 + 1;", &types, false);
 
         assert!(code.contains("let cell0: u32"));
         assert!(code.contains("let cell1: String"));
@@ -253,7 +253,7 @@ mod pipeline_tests {
         assert_eq!(preamble, 12, "6 base + 3 (ptr + inputs) + 2 cells + 1 last");
 
         // With no previous cells.
-        let (code_empty, preamble_empty, _) = generate_lib_rs("    let x = 1;", &[], false);
+        let (code_empty, preamble_empty, ..) = generate_lib_rs("    let x = 1;", &[], false);
 
         assert!(!code_empty.contains("__ironpad_inputs__"));
         assert!(!code_empty.contains("let cell"));
@@ -407,7 +407,7 @@ mod e2e_tests {
         let source = "    let x: i32 = \"oops\";\n    CellOutput::empty()";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, preamble_lines, _) = scaffold_micro_crate(
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,

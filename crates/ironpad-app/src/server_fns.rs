@@ -54,7 +54,7 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 
     // Scaffold micro-crate.
 
-    let (crate_dir, preamble_lines, _is_async) = scaffold_micro_crate(
+    let (crate_dir, preamble_lines, _is_async, _is_simulation) = scaffold_micro_crate(
         &config.cache_dir,
         &config.ironpad_cell_path,
         session_id,
