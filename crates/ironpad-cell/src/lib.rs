@@ -456,7 +456,7 @@ impl From<()> for CellOutput {
 impl<T: serde::Serialize + std::fmt::Debug> From<Vec<T>> for CellOutput {
     fn from(value: Vec<T>) -> Self {
         let type_tag = Some(clean_type_name(std::any::type_name::<Vec<T>>()));
-        let display = format!("{value:?}");
+        let display = format_vec_truncated(&value, type_tag.as_deref());
         let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
             .expect("serialization of Vec<T: Serialize> cannot fail");
         Self {
@@ -575,7 +575,7 @@ impl IntoPanels for String {
 
 impl<T: std::fmt::Debug> IntoPanels for Vec<T> {
     fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Text(format!("{self:?}"))]
+        vec![DisplayPanel::Text(format_vec_truncated(self, None))]
     }
 }
 
@@ -757,6 +757,44 @@ fn clean_type_name(name: &str) -> String {
         .replace("alloc::boxed::Box", "Box")
         .replace("core::option::Option", "Option")
         .replace("core::result::Result", "Result")
+}
+
+/// Maximum number of elements shown when displaying a collection.
+const DISPLAY_TRUNCATE_LEN: usize = 20;
+
+/// Maximum characters for a single element's debug representation.
+const DISPLAY_ELEMENT_MAX_CHARS: usize = 80;
+
+/// Truncate a single element's debug string if it exceeds [`DISPLAY_ELEMENT_MAX_CHARS`].
+fn truncate_debug<T: std::fmt::Debug>(val: &T) -> String {
+    let full = format!("{val:?}");
+    if full.len() <= DISPLAY_ELEMENT_MAX_CHARS {
+        return full;
+    }
+    let mut s = full[..DISPLAY_ELEMENT_MAX_CHARS].to_string();
+    s.push('…');
+    s
+}
+
+/// Format a `Vec<T: Debug>` for display, truncating to [`DISPLAY_TRUNCATE_LEN`]
+/// elements when the collection is large, and capping each element's debug
+/// representation at [`DISPLAY_ELEMENT_MAX_CHARS`].
+///
+/// Short vecs: `[1, 2, 3]`
+/// Long vecs:  `Vec<u64>, len = 4500, [1, 2, 3, ... 18, 19, 20, ...]`
+fn format_vec_truncated<T: std::fmt::Debug>(v: &[T], type_tag: Option<&str>) -> String {
+    if v.len() <= DISPLAY_TRUNCATE_LEN {
+        let items: Vec<String> = v.iter().map(|x| truncate_debug(x)).collect();
+        return format!("[{}]", items.join(", "));
+    }
+
+    let items: Vec<String> = v[..DISPLAY_TRUNCATE_LEN]
+        .iter()
+        .map(|x| truncate_debug(x))
+        .collect();
+
+    let tag = type_tag.unwrap_or("Vec<_>");
+    format!("{tag}, len = {}, [{}, ...]", v.len(), items.join(", "))
 }
 
 /// Escape HTML special characters to prevent XSS.
@@ -1767,6 +1805,20 @@ mod tests {
     }
 
     #[test]
+    fn into_panels_vec_truncated() {
+        let v: Vec<u64> = (1..=50).collect();
+        let panels = v.into_panels();
+        assert_eq!(panels.len(), 1);
+        let DisplayPanel::Text(text) = &panels[0] else {
+            panic!("expected Text panel");
+        };
+        assert!(text.starts_with("Vec<_>, len = 50, [1, 2, 3,"), "got: {text}");
+        assert!(text.ends_with("...]"), "got: {text}");
+        assert!(text.contains("20,"), "should include 20th element: {text}");
+        assert!(!text.contains("21,"), "should not include 21st element: {text}");
+    }
+
+    #[test]
     fn into_panels_svg_html() {
         assert_eq!(
             Svg("<svg/>".into()).into_panels(),
@@ -1801,6 +1853,23 @@ mod tests {
                 DisplayPanel::Svg("<svg/>".into()),
             ]
         );
+    }
+
+    #[test]
+    fn cell_output_from_vec_truncated() {
+        let v: Vec<u64> = (1..=100).collect();
+        let output = CellOutput::from(v);
+
+        // Display should be truncated.
+        let panels = output.into_panels();
+        let DisplayPanel::Text(text) = &panels[0] else {
+            panic!("expected Text panel");
+        };
+        assert!(
+            text.starts_with("Vec<u64>, len = 100,"),
+            "should include type tag: {text}"
+        );
+        assert!(text.ends_with("...]"), "should end with ...]: {text}");
     }
 
     // ── TypeTag trait tests ─────────────────────────────────────────────

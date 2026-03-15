@@ -95,6 +95,10 @@ pub struct ExecutionResult {
     /// Rust type tag of the cell output (e.g. `"u32"`, `"String"`, `"Vec<i32>"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_tag: Option<String>,
+    /// `true` when execution fell back to the main thread (e.g. because a
+    /// DOM-dependent library like plotters panicked in the Web Worker).
+    #[serde(default)]
+    pub ran_on_main_thread: bool,
 }
 
 // ── Cell Type ────────────────────────────────────────────────────────────────

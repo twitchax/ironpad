@@ -27,7 +27,7 @@
       "order": 2,
       "label": "Render Fractal",
       "cell_type": "Code",
-      "source": "use ironpad_cell::prelude::*;\n\n// Receive the chaos game points from the previous cell\nlet points: Vec<(f64, f64)> = cell1;\nlet y_max = 3.0_f64.sqrt() / 2.0;\n\nlet canvas_w = 700u32;\nlet canvas_h = 620u32;\nlet margin = 0.05_f64;\nlet x_range = 1.0 + 2.0 * margin;\nlet y_range = y_max + 2.0 * margin;\n\nlet mut canvas = Canvas::new(canvas_w, canvas_h);\ncanvas.fill((10, 10, 20));\n\nfor &(x, y) in &points {\n    let px_f = (x + margin) / x_range * canvas_w as f64;\n    let py_f = (1.0 - (y + margin) / y_range) * canvas_h as f64;\n    if px_f >= 0.0 && px_f < canvas_w as f64 && py_f >= 0.0 && py_f < canvas_h as f64 {\n        canvas.set_pixel(px_f as u32, py_f as u32, (50, 205, 50));\n    }\n}\n\nCellOutput::from(canvas)\n",
+      "source": "use ironpad_cell::prelude::*;\n\n// Receive the chaos game points from the previous cell\nlet points: Vec<(f64, f64)> = cell1;\nlet y_max = 3.0_f64.sqrt() / 2.0;\n\nlet canvas_w = 600u32;\nlet canvas_h = 450u32;\nlet margin = 0.05_f64;\nlet x_range = 1.0 + 2.0 * margin;\nlet y_range = y_max + 2.0 * margin;\n\nlet mut canvas = Canvas::new(canvas_w, canvas_h);\ncanvas.fill((10, 10, 20));\n\nfor &(x, y) in &points {\n    let px_f = (x + margin) / x_range * canvas_w as f64;\n    let py_f = (1.0 - (y + margin) / y_range) * canvas_h as f64;\n    if px_f >= 0.0 && px_f < canvas_w as f64 && py_f >= 0.0 && py_f < canvas_h as f64 {\n        canvas.set_pixel(px_f as u32, py_f as u32, (50, 205, 50));\n    }\n}\n\nCellOutput::from(canvas)\n",
       "cargo_toml": null
     },
     {

@@ -1358,6 +1358,15 @@ a:focus-visible {
     border-radius: 10px;
 }
 
+.ironpad-output-fallback-badge {
+    font-size: 0.65rem;
+    color: var(--colorPaletteYellowForeground1, #c4a000);
+    background: rgba(196, 160, 0, 0.15);
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
 .ironpad-output-body {
     padding: 4px 12px 8px;
 }
@@ -1870,7 +1879,7 @@ samp,
 .view-only-toolbar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 0.5rem;
     padding: 1rem;
     border-bottom: 1px solid var(--colorNeutralStroke1);
 }
@@ -1879,6 +1888,10 @@ samp,
     margin: 0;
     font-size: 1.5rem;
     color: var(--colorNeutralForeground1);
+}
+
+.view-only-toolbar .ironpad-theme-toggle {
+    margin-right: auto;
 }
 
 .fork-button {
@@ -1892,26 +1905,6 @@ samp,
 
     &:hover {
         background: var(--colorBrandBackgroundHover);
-    }
-}
-
-.force-recompile-button {
-    padding: 0.5rem 1rem;
-    background: var(--colorNeutralBackground3);
-    color: var(--colorNeutralForeground2);
-    border: 1px solid var(--colorNeutralStroke1);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.85rem;
-
-    &:hover {
-        background: var(--colorNeutralBackground3Hover);
-    }
-
-    &.active {
-        background: var(--colorPaletteYellowBackground2);
-        color: var(--colorPaletteYellowForeground2);
-        border-color: var(--colorPaletteYellowBorder2);
     }
 }
 
@@ -1955,6 +1948,15 @@ samp,
         opacity: 0.5;
         cursor: not-allowed;
     }
+}
+
+.view-only-timing-badge {
+    font-size: 0.75rem;
+    color: var(--ip-text-tertiary);
+    background: rgba(64, 192, 128, 0.15);
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
 }
 
 .view-only-markdown {

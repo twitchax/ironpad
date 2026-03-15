@@ -164,6 +164,7 @@ pub(super) fn CellOutputPanel(
 
             let time_ms = result.execution_time_ms;
             let byte_count = result.output_bytes.len();
+            let ran_on_main_thread = result.ran_on_main_thread;
             let output_bytes = result.output_bytes.clone();
 
             // Parse display panels from JSON, with backward-compat fallback.
@@ -185,6 +186,18 @@ pub(super) fn CellOutputPanel(
                         <span class="ironpad-output-meta">
                             {format!("{byte_count} bytes · {time_ms:.1}ms")}
                         </span>
+                        {if ran_on_main_thread {
+                            view! {
+                                <span
+                                    class="ironpad-output-fallback-badge"
+                                    title="This cell was re-executed on the main thread because it requires DOM access (e.g. plotters font measurement)"
+                                >
+                                    "⚠ main thread"
+                                </span>
+                            }.into_any()
+                        } else {
+                            view! { <span /> }.into_any()
+                        }}
                     </div>
 
                     {if output_collapsed.get_untracked() {

@@ -6,6 +6,23 @@
 
 "use strict";
 
+// ── Panic message capture ───────────────────────────────────────────────────
+//
+// When WASM panics, console_error_panic_hook logs the real message to
+// console.error, but the JS catch only sees a generic "unreachable" trap.
+// We intercept console.error to capture the last panic message so we can
+// include it in the error sent back to the main thread.
+
+var _lastPanicMessage = null;
+var _origConsoleError = console.error;
+console.error = function () {
+  var msg = Array.prototype.join.call(arguments, " ");
+  if (msg.indexOf("panicked at") !== -1) {
+    _lastPanicMessage = msg;
+  }
+  _origConsoleError.apply(console, arguments);
+};
+
 // ── Load core executor logic ────────────────────────────────────────────────
 
 importScripts("/worker-executor.js");
@@ -52,7 +69,12 @@ self.onmessage = async function (e) {
       await executor.loadBlob(msg.cellId, msg.hash, msg.wasmBytes, msg.jsGlue || null);
       self.postMessage({ type: "result", id: msg.id, value: null });
     } catch (err) {
-      self.postMessage({ type: "error", id: msg.id, error: err.message || String(err) });
+      var errorMsg = err.message || String(err);
+      if (_lastPanicMessage) {
+        errorMsg = _lastPanicMessage;
+        _lastPanicMessage = null;
+      }
+      self.postMessage({ type: "error", id: msg.id, error: errorMsg });
     }
   } else if (msg.type === "execute") {
     try {
@@ -63,7 +85,12 @@ self.onmessage = async function (e) {
         : [];
       self.postMessage({ type: "result", id: msg.id, value: result }, transfer);
     } catch (err) {
-      self.postMessage({ type: "error", id: msg.id, error: err.message || String(err) });
+      var errorMsg = err.message || String(err);
+      if (_lastPanicMessage) {
+        errorMsg = _lastPanicMessage;
+        _lastPanicMessage = null;
+      }
+      self.postMessage({ type: "error", id: msg.id, error: errorMsg });
     }
   } else if (msg.type === "unload") {
     executor.unload(msg.cellId);

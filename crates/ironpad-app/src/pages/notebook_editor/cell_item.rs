@@ -556,7 +556,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         )
                                         .await
                                         {
-                                            Ok((output_bytes, display_text, type_tag)) => {
+                                            Ok((output_bytes, display_text, type_tag, ran_on_main_thread)) => {
                                                 // Store output for downstream cells.
                                                 state.cell_outputs.update(|map| {
                                                     map.insert(
@@ -584,6 +584,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                                     execution_time_ms: js_sys::Date::now()
                                                         - exec_start,
                                                     type_tag,
+                                                    ran_on_main_thread,
                                                 }));
                                                 cell_status.set(CellStatus::Success);
 
@@ -620,6 +621,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         output_bytes: vec![],
                                         execution_time_ms: 0.0,
                                         type_tag: None,
+                                        ran_on_main_thread: false,
                                     }));
                                     cell_status.set(CellStatus::Error);
 

@@ -144,6 +144,20 @@ pub fn ViewOnlyNotebook(
         <div class="view-only-notebook">
             <div class="view-only-toolbar">
                 <h1 class="view-only-title">{notebook.with_value(|nb| nb.title.clone())}</h1>
+                <div class="ironpad-theme-toggle" title="Bypass WASM cache and force fresh compilation">
+                    <button
+                        class=move || if force_recompile.get() { "ironpad-theme-toggle-segment" } else { "ironpad-theme-toggle-segment ironpad-theme-toggle-segment--active" }
+                        on:click=move |_| force_recompile.set(false)
+                    >
+                        "Cached"
+                    </button>
+                    <button
+                        class=move || if force_recompile.get() { "ironpad-theme-toggle-segment ironpad-theme-toggle-segment--active" } else { "ironpad-theme-toggle-segment" }
+                        on:click=move |_| force_recompile.set(true)
+                    >
+                        "↻ Fresh"
+                    </button>
+                </div>
                 <button
                     class="run-all-button"
                     on:click=run_all_action
@@ -153,13 +167,6 @@ pub fn ViewOnlyNotebook(
                 </button>
                 <button class="fork-button" on:click=fork_action>
                     {"↳ "}{fork_label_clone}
-                </button>
-                <button
-                    class={move || if force_recompile.get() { "force-recompile-button active" } else { "force-recompile-button" }}
-                    on:click=move |_| force_recompile.update(|v| *v = !*v)
-                    title="Bypass WASM cache and force fresh compilation"
-                >
-                    {move || if force_recompile.get() { "↻ Force Recompile ✓" } else { "↻ Force Recompile" }}
                 </button>
             </div>
             <div class="view-only-cells">
@@ -256,6 +263,7 @@ fn ViewOnlyCodeCell(
     let compiling = RwSignal::new(false);
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
     let error_message: RwSignal<Option<String>> = RwSignal::new(None);
+    let compile_time_ms: RwSignal<Option<f64>> = RwSignal::new(None);
 
     // Trigger signal: incrementing this dispatches a compile.
     let run_trigger = RwSignal::new(0u64);
@@ -359,8 +367,10 @@ fn ViewOnlyCodeCell(
 
                 let mut had_error = false;
 
+                let compile_start = js_sys::Date::now();
                 match compile_cell(request).await {
                     Ok(response) => {
+                        compile_time_ms.set(Some(js_sys::Date::now() - compile_start));
                         if response.wasm_blob.is_empty() {
                             let errors: Vec<String> = response
                                 .diagnostics
@@ -388,7 +398,7 @@ fn ViewOnlyCodeCell(
                                     )
                                     .await
                                     {
-                                        Ok((output_bytes, display_text, type_tag)) => {
+                                        Ok((output_bytes, display_text, type_tag, ran_on_main_thread)) => {
                                             cell_outputs.update(|map| {
                                                 map.insert(
                                                     cell_data.id.clone(),
@@ -404,6 +414,7 @@ fn ViewOnlyCodeCell(
                                                 output_bytes,
                                                 execution_time_ms: js_sys::Date::now() - exec_start,
                                                 type_tag,
+                                                ran_on_main_thread,
                                             }));
                                         }
                                         Err(e) => {
@@ -485,6 +496,19 @@ fn ViewOnlyCodeCell(
                 >
                     {button_text}
                 </button>
+                {move || {
+                    let compile = compile_time_ms.get();
+                    let runtime = execution_result.get().map(|r| r.execution_time_ms);
+                    match (compile, runtime) {
+                        (Some(c), Some(r)) => view! {
+                            <span class="view-only-timing-badge">{format!("✓ {c:.0}+{r:.0}ms")}</span>
+                        }.into_any(),
+                        (Some(c), None) => view! {
+                            <span class="view-only-timing-badge">{format!("✓ {c:.0}ms")}</span>
+                        }.into_any(),
+                        _ => view! { <span /> }.into_any(),
+                    }
+                }}
             </div>
             <div class=body_class>
                 <MonacoEditor
@@ -550,6 +574,7 @@ fn ViewOnlyOutput(
 
     let output_len = result.output_bytes.len();
     let exec_time = result.execution_time_ms;
+    let ran_on_main_thread = result.ran_on_main_thread;
 
     let collapsed = RwSignal::new(false);
     let toggle_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
@@ -571,6 +596,18 @@ fn ViewOnlyOutput(
                 <span class="ironpad-output-toggle">{toggle_icon}</span>
                 <span>{format!("{output_len} bytes")}</span>
                 <span>{format!("{exec_time:.1} ms")}</span>
+                {if ran_on_main_thread {
+                    view! {
+                        <span
+                            class="ironpad-output-fallback-badge"
+                            title="This cell was re-executed on the main thread because it requires DOM access (e.g. plotters font measurement)"
+                        >
+                            "⚠ main thread"
+                        </span>
+                    }.into_any()
+                } else {
+                    view! { <span /> }.into_any()
+                }}
             </div>
             <div class="view-only-output-body" style:display=move || {
                 if collapsed.get() { "none" } else { "block" }

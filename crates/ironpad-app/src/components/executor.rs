@@ -110,9 +110,9 @@ pub async fn load_blob(
     Ok(())
 }
 
-/// Execution result from running a cell: (`output_bytes`, `display_text`, `type_tag`).
+/// Execution result from running a cell: (`output_bytes`, `display_text`, `type_tag`, `ran_on_main_thread`).
 #[cfg(feature = "hydrate")]
-pub type CellExecResult = (Vec<u8>, Option<String>, Option<String>);
+pub type CellExecResult = (Vec<u8>, Option<String>, Option<String>, bool);
 
 /// Execute a previously-loaded cell with the given input bytes.
 ///
@@ -160,5 +160,11 @@ pub async fn execute_cell(cell_id: &str, input_bytes: &[u8]) -> Result<CellExecR
         type_tag_val.as_string()
     };
 
-    Ok((output_bytes, display_text, type_tag))
+    // Extract `fallback` (bool) — true when execution fell back to the main thread.
+    let fallback_val =
+        js_sys::Reflect::get(&result, &"fallback".into()).map_err(|e| format!("{e:?}"))?;
+
+    let ran_on_main_thread = fallback_val.as_bool().unwrap_or(false);
+
+    Ok((output_bytes, display_text, type_tag, ran_on_main_thread))
 }
