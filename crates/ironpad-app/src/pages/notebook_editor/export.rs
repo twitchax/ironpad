@@ -27,6 +27,13 @@ pub(super) enum DisplayPanel {
         kind: String,
         config: String,
     },
+    /// Binary image data (base64-encoded BMP/PNG), rendered via a Blob URL.
+    BlobImage {
+        mime_type: String,
+        base64_data: String,
+        width: u32,
+        height: u32,
+    },
 }
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
@@ -188,6 +195,23 @@ pub(super) fn build_export_html(
                                 }
                                 DisplayPanel::Interactive { kind, config } => {
                                     render_interactive_static(&mut html, kind, config);
+                                }
+                                DisplayPanel::BlobImage {
+                                    mime_type,
+                                    base64_data,
+                                    width,
+                                    height,
+                                } => {
+                                    // Static HTML export: inline the data URL since
+                                    // Blob URLs are not available in a static file.
+                                    let _ = writeln!(
+                                        html,
+                                        "<div class=\"output-html\">\
+                                         <img src=\"data:{mime_type};base64,{base64_data}\" \
+                                         width=\"{width}\" height=\"{height}\" \
+                                         style=\"image-rendering: pixelated;\" />\
+                                         </div>"
+                                    );
                                 }
                             }
                         }
@@ -362,6 +386,7 @@ fn trigger_download(content: &str, mime_type: &str, filename: &str) {
 }
 
 /// Sanitize a title for use as a filename, replacing non-alphanumeric characters with dashes.
+#[cfg(feature = "hydrate")]
 fn sanitize_filename(title: &str) -> String {
     title
         .chars()

@@ -12,6 +12,52 @@ use crate::components::markdown_cell::render_markdown;
 use super::export::{render_table_html, render_table_tsv, DisplayPanel};
 use super::state::{CellOutputData, CellStatus};
 
+// ── Blob URL helpers (hydrate-only) ──────────────────────────────────────────
+
+/// Decode a base64 string to raw bytes and create a Blob URL via the browser.
+///
+/// Returns the `blob:` URL string, or `None` if the browser APIs are
+/// unavailable (e.g. during SSR).
+#[cfg(feature = "hydrate")]
+fn create_blob_url(base64_data: &str, mime_type: &str) -> Option<String> {
+    use js_sys::Function;
+    use wasm_bindgen::JsValue;
+
+    // Run the entire base64 → Blob URL pipeline in a single JS call so the
+    // decoded bytes never cross the WASM boundary.
+    let func = Function::new_with_args(
+        "b64,mime",
+        "var s=atob(b64);\
+         var b=new Uint8Array(s.length);\
+         for(var i=0;i<s.length;i++)b[i]=s.charCodeAt(i);\
+         return URL.createObjectURL(new Blob([b],{type:mime}))",
+    );
+
+    func.call2(
+        &JsValue::NULL,
+        &JsValue::from_str(base64_data),
+        &JsValue::from_str(mime_type),
+    )
+    .ok()
+    .and_then(|v| v.as_string())
+}
+
+/// No-op on the server side.
+#[cfg(not(feature = "hydrate"))]
+fn create_blob_url(_base64_data: &str, _mime_type: &str) -> Option<String> {
+    None
+}
+
+/// Revoke a previously created Blob URL to free browser memory.
+#[cfg(feature = "hydrate")]
+fn revoke_blob_url(url: &str) {
+    let _ = web_sys::Url::revoke_object_url(url);
+}
+
+/// No-op on the server side.
+#[cfg(not(feature = "hydrate"))]
+fn revoke_blob_url(_url: &str) {}
+
 // ── Widget context ───────────────────────────────────────────────────────────
 
 /// Bundles the reactive signals needed by interactive widgets to update cell
@@ -266,6 +312,28 @@ pub(super) fn CellOutputPanel(
                                                     cell_id=cid
                                                     widget_ctx=widget_ctx
                                                 />
+                                            }.into_any()
+                                        },
+                                        DisplayPanel::BlobImage { mime_type, base64_data, width, height } => {
+                                            let blob_url = create_blob_url(&base64_data, &mime_type)
+                                                .unwrap_or_default();
+
+                                            // Revoke the Blob URL when this reactive scope is disposed
+                                            // to free browser memory.
+                                            let url_for_cleanup = blob_url.clone();
+                                            on_cleanup(move || {
+                                                revoke_blob_url(&url_for_cleanup);
+                                            });
+
+                                            view! {
+                                                <div class="ironpad-output-display ironpad-output-html">
+                                                    <img
+                                                        src=blob_url
+                                                        width=width
+                                                        height=height
+                                                        style="image-rendering: pixelated;"
+                                                    />
+                                                </div>
                                             }.into_any()
                                         },
                                     }
@@ -829,12 +897,19 @@ fn render_progress(cfg: &serde_json::Value, label: &str) -> impl IntoView {
 ///
 /// Each row shows: offset (hex)  │  hex bytes (space-separated)  │  ASCII repr
 /// Non-printable bytes render as `.` in the ASCII column.
+///
+/// Only the first `MAX_DUMP_BYTES` bytes are shown; a truncation note is
+/// appended when the input exceeds this limit.
 fn format_hex_dump(data: &[u8]) -> String {
     const BYTES_PER_ROW: usize = 16;
+    const MAX_DUMP_BYTES: usize = 1024;
+
+    let truncated = data.len() > MAX_DUMP_BYTES;
+    let display_data = &data[..data.len().min(MAX_DUMP_BYTES)];
 
     let mut lines = Vec::new();
 
-    for (i, chunk) in data.chunks(BYTES_PER_ROW).enumerate() {
+    for (i, chunk) in display_data.chunks(BYTES_PER_ROW).enumerate() {
         let offset = i * BYTES_PER_ROW;
 
         let hex_part: String = chunk
@@ -856,6 +931,14 @@ fn format_hex_dump(data: &[u8]) -> String {
 
         // Pad hex part to a fixed width so ASCII column aligns.
         lines.push(format!("{offset:08x}  {hex_part:<48}  {ascii_part}"));
+    }
+
+    if truncated {
+        lines.push(format!(
+            "\n... truncated ({} of {} bytes shown)",
+            MAX_DUMP_BYTES,
+            data.len()
+        ));
     }
 
     lines.join("\n")

@@ -5,6 +5,10 @@
   // Tell the AMD loader where to find Monaco modules.
   require.config({
     paths: { vs: "/monaco/vs" },
+    // Suppress harmless "Duplicate definition" warnings from the Monaco AMD
+    // bundle — the bundled editor.main.js can trigger a re-define during
+    // dependency resolution.
+    ignoreDuplicateModules: ["vs/editor/editor.main"],
   });
 
   // Configure Monaco environment for worker URLs.

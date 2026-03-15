@@ -556,7 +556,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         )
                                         .await
                                         {
-                                            Ok((output_bytes, display_text, type_tag, ran_on_main_thread)) => {
+                                            Ok((
+                                                output_bytes,
+                                                display_text,
+                                                type_tag,
+                                                ran_on_main_thread,
+                                            )) => {
                                                 // Store output for downstream cells.
                                                 state.cell_outputs.update(|map| {
                                                     map.insert(

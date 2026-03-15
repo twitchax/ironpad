@@ -200,7 +200,7 @@ impl Canvas {
 // ── Base64 encoding ──────────────────────────────────────────────────────────
 
 /// Encode binary data as a base64 string (no external crate needed).
-fn base64_encode(data: &[u8]) -> String {
+pub(crate) fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);

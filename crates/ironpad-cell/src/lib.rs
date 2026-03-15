@@ -227,6 +227,13 @@ pub enum DisplayPanel {
     },
     /// Interactive UI widget (slider, dropdown, checkbox, etc.).
     Interactive { kind: String, config: String },
+    /// Binary image data (base64-encoded BMP/PNG), rendered via a Blob URL.
+    BlobImage {
+        mime_type: String,
+        base64_data: String,
+        width: u32,
+        height: u32,
+    },
 }
 
 // ── Svg / Html / Md newtypes ─────────────────────────────────────────────────
@@ -532,12 +539,22 @@ impl From<Json> for CellOutput {
 
 impl From<canvas::Canvas> for CellOutput {
     fn from(value: canvas::Canvas) -> Self {
-        let html = value.to_html();
+        let width = value.width();
+        let height = value.height();
+        let bmp = value.to_bmp();
+        let base64_data = canvas::base64_encode(&bmp);
+
         let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
             .expect("serialization of Canvas cannot fail");
+
         Self {
             bytes,
-            panels: vec![DisplayPanel::Html(html)],
+            panels: vec![DisplayPanel::BlobImage {
+                mime_type: "image/bmp".into(),
+                base64_data,
+                width,
+                height,
+            }],
             type_tag: Some("Canvas".into()),
         }
     }
@@ -1812,10 +1829,16 @@ mod tests {
         let DisplayPanel::Text(text) = &panels[0] else {
             panic!("expected Text panel");
         };
-        assert!(text.starts_with("Vec<_>, len = 50, [1, 2, 3,"), "got: {text}");
+        assert!(
+            text.starts_with("Vec<_>, len = 50, [1, 2, 3,"),
+            "got: {text}"
+        );
         assert!(text.ends_with("...]"), "got: {text}");
         assert!(text.contains("20,"), "should include 20th element: {text}");
-        assert!(!text.contains("21,"), "should not include 21st element: {text}");
+        assert!(
+            !text.contains("21,"),
+            "should not include 21st element: {text}"
+        );
     }
 
     #[test]

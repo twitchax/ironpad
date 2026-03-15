@@ -35,7 +35,52 @@ enum DisplayPanel {
         kind: String,
         config: String,
     },
+    /// Binary image data (base64-encoded BMP/PNG), rendered via a Blob URL.
+    BlobImage {
+        mime_type: String,
+        base64_data: String,
+        width: u32,
+        height: u32,
+    },
 }
+
+// ── Blob URL helpers (hydrate-only) ──────────────────────────────────────────
+
+/// Decode a base64 string to raw bytes and create a Blob URL via the browser.
+#[cfg(feature = "hydrate")]
+fn create_blob_url(base64_data: &str, mime_type: &str) -> Option<String> {
+    use js_sys::Function;
+    use wasm_bindgen::JsValue;
+
+    let func = Function::new_with_args(
+        "b64,mime",
+        "var s=atob(b64);\
+         var b=new Uint8Array(s.length);\
+         for(var i=0;i<s.length;i++)b[i]=s.charCodeAt(i);\
+         return URL.createObjectURL(new Blob([b],{type:mime}))",
+    );
+
+    func.call2(
+        &JsValue::NULL,
+        &JsValue::from_str(base64_data),
+        &JsValue::from_str(mime_type),
+    )
+    .ok()
+    .and_then(|v| v.as_string())
+}
+
+#[cfg(not(feature = "hydrate"))]
+fn create_blob_url(_base64_data: &str, _mime_type: &str) -> Option<String> {
+    None
+}
+
+#[cfg(feature = "hydrate")]
+fn revoke_blob_url(url: &str) {
+    let _ = web_sys::Url::revoke_object_url(url);
+}
+
+#[cfg(not(feature = "hydrate"))]
+fn revoke_blob_url(_url: &str) {}
 
 // ── Per-cell output data ────────────────────────────────────────────────────
 
@@ -398,7 +443,12 @@ fn ViewOnlyCodeCell(
                                     )
                                     .await
                                     {
-                                        Ok((output_bytes, display_text, type_tag, ran_on_main_thread)) => {
+                                        Ok((
+                                            output_bytes,
+                                            display_text,
+                                            type_tag,
+                                            ran_on_main_thread,
+                                        )) => {
                                             cell_outputs.update(|map| {
                                                 map.insert(
                                                     cell_data.id.clone(),
@@ -666,6 +716,26 @@ fn ViewOnlyOutput(
                             let cells = all_cells.clone();
                             view! {
                                 <ViewOnlyInteractiveWidget kind=kind config=config cell_id=cid all_cells=cells run_all_queue=run_all_queue cell_outputs=cell_outputs />
+                            }.into_any()
+                        },
+                        DisplayPanel::BlobImage { mime_type, base64_data, width, height } => {
+                            let blob_url = create_blob_url(&base64_data, &mime_type)
+                                .unwrap_or_default();
+
+                            let url_for_cleanup = blob_url.clone();
+                            on_cleanup(move || {
+                                revoke_blob_url(&url_for_cleanup);
+                            });
+
+                            view! {
+                                <div class="view-only-output-display view-only-output-html">
+                                    <img
+                                        src=blob_url
+                                        width=width
+                                        height=height
+                                        style="image-rendering: pixelated;"
+                                    />
+                                </div>
                             }.into_any()
                         },
                     }
