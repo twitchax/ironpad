@@ -6,47 +6,123 @@
 
 use leptos::prelude::*;
 
-// ── Base64 → raw bytes (hydrate-only) ───────────────────────────────────────
+// ── JS-side helpers (hydrate-only) ──────────────────────────────────────────
+//
+// All heavy pixel work (base64 decode, RGB→RGBA expansion, ImageData creation)
+// is done in a single JS call to avoid copying large buffers across the WASM
+// boundary.
 
-/// Decode a base64 string to raw bytes using the browser's `atob`.
+/// Draw a base64-encoded RGB frame to a canvas entirely in JS.
+///
+/// Decodes base64, expands RGB→RGBA, builds an `ImageData`, and calls
+/// `putImageData` — all without crossing the WASM boundary.
 #[cfg(feature = "hydrate")]
-fn decode_base64(b64: &str) -> Vec<u8> {
-    let window = web_sys::window().expect("window");
-    let decoded = window.atob(b64).unwrap_or_default();
-    decoded.as_bytes().to_vec()
-}
-
-/// Expand RGB bytes to RGBA (opaque alpha).
-#[cfg(feature = "hydrate")]
-fn rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
-    let pixel_count = rgb.len() / 3;
-    let mut rgba = Vec::with_capacity(pixel_count * 4);
-    for chunk in rgb.chunks_exact(3) {
-        rgba.push(chunk[0]);
-        rgba.push(chunk[1]);
-        rgba.push(chunk[2]);
-        rgba.push(255);
-    }
-    rgba
-}
-
-/// Draw RGBA pixel data to a canvas 2D context.
-#[cfg(feature = "hydrate")]
-fn draw_rgba_to_canvas(
+fn draw_b64_rgb_to_canvas(
     ctx: &web_sys::CanvasRenderingContext2d,
-    rgba: &[u8],
+    b64: &str,
     width: u32,
     height: u32,
 ) {
-    use wasm_bindgen::Clamped;
+    use js_sys::Function;
+    use wasm_bindgen::JsValue;
 
-    let owned = rgba.to_vec();
-    let image_data =
-        web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(&owned), width, height)
-            .expect("create ImageData");
+    let func = Function::new_with_args(
+        "ctx,b64,w,h",
+        "var s=atob(b64),n=s.length,a=new Uint8ClampedArray(n/3*4);\
+         for(var i=0,j=0;i<n;i+=3,j+=4){a[j]=s.charCodeAt(i);a[j+1]=s.charCodeAt(i+1);a[j+2]=s.charCodeAt(i+2);a[j+3]=255;}\
+         ctx.putImageData(new ImageData(a,w,h),0,0)",
+    );
+    let _ = func.call4(
+        &JsValue::NULL,
+        ctx,
+        &JsValue::from_str(b64),
+        &JsValue::from_f64(f64::from(width)),
+        &JsValue::from_f64(f64::from(height)),
+    );
+}
 
-    ctx.put_image_data(&image_data, 0.0, 0.0)
-        .expect("putImageData");
+/// Draw raw RGB bytes (already in WASM memory) to a canvas.
+///
+/// Expands RGB→RGBA and calls `putImageData` in one JS call.  The
+/// `Uint8Array` view is zero-copy into JS.
+#[cfg(feature = "hydrate")]
+fn draw_rgb_to_canvas(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+) {
+    use js_sys::Function;
+    use wasm_bindgen::JsValue;
+
+    let js_rgb = js_sys::Uint8Array::from(rgb);
+    let func = Function::new_with_args(
+        "ctx,rgb,w,h",
+        "var n=rgb.length,a=new Uint8ClampedArray(n/3*4);\
+         for(var i=0,j=0;i<n;i+=3,j+=4){a[j]=rgb[i];a[j+1]=rgb[i+1];a[j+2]=rgb[i+2];a[j+3]=255;}\
+         ctx.putImageData(new ImageData(a,w,h),0,0)",
+    );
+    let _ = func.call4(
+        &JsValue::NULL,
+        ctx,
+        &js_rgb,
+        &JsValue::from_f64(f64::from(width)),
+        &JsValue::from_f64(f64::from(height)),
+    );
+}
+
+/// Decode a base64 RGB blob into per-frame RGBA `Uint8Array`s entirely in JS.
+///
+/// Returns a `js_sys::Array` of `Uint8Array` (one per frame, already RGBA).
+/// All work happens JS-side to avoid copying the full animation buffer into
+/// WASM linear memory.
+#[cfg(feature = "hydrate")]
+fn decode_animation_frames(b64: &str, frame_rgb_size: u32, frame_count: u32) -> js_sys::Array {
+    use js_sys::Function;
+    use wasm_bindgen::JsValue;
+
+    let func = Function::new_with_args(
+        "b64,fsz,fc",
+        "var s=atob(b64),out=[];\
+         for(var f=0;f<fc;f++){\
+           var off=f*fsz,a=new Uint8ClampedArray(fsz/3*4);\
+           for(var i=0,j=0;i<fsz;i+=3,j+=4){var p=off+i;a[j]=s.charCodeAt(p);a[j+1]=s.charCodeAt(p+1);a[j+2]=s.charCodeAt(p+2);a[j+3]=255;}\
+           out.push(a);}\
+         return out",
+    );
+    let result = func
+        .call3(
+            &JsValue::NULL,
+            &JsValue::from_str(b64),
+            &JsValue::from_f64(f64::from(frame_rgb_size)),
+            &JsValue::from_f64(f64::from(frame_count)),
+        )
+        .unwrap_or_else(|_| JsValue::from(js_sys::Array::new()));
+    js_sys::Array::from(&result)
+}
+
+/// Draw a pre-decoded RGBA `Uint8ClampedArray` frame to a canvas context.
+#[cfg(feature = "hydrate")]
+fn draw_js_frame_to_canvas(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    rgba_clamped: &wasm_bindgen::JsValue,
+    width: u32,
+    height: u32,
+) {
+    use js_sys::Function;
+    use wasm_bindgen::JsValue;
+
+    let func = Function::new_with_args(
+        "ctx,a,w,h",
+        "ctx.putImageData(new ImageData(a,w,h),0,0)",
+    );
+    let _ = func.call4(
+        &JsValue::NULL,
+        ctx,
+        rgba_clamped,
+        &JsValue::from_f64(f64::from(width)),
+        &JsValue::from_f64(f64::from(height)),
+    );
 }
 
 /// Cancel a `requestAnimationFrame` by ID (if present).
@@ -85,21 +161,14 @@ pub fn AnimationCanvas(
         let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
         let playing = RwSignal::new(true);
         let current_frame = RwSignal::new(0u32);
-        // Store the rAF ID in a signal so on_cleanup (Send+Sync) can cancel it.
         let raf_id_signal = RwSignal::new(Option::<i32>::None);
 
-        // Decode all frames up front.
-        let raw_bytes = decode_base64(&data);
-        let frame_size = (width * height * 3) as usize;
-        let frames: Rc<Vec<Vec<u8>>> = Rc::new(
-            raw_bytes
-                .chunks(frame_size)
-                .take(frame_count as usize)
-                .map(rgb_to_rgba)
-                .collect(),
-        );
+        // Decode all frames to RGBA entirely in JS — never copies bulk pixel
+        // data into WASM linear memory.
+        let frame_rgb_size = width * height * 3;
+        let frames: Rc<js_sys::Array> =
+            Rc::new(decode_animation_frames(&data, frame_rgb_size, frame_count));
 
-        // Start the animation loop after mount.
         let frames_effect = frames.clone();
         Effect::new(move |_| {
             let Some(canvas) = canvas_ref.get() else {
@@ -118,8 +187,8 @@ pub fn AnimationCanvas(
                 .expect("cast to CanvasRenderingContext2d");
 
             // Draw the first frame immediately.
-            if let Some(frame) = frames_effect.first() {
-                draw_rgba_to_canvas(&ctx, frame, width, height);
+            if frames_effect.length() > 0 {
+                draw_js_frame_to_canvas(&ctx, &frames_effect.get(0), width, height);
             }
 
             let frames_loop = frames_effect.clone();
@@ -133,8 +202,7 @@ pub fn AnimationCanvas(
             let cb: RafClosure = Rc::new(RefCell::new(None));
             let cb_clone = cb.clone();
 
-            #[allow(clippy::cast_possible_truncation)]
-            let total = frames_loop.len() as u32;
+            let total = frames_loop.length();
             *cb.borrow_mut() = Some(Closure::new(move |timestamp: f64| {
                 if !playing.get_untracked() {
                     *last_time.borrow_mut() = timestamp;
@@ -152,9 +220,7 @@ pub fn AnimationCanvas(
                 if dt >= frame_interval_ms {
                     *last_time.borrow_mut() = timestamp;
                     let idx = current_frame.get_untracked();
-                    if let Some(frame) = frames_loop.get(idx as usize) {
-                        draw_rgba_to_canvas(&ctx, frame, width, height);
-                    }
+                    draw_js_frame_to_canvas(&ctx, &frames_loop.get(idx), width, height);
                     current_frame.set((idx + 1) % total.max(1));
                 }
 
@@ -275,9 +341,8 @@ pub fn SimulationCanvas(
                 .dyn_into::<web_sys::CanvasRenderingContext2d>()
                 .expect("cast to CanvasRenderingContext2d");
 
-            let initial_rgb = decode_base64(&first_frame_data);
-            let initial_rgba = rgb_to_rgba(&initial_rgb);
-            draw_rgba_to_canvas(&ctx, &initial_rgba, width, height);
+            // Draw first frame entirely in JS (base64 → RGB → RGBA → putImageData).
+            draw_b64_rgb_to_canvas(&ctx, &first_frame_data, width, height);
 
             *ctx_cell_effect.borrow_mut() = Some(ctx);
 
@@ -318,11 +383,10 @@ pub fn SimulationCanvas(
                     wasm_bindgen_futures::spawn_local(async move {
                         match crate::components::executor::tick_cell(&cid).await {
                             Ok(tick_result) => {
-                                let rgba = rgb_to_rgba(&tick_result.rgb_bytes);
                                 if let Some(ref ctx) = *ctx_tick.borrow() {
-                                    draw_rgba_to_canvas(
+                                    draw_rgb_to_canvas(
                                         ctx,
-                                        &rgba,
+                                        &tick_result.rgb_bytes,
                                         tick_result.width,
                                         tick_result.height,
                                     );
@@ -377,9 +441,13 @@ pub fn SimulationCanvas(
             wasm_bindgen_futures::spawn_local(async move {
                 match crate::components::executor::tick_cell(&cid).await {
                     Ok(tick_result) => {
-                        let rgba = rgb_to_rgba(&tick_result.rgb_bytes);
                         if let Some(ref ctx) = *ctx_s.borrow() {
-                            draw_rgba_to_canvas(ctx, &rgba, tick_result.width, tick_result.height);
+                            draw_rgb_to_canvas(
+                                ctx,
+                                &tick_result.rgb_bytes,
+                                tick_result.width,
+                                tick_result.height,
+                            );
                         }
                         frame_number.update(|n| *n += 1);
                     }
