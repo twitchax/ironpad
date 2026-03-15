@@ -551,70 +551,89 @@ fn ViewOnlyOutput(
     let output_len = result.output_bytes.len();
     let exec_time = result.execution_time_ms;
 
+    let collapsed = RwSignal::new(false);
+    let toggle_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
+    let outer_class = Signal::derive(move || {
+        if collapsed.get() {
+            "view-only-output view-only-output--collapsed"
+        } else {
+            "view-only-output"
+        }
+    });
+
     view! {
-        <div class="view-only-output">
-            <div class="view-only-output-meta">
+        <div class=outer_class>
+            <div
+                class="view-only-output-meta"
+                style="cursor: pointer;"
+                on:click=move |_| collapsed.update(|c| *c = !*c)
+            >
+                <span class="ironpad-output-toggle">{toggle_icon}</span>
                 <span>{format!("{output_len} bytes")}</span>
                 <span>{format!("{exec_time:.1} ms")}</span>
             </div>
-            {panels.into_iter().map(|panel| {
-                match panel {
-                    DisplayPanel::Text(text) => {
-                        let copy_text = text.clone();
-                        view! {
-                            <div class="view-only-output-display">
-                                <CopyButton text=copy_text />
-                                <pre class="view-only-output-text">{text}</pre>
-                            </div>
-                        }.into_any()
-                    },
-                    DisplayPanel::Html(html) => {
-                        let copy_text = html.clone();
-                        view! {
-                            <div class="view-only-output-display view-only-output-html">
-                                <CopyButton text=copy_text />
-                                <div inner_html=html></div>
-                            </div>
-                        }.into_any()
-                    },
-                    DisplayPanel::Svg(svg) => {
-                        let copy_text = svg.clone();
-                        view! {
-                            <div class="view-only-output-display view-only-output-svg">
-                                <CopyButton text=copy_text />
-                                <div inner_html=svg></div>
-                            </div>
-                        }.into_any()
-                    },
-                    DisplayPanel::Markdown(md) => {
-                        let copy_text = md.clone();
-                        let rendered = render_markdown(&md);
-                        view! {
-                            <div class="view-only-output-display">
-                                <CopyButton text=copy_text />
-                                <div class="ironpad-markdown-cell-preview" inner_html=rendered></div>
-                            </div>
-                        }.into_any()
-                    },
-                    DisplayPanel::Table { headers, rows } => {
-                        let copy_text = render_table_tsv(&headers, &rows);
-                        let table_html = render_table_html(&headers, &rows);
-                        view! {
-                            <div class="view-only-output-display">
-                                <CopyButton text=copy_text />
-                                <div inner_html=table_html></div>
-                            </div>
-                        }.into_any()
-                    },
-                    DisplayPanel::Interactive { kind, config } => {
-                        let cid = cell_id.clone();
-                        let cells = all_cells.clone();
-                        view! {
-                            <ViewOnlyInteractiveWidget kind=kind config=config cell_id=cid all_cells=cells run_all_queue=run_all_queue cell_outputs=cell_outputs />
-                        }.into_any()
-                    },
-                }
-            }).collect_view()}
+            <div class="view-only-output-body" style:display=move || {
+                if collapsed.get() { "none" } else { "block" }
+            }>
+                {panels.into_iter().map(|panel| {
+                    match panel {
+                        DisplayPanel::Text(text) => {
+                            let copy_text = text.clone();
+                            view! {
+                                <div class="view-only-output-display">
+                                    <CopyButton text=copy_text />
+                                    <pre class="view-only-output-text">{text}</pre>
+                                </div>
+                            }.into_any()
+                        },
+                        DisplayPanel::Html(html) => {
+                            let copy_text = html.clone();
+                            view! {
+                                <div class="view-only-output-display view-only-output-html">
+                                    <CopyButton text=copy_text />
+                                    <div inner_html=html></div>
+                                </div>
+                            }.into_any()
+                        },
+                        DisplayPanel::Svg(svg) => {
+                            let copy_text = svg.clone();
+                            view! {
+                                <div class="view-only-output-display view-only-output-svg">
+                                    <CopyButton text=copy_text />
+                                    <div inner_html=svg></div>
+                                </div>
+                            }.into_any()
+                        },
+                        DisplayPanel::Markdown(md) => {
+                            let copy_text = md.clone();
+                            let rendered = render_markdown(&md);
+                            view! {
+                                <div class="view-only-output-display">
+                                    <CopyButton text=copy_text />
+                                    <div class="ironpad-markdown-cell-preview" inner_html=rendered></div>
+                                </div>
+                            }.into_any()
+                        },
+                        DisplayPanel::Table { headers, rows } => {
+                            let copy_text = render_table_tsv(&headers, &rows);
+                            let table_html = render_table_html(&headers, &rows);
+                            view! {
+                                <div class="view-only-output-display">
+                                    <CopyButton text=copy_text />
+                                    <div inner_html=table_html></div>
+                                </div>
+                            }.into_any()
+                        },
+                        DisplayPanel::Interactive { kind, config } => {
+                            let cid = cell_id.clone();
+                            let cells = all_cells.clone();
+                            view! {
+                                <ViewOnlyInteractiveWidget kind=kind config=config cell_id=cid all_cells=cells run_all_queue=run_all_queue cell_outputs=cell_outputs />
+                            }.into_any()
+                        },
+                    }
+                }).collect_view()}
+            </div>
         </div>
     }
 }

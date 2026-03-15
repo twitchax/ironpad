@@ -174,28 +174,7 @@ cargo make build-cli
 
 ## TODO / Future Ideas
 
-- Give timings for the runtime as well as the compile time (compile time is already there).  Badge should be something like `{compile time} + {runtime time}`.  User can infer what that means.  The line in the cell text (`✓ Compiled (189.7 KB, 122ms, cached)`) can be updated to include runtime time as well (`✓ Compiled (189.7 KB, 122ms compile, 45ms runtime, cached)`).
-- On the public notebook page, allow for collapsed results.
-- On both notebook edit and view (and the public page), give the output a max-height and make it scrollable if it exceeds that height (big arrays, e.g.).
-- Make mandelbrrot and julia sets more fine-grained (800 x 600 pixels with the same number of cells), and add a progress bar for them.  Also, make them render to the Canvas type.
-- Should some of the other code examples also be rendering to Canvas?  It would be a more consistent experience, and allow for more complex visualizations.
-- Sierpinski triangle fails on cell[2] because `cell1` is not available.  For some reason, cell[1]'s output is available as `cell0`, which is incorrect.
-- A cell's individual cargo.toml seems not to do anything?  Once we fix this, let's move _everything_ we can to shared for all public notebooks, and make this the default for new notebooks.
-```toml
-[package]
-version = "0.1.0"
-edition = "2024"
 
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-ironpad-cell = "0.1"
-
-[profile.release]
-opt-level = 1
-lto = false
-codegen-units = 16
 ```
 - UI cleanup.
 - CI cleanup.

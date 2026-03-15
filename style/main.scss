@@ -1377,6 +1377,8 @@ a:focus-visible {
     word-break: break-word;
     font-size: 0.8rem;
     line-height: 1.5;
+    max-height: 500px;
+    overflow-y: auto;
 }
 
 .ironpad-output-svg {
@@ -1410,6 +1412,8 @@ a:focus-visible {
 
 .ironpad-output-html {
     padding: 0.5rem;
+    max-height: 500px;
+    overflow-y: auto;
 }
 
 .ironpad-output-table {
@@ -1438,6 +1442,11 @@ a:focus-visible {
     tbody tr:hover {
         background: rgba(255, 255, 255, 0.06);
     }
+}
+
+.ironpad-output-display:has(.ironpad-output-table) {
+    max-height: 500px;
+    overflow-y: auto;
 }
 
 .ironpad-output-bytes {
@@ -1974,6 +1983,10 @@ samp,
     overflow: hidden;
 }
 
+.view-only-output--collapsed .view-only-output-body {
+    display: none;
+}
+
 .view-only-output-meta {
     display: flex;
     gap: 1rem;
@@ -1993,11 +2006,22 @@ samp,
     margin: 0;
     white-space: pre-wrap;
     font-size: 0.85rem;
+    max-height: 500px;
+    overflow-y: auto;
 }
 
-.view-only-output-html,
+.view-only-output-html {
+    overflow: auto;
+    max-height: 500px;
+}
+
 .view-only-output-svg {
     overflow: auto;
+}
+
+.view-only-output-display:has(.ironpad-output-table) {
+    max-height: 500px;
+    overflow-y: auto;
 }
 
 .view-only-output-svg svg {
