@@ -67,7 +67,7 @@
       "title": "Interactive Widgets",
       "description": "Build a reactive tip calculator using all six widget types: slider, dropdown, number, switch, text input, and checkbox.",
       "filename": "interactive-widgets.ironpad",
-      "cell_count": 10,
+      "cell_count": 12,
       "tags": [
         "widgets",
         "interactive",

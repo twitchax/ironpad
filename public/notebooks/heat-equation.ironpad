@@ -1,4 +1,10 @@
 {
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000113",
+  "title": "Heat Equation",
+  "created_at": "2026-03-16T00:00:00Z",
+  "updated_at": "2026-03-16T00:00:00Z",
+  "shared_cargo_toml": null,
   "cells": [
     {
       "id": "cell_1",
@@ -8,6 +14,5 @@
       "label": "Heat Diffusion",
       "cell_type": "Code"
     }
-  ],
-  "version": 1
+  ]
 }

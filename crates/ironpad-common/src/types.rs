@@ -261,4 +261,97 @@ mod tests {
         // version:0 should be present (not skipped).
         assert!(json.contains("\"version\":0"));
     }
+
+    /// Verify every `.ironpad` file in `public/notebooks/` deserializes as a
+    /// valid [`IronpadNotebook`] and that each cell satisfies basic invariants.
+    ///
+    /// This catches missing/mistyped fields early — before they reach the
+    /// server's `get_public_notebook` endpoint and produce a runtime error.
+    #[test]
+    fn all_public_notebooks_conform_to_schema() {
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("could not locate workspace root");
+        let notebooks_dir = workspace_root.join("public").join("notebooks");
+
+        // ── Validate index.json ──────────────────────────────────────
+        let index_path = notebooks_dir.join("index.json");
+        let index_bytes = std::fs::read(&index_path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", index_path.display()));
+        let index: PublicNotebookIndex = serde_json::from_slice(&index_bytes)
+            .unwrap_or_else(|e| panic!("index.json schema error: {e}"));
+
+        let mut indexed_filenames: std::collections::HashSet<String> = index
+            .notebooks
+            .iter()
+            .map(|n| n.filename.clone())
+            .collect();
+
+        // ── Validate each .ironpad file ──────────────────────────────
+        let mut count = 0;
+        for entry in std::fs::read_dir(&notebooks_dir).expect("cannot read notebooks dir") {
+            let entry = entry.expect("bad dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("ironpad") {
+                continue;
+            }
+            let filename = path.file_name().unwrap().to_string_lossy().to_string();
+
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|e| panic!("cannot read {filename}: {e}"));
+            let nb: IronpadNotebook = serde_json::from_slice(&bytes)
+                .unwrap_or_else(|e| panic!("{filename}: schema error: {e}"));
+
+            // version must be 1.
+            assert_eq!(nb.version, 1, "{filename}: unexpected version {}", nb.version);
+
+            // Must have at least one cell.
+            assert!(!nb.cells.is_empty(), "{filename}: no cells");
+
+            // Cell order values must be sequential starting at 0.
+            for (i, cell) in nb.cells.iter().enumerate() {
+                assert_eq!(
+                    cell.order,
+                    u32::try_from(i).expect("too many cells"),
+                    "{filename}: cell[{i}] order is {} but expected {i}",
+                    cell.order
+                );
+                assert!(!cell.id.is_empty(), "{filename}: cell[{i}] has empty id");
+                assert!(!cell.label.is_empty(), "{filename}: cell[{i}] has empty label");
+                assert!(!cell.source.is_empty(), "{filename}: cell[{i}] has empty source");
+            }
+
+            // The file must appear in index.json.
+            assert!(
+                indexed_filenames.remove(&filename),
+                "{filename}: present on disk but missing from index.json"
+            );
+
+            // Matching index entry must have correct cell count.
+            let summary = index
+                .notebooks
+                .iter()
+                .find(|n| n.filename == filename)
+                .unwrap();
+            assert_eq!(
+                summary.cell_count,
+                nb.cells.len(),
+                "{filename}: index says {} cells but file has {}",
+                summary.cell_count,
+                nb.cells.len()
+            );
+
+            count += 1;
+        }
+
+        // Every file listed in index.json must exist on disk.
+        assert!(
+            indexed_filenames.is_empty(),
+            "index.json references missing files: {indexed_filenames:?}"
+        );
+
+        // Sanity: we validated at least one notebook.
+        assert!(count > 0, "no .ironpad files found in {}", notebooks_dir.display());
+    }
 }
