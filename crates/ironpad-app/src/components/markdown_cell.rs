@@ -14,6 +14,7 @@ pub fn render_markdown(source: &str) -> String {
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+    opts.insert(Options::ENABLE_MATH);
     let parser = Parser::new_ext(source, opts);
     let mut html = String::new();
     push_html(&mut html, parser);

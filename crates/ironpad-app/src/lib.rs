@@ -33,6 +33,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+                <link rel="stylesheet" href="/katex/katex.min.css"/>
                 <AutoReload options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>
@@ -51,6 +52,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 
                 // Drag-and-drop sortable library.
                 <script src="/sortable.min.js"></script>
+
+                // KaTeX math rendering (processes <span class="math"> from pulldown-cmark).
+                <script defer src="/katex/katex.min.js"></script>
+                <script defer src="/katex/render-math.js"></script>
             </head>
             <body>
                 <App/>

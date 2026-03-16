@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "katex": "^0.16.38",
     "monaco-editor": "^0.55.1",
     "sortablejs": "^1.15.7"
   },
