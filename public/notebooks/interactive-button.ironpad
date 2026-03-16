@@ -19,7 +19,7 @@
       "order": 1,
       "label": "Input Value",
       "cell_type": "Code",
-      "source": "ui::slider(1.0, 100.0)\n    .step(1.0)\n    .label(\"Input Value\")\n    .default_value(42.0)\n",
+      "source": "ui::slider(\"repeat_count\", 1.0, 100.0)\n    .step(1.0)\n    .label(\"Input Value\")\n    .default_value(42.0)\n",
       "cargo_toml": null
     },
     {

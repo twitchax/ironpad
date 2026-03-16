@@ -2305,7 +2305,7 @@ samp,
     }
 
     input[type="range"] {
-        flex: 1;
+        width: 300px;
         min-width: 120px;
         height: 4px;
         appearance: none;
@@ -2771,7 +2771,7 @@ samp,
     }
 
     input[type="range"] {
-        flex: 1;
+        width: 300px;
     }
 
     .ironpad-sim-slider-value {

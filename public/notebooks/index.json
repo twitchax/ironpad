@@ -274,7 +274,7 @@
       "title": "Nuclear Reactor",
       "description": "2D neutron diffusion with 6-group delayed precursors — watch prompt vs delayed neutrons pulse through a reactor core.",
       "filename": "nuclear-reactor.ironpad",
-      "cell_count": 1,
+      "cell_count": 2,
       "tags": [
         "physics",
         "simulation",

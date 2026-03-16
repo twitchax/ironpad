@@ -7,9 +7,9 @@
 //! # Examples
 //!
 //! ```ignore
-//! ui::slider(1.0, 10.0).step(0.5).label("Speed")
+//! ui::slider("speed", 1.0, 10.0).step(0.5).label("Speed")
 //! ui::dropdown(&["red", "green", "blue"]).label("Color")
-//! ui::checkbox("Enable logging")
+//! ui::checkbox("enable_logging").label("Enable logging")
 //! ```
 
 use crate::{CellOutput, DisplayPanel, IntoPanels, TypeTag};
@@ -31,6 +31,7 @@ fn simple_id() -> String {
 
 /// Builder for a range slider widget producing an `f64` value.
 pub struct Slider {
+    name: String,
     min: f64,
     max: f64,
     step: f64,
@@ -38,10 +39,11 @@ pub struct Slider {
     default: f64,
 }
 
-/// Create a slider widget with the given range.
+/// Create a slider widget with the given range and a bus key name.
 #[must_use]
-pub fn slider(min: f64, max: f64) -> Slider {
+pub fn slider(name: &str, min: f64, max: f64) -> Slider {
     Slider {
+        name: name.to_owned(),
         min,
         max,
         step: 1.0,
@@ -74,6 +76,7 @@ impl Slider {
 
     fn config_json(&self) -> String {
         serde_json::json!({
+            "name": self.name,
             "min": self.min,
             "max": self.max,
             "step": self.step,
@@ -202,20 +205,29 @@ impl serde::Serialize for Dropdown {
 
 /// Builder for a checkbox widget producing a `bool` value.
 pub struct Checkbox {
+    name: String,
     label: String,
     default: bool,
 }
 
-/// Create a checkbox widget with the given label.
+/// Create a checkbox widget with the given bus key name.
 #[must_use]
-pub fn checkbox(label: &str) -> Checkbox {
+pub fn checkbox(name: &str) -> Checkbox {
     Checkbox {
-        label: label.to_owned(),
+        name: name.to_owned(),
+        label: name.to_owned(),
         default: false,
     }
 }
 
 impl Checkbox {
+    /// Set a custom display label (defaults to the name).
+    #[must_use]
+    pub fn label(mut self, label: &str) -> Self {
+        label.clone_into(&mut self.label);
+        self
+    }
+
     /// Override the default checked state.
     #[must_use]
     pub fn default_value(mut self, value: bool) -> Self {
@@ -225,6 +237,7 @@ impl Checkbox {
 
     fn config_json(&self) -> String {
         serde_json::json!({
+            "name": self.name,
             "label": self.label,
             "default": self.default,
         })
@@ -771,21 +784,22 @@ mod tests {
 
     #[test]
     fn slider_default_value() {
-        let output: CellOutput = slider(1.0, 10.0).into();
+        let output: CellOutput = slider("s", 1.0, 10.0).into();
         assert!((decode_f64(&output.bytes) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn slider_type_tag() {
-        let output: CellOutput = slider(0.0, 1.0).into();
+        let output: CellOutput = slider("s", 0.0, 1.0).into();
         assert_eq!(output.type_tag.as_deref(), Some("f64"));
         assert_eq!(Slider::type_tag(), "f64");
     }
 
     #[test]
     fn slider_panel_and_config() {
-        let output: CellOutput = slider(0.0, 100.0).step(5.0).label("Volume").into();
+        let output: CellOutput = slider("vol", 0.0, 100.0).step(5.0).label("Volume").into();
         let cfg = assert_interactive(&output, "slider");
+        assert_eq!(cfg["name"].as_str().unwrap(), "vol");
         assert!((cfg["min"].as_f64().unwrap()).abs() < f64::EPSILON);
         assert!((cfg["max"].as_f64().unwrap() - 100.0).abs() < f64::EPSILON);
         assert!((cfg["step"].as_f64().unwrap() - 5.0).abs() < f64::EPSILON);
@@ -795,7 +809,7 @@ mod tests {
 
     #[test]
     fn slider_custom_default() {
-        let output: CellOutput = slider(1.0, 10.0).default_value(5.0).into();
+        let output: CellOutput = slider("s", 1.0, 10.0).default_value(5.0).into();
         assert!((decode_f64(&output.bytes) - 5.0).abs() < f64::EPSILON);
         let cfg = assert_interactive(&output, "slider");
         assert!((cfg["default"].as_f64().unwrap() - 5.0).abs() < f64::EPSILON);
@@ -803,14 +817,14 @@ mod tests {
 
     #[test]
     fn slider_label_null_by_default() {
-        let output: CellOutput = slider(0.0, 1.0).into();
+        let output: CellOutput = slider("s", 0.0, 1.0).into();
         let cfg = assert_interactive(&output, "slider");
         assert!(cfg["label"].is_null());
     }
 
     #[test]
     fn slider_into_panels() {
-        let s = slider(0.0, 10.0);
+        let s = slider("s", 0.0, 10.0);
         let panels = s.into_panels();
         assert_eq!(panels.len(), 1);
         assert!(matches!(&panels[0], DisplayPanel::Interactive { kind, .. } if kind == "slider"));
@@ -874,7 +888,7 @@ mod tests {
 
     #[test]
     fn checkbox_default_value() {
-        let output: CellOutput = checkbox("Enable").into();
+        let output: CellOutput = checkbox("enable").into();
         assert!(!decode_bool(&output.bytes));
     }
 
@@ -887,15 +901,16 @@ mod tests {
 
     #[test]
     fn checkbox_panel_and_config() {
-        let output: CellOutput = checkbox("Debug mode").into();
+        let output: CellOutput = checkbox("debug_mode").label("Debug mode").into();
         let cfg = assert_interactive(&output, "checkbox");
+        assert_eq!(cfg["name"].as_str().unwrap(), "debug_mode");
         assert_eq!(cfg["label"].as_str().unwrap(), "Debug mode");
         assert!(!cfg["default"].as_bool().unwrap());
     }
 
     #[test]
     fn checkbox_custom_default() {
-        let output: CellOutput = checkbox("On").default_value(true).into();
+        let output: CellOutput = checkbox("on").default_value(true).into();
         assert!(decode_bool(&output.bytes));
         let cfg = assert_interactive(&output, "checkbox");
         assert!(cfg["default"].as_bool().unwrap());
@@ -907,6 +922,22 @@ mod tests {
         let panels = c.into_panels();
         assert_eq!(panels.len(), 1);
         assert!(matches!(&panels[0], DisplayPanel::Interactive { kind, .. } if kind == "checkbox"));
+    }
+
+    #[test]
+    fn checkbox_name_defaults_to_label() {
+        let output: CellOutput = checkbox("my_flag").into();
+        let cfg = assert_interactive(&output, "checkbox");
+        assert_eq!(cfg["name"].as_str().unwrap(), "my_flag");
+        assert_eq!(cfg["label"].as_str().unwrap(), "my_flag");
+    }
+
+    #[test]
+    fn checkbox_custom_label() {
+        let output: CellOutput = checkbox("my_flag").label("My Flag").into();
+        let cfg = assert_interactive(&output, "checkbox");
+        assert_eq!(cfg["name"].as_str().unwrap(), "my_flag");
+        assert_eq!(cfg["label"].as_str().unwrap(), "My Flag");
     }
 
     // ── TextInput tests ──────────────────────────────────────────────────
@@ -1076,7 +1107,7 @@ mod tests {
 
     #[test]
     fn slider_full_chain() {
-        let output: CellOutput = slider(0.0, 100.0)
+        let output: CellOutput = slider("brightness", 0.0, 100.0)
             .step(0.1)
             .label("Brightness")
             .default_value(50.0)
@@ -1105,7 +1136,7 @@ mod tests {
 
     #[test]
     fn slider_serialize_matches_from_bytes() {
-        let s = slider(0.0, 100.0).default_value(42.0);
+        let s = slider("s", 0.0, 100.0).default_value(42.0);
         let expected = encode_bincode(&s.default);
         let actual = encode_bincode(&s);
         assert_eq!(actual, expected);
@@ -1113,7 +1144,7 @@ mod tests {
 
     #[test]
     fn tuple_slider_button_produces_valid_cell_output() {
-        let s = slider(0.0, 100.0).default_value(25.0);
+        let s = slider("s", 0.0, 100.0).default_value(25.0);
         let b = button("Go");
         let output = CellOutput::from((s, b));
 
@@ -1128,7 +1159,7 @@ mod tests {
 
     #[test]
     fn tuple_slider_dropdown_produces_valid_cell_output() {
-        let s = slider(0.0, 10.0).default_value(3.0);
+        let s = slider("s", 0.0, 10.0).default_value(3.0);
         let d = dropdown(&["red", "green", "blue"]);
         let output = CellOutput::from((s, d));
 

@@ -19,7 +19,7 @@
       "order": 1,
       "label": "Bill Amount",
       "cell_type": "Code",
-      "source": "ui::slider(0.0, 500.0)\n    .step(0.50)\n    .label(\"Bill Amount ($)\")\n    .default_value(85.0)\n",
+      "source": "ui::slider(\"threshold\", 0.0, 500.0)\n    .step(0.50)\n    .label(\"Bill Amount ($)\")\n    .default_value(85.0)\n",
       "cargo_toml": null
     },
     {
@@ -83,7 +83,7 @@
       "order": 9,
       "label": "Detailed Breakdown",
       "cell_type": "Code",
-      "source": "ui::checkbox(\"Show detailed breakdown\")\n    .default_value(true)\n",
+      "source": "ui::checkbox(\"show_detailed\").label(\"Show detailed breakdown\")\n    .default_value(true)\n",
       "cargo_toml": null
     },
     {
