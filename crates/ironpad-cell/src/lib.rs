@@ -1001,6 +1001,11 @@ impl_from_tuple_for_cell_output!((A, B));
 impl_from_tuple_for_cell_output!((A, B, C));
 impl_from_tuple_for_cell_output!((A, B, C, D));
 impl_from_tuple_for_cell_output!((A, B, C, D, E));
+impl_from_tuple_for_cell_output!((A, B, C, D, E, F));
+impl_from_tuple_for_cell_output!((A, B, C, D, E, F, G));
+impl_from_tuple_for_cell_output!((A, B, C, D, E, F, G, H));
+impl_from_tuple_for_cell_output!((A, B, C, D, E, F, G, H, I));
+impl_from_tuple_for_cell_output!((A, B, C, D, E, F, G, H, I, J));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
