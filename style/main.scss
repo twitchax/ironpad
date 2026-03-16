@@ -1425,6 +1425,12 @@ a:focus-visible {
     overflow-y: auto;
 }
 
+// Visual outputs (SVG, Canvas/BlobImage, Animation, Simulation) are not
+// height-constrained — they size themselves based on their content.
+.ironpad-output-visual {
+    padding: 0.5rem;
+}
+
 .ironpad-output-table {
     width: 100%;
     border-collapse: collapse;
@@ -2015,6 +2021,12 @@ samp,
 .view-only-output-html {
     overflow: auto;
     max-height: 500px;
+}
+
+// Visual outputs (SVG, Canvas/BlobImage, Animation, Simulation) are not
+// height-constrained — they size themselves based on their content.
+.view-only-output-visual {
+    overflow: auto;
 }
 
 .view-only-output-svg {
@@ -2739,4 +2751,34 @@ samp,
     font-family: var(--ip-font-mono, monospace);
     font-size: 0.75rem;
     color: var(--ip-text-tertiary, #888);
+}
+
+.ironpad-sim-sliders {
+    padding: 0.5rem 0;
+    width: 100%;
+}
+
+.ironpad-sim-slider {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0;
+
+    label {
+        min-width: 12rem;
+        font-size: 0.85rem;
+        color: var(--ip-text-secondary, #b0b0b0);
+    }
+
+    input[type="range"] {
+        flex: 1;
+    }
+
+    .ironpad-sim-slider-value {
+        font-family: var(--ip-font-mono, monospace);
+        font-size: 0.85rem;
+        min-width: 4rem;
+        text-align: right;
+        color: var(--ip-text-tertiary, #888);
+    }
 }

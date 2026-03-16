@@ -144,6 +144,24 @@ fn cancel_raf(id: Option<i32>) {
     }
 }
 
+// ── Sim bus JS interop (hydrate-only) ───────────────────────────────────────
+
+#[cfg(feature = "hydrate")]
+mod js {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen(inline_js = "
+        export function sim_bus_write(key, value) {
+            if (window.IronpadExecutor && window.IronpadExecutor.simBusWrite) {
+                window.IronpadExecutor.simBusWrite(key, value);
+            }
+        }
+    ")]
+    extern "C" {
+        pub fn sim_bus_write(key: &str, value: f64);
+    }
+}
+
 // ── AnimationCanvas ─────────────────────────────────────────────────────────
 
 /// Renders a precomputed multi-frame animation on a `<canvas>` element.
@@ -469,8 +487,21 @@ pub fn SimulationCanvas(
             });
         };
 
-        // sliders will be rendered in T-008; store for future use.
-        drop(sliders);
+        // Create a signal for each slider's current value.
+        let slider_signals: Vec<(SimSliderMeta, RwSignal<f64>)> = sliders
+            .iter()
+            .map(|s| (s.clone(), RwSignal::new(s.default)))
+            .collect();
+
+        // Emit default values to the sim bus once on mount so the bus has
+        // initial values before the first user interaction.
+        let defaults: Vec<(String, f64)> =
+            sliders.iter().map(|s| (s.key.clone(), s.default)).collect();
+        Effect::new(move |_| {
+            for (key, val) in &defaults {
+                js::sim_bus_write(key, *val);
+            }
+        });
 
         view! {
             <div class="animation-canvas-container">
@@ -494,6 +525,36 @@ pub fn SimulationCanvas(
                         {format!("{fps} fps")}
                     </span>
                 </div>
+                <div class="ironpad-sim-sliders">
+                    {slider_signals.into_iter().map(|(slider, sig)| {
+                        let key = slider.key.clone();
+                        let default = slider.default;
+                        view! {
+                            <div class="ironpad-sim-slider">
+                                <label>
+                                    {format!("{}: ", slider.label)}
+                                    <span class="ironpad-sim-slider-value">
+                                        {move || sig.get().to_string()}
+                                    </span>
+                                </label>
+                                <input
+                                    type="range"
+                                    min=slider.min.to_string()
+                                    max=slider.max.to_string()
+                                    step=slider.step.to_string()
+                                    prop:value=move || sig.get().to_string()
+                                    on:input=move |ev| {
+                                        let v: f64 = event_target_value(&ev)
+                                            .parse()
+                                            .unwrap_or(default);
+                                        sig.set(v);
+                                        js::sim_bus_write(&key, v);
+                                    }
+                                />
+                            </div>
+                        }
+                    }).collect::<Vec<_>>()}
+                </div>
             </div>
         }
         .into_any()
@@ -501,8 +562,7 @@ pub fn SimulationCanvas(
 
     #[cfg(not(feature = "hydrate"))]
     {
-        let _ = (width, height, fps, first_frame_data, cell_id);
-        drop(sliders);
+        let _ = (width, height, fps, first_frame_data, cell_id, sliders);
         view! {
             <div class="animation-canvas-container">
                 <div>{format!("Simulation at {fps} fps ({width}×{height})")}</div>

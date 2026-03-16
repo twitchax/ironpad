@@ -599,6 +599,12 @@
     if (entry.ring.length > 1000) entry.ring.shift();
   };
 
+  /// Read the latest value from the sim bus (convenience for debugging).
+  CellExecutor.prototype.simBusRead = function (key) {
+    var entry = this._simBus.get(key);
+    return entry ? JSON.parse(entry.latest) : null;
+  };
+
   // ── Expose as a global singleton ─────────────────────────────────────────
 
   var executor = new CellExecutor();

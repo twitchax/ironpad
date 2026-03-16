@@ -313,6 +313,12 @@
     }
   };
 
+  /// Read the latest value from the bridge's sim bus (convenience for debugging).
+  BridgeExecutor.prototype.simBusRead = function (key) {
+    var entry = this._simBus.get(key);
+    return entry ? JSON.parse(entry.latest) : null;
+  };
+
   // ── Termination ───────────────────────────────────────────────────────────
 
   /// Kill the running Worker and respawn a fresh one.
