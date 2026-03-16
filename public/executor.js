@@ -43,6 +43,7 @@
   function CellExecutor() {
     this.modules = new Map(); // cell_id -> { hash, type, ... }
     this._messageHandlers = {}; // type -> handler(msg, cellId)
+    this._simBus = new Map(); // key -> { latest: string|null, ring: string[] }
   }
 
   // ── Host message infrastructure ─────────────────────────────────────────
@@ -85,6 +86,71 @@
     }
   };
 
+  /// Read the latest value for a sim bus key from WASM memory.
+  /// Allocates WASM memory via ironpad_alloc and writes [u32-LE length][JSON bytes].
+  /// Returns the pointer, or 0 if the key has no value.
+  CellExecutor.prototype._simRead = function (cellId, keyPtr, keyLen) {
+    var entry = this.modules.get(cellId);
+    if (!entry) return 0;
+    var memory = entry.type === "bindgen"
+      ? (entry.wasm && entry.wasm.memory)
+      : (entry.instance && entry.instance.exports.memory);
+    var alloc = entry.type === "bindgen"
+      ? (entry.wasm && entry.wasm.ironpad_alloc)
+      : (entry.instance && entry.instance.exports.ironpad_alloc);
+    if (!memory || !alloc) return 0;
+
+    var keyBytes = new Uint8Array(memory.buffer, keyPtr, keyLen);
+    var key = new TextDecoder().decode(keyBytes);
+
+    var busEntry = this._simBus.get(key);
+    if (!busEntry || busEntry.latest === null || busEntry.latest === undefined) return 0;
+
+    var jsonBytes = new TextEncoder().encode(busEntry.latest);
+    var totalLen = 4 + jsonBytes.length;
+    var ptr = alloc(totalLen);
+    if (ptr === 0) return 0;
+
+    var view = new DataView(memory.buffer, ptr, 4);
+    view.setUint32(0, jsonBytes.length, true);
+    new Uint8Array(memory.buffer, ptr + 4, jsonBytes.length).set(jsonBytes);
+
+    return ptr;
+  };
+
+  /// Read all buffered values for a sim bus key from WASM memory.
+  /// Writes the ring buffer as a JSON array: [v0,v1,...].
+  /// Returns the pointer, or 0 if the key has no entries.
+  CellExecutor.prototype._simReadAll = function (cellId, keyPtr, keyLen) {
+    var entry = this.modules.get(cellId);
+    if (!entry) return 0;
+    var memory = entry.type === "bindgen"
+      ? (entry.wasm && entry.wasm.memory)
+      : (entry.instance && entry.instance.exports.memory);
+    var alloc = entry.type === "bindgen"
+      ? (entry.wasm && entry.wasm.ironpad_alloc)
+      : (entry.instance && entry.instance.exports.ironpad_alloc);
+    if (!memory || !alloc) return 0;
+
+    var keyBytes = new Uint8Array(memory.buffer, keyPtr, keyLen);
+    var key = new TextDecoder().decode(keyBytes);
+
+    var busEntry = this._simBus.get(key);
+    if (!busEntry || busEntry.ring.length === 0) return 0;
+
+    var json = "[" + busEntry.ring.join(",") + "]";
+    var jsonBytes = new TextEncoder().encode(json);
+    var totalLen = 4 + jsonBytes.length;
+    var ptr = alloc(totalLen);
+    if (ptr === 0) return 0;
+
+    var view = new DataView(memory.buffer, ptr, 4);
+    view.setUint32(0, jsonBytes.length, true);
+    new Uint8Array(memory.buffer, ptr + 4, jsonBytes.length).set(jsonBytes);
+
+    return ptr;
+  };
+
   /// Load a compiled WASM blob for a cell.
   ///
   /// If `jsGlue` is provided, uses the wasm-bindgen path: dynamic-imports the
@@ -120,7 +186,13 @@
         "ironpad_host_message: function(ptr, len) { " +
         "if (window.IronpadExecutor) { " +
         "window.IronpadExecutor._dispatchHostMessage(" +
-        JSON.stringify(cellId) + ", ptr, len); } }";
+        JSON.stringify(cellId) + ", ptr, len); } }, " +
+        "ironpad_sim_read: function(ptr, len) { " +
+        "return window.IronpadExecutor ? window.IronpadExecutor._simRead(" +
+        JSON.stringify(cellId) + ", ptr, len) : 0; }, " +
+        "ironpad_sim_read_all: function(ptr, len) { " +
+        "return window.IronpadExecutor ? window.IronpadExecutor._simReadAll(" +
+        JSON.stringify(cellId) + ", ptr, len) : 0; }";
       jsGlue = jsGlue.replace(
         /import\s*\*\s*as\s+(\w+)\s+from\s+['"]env['"]\s*;?/g,
         function (_match, starName) {
@@ -140,6 +212,12 @@
         "      if (window.IronpadExecutor) {\n" +
         "        window.IronpadExecutor._dispatchHostMessage(__ironpad_cell_id, ptr, len);\n" +
         "      }\n" +
+        "    };\n" +
+        "    imports.env.ironpad_sim_read = function(ptr, len) {\n" +
+        "      return window.IronpadExecutor ? window.IronpadExecutor._simRead(__ironpad_cell_id, ptr, len) : 0;\n" +
+        "    };\n" +
+        "    imports.env.ironpad_sim_read_all = function(ptr, len) {\n" +
+        "      return window.IronpadExecutor ? window.IronpadExecutor._simReadAll(__ironpad_cell_id, ptr, len) : 0;\n" +
         "    };\n" +
         "    return imports;\n" +
         "  };\n" +
@@ -172,6 +250,12 @@
         env: {
           ironpad_host_message: function (ptr, len) {
             rawSelf._dispatchHostMessage(rawCellId, ptr, len);
+          },
+          ironpad_sim_read: function (ptr, len) {
+            return rawSelf._simRead(rawCellId, ptr, len);
+          },
+          ironpad_sim_read_all: function (ptr, len) {
+            return rawSelf._simReadAll(rawCellId, ptr, len);
           },
         },
       };
@@ -502,6 +586,19 @@
     return !!existing && existing.hash === hash;
   };
 
+  /// Write a value to the sim bus directly from the main thread (e.g. a slider).
+  CellExecutor.prototype.simBusWrite = function (key, value) {
+    var json = JSON.stringify(value);
+    var entry = this._simBus.get(key);
+    if (!entry) {
+      entry = { latest: null, ring: [] };
+      this._simBus.set(key, entry);
+    }
+    entry.latest = json;
+    entry.ring.push(json);
+    if (entry.ring.length > 1000) entry.ring.shift();
+  };
+
   // ── Expose as a global singleton ─────────────────────────────────────────
 
   var executor = new CellExecutor();
@@ -522,6 +619,19 @@
     if (label) {
       label.textContent = Math.round(msg.value) + "%";
     }
+  });
+
+  executor.onHostMessage("sim_emit", function (msg, _cellId) {
+    var key = msg.key;
+    var json = JSON.stringify(msg.value);
+    var entry = executor._simBus.get(key);
+    if (!entry) {
+      entry = { latest: null, ring: [] };
+      executor._simBus.set(key, entry);
+    }
+    entry.latest = json;
+    entry.ring.push(json);
+    if (entry.ring.length > 1000) entry.ring.shift();
   });
 
   window.IronpadExecutor = executor;

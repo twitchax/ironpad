@@ -22,6 +22,7 @@
     this._loadedCache = new Map();   // cellId -> hash
     this._blobCache = new Map();     // cellId -> { hash, wasmBytes, jsGlue }
     this._messageHandlers = {};      // type -> handler(msg, cellId)
+    this._simBus = new Map();        // key -> { latest: string|null, ring: string[] }
     this._worker = null;
     this._mainExecutor = null;       // Lazy main-thread CellExecutor for fallback
 
@@ -276,6 +277,42 @@
     }
   };
 
+  // ── Sim bus ───────────────────────────────────────────────────────────────
+
+  /// Write a value to the sim bus from the main thread (e.g. from a slider).
+  ///
+  /// Updates the bridge's own _simBus, forwards to the Worker so simulation
+  /// cells running there can read the value via ironpad_sim_read, and also
+  /// updates the main-thread fallback executor's bus if present.
+  BridgeExecutor.prototype.simBusWrite = function (key, value) {
+    var json = JSON.stringify(value);
+
+    // Update bridge bus (main-thread side).
+    var entry = this._simBus.get(key);
+    if (!entry) {
+      entry = { latest: null, ring: [] };
+      this._simBus.set(key, entry);
+    }
+    entry.latest = json;
+    entry.ring.push(json);
+    if (entry.ring.length > 1000) entry.ring.shift();
+
+    // Forward to worker bus.
+    this._worker.postMessage({ type: "sim_bus_write", key: key, json: json });
+
+    // Mirror to main-thread fallback executor bus if loaded.
+    if (this._mainExecutor) {
+      var fallbackEntry = this._mainExecutor._simBus.get(key);
+      if (!fallbackEntry) {
+        fallbackEntry = { latest: null, ring: [] };
+        this._mainExecutor._simBus.set(key, fallbackEntry);
+      }
+      fallbackEntry.latest = json;
+      fallbackEntry.ring.push(json);
+      if (fallbackEntry.ring.length > 1000) fallbackEntry.ring.shift();
+    }
+  };
+
   // ── Termination ───────────────────────────────────────────────────────────
 
   /// Kill the running Worker and respawn a fresh one.
@@ -319,6 +356,19 @@
     if (label) {
       label.textContent = Math.round(msg.value) + "%";
     }
+  });
+
+  executor.onHostMessage("sim_emit", function (msg, _cellId) {
+    var key = msg.key;
+    var json = JSON.stringify(msg.value);
+    var entry = executor._simBus.get(key);
+    if (!entry) {
+      entry = { latest: null, ring: [] };
+      executor._simBus.set(key, entry);
+    }
+    entry.latest = json;
+    entry.ring.push(json);
+    if (entry.ring.length > 1000) entry.ring.shift();
   });
 
   window.IronpadExecutor = executor;

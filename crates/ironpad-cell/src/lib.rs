@@ -66,6 +66,7 @@ pub mod prelude {
 
     pub use crate::canvas::{Animation, Canvas};
     pub use crate::plot::Plot;
+    pub use crate::sim;
     pub use crate::ui;
     pub use crate::ui::ProgressHandle;
     pub use crate::{host_message, host_message_json};
@@ -80,6 +81,7 @@ pub mod prelude {
 
 pub mod canvas;
 pub mod plot;
+pub mod sim;
 pub mod ui;
 
 #[cfg(target_arch = "wasm32")]

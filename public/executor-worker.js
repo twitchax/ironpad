@@ -29,6 +29,25 @@ importScripts("/worker-executor.js");
 
 var executor = new self.CellExecutor();
 
+// ── Sim bus: update local bus on sim_emit ────────────────────────────────────
+//
+// sim_emit messages arrive via _dispatchHostMessage (forwarded from WASM).
+// The worker's bus must be updated so ironpad_sim_read can serve reads from
+// simulation cells running in this worker.
+
+executor.onHostMessage("sim_emit", function (msg, _cellId) {
+  var key = msg.key;
+  var json = JSON.stringify(msg.value);
+  var entry = executor._simBus.get(key);
+  if (!entry) {
+    entry = { latest: null, ring: [] };
+    executor._simBus.set(key, entry);
+  }
+  entry.latest = json;
+  entry.ring.push(json);
+  if (entry.ring.length > 1000) entry.ring.shift();
+});
+
 // ── Host message forwarding ─────────────────────────────────────────────────
 //
 // WASM cells call `ironpad_host_message(ptr, len)` which lands in
@@ -57,12 +76,28 @@ executor._dispatchHostMessage = function (cellId, ptr, len) {
 // ── Command handler ─────────────────────────────────────────────────────────
 //
 // Protocol:
-//   Incoming:  { type: "loadBlob"|"execute"|"tick"|"unload", id?, cellId, ... }
+//   Incoming:  { type: "loadBlob"|"execute"|"tick"|"unload"|"sim_bus_write", id?, cellId, ... }
 //   Outgoing:  { type: "result"|"error", id, value?|error? }
 //              { type: "hostMessage", cellId, messageJson }
 
 self.onmessage = async function (e) {
   var msg = e.data;
+
+  if (msg.type === "sim_bus_write") {
+    // Main thread (e.g. a slider) wrote a value to the bus — mirror it here
+    // so simulation cells running in this worker can read it via ironpad_sim_read.
+    var key = msg.key;
+    var json = msg.json;
+    var entry = executor._simBus.get(key);
+    if (!entry) {
+      entry = { latest: null, ring: [] };
+      executor._simBus.set(key, entry);
+    }
+    entry.latest = json;
+    entry.ring.push(json);
+    if (entry.ring.length > 1000) entry.ring.shift();
+    return; // No response needed.
+  }
 
   if (msg.type === "loadBlob") {
     try {
