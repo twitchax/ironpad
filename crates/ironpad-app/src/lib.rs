@@ -38,6 +38,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <HydrationScripts options/>
                 <MetaTags/>
 
+                // KaTeX math rendering — loaded before Monaco (no defer) to avoid AMD `define` conflict.
+                <script src="/katex/katex.min.js"></script>
+                <script src="/katex/render-math.js"></script>
+
                 // Monaco editor: AMD loader + worker configuration + languages + Rust bridge.
                 <script src="/monaco/vs/loader.js"></script>
                 <script src="/monaco/init.js"></script>
@@ -52,10 +56,6 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 
                 // Drag-and-drop sortable library.
                 <script src="/sortable.min.js"></script>
-
-                // KaTeX math rendering (processes <span class="math"> from pulldown-cmark).
-                <script defer src="/katex/katex.min.js"></script>
-                <script defer src="/katex/render-math.js"></script>
             </head>
             <body>
                 <App/>
