@@ -282,11 +282,8 @@ mod tests {
         let index: PublicNotebookIndex = serde_json::from_slice(&index_bytes)
             .unwrap_or_else(|e| panic!("index.json schema error: {e}"));
 
-        let mut indexed_filenames: std::collections::HashSet<String> = index
-            .notebooks
-            .iter()
-            .map(|n| n.filename.clone())
-            .collect();
+        let mut indexed_filenames: std::collections::HashSet<String> =
+            index.notebooks.iter().map(|n| n.filename.clone()).collect();
 
         // ── Validate each .ironpad file ──────────────────────────────
         let mut count = 0;
@@ -298,13 +295,17 @@ mod tests {
             }
             let filename = path.file_name().unwrap().to_string_lossy().to_string();
 
-            let bytes = std::fs::read(&path)
-                .unwrap_or_else(|e| panic!("cannot read {filename}: {e}"));
+            let bytes =
+                std::fs::read(&path).unwrap_or_else(|e| panic!("cannot read {filename}: {e}"));
             let nb: IronpadNotebook = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("{filename}: schema error: {e}"));
 
             // version must be 1.
-            assert_eq!(nb.version, 1, "{filename}: unexpected version {}", nb.version);
+            assert_eq!(
+                nb.version, 1,
+                "{filename}: unexpected version {}",
+                nb.version
+            );
 
             // Must have at least one cell.
             assert!(!nb.cells.is_empty(), "{filename}: no cells");
@@ -318,8 +319,14 @@ mod tests {
                     cell.order
                 );
                 assert!(!cell.id.is_empty(), "{filename}: cell[{i}] has empty id");
-                assert!(!cell.label.is_empty(), "{filename}: cell[{i}] has empty label");
-                assert!(!cell.source.is_empty(), "{filename}: cell[{i}] has empty source");
+                assert!(
+                    !cell.label.is_empty(),
+                    "{filename}: cell[{i}] has empty label"
+                );
+                assert!(
+                    !cell.source.is_empty(),
+                    "{filename}: cell[{i}] has empty source"
+                );
             }
 
             // The file must appear in index.json.
@@ -352,6 +359,10 @@ mod tests {
         );
 
         // Sanity: we validated at least one notebook.
-        assert!(count > 0, "no .ironpad files found in {}", notebooks_dir.display());
+        assert!(
+            count > 0,
+            "no .ironpad files found in {}",
+            notebooks_dir.display()
+        );
     }
 }
