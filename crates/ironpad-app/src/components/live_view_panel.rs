@@ -165,7 +165,7 @@ pub fn LiveViewPanel(
                                     // 0 and anything else: plain text.
                                     _ => "text",
                                 };
-                                if let Some(el) = content_ref_tick.get() {
+                                if let Some(el) = content_ref_tick.get_untracked() {
                                     let el: &web_sys::HtmlElement = &el;
                                     apply_tick(el, Some(kind_str), &live_result.content);
                                 }
@@ -225,7 +225,7 @@ pub fn LiveViewPanel(
                             // 0 and anything else: plain text.
                             _ => "text",
                         };
-                        if let Some(el) = content_ref_step.get() {
+                        if let Some(el) = content_ref_step.get_untracked() {
                             let el: &web_sys::HtmlElement = &el;
                             apply_s(el, Some(kind_str), &live_result.content);
                         }
