@@ -2402,6 +2402,10 @@ samp,
     color: var(--ip-text-secondary);
     white-space: nowrap;
     font-weight: 500;
+    width: 200px;
+    min-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .ironpad-widget-value {
@@ -2765,7 +2769,11 @@ samp,
     padding: 0.25rem 0;
 
     label {
-        min-width: 12rem;
+        width: 200px;
+        min-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         font-size: 0.85rem;
         color: var(--ip-text-secondary, #b0b0b0);
     }
