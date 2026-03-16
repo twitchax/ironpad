@@ -1386,7 +1386,6 @@ a:focus-visible {
     word-break: break-word;
     font-size: 0.8rem;
     line-height: 1.5;
-    max-height: 500px;
     overflow-y: auto;
 }
 
@@ -1421,8 +1420,6 @@ a:focus-visible {
 
 .ironpad-output-html {
     padding: 0.5rem;
-    max-height: 500px;
-    overflow-y: auto;
 }
 
 // Visual outputs (SVG, Canvas/BlobImage, Animation, Simulation) are not
@@ -1460,7 +1457,6 @@ a:focus-visible {
 }
 
 .ironpad-output-display:has(.ironpad-output-table) {
-    max-height: 500px;
     overflow-y: auto;
 }
 
@@ -1500,7 +1496,6 @@ details[open].ironpad-output-bytes>.ironpad-output-bytes-header {
     font-size: 0.75rem;
     line-height: 1.5;
     overflow-x: auto;
-    max-height: 200px;
     overflow-y: auto;
 }
 
@@ -1762,7 +1757,7 @@ samp,
         h1 {
             font-size: 1.8em;
             margin: 0.5em 0;
-            color: var(--ip-text-on-accent);
+            color: var(--ip-text-primary);
             border-bottom: 1px solid var(--ip-border);
             padding-bottom: 0.3em;
         }
@@ -1770,13 +1765,13 @@ samp,
         h2 {
             font-size: 1.5em;
             margin: 0.5em 0;
-            color: var(--ip-text-on-accent);
+            color: var(--ip-text-primary);
         }
 
         h3 {
             font-size: 1.25em;
             margin: 0.5em 0;
-            color: var(--ip-text-on-accent);
+            color: var(--ip-text-primary);
         }
 
         p {
@@ -2014,13 +2009,11 @@ samp,
     margin: 0;
     white-space: pre-wrap;
     font-size: 0.85rem;
-    max-height: 500px;
     overflow-y: auto;
 }
 
 .view-only-output-html {
     overflow: auto;
-    max-height: 500px;
 }
 
 // Visual outputs (SVG, Canvas/BlobImage, Animation, Simulation) are not
@@ -2034,7 +2027,6 @@ samp,
 }
 
 .view-only-output-display:has(.ironpad-output-table) {
-    max-height: 500px;
     overflow-y: auto;
 }
 
