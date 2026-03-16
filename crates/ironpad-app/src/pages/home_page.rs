@@ -113,7 +113,7 @@ pub fn HomePage() -> impl IntoView {
                         appearance=ButtonAppearance::Subtle
                         on_click=on_import
                     >
-                        "↓ Import Notebook"
+                        "↑ Import Notebook"
                     </Button>
                 </div>
             </div>
