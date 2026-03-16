@@ -8,5 +8,6 @@
       "label": "Reactor Simulation",
       "cell_type": "Code"
     }
-  ]
+  ],
+  "version": 1
 }

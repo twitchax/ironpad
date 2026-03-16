@@ -8,5 +8,6 @@
       "label": "Heat Diffusion",
       "cell_type": "Code"
     }
-  ]
+  ],
+  "version": 1
 }
