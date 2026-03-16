@@ -6,6 +6,20 @@
 
 use leptos::prelude::*;
 
+/// Mirror of `ironpad_cell::SimSliderMeta` for use within the app rendering pipeline.
+///
+/// Defined here to avoid introducing `ironpad-cell` as a direct dependency of `ironpad-app`.
+/// Serializes/deserializes identically to the cell-side type.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SimSliderMeta {
+    pub key: String,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub label: String,
+    pub default: f64,
+}
+
 // ── JS-side helpers (hydrate-only) ──────────────────────────────────────────
 //
 // All heavy pixel work (base64 decode, RGB→RGBA expansion, ImageData creation)
@@ -112,10 +126,7 @@ fn draw_js_frame_to_canvas(
     use js_sys::Function;
     use wasm_bindgen::JsValue;
 
-    let func = Function::new_with_args(
-        "ctx,a,w,h",
-        "ctx.putImageData(new ImageData(a,w,h),0,0)",
-    );
+    let func = Function::new_with_args("ctx,a,w,h", "ctx.putImageData(new ImageData(a,w,h),0,0)");
     let _ = func.call4(
         &JsValue::NULL,
         ctx,
@@ -301,6 +312,7 @@ pub fn SimulationCanvas(
     fps: u32,
     first_frame_data: String,
     #[prop(into)] cell_id: String,
+    #[prop(default = vec![])] sliders: Vec<SimSliderMeta>,
 ) -> impl IntoView {
     #[cfg(feature = "hydrate")]
     {
@@ -457,6 +469,9 @@ pub fn SimulationCanvas(
             });
         };
 
+        // sliders will be rendered in T-008; store for future use.
+        drop(sliders);
+
         view! {
             <div class="animation-canvas-container">
                 <canvas
@@ -487,6 +502,7 @@ pub fn SimulationCanvas(
     #[cfg(not(feature = "hydrate"))]
     {
         let _ = (width, height, fps, first_frame_data, cell_id);
+        drop(sliders);
         view! {
             <div class="animation-canvas-container">
                 <div>{format!("Simulation at {fps} fps ({width}×{height})")}</div>

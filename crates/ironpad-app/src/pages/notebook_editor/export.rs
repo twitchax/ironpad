@@ -9,6 +9,8 @@ use ironpad_common::{CellType, IronpadNotebook};
 #[cfg(feature = "hydrate")]
 use crate::components::markdown_cell::render_markdown;
 
+use crate::components::animation_canvas::SimSliderMeta;
+
 // ── Display panels ──────────────────────────────────────────────────────────
 
 /// Display panel types matching `ironpad-cell`'s `DisplayPanel` enum.
@@ -48,6 +50,7 @@ pub(super) enum DisplayPanel {
         height: u32,
         fps: u32,
         first_frame_data: String,
+        sliders: Vec<SimSliderMeta>,
     },
 }
 

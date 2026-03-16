@@ -469,6 +469,7 @@ let meta = SimulationMeta {{
     height: first_frame.height(),
     fps: {struct_name}::fps(),
     first_frame,
+    sliders: {struct_name}::sliders(),
 }};
 unsafe {{ __IRONPAD_SIM__ = Some(sim); }}
 let __ironpad_output__: CellOutput = meta.into();

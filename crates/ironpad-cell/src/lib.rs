@@ -68,11 +68,11 @@ pub mod prelude {
     pub use crate::plot::Plot;
     pub use crate::sim;
     pub use crate::ui;
-    pub use crate::ui::ProgressHandle;
+    pub use crate::ui::{sim_slider, ProgressHandle, SimSlider};
     pub use crate::{host_message, host_message_json};
     pub use crate::{
         CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Json, Md,
-        Simulation, SimulationMeta, Svg, Table, TickResult, TypeTag,
+        SimSliderMeta, Simulation, SimulationMeta, Svg, Table, TickResult, TypeTag,
     };
 
     #[cfg(target_arch = "wasm32")]
@@ -250,6 +250,7 @@ pub enum DisplayPanel {
         height: u32,
         fps: u32,
         first_frame_data: String,
+        sliders: Vec<SimSliderMeta>,
     },
 }
 
@@ -596,6 +597,7 @@ impl From<SimulationMeta> for CellOutput {
             height: meta.height,
             fps: meta.fps,
             first_frame_data: rgb_data,
+            sliders: meta.sliders,
         }];
         Self {
             bytes: vec![],
@@ -821,6 +823,21 @@ pub trait Simulation: Sized + 'static {
     fn fps() -> u32 {
         30
     }
+    /// Slider declarations for this simulation (default: none).
+    fn sliders() -> Vec<SimSliderMeta> {
+        vec![]
+    }
+}
+
+/// Metadata for a simulation slider, declaring a bus key and value range.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SimSliderMeta {
+    pub key: String,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub label: String,
+    pub default: f64,
 }
 
 /// Metadata emitted by the scaffold for a [`Simulation`] cell.
@@ -829,6 +846,7 @@ pub struct SimulationMeta {
     pub height: u32,
     pub fps: u32,
     pub first_frame: canvas::Canvas,
+    pub sliders: Vec<SimSliderMeta>,
 }
 
 /// FFI-safe return type for the `cell_tick` export.
@@ -2400,6 +2418,7 @@ mod tests {
             height: 3,
             fps: 60,
             first_frame: frame,
+            sliders: vec![],
         };
         let output = CellOutput::from(meta);
         assert_eq!(output.type_tag.as_deref(), Some("Simulation"));
@@ -2411,6 +2430,7 @@ mod tests {
                 height,
                 fps,
                 first_frame_data,
+                ..
             } => {
                 assert_eq!(*width, 4);
                 assert_eq!(*height, 3);

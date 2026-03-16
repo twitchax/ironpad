@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use ironpad_common::CompileRequest;
 use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 
-use crate::components::animation_canvas::{AnimationCanvas, SimulationCanvas};
+use crate::components::animation_canvas::{AnimationCanvas, SimSliderMeta, SimulationCanvas};
 use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
@@ -57,6 +57,7 @@ enum DisplayPanel {
         height: u32,
         fps: u32,
         first_frame_data: String,
+        sliders: Vec<SimSliderMeta>,
     },
 }
 
@@ -744,7 +745,7 @@ fn ViewOnlyOutput(
                             });
 
                             view! {
-                                <div class="view-only-output-display view-only-output-html">
+                                <div class="view-only-output-display view-only-output-visual">
                                     <img
                                         src=blob_url
                                         width=width
@@ -761,11 +762,11 @@ fn ViewOnlyOutput(
                                 </div>
                             }.into_any()
                         },
-                        DisplayPanel::Simulation { width, height, fps, first_frame_data } => {
+                        DisplayPanel::Simulation { width, height, fps, first_frame_data, sliders } => {
                             let cid = cell_id.clone();
                             view! {
                                 <div class="view-only-output-display">
-                                    <SimulationCanvas width=width height=height fps=fps first_frame_data=first_frame_data cell_id=cid />
+                                    <SimulationCanvas width=width height=height fps=fps first_frame_data=first_frame_data cell_id=cid sliders=sliders />
                                 </div>
                             }.into_any()
                         },

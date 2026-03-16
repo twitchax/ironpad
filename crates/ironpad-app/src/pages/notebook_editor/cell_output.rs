@@ -327,7 +327,7 @@ pub(super) fn CellOutputPanel(
                                             });
 
                                             view! {
-                                                <div class="ironpad-output-display ironpad-output-html">
+                                                <div class="ironpad-output-display ironpad-output-visual">
                                                     <img
                                                         src=blob_url
                                                         width=width
@@ -344,11 +344,11 @@ pub(super) fn CellOutputPanel(
                                                 </div>
                                             }.into_any()
                                         },
-                                        DisplayPanel::Simulation { width, height, fps, first_frame_data } => {
+                                        DisplayPanel::Simulation { width, height, fps, first_frame_data, sliders } => {
                                             let cid = cell_id.clone().unwrap_or_default();
                                             view! {
                                                 <div class="ironpad-output-display">
-                                                    <SimulationCanvas width=width height=height fps=fps first_frame_data=first_frame_data cell_id=cid />
+                                                    <SimulationCanvas width=width height=height fps=fps first_frame_data=first_frame_data cell_id=cid sliders=sliders />
                                                 </div>
                                             }.into_any()
                                         },

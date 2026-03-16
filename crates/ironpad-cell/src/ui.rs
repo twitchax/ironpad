@@ -673,6 +673,58 @@ impl ProgressHandle {
     }
 }
 
+// ── SimSlider ────────────────────────────────────────────────────────────────
+
+/// Builder for a simulation slider.
+///
+/// Declares a named bus key; the executor auto-emits the slider value
+/// to the sim bus on every change.  Simulations read the value via
+/// `sim::read::<f64>(key)`.
+#[must_use]
+pub struct SimSlider {
+    meta: crate::SimSliderMeta,
+}
+
+/// Create a simulation slider bound to a bus key.
+pub fn sim_slider(key: &str, min: f64, max: f64) -> SimSlider {
+    SimSlider {
+        meta: crate::SimSliderMeta {
+            key: key.to_owned(),
+            min,
+            max,
+            step: 0.01,
+            label: key.to_owned(),
+            default: min,
+        },
+    }
+}
+
+impl SimSlider {
+    /// Set the step increment.
+    pub fn step(mut self, step: f64) -> Self {
+        self.meta.step = step;
+        self
+    }
+
+    /// Set the display label.
+    pub fn label(mut self, label: &str) -> Self {
+        label.clone_into(&mut self.meta.label);
+        self
+    }
+
+    /// Set the default value.
+    pub fn default_value(mut self, value: f64) -> Self {
+        self.meta.default = value;
+        self
+    }
+
+    /// Consume the builder and return the underlying [`SimSliderMeta`](crate::SimSliderMeta).
+    #[must_use]
+    pub fn into_meta(self) -> crate::SimSliderMeta {
+        self.meta
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
