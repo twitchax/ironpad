@@ -805,6 +805,30 @@ fn render_table_tsv(headers: &[String], rows: &[Vec<String>]) -> String {
     tsv
 }
 
+// ── Sim bus JS bridge (hydrate-only) ─────────────────────────────────────────
+
+#[cfg(feature = "hydrate")]
+mod view_only_sim_bus_js {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen(inline_js = "
+        export function sim_bus_write_f64(key, value) {
+            if (window.IronpadExecutor && window.IronpadExecutor.simBusWrite) {
+                window.IronpadExecutor.simBusWrite(key, value);
+            }
+        }
+        export function sim_bus_write_bool(key, value) {
+            if (window.IronpadExecutor && window.IronpadExecutor.simBusWrite) {
+                window.IronpadExecutor.simBusWrite(key, value ? 1.0 : 0.0);
+            }
+        }
+    ")]
+    extern "C" {
+        pub fn sim_bus_write_f64(key: &str, value: f64);
+        pub fn sim_bus_write_bool(key: &str, value: bool);
+    }
+}
+
 // ── ViewOnlyInteractiveWidget ────────────────────────────────────────────────
 
 /// Renders an interactive widget in read-only mode (shows current/default value).
@@ -849,25 +873,39 @@ fn ViewOnlyInteractiveWidget(
             } else {
                 label.clone()
             };
+            let bus_key = cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned);
 
             let value = RwSignal::new(default.to_string());
 
             #[cfg(feature = "hydrate")]
+            {
+                if let Some(key) = bus_key.clone() {
+                    Effect::new(move |_| {
+                        view_only_sim_bus_js::sim_bus_write_f64(&key, default);
+                    });
+                }
+            }
+
+            #[cfg(feature = "hydrate")]
             let on_input = {
                 let cell_id = cell_id.clone();
+                let bus_key = bus_key.clone();
                 move |ev: web_sys::Event| {
                     let new_val = leptos::prelude::event_target_value(&ev);
                     value.set(new_val.clone());
                     if let Ok(f) = new_val.parse::<f64>() {
                         let bytes = bincode_encode_f64(f);
                         update_view_cell_output(bytes, &cell_id, cell_outputs);
+                        if let Some(ref key) = bus_key {
+                            view_only_sim_bus_js::sim_bus_write_f64(key, f);
+                        }
                     }
                 }
             };
 
             #[cfg(not(feature = "hydrate"))]
             let on_input = move |_: leptos::ev::Event| {};
-            let _ = (&cell_id, &cell_outputs);
+            let _ = (&cell_id, &cell_outputs, &bus_key);
 
             view! {
                 <div class="ironpad-interactive-widget">
@@ -949,12 +987,23 @@ fn ViewOnlyInteractiveWidget(
                 .get("default")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+            let bus_key = cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned);
 
             let checked = RwSignal::new(default);
 
             #[cfg(feature = "hydrate")]
+            {
+                if let Some(key) = bus_key.clone() {
+                    Effect::new(move |_| {
+                        view_only_sim_bus_js::sim_bus_write_bool(&key, default);
+                    });
+                }
+            }
+
+            #[cfg(feature = "hydrate")]
             let on_change = {
                 let cell_id = cell_id.clone();
+                let bus_key = bus_key.clone();
                 move |ev: web_sys::Event| {
                     use wasm_bindgen::JsCast;
                     if let Some(input) = ev
@@ -965,13 +1014,16 @@ fn ViewOnlyInteractiveWidget(
                         checked.set(new_val);
                         let bytes = bincode_encode_bool(new_val);
                         update_view_cell_output(bytes, &cell_id, cell_outputs);
+                        if let Some(ref key) = bus_key {
+                            view_only_sim_bus_js::sim_bus_write_bool(key, new_val);
+                        }
                     }
                 }
             };
 
             #[cfg(not(feature = "hydrate"))]
             let on_change = move |_: leptos::ev::Event| {};
-            let _ = (&cell_id, &cell_outputs);
+            let _ = (&cell_id, &cell_outputs, &bus_key);
 
             view! {
                 <div class="ironpad-interactive-widget">
