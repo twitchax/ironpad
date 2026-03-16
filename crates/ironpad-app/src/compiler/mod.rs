@@ -524,4 +524,78 @@ mod e2e_tests {
             "different source should not hit the cache",
         );
     }
+
+    // ── Sim bus compilation ─────────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn pipeline_simulation_with_sim_bus_compiles() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-simbustest";
+        let cell_id = "simbus";
+
+        // A minimal simulation that uses sim::emit and sim::read via sliders.
+        let source = r#"
+struct BusSim {
+    frame: u32,
+}
+
+impl Simulation for BusSim {
+    fn init() -> Self {
+        Self { frame: 0 }
+    }
+
+    fn tick(&mut self) -> Canvas {
+        let val: f64 = sim::read("test_key").unwrap_or(42.0);
+        sim::emit("output_key", &val);
+        self.frame += 1;
+        Canvas::new(10, 10)
+    }
+
+    fn sliders() -> Vec<SimSliderMeta> {
+        vec![
+            ui::sim_slider("test_key", 0.0, 100.0)
+                .default_value(42.0)
+                .into_meta(),
+        ]
+    }
+}
+"#;
+        let cargo_toml = "[dependencies]";
+
+        let (crate_dir, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+            .await
+            .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                assert!(wasm_path.exists(), "WASM blob should exist on disk");
+                let wasm_bytes = std::fs::read(&wasm_path).unwrap();
+                assert_eq!(
+                    &wasm_bytes[..4],
+                    b"\x00asm",
+                    "WASM blob should start with the WASM magic number",
+                );
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "sim bus cell should compile successfully but got failure.\nstdout: {stdout}\nstderr: {stderr}"
+                );
+            }
+        }
+    }
 }

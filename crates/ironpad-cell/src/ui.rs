@@ -1173,4 +1173,42 @@ mod tests {
         // Should not panic on native (non-WASM) — host_message is a no-op.
         handle.update(50.0);
     }
+
+    // ── SimSlider tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn sim_slider_meta_serialization() {
+        let meta = sim_slider("key", 0.0, 1.0)
+            .step(0.01)
+            .label("Test")
+            .default_value(0.5)
+            .into_meta();
+        let json = serde_json::to_string(&meta).unwrap();
+        let roundtrip: crate::SimSliderMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta, roundtrip);
+    }
+
+    #[test]
+    fn sim_slider_defaults() {
+        let meta = sim_slider("speed", 0.0, 10.0).into_meta();
+        assert_eq!(meta.key, "speed");
+        assert!((meta.min - 0.0).abs() < f64::EPSILON);
+        assert!((meta.max - 10.0).abs() < f64::EPSILON);
+        assert!((meta.step - 0.01).abs() < f64::EPSILON);
+        assert_eq!(meta.label, "speed");
+        assert!((meta.default - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sim_slider_builder_overrides() {
+        let meta = sim_slider("x", -1.0, 1.0)
+            .step(0.1)
+            .label("X axis")
+            .default_value(0.25)
+            .into_meta();
+        assert_eq!(meta.key, "x");
+        assert!((meta.step - 0.1).abs() < f64::EPSILON);
+        assert_eq!(meta.label, "X axis");
+        assert!((meta.default - 0.25).abs() < f64::EPSILON);
+    }
 }
