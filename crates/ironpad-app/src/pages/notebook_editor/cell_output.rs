@@ -8,6 +8,7 @@ use leptos::prelude::*;
 use crate::components::animation_canvas::{AnimationCanvas, SimulationCanvas};
 use crate::components::copy_button::CopyButton;
 use crate::components::error_panel::ErrorPanel;
+use crate::components::live_view_panel::LiveViewPanel;
 use crate::components::markdown_cell::render_markdown;
 
 use super::export::{render_table_html, render_table_tsv, DisplayPanel};
@@ -349,6 +350,14 @@ pub(super) fn CellOutputPanel(
                                             view! {
                                                 <div class="ironpad-output-display">
                                                     <SimulationCanvas width=width height=height fps=fps first_frame_data=first_frame_data cell_id=cid sliders=sliders />
+                                                </div>
+                                            }.into_any()
+                                        },
+                                        DisplayPanel::LiveView { fps, kind, content } => {
+                                            let cid = cell_id.clone().unwrap_or_default();
+                                            view! {
+                                                <div class="ironpad-output-display">
+                                                    <LiveViewPanel fps=fps kind=kind content=content cell_id=cid />
                                                 </div>
                                             }.into_any()
                                         },

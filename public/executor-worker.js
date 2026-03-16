@@ -76,7 +76,7 @@ executor._dispatchHostMessage = function (cellId, ptr, len) {
 // ── Command handler ─────────────────────────────────────────────────────────
 //
 // Protocol:
-//   Incoming:  { type: "loadBlob"|"execute"|"tick"|"unload"|"sim_bus_write", id?, cellId, ... }
+//   Incoming:  { type: "loadBlob"|"execute"|"tick"|"tick_live"|"unload"|"sim_bus_write", id?, cellId, ... }
 //   Outgoing:  { type: "result"|"error", id, value?|error? }
 //              { type: "hostMessage", cellId, messageJson }
 
@@ -135,6 +135,18 @@ self.onmessage = async function (e) {
         ? [result.rgbBytes.buffer]
         : [];
       self.postMessage({ type: "result", id: msg.id, value: result }, transfer);
+    } catch (err) {
+      var errorMsg = err.message || String(err);
+      if (_lastPanicMessage) {
+        errorMsg = _lastPanicMessage;
+        _lastPanicMessage = null;
+      }
+      self.postMessage({ type: "error", id: msg.id, error: errorMsg });
+    }
+  } else if (msg.type === "tick_live") {
+    try {
+      var result = await executor.tickLive(msg.cellId);
+      self.postMessage({ type: "result", id: msg.id, value: result });
     } catch (err) {
       var errorMsg = err.message || String(err);
       if (_lastPanicMessage) {

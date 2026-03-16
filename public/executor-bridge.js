@@ -230,6 +230,39 @@
     });
   };
 
+  /// Execute a single tick on a loaded LiveView cell.
+  ///
+  /// Returns Promise<{ kind, content, fallback? }>.
+  /// If the worker tick fails, automatically retries on the main thread.
+  BridgeExecutor.prototype.tickLive = function (cellId) {
+    var self = this;
+
+    return this._postRequest({
+      type: "tick_live",
+      cellId: cellId,
+    }).catch(async function (workerError) {
+      console.warn(
+        "ironpad: worker tickLive failed for " + cellId +
+        ", retrying on main thread. Worker error: " + workerError.message
+      );
+
+      var exec = await self._ensureMainExecutor();
+      var blob = self._blobCache.get(cellId);
+
+      if (!blob) throw workerError;
+
+      if (!exec.isLoaded(cellId, blob.hash)) {
+        await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
+      }
+
+      if (!exec.tickLive) throw workerError;
+
+      var result = await exec.tickLive(cellId);
+      result.fallback = true;
+      return result;
+    });
+  };
+
   /// Remove a loaded cell module.  Fire-and-forget (no response expected).
   BridgeExecutor.prototype.unload = function (cellId) {
     this._loadedCache.delete(cellId);

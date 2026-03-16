@@ -52,6 +52,12 @@ pub(super) enum DisplayPanel {
         first_frame_data: String,
         sliders: Vec<SimSliderMeta>,
     },
+    /// Live view placeholder (initial content + fps + content kind).
+    LiveView {
+        fps: u32,
+        kind: String,
+        content: String,
+    },
 }
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
@@ -252,6 +258,18 @@ pub(super) fn build_export_html(
                                         html,
                                         "<div class=\"output-html\">\
                                          <em>Simulation at {fps} fps ({width}×{height})</em>\
+                                         </div>"
+                                    );
+                                }
+                                DisplayPanel::LiveView {
+                                    fps,
+                                    kind,
+                                    content: _,
+                                } => {
+                                    let _ = writeln!(
+                                        html,
+                                        "<div class=\"output-html\">\
+                                         <em>LiveView at {fps} fps ({kind})</em>\
                                          </div>"
                                     );
                                 }

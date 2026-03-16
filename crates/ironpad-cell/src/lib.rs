@@ -71,8 +71,9 @@ pub mod prelude {
     pub use crate::ui::{sim_slider, ProgressHandle, SimSlider};
     pub use crate::{host_message, host_message_json};
     pub use crate::{
-        CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Json, Md,
-        SimSliderMeta, Simulation, SimulationMeta, Svg, Table, TickResult, TypeTag,
+        CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Json,
+        LiveContent, LiveTickResult, LiveView, LiveViewMeta, Md, SimSliderMeta, Simulation,
+        SimulationMeta, Svg, Table, TickResult, TypeTag,
     };
 
     #[cfg(target_arch = "wasm32")]
@@ -251,6 +252,12 @@ pub enum DisplayPanel {
         fps: u32,
         first_frame_data: String,
         sliders: Vec<SimSliderMeta>,
+    },
+    /// Live view placeholder (initial content + fps + content kind).
+    LiveView {
+        fps: u32,
+        kind: String,
+        content: String,
     },
 }
 
@@ -607,6 +614,26 @@ impl From<SimulationMeta> for CellOutput {
     }
 }
 
+impl From<LiveViewMeta> for CellOutput {
+    fn from(meta: LiveViewMeta) -> Self {
+        let (kind, content) = match &meta.initial_content {
+            LiveContent::Text(s) => ("text".to_string(), s.clone()),
+            LiveContent::Html(s) => ("html".to_string(), s.clone()),
+            LiveContent::Markdown(s) => ("markdown".to_string(), s.clone()),
+        };
+        let panels = vec![DisplayPanel::LiveView {
+            fps: meta.fps,
+            kind,
+            content,
+        }];
+        Self {
+            bytes: vec![],
+            panels,
+            type_tag: Some("LiveView".into()),
+        }
+    }
+}
+
 // ── IntoPanels trait ─────────────────────────────────────────────────────────
 
 /// Trait for types that can produce display panels.
@@ -872,6 +899,73 @@ impl From<canvas::Canvas> for TickResult {
             rgb_len: len,
             width,
             height,
+        }
+    }
+}
+
+// ── LiveView ────────────────────────────────────────────────────────────────
+
+/// Trait for live views that produce text/HTML/Markdown on each tick.
+///
+/// Implement this on your view state to enable live-updating content in
+/// the notebook. The runtime calls [`init`](LiveView::init) once, then
+/// [`tick`](LiveView::tick) repeatedly at the target [`fps`](LiveView::fps).
+pub trait LiveView: Sized + 'static {
+    /// Create the initial view state.
+    fn init() -> Self;
+    /// Produce updated content for this tick.
+    fn tick(&mut self) -> LiveContent;
+    /// Target frames per second (default: 10).
+    fn fps() -> u32 {
+        10
+    }
+}
+
+/// Content produced by a [`LiveView`] tick.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum LiveContent {
+    /// Plain text, rendered in a `<pre>` tag.
+    Text(String),
+    /// Raw HTML, rendered via `inner_html`.
+    Html(String),
+    /// Markdown, rendered client-side (supports `KaTeX`).
+    Markdown(String),
+}
+
+/// Metadata emitted by the scaffold for a [`LiveView`] cell.
+pub struct LiveViewMeta {
+    pub fps: u32,
+    pub initial_content: LiveContent,
+}
+
+/// FFI-safe return type for the `cell_tick` export of a `LiveView` cell.
+///
+/// Layout (12 bytes on wasm32):
+///   - offset 0: `kind` (`u32`) — 0=Text, 1=Html, 2=Markdown
+///   - offset 4: `content_ptr` (`*mut u8`) — pointer to UTF-8 content string
+///   - offset 8: `content_len` (`usize`) — length of content string
+#[repr(C)]
+pub struct LiveTickResult {
+    pub kind: u32,
+    pub content_ptr: *mut u8,
+    pub content_len: usize,
+}
+
+impl From<LiveContent> for LiveTickResult {
+    fn from(content: LiveContent) -> Self {
+        let (kind, s) = match content {
+            LiveContent::Text(s) => (0, s),
+            LiveContent::Html(s) => (1, s),
+            LiveContent::Markdown(s) => (2, s),
+        };
+        let mut bytes = s.into_bytes().into_boxed_slice();
+        let ptr = bytes.as_mut_ptr();
+        let len = bytes.len();
+        std::mem::forget(bytes);
+        LiveTickResult {
+            kind,
+            content_ptr: ptr,
+            content_len: len,
         }
     }
 }
@@ -2454,6 +2548,75 @@ mod tests {
         // Clean up leaked memory.
         unsafe {
             drop(Vec::from_raw_parts(tr.rgb_ptr, tr.rgb_len, tr.rgb_len));
+        }
+    }
+
+    // ── LiveView / LiveTickResult ──────────────────────────────────────────
+
+    #[test]
+    fn live_view_meta_into_cell_output() {
+        let meta = LiveViewMeta {
+            fps: 10,
+            initial_content: LiveContent::Html("<b>hello</b>".into()),
+        };
+        let output = CellOutput::from(meta);
+        assert_eq!(output.type_tag.as_deref(), Some("LiveView"));
+        assert!(output.bytes.is_empty());
+        assert_eq!(output.panels.len(), 1);
+        match &output.panels[0] {
+            DisplayPanel::LiveView { fps, kind, content } => {
+                assert_eq!(*fps, 10);
+                assert_eq!(kind, "html");
+                assert_eq!(content, "<b>hello</b>");
+            }
+            other => panic!("expected LiveView panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_tick_result_from_text() {
+        let content = LiveContent::Text("hello world".into());
+        let result = LiveTickResult::from(content);
+        assert_eq!(result.kind, 0);
+        assert_eq!(result.content_len, 11);
+        assert!(!result.content_ptr.is_null());
+        // Clean up leaked memory.
+        unsafe {
+            drop(Vec::from_raw_parts(
+                result.content_ptr,
+                result.content_len,
+                result.content_len,
+            ));
+        }
+    }
+
+    #[test]
+    fn live_tick_result_from_html() {
+        let content = LiveContent::Html("<b>hi</b>".into());
+        let result = LiveTickResult::from(content);
+        assert_eq!(result.kind, 1);
+        // Clean up.
+        unsafe {
+            drop(Vec::from_raw_parts(
+                result.content_ptr,
+                result.content_len,
+                result.content_len,
+            ));
+        }
+    }
+
+    #[test]
+    fn live_tick_result_from_markdown() {
+        let content = LiveContent::Markdown("# Title".into());
+        let result = LiveTickResult::from(content);
+        assert_eq!(result.kind, 2);
+        // Clean up.
+        unsafe {
+            drop(Vec::from_raw_parts(
+                result.content_ptr,
+                result.content_len,
+                result.content_len,
+            ));
         }
     }
 }

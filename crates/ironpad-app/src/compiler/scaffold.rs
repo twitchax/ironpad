@@ -318,6 +318,33 @@ fn is_simulation(source: &str) -> Option<String> {
     None
 }
 
+/// Detect whether the source implements the `LiveView` trait.
+///
+/// Scans for `impl LiveView for <Name>` and returns the struct name if found.
+/// Handles whitespace variations between tokens. Ignores commented-out lines.
+fn is_live_view(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // Skip comment lines.
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") {
+            continue;
+        }
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        for window in tokens.windows(4) {
+            if window[0] == "impl" && window[1] == "LiveView" && window[2] == "for" {
+                let name: String = window[3]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Wrap user source code in the `cell_main` wasm-bindgen entry point.
 ///
 /// Produces a `lib.rs` that:
@@ -344,6 +371,11 @@ pub fn generate_lib_rs(
     // Simulation cells get a completely different wrapper.
     if let Some(struct_name) = is_simulation(source) {
         return generate_simulation_lib_rs(source, &struct_name, has_shared_source);
+    }
+
+    // LiveView cells get a content-returning tick wrapper.
+    if let Some(struct_name) = is_live_view(source) {
+        return generate_live_view_lib_rs(source, &struct_name, has_shared_source);
     }
 
     let is_async = needs_async(source);
@@ -492,6 +524,64 @@ Box::into_raw(Box::new(result)) as u32
     let preamble_lines = 2 + shared_lines;
 
     // Simulations are always sync.
+    (code, preamble_lines, false, true)
+}
+
+/// Generate the `lib.rs` wrapper for `LiveView` cells.
+///
+/// `LiveView` cells produce two WASM exports: `cell_main` (initialization) and
+/// `cell_tick` (per-tick update returning content). The user source (struct
+/// definition + trait impl) appears at module level.
+fn generate_live_view_lib_rs(
+    source: &str,
+    struct_name: &str,
+    has_shared_source: bool,
+) -> (String, u32, bool, bool) {
+    let shared_mod = if has_shared_source {
+        "mod shared;\n"
+    } else {
+        ""
+    };
+
+    let code = format!(
+        "\
+use ironpad_cell::prelude::*;
+{shared_mod}
+{source}
+
+static mut __IRONPAD_LIVE_VIEW__: Option<{struct_name}> = None;
+
+#[wasm_bindgen]
+pub fn cell_main(_input_ptr: u32, _input_len: u32) -> u32 {{
+console_error_panic_hook::set_once();
+let mut view = {struct_name}::init();
+let first_content = view.tick();
+let meta = LiveViewMeta {{
+    fps: {struct_name}::fps(),
+    initial_content: first_content,
+}};
+unsafe {{ __IRONPAD_LIVE_VIEW__ = Some(view); }}
+let __ironpad_output__: CellOutput = meta.into();
+let result: CellResult = __ironpad_output__.into();
+Box::into_raw(Box::new(result)) as u32
+}}
+
+#[wasm_bindgen]
+pub fn cell_tick() -> u32 {{
+let view = unsafe {{ __IRONPAD_LIVE_VIEW__.as_mut().unwrap() }};
+let content = view.tick();
+let result: LiveTickResult = content.into();
+Box::into_raw(Box::new(result)) as u32
+}}
+"
+    );
+
+    // Preamble: 2 base (use + blank) + 1 if shared_mod.
+    let shared_lines = u32::from(has_shared_source);
+    let preamble_lines = 2 + shared_lines;
+
+    // LiveView cells reuse the tick infrastructure (is_simulation=true tells
+    // the executor to export cell_tick).
     (code, preamble_lines, false, true)
 }
 
@@ -1353,5 +1443,118 @@ impl Simulation for Pendulum {
         assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
         assert!(!lib_rs.contains("cell_tick"));
         assert!(!lib_rs.contains("__IRONPAD_SIM__"));
+    }
+
+    // ── T-003/T-008: LiveView detection and scaffold ────────────────────
+
+    #[test]
+    fn is_live_view_detects_impl() {
+        assert_eq!(
+            is_live_view("impl LiveView for Dashboard"),
+            Some("Dashboard".into())
+        );
+    }
+
+    #[test]
+    fn is_live_view_handles_whitespace_variations() {
+        assert_eq!(
+            is_live_view("impl  LiveView  for  MyView"),
+            Some("MyView".into())
+        );
+        assert_eq!(
+            is_live_view("  impl LiveView for Foo {"),
+            Some("Foo".into())
+        );
+    }
+
+    #[test]
+    fn is_live_view_returns_none_for_non_live_view() {
+        assert_eq!(is_live_view("let x = 42;"), None);
+        assert_eq!(is_live_view("impl Simulation for Foo"), None);
+        assert_eq!(is_live_view("impl Display for Foo"), None);
+        assert_eq!(is_live_view("// impl LiveView for Foo"), None);
+    }
+
+    #[test]
+    fn is_live_view_multiline_source() {
+        let source = "\
+struct Dashboard { count: u32 }
+
+impl LiveView for Dashboard {
+    fn init() -> Self { Dashboard { count: 0 } }
+    fn tick(&mut self) -> LiveContent { LiveContent::Text(\"hi\".into()) }
+}";
+        assert_eq!(is_live_view(source), Some("Dashboard".into()));
+    }
+
+    #[test]
+    fn generate_lib_rs_live_view_mode() {
+        let source = "\
+struct Dashboard { count: u32 }
+
+impl LiveView for Dashboard {
+    fn init() -> Self { Dashboard { count: 0 } }
+    fn tick(&mut self) -> LiveContent { LiveContent::Text(\"hi\".into()) }
+}";
+        let (lib_rs, preamble, is_async, is_sim) = generate_lib_rs(source, &[], false);
+
+        assert!(!is_async);
+        assert!(is_sim); // reuses tick infrastructure
+        assert_eq!(preamble, 2);
+
+        // Both exports present.
+        assert!(lib_rs.contains("pub fn cell_main("));
+        assert!(lib_rs.contains("pub fn cell_tick()"));
+
+        // LiveView-specific code.
+        assert!(lib_rs.contains("static mut __IRONPAD_LIVE_VIEW__: Option<Dashboard>"));
+        assert!(lib_rs.contains("Dashboard::init()"));
+        assert!(lib_rs.contains("Dashboard::fps()"));
+        assert!(lib_rs.contains("LiveViewMeta"));
+        assert!(lib_rs.contains("LiveTickResult"));
+
+        // User source present in generated code.
+        assert!(lib_rs.contains("struct Dashboard"));
+        assert!(lib_rs.contains("impl LiveView for Dashboard"));
+
+        // Should NOT contain normal expression wrapper or Simulation code.
+        assert!(!lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
+        assert!(!lib_rs.contains("__IRONPAD_SIM__"));
+        assert!(!lib_rs.contains(": TickResult"));
+    }
+
+    #[test]
+    fn generate_lib_rs_live_view_preamble_count() {
+        let source = "struct V {}\nimpl LiveView for V {}";
+        let (lib_rs, preamble, ..) = generate_lib_rs(source, &[], false);
+
+        // Preamble: 2 (use + blank).
+        assert_eq!(preamble, 2);
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize], "struct V {}");
+    }
+
+    #[test]
+    fn generate_lib_rs_live_view_preamble_with_shared() {
+        let source = "struct V {}\nimpl LiveView for V {}";
+        let (lib_rs, preamble, ..) = generate_lib_rs(source, &[], true);
+
+        // Preamble: 2 base + 1 shared = 3.
+        assert_eq!(preamble, 3);
+
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize], "struct V {}");
+    }
+
+    #[test]
+    fn generate_lib_rs_live_view_does_not_match_simulation() {
+        // A Simulation impl should NOT be caught by the LiveView detector.
+        let source = "struct S {}\nimpl Simulation for S {\n    fn init() -> Self { S {} }\n    fn tick(&mut self) -> Canvas { todo!() }\n}";
+        let (lib_rs, _, _, _) = generate_lib_rs(source, &[], false);
+
+        // Should use simulation path, not live view.
+        assert!(lib_rs.contains("__IRONPAD_SIM__"));
+        assert!(!lib_rs.contains("__IRONPAD_LIVE_VIEW__"));
     }
 }

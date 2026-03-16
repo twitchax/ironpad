@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Mandelbrot Set 🌀\n\nThe **Mandelbrot set** is the most famous fractal in mathematics. It is defined as the set of complex numbers *c* for which the iteration\n\n> z_{n+1} = z_n² + c,  starting with z₀ = 0\n\nremains bounded (|z| ≤ 2) as n → ∞.\n\n## The Escape-Time Algorithm\n\nFor each pixel we map its position to a complex number *c*, then iterate the formula above. If |z| exceeds 2, the sequence will diverge — the number of iterations before escape determines the pixel's color. Points that never escape (up to our iteration limit) are colored black — these lie *inside* the Mandelbrot set.\n\nThe boundary is a fractal of infinite complexity: no matter how far you zoom in, there is always more detail.",
+      "source": "# Mandelbrot Set 🌀\n\nThe **Mandelbrot set** is the most famous fractal in mathematics. It is defined as the set of complex numbers $c$ for which the iteration\n\n$$z_{n+1} = z_n^2 + c, \\quad z_0 = 0$$\n\nremains bounded ($|z| \\le 2$) as $n \\to \\infty$.\n\n## The Escape-Time Algorithm\n\nFor each pixel we map its position to a complex number $c$, then iterate the formula above. If $|z|$ exceeds 2, the sequence will diverge — the number of iterations before escape determines the pixel's color. Points that never escape (up to our iteration limit) are colored black — these lie *inside* the Mandelbrot set.\n\nThe boundary is a fractal of infinite complexity: no matter how far you zoom in, there is always more detail.",
       "cargo_toml": null
     },
     {

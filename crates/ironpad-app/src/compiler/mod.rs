@@ -598,4 +598,91 @@ impl Simulation for BusSim {
             }
         }
     }
+
+    // ── LiveView compilation ────────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn pipeline_live_view_compiles() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-liveview";
+        let cell_id = "liveview";
+
+        // A minimal LiveView that returns HTML content.
+        let source = r#"
+struct Counter {
+    n: u32,
+}
+
+impl LiveView for Counter {
+    fn init() -> Self {
+        Self { n: 0 }
+    }
+
+    fn tick(&mut self) -> LiveContent {
+        self.n += 1;
+        LiveContent::Html(format!("<p>Tick {}</p>", self.n))
+    }
+
+    fn fps() -> u32 {
+        5
+    }
+}
+"#;
+        let cargo_toml = "[dependencies]";
+
+        let (crate_dir, _preamble, _is_async, is_sim) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+        )
+        .expect("scaffold should succeed");
+
+        // LiveView cells report is_simulation=true so the executor knows to
+        // export cell_tick.
+        assert!(is_sim, "LiveView cells should report is_simulation=true");
+
+        // Verify the generated lib.rs contains LiveView-specific code.
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(
+            lib_rs.contains("LiveViewMeta"),
+            "generated lib.rs should contain LiveViewMeta"
+        );
+        assert!(
+            lib_rs.contains("LiveTickResult"),
+            "generated lib.rs should contain LiveTickResult"
+        );
+        assert!(
+            lib_rs.contains("__IRONPAD_LIVE_VIEW__"),
+            "generated lib.rs should use __IRONPAD_LIVE_VIEW__ static"
+        );
+
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+            .await
+            .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                assert!(wasm_path.exists(), "WASM blob should exist on disk");
+                let wasm_bytes = std::fs::read(&wasm_path).unwrap();
+                assert_eq!(
+                    &wasm_bytes[..4],
+                    b"\x00asm",
+                    "WASM blob should start with the WASM magic number",
+                );
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "LiveView cell should compile successfully but got failure.\nstdout: {stdout}\nstderr: {stderr}"
+                );
+            }
+        }
+    }
 }

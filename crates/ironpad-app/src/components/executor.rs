@@ -44,6 +44,11 @@ mod js {
         #[wasm_bindgen(js_namespace = IronpadExecutor, catch)]
         pub fn tick(cell_id: &str) -> Result<js_sys::Promise, JsValue>;
 
+        /// Tick a LiveView cell.  Returns a
+        /// `Promise<{ kind, content, fallback? }>`.
+        #[wasm_bindgen(js_namespace = IronpadExecutor, js_name = "tickLive", catch)]
+        pub fn tick_live(cell_id: &str) -> Result<js_sys::Promise, JsValue>;
+
         /// Terminate the running Web Worker, aborting any in-flight execution.
         /// A fresh Worker is automatically respawned by the bridge.
         #[wasm_bindgen(js_namespace = IronpadExecutor)]
@@ -176,6 +181,14 @@ pub async fn execute_cell(cell_id: &str, input_bytes: &[u8]) -> Result<CellExecR
 
 // ── Tick (simulation cells) ─────────────────────────────────────────────────
 
+/// Result of ticking a `LiveView` cell: content kind, string content, and
+/// whether the tick fell back to the main thread.
+pub struct LiveTickResult {
+    pub kind: u32,
+    pub content: String,
+    pub fallback: bool,
+}
+
 /// Result of ticking a simulation cell: frame dimensions, RGB pixel data, and
 /// whether the tick fell back to the main thread.
 pub struct TickResult {
@@ -235,4 +248,43 @@ pub async fn tick_cell(cell_id: &str) -> Result<TickResult, String> {
 #[allow(clippy::unused_async)]
 pub async fn tick_cell(_cell_id: &str) -> Result<TickResult, String> {
     Err("tick_cell is only available in hydrate mode".into())
+}
+
+// ── Tick (LiveView cells) ───────────────────────────────────────────────────
+
+/// Tick a `LiveView` cell, returning the content string and kind.
+///
+/// The JS executor calls `cell_tick` and returns `{ kind, content, fallback? }`.
+#[cfg(feature = "hydrate")]
+pub async fn tick_live_cell(cell_id: &str) -> Result<LiveTickResult, String> {
+    let promise = js::tick_live(cell_id).map_err(|e| format!("{e:?}"))?;
+    let result = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+
+    let kind_val = js_sys::Reflect::get(&result, &"kind".into()).map_err(|e| format!("{e:?}"))?;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let kind = kind_val
+        .as_f64()
+        .ok_or_else(|| "tick_live result missing `kind`".to_string())? as u32;
+
+    let content_val =
+        js_sys::Reflect::get(&result, &"content".into()).map_err(|e| format!("{e:?}"))?;
+    let content = content_val.as_string().unwrap_or_default();
+
+    let fallback_val =
+        js_sys::Reflect::get(&result, &"fallback".into()).map_err(|e| format!("{e:?}"))?;
+    let fallback = fallback_val.as_bool().unwrap_or(false);
+
+    Ok(LiveTickResult {
+        kind,
+        content,
+        fallback,
+    })
+}
+
+#[cfg(not(feature = "hydrate"))]
+#[allow(clippy::unused_async)]
+pub async fn tick_live_cell(_cell_id: &str) -> Result<LiveTickResult, String> {
+    Err("tick_live_cell is only available in hydrate mode".into())
 }

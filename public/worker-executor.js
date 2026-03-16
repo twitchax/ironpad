@@ -38,6 +38,18 @@
 
   var TICK_RESULT_SIZE = 16;
 
+  // ── LiveTickResult layout ────────────────────────────────────────────────
+  //
+  // The cell_tick function for LiveView cells returns a pointer to a
+  // LiveTickResult (#[repr(C)]):
+  //   offset  0: kind         (u32) — 0=Text, 1=Html, 2=Markdown
+  //   offset  4: content_ptr  (u32) — pointer to UTF-8 content string
+  //   offset  8: content_len  (u32) — length of content string
+  //
+  // Total size: 12 bytes.
+
+  var LIVE_TICK_RESULT_SIZE = 12;
+
   // ── CellExecutor ───────────────────────────────────────────────────────────
 
   function CellExecutor() {
@@ -583,6 +595,119 @@
     if (useSret || retptr) dealloc(retptr, TICK_RESULT_SIZE);
 
     return { width: width, height: height, rgbBytes: rgbBytes };
+  };
+
+  // ── Shared LiveTickResult reader ──────────────────────────────────────
+
+  CellExecutor.prototype._readLiveTickResult = function (
+    memory, dealloc, retptr, useSret
+  ) {
+    var view = new DataView(memory.buffer);
+    var kind = view.getUint32(retptr, true);
+    var contentPtr = view.getUint32(retptr + 4, true);
+    var contentLen = view.getUint32(retptr + 8, true);
+
+    // Decode content string from UTF-8.
+    var content = contentLen > 0
+      ? new TextDecoder().decode(new Uint8Array(memory.buffer, contentPtr, contentLen))
+      : "";
+
+    // ── Clean up WASM allocations ──────────────────────────────────────
+
+    if (contentLen > 0) dealloc(contentPtr, contentLen);
+    if (useSret || retptr) dealloc(retptr, LIVE_TICK_RESULT_SIZE);
+
+    return { kind: kind, content: content };
+  };
+
+  // ── LiveView tick execution ───────────────────────────────────────────
+  //
+  // LiveView cells export `cell_tick()` which advances one step and returns
+  // a LiveTickResult (12 bytes) containing the content kind and string.
+
+  /// Execute a single tick on a loaded LiveView cell.
+  ///
+  /// Returns Promise<{ kind, content }>.
+  CellExecutor.prototype.tickLive = async function (cellId) {
+    var entry = this.modules.get(cellId);
+    if (!entry) {
+      throw new Error("Cell " + cellId + " not loaded");
+    }
+
+    if (entry.type === "bindgen") {
+      return this._tickLiveBindgen(entry);
+    } else {
+      return this._tickLiveRaw(entry);
+    }
+  };
+
+  // ── wasm-bindgen LiveView tick path ──────────────────────────────────
+
+  CellExecutor.prototype._tickLiveBindgen = async function (entry) {
+    var mod = entry.module;
+    var wasm = entry.wasm;
+    var memory = wasm.memory;
+    var dealloc = wasm.ironpad_dealloc;
+
+    if (!memory) throw new Error("wasm-bindgen module: missing 'memory' export");
+    if (!dealloc) throw new Error("wasm-bindgen module: missing 'ironpad_dealloc' export");
+
+    var tickFn = mod.cell_tick || wasm.cell_tick;
+    if (!tickFn) throw new Error("Module does not export cell_tick");
+
+    var resultPtr;
+    try {
+      resultPtr = await tickFn();
+    } catch (e) {
+      throw new Error("WASM tick trapped: " + e.message);
+    }
+
+    if (!resultPtr) {
+      throw new Error("cell_tick returned null");
+    }
+
+    return this._readLiveTickResult(memory, dealloc, resultPtr, false);
+  };
+
+  // ── Legacy raw LiveView tick path ────────────────────────────────────
+
+  CellExecutor.prototype._tickLiveRaw = function (entry) {
+    var instance = entry.instance;
+    var memory = instance.exports.memory;
+    var alloc = instance.exports.ironpad_alloc;
+    var dealloc = instance.exports.ironpad_dealloc;
+    var cellTick = instance.exports.cell_tick;
+
+    if (!memory) throw new Error("raw module: missing 'memory' export");
+    if (!dealloc) throw new Error("raw module: missing 'ironpad_dealloc' export");
+    if (!cellTick) throw new Error("raw module: missing 'cell_tick' export");
+
+    var retptr;
+    var useSret = cellTick.length === 1;
+
+    if (useSret) {
+      if (!alloc) throw new Error("raw module: missing 'ironpad_alloc' export");
+      retptr = alloc(LIVE_TICK_RESULT_SIZE);
+      if (retptr === 0) {
+        throw new Error("ironpad_alloc failed for live tick return struct");
+      }
+    }
+
+    try {
+      if (useSret) {
+        cellTick(retptr);
+      } else {
+        retptr = cellTick();
+        if (!retptr) {
+          throw new Error("cell_tick returned null");
+        }
+      }
+    } catch (e) {
+      if (useSret && retptr) dealloc(retptr, LIVE_TICK_RESULT_SIZE);
+      throw new Error("WASM tick trapped: " + e.message);
+    }
+
+    return this._readLiveTickResult(memory, dealloc, retptr, useSret);
   };
 
   /// Remove a loaded cell module, freeing browser-side resources.

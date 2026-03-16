@@ -272,9 +272,9 @@
     {
       "id": "00000000-0000-0000-0000-000000000114",
       "title": "Nuclear Reactor",
-      "description": "2D neutron diffusion with 6-group delayed precursors \u2014 watch prompt vs delayed neutrons pulse through a reactor core.",
+      "description": "2D neutron diffusion with 6-group delayed precursors — watch prompt vs delayed neutrons pulse through a reactor core.",
       "filename": "nuclear-reactor.ironpad",
-      "cell_count": 4,
+      "cell_count": 5,
       "tags": [
         "physics",
         "simulation",
