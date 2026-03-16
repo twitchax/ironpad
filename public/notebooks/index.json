@@ -255,6 +255,19 @@
         "algorithm",
         "visualization"
       ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000113",
+      "title": "Heat Equation",
+      "description": "Watch heat diffuse across a 2D surface in real time using the Simulation trait.",
+      "filename": "heat-equation.ironpad",
+      "cell_count": 1,
+      "tags": [
+        "physics",
+        "simulation",
+        "pde",
+        "live-simulation"
+      ]
     }
   ]
 }
