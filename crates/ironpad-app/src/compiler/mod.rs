@@ -310,7 +310,7 @@ mod pipeline_tests {
 mod e2e_tests {
     use std::path::PathBuf;
 
-    use super::build::{build_micro_crate, BuildResult};
+    use super::build::{build_micro_crate, check_micro_crate, BuildResult, CheckResult};
     use super::cache::{content_hash, store_blob, try_cache_hit};
     use super::diagnostics::parse_diagnostics;
     use super::scaffold::scaffold_micro_crate;
@@ -684,5 +684,157 @@ impl LiveView for Counter {
                 );
             }
         }
+    }
+
+    // ── Public notebook compilation ──────────────────────────────────────
+
+    /// Compiles every Code cell in every public notebook to verify they all
+    /// type-check against wasm32-unknown-unknown.  Uses `cargo check` (not
+    /// `cargo build`) with a shared `CARGO_HOME` and target dir so dependencies
+    /// are downloaded/compiled only once.
+    #[tokio::test]
+    #[ignore = "slow: type-checks every public notebook cell for wasm32-unknown-unknown"]
+    async fn all_public_notebook_cells_compile() {
+        use ironpad_common::{CellType, IronpadNotebook};
+
+        let notebooks_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../public/notebooks")
+            .canonicalize()
+            .expect("public/notebooks directory should exist");
+
+        let cell_path = ironpad_cell_path();
+
+        let mut notebook_files: Vec<_> = std::fs::read_dir(&notebooks_dir)
+            .expect("should read notebooks directory")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "ironpad"))
+            .map(|e| e.path())
+            .collect();
+        notebook_files.sort();
+
+        assert!(
+            !notebook_files.is_empty(),
+            "should find at least one .ironpad file"
+        );
+
+        // Shared cache_dir: all cells share one CARGO_HOME (download crates
+        // once) and one CARGO_TARGET_DIR (compile deps once).
+        let cache_dir = tempdir();
+        let session_id = "e2e-notebooks";
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut total_cells = 0u32;
+
+        for nb_path in &notebook_files {
+            let filename = nb_path.file_name().unwrap().to_string_lossy();
+            let nb_stem = nb_path.file_stem().unwrap().to_string_lossy();
+            let json = std::fs::read_to_string(nb_path)
+                .unwrap_or_else(|e| panic!("failed to read {filename}: {e}"));
+            let notebook: IronpadNotebook = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("failed to parse {filename}: {e}"));
+
+            let shared_cargo_toml = notebook.shared_cargo_toml.as_deref();
+            let shared_source = notebook.shared_source.as_deref();
+
+            // Sort cells by order so previous_cell_types accumulates correctly.
+            let mut cells = notebook.cells.clone();
+            cells.sort_by_key(|c| c.order);
+
+            let mut previous_cell_types: Vec<String> = Vec::new();
+
+            for cell in &cells {
+                if cell.cell_type != CellType::Code {
+                    previous_cell_types.push(String::new());
+                    continue;
+                }
+
+                // Skip cells that reference prior cell outputs (cell0, cell1,
+                // etc.) or the scaffold-injected `last` binding — they can't
+                // compile in isolation since we don't know the concrete
+                // output types of predecessor cells.
+                let uses_cell_ref = (0..10).any(|i| {
+                    let pat = format!("cell{i}");
+                    cell.source.contains(&pat)
+                });
+                // Bare `last` (not `.last()`) indicates the scaffold binding.
+                let uses_last_binding = cell.source.split_whitespace().any(|tok| {
+                    tok == "last" || tok.starts_with("last,") || tok.starts_with("last)")
+                });
+                if uses_cell_ref || uses_last_binding {
+                    previous_cell_types.push(String::new());
+                    continue;
+                }
+
+                total_cells += 1;
+                let cell_cargo = cell.cargo_toml.as_deref().unwrap_or("[dependencies]");
+
+                // Prefix cell_id with notebook stem to avoid collisions
+                // (many notebooks use cell_0, cell_1, etc.).
+                let unique_id = format!("{nb_stem}__{}", cell.id);
+
+                let scaffold_result = scaffold_micro_crate(
+                    &cache_dir,
+                    &cell_path,
+                    session_id,
+                    &unique_id,
+                    &cell.source,
+                    cell_cargo,
+                    &previous_cell_types,
+                    shared_cargo_toml,
+                    shared_source,
+                );
+
+                let (crate_dir, ..) = match scaffold_result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        failures.push(format!(
+                            "{filename} / {} ({}): scaffold error: {e}",
+                            cell.id, cell.label
+                        ));
+                        previous_cell_types.push(String::new());
+                        continue;
+                    }
+                };
+
+                let result =
+                    check_micro_crate(&crate_dir, &cache_dir, session_id, &unique_id).await;
+
+                match result {
+                    Ok(CheckResult::Ok) => {
+                        previous_cell_types.push(String::new());
+                    }
+                    Ok(CheckResult::Failure { stdout, stderr }) => {
+                        failures.push(format!(
+                            "{filename} / {} ({}):\n  stdout: {}\n  stderr: {}",
+                            cell.id,
+                            cell.label,
+                            stdout.chars().take(500).collect::<String>(),
+                            stderr.chars().take(500).collect::<String>(),
+                        ));
+                        previous_cell_types.push(String::new());
+                    }
+                    Err(e) => {
+                        failures.push(format!(
+                            "{filename} / {} ({}): check infra error: {e}",
+                            cell.id, cell.label
+                        ));
+                        previous_cell_types.push(String::new());
+                    }
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "\n{} of {total_cells} notebook cells failed to compile:\n\n{}\n",
+            failures.len(),
+            failures.join("\n\n"),
+        );
+
+        // Sanity: we should have compiled a meaningful number of cells.
+        assert!(
+            total_cells >= 20,
+            "expected at least 20 standalone code cells across all notebooks, got {total_cells}"
+        );
     }
 }

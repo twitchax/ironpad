@@ -174,6 +174,67 @@ pub async fn build_micro_crate(
     })
 }
 
+/// Check (type-check only) a scaffolded micro-crate without full codegen.
+///
+/// Runs `cargo check --target wasm32-unknown-unknown --release
+/// --message-format=json`.  Much faster than [`build_micro_crate`] because it
+/// skips LLVM codegen, WASM linking, and wasm-bindgen post-processing.
+///
+/// Intended for bulk validation (e.g. checking every public notebook cell).
+#[cfg(test)]
+pub async fn check_micro_crate(
+    crate_dir: &Path,
+    cache_dir: &Path,
+    session_id: &str,
+    _cell_id: &str,
+) -> anyhow::Result<CheckResult> {
+    let cargo_home = cargo_home_dir(cache_dir);
+    let target_dir = target_dir(cache_dir, session_id);
+
+    std::fs::create_dir_all(&cargo_home)?;
+    std::fs::create_dir_all(&target_dir)?;
+
+    let cargo_home = std::fs::canonicalize(&cargo_home)?;
+    let target_dir = std::fs::canonicalize(&target_dir)?;
+
+    let output = tokio::time::timeout(BUILD_TIMEOUT, {
+        Command::new("cargo")
+            .arg("check")
+            .arg("--target")
+            .arg("wasm32-unknown-unknown")
+            .arg("--release")
+            .arg("--message-format=json")
+            .current_dir(crate_dir)
+            .env("CARGO_HOME", &cargo_home)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("CARGO_BUILD_RUSTFLAGS")
+            .output()
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("cargo check timed out after {}s", BUILD_TIMEOUT.as_secs()))?
+    .map_err(|e| anyhow::anyhow!("failed to spawn cargo: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if output.status.success() {
+        Ok(CheckResult::Ok)
+    } else {
+        Ok(CheckResult::Failure { stdout, stderr })
+    }
+}
+
+/// Outcome of a `cargo check` invocation.
+#[cfg(test)]
+pub enum CheckResult {
+    /// Type-checking passed.
+    Ok,
+    /// Compilation errors; stdout has JSON diagnostics, stderr has human-readable output.
+    Failure { stdout: String, stderr: String },
+}
+
 // ── Path Helpers ─────────────────────────────────────────────────────────────
 
 /// Shared `CARGO_HOME` directory for registry caching across all builds.
