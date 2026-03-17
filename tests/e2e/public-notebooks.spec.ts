@@ -74,13 +74,21 @@ test.describe("Public notebooks", () => {
       timeout: 15_000,
     });
 
+    // Wait for WASM hydration to complete (fork requires client-side code).
+    // The view-only cells are server-rendered; wait for the fork button's
+    // click handler to be wired up by checking that IronpadStorage is available.
+    await page.waitForFunction(() => !!(window as any).IronpadStorage, null, {
+      timeout: 15_000,
+    });
+
     // Click the fork button.
     const forkButton = page.locator(".fork-button");
     await expect(forkButton).toBeVisible();
     await forkButton.click();
 
     // Verify navigation to a new private notebook editor.
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/, {
+    // The fork URL must NOT match /notebook/public/ (it should be /notebook/{uuid}).
+    await expect(page).toHaveURL(/\/notebook\/(?!public\/)[a-f0-9-]+/, {
       timeout: 15_000,
     });
     await expect(page.locator(".ironpad-editor")).toBeVisible({

@@ -75,10 +75,11 @@ test.describe("Keyboard shortcuts", () => {
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
-    // Add two cells.
-    await page.locator(".ironpad-add-cell-btn").first().click();
+    // Add two code cells (use text filter to avoid clicking "+ Markdown").
+    const addCodeBtn = page.locator("button.ironpad-add-cell-btn", { hasText: "+ Code" });
+    await addCodeBtn.first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
-    await page.locator(".ironpad-add-cell-btn").last().click();
+    await addCodeBtn.last().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(2);
 
     // Wait for Monaco editors to mount in both cells.
@@ -91,12 +92,18 @@ test.describe("Keyboard shortcuts", () => {
     });
 
     // ── Press Ctrl+Shift+Enter to run all cells ─────────────────────────
+    // Move focus out of Monaco (which may swallow keyboard events) by
+    // clicking the cell header, then press the shortcut.
+    await cells.nth(0).locator(".ironpad-cell-header").click();
     await page.keyboard.press("Control+Shift+Enter");
 
-    // Verify at least one cell starts compiling.
+    // Verify at least one cell starts compiling (or reaches a terminal state
+    // if compilation is cached and fast).
     await expect(
-      cells.nth(0).locator(".ironpad-cell-status--compiling")
-    ).toBeVisible({ timeout: 10_000 });
+      cells.nth(0).locator(
+        ".ironpad-cell-status--compiling, .ironpad-cell-status--success, .ironpad-cell-status--error"
+      )
+    ).toBeVisible({ timeout: 30_000 });
 
     // Wait for the first cell to finish compilation.
     await expect(
