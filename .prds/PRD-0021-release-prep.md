@@ -1,7 +1,7 @@
 ---
 id: PRD-0021
 title: "Release Preparation: Test Coverage, README, and Site Promotion"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2026-03-17
 updated: 2026-03-17
@@ -162,3 +162,10 @@ MIT
 # History
 
 (Entries appended during implementation go below this line.)
+
+- 2026-03-17: T-001 done — audited Playwright tests: 16 pass, 9 skipped (CLI/filesystem-dependent)
+- 2026-03-17: T-002 done — created notebook-smoke.spec.ts with mandelbrot, game-of-life, fourier tests
+- 2026-03-17: T-003 done — added Playwright CI job to build.yml
+- 2026-03-17: T-004 done — rewrote README to 58 lines (kord/rtz style)
+- 2026-03-17: T-005 done — migrated unique README content to DEVELOPMENT.md (615 lines)
+- 2026-03-17: T-006 in progress — pushed, CI running (run 23217674237)
