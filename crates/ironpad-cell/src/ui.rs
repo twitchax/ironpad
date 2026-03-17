@@ -128,6 +128,7 @@ pub struct Dropdown {
     options: Vec<String>,
     label: Option<String>,
     default: String,
+    name: Option<String>,
 }
 
 /// Create a dropdown widget with the given options.
@@ -139,6 +140,7 @@ pub fn dropdown(options: &[&str]) -> Dropdown {
         options,
         label: None,
         default,
+        name: None,
     }
 }
 
@@ -157,11 +159,19 @@ impl Dropdown {
         self
     }
 
+    /// Set a simulation-bus name so the selected index is published as `f64`.
+    #[must_use]
+    pub fn name(mut self, key: &str) -> Self {
+        self.name = Some(key.to_owned());
+        self
+    }
+
     fn config_json(&self) -> String {
         serde_json::json!({
             "options": self.options,
             "label": self.label,
             "default": self.default,
+            "name": self.name,
         })
         .to_string()
     }

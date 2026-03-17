@@ -8,6 +8,11 @@
 //! use ironpad_cell::prelude::*;
 //! ```
 
+// FFI reclaim helpers intentionally use Vec::from_raw_parts(ptr, len, len)
+// because every buffer we allocate has capacity == length.
+#![allow(unknown_lints)]
+#![allow(clippy::same_length_and_capacity)]
+
 // ── Host messaging FFI ───────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]

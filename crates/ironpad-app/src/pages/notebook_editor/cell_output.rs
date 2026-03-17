@@ -600,23 +600,50 @@ fn render_dropdown(
     } else {
         label.to_owned()
     };
+    let bus_key = cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned);
 
-    let value = RwSignal::new(default);
+    let options_for_bus = options.clone();
+
+    let value = RwSignal::new(default.clone());
+
+    #[cfg(feature = "hydrate")]
+    {
+        if let Some(key) = bus_key.clone() {
+            #[allow(clippy::cast_precision_loss)]
+            let default_idx = options_for_bus
+                .iter()
+                .position(|o| *o == default)
+                .unwrap_or(0) as f64;
+            Effect::new(move |_| {
+                sim_bus_js::sim_bus_write_f64(&key, default_idx);
+            });
+        }
+    }
 
     #[cfg(feature = "hydrate")]
     let on_change = {
         let cell_id = cell_id.clone();
+        let bus_key = bus_key.clone();
+        let options_for_bus = options_for_bus.clone();
         move |ev: web_sys::Event| {
             let new_val = leptos::prelude::event_target_value(&ev);
             value.set(new_val.clone());
             let bytes = bincode_encode_string(&new_val);
             update_cell_output(bytes, cell_id.as_ref(), widget_ctx);
+            if let Some(ref key) = bus_key {
+                #[allow(clippy::cast_precision_loss)]
+                let idx = options_for_bus
+                    .iter()
+                    .position(|o| *o == new_val)
+                    .unwrap_or(0) as f64;
+                sim_bus_js::sim_bus_write_f64(key, idx);
+            }
         }
     };
 
     #[cfg(not(feature = "hydrate"))]
     let on_change = move |_: leptos::ev::Event| {};
-    let _ = (&cell_id, &widget_ctx);
+    let _ = (&cell_id, &widget_ctx, &bus_key);
 
     view! {
         <div class="ironpad-interactive-widget">
