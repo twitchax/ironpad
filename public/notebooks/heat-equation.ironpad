@@ -22,5 +22,12 @@
       "label": "Heat Diffusion",
       "cell_type": "Code"
     }
+  ],
+  "description": "Watch heat diffuse across a 2D surface in real time using the Simulation trait.",
+  "tags": [
+    "physics",
+    "simulation",
+    "pde",
+    "live-simulation"
   ]
 }

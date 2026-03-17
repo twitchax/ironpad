@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Working with JSON 🔮\n\nironpad has a built-in `Json` display type that pretty-prints JSON with syntax highlighting. It's great for exploring API responses, configuration data, or any structured data.\n\nThe `Json` type wraps a `serde_json::Value` and renders it with color-coded keys, strings, numbers, and booleans.",
+      "source": "# Working with JSON \ud83d\udd2e\n\nironpad has a built-in `Json` display type that pretty-prints JSON with syntax highlighting. It's great for exploring API responses, configuration data, or any structured data.\n\nThe `Json` type wraps a `serde_json::Value` and renders it with color-coded keys, strings, numbers, and booleans.",
       "cargo_toml": null
     },
     {
@@ -35,7 +35,7 @@
       "order": 3,
       "label": "Parse Example",
       "cell_type": "Code",
-      "source": "let raw = r#\"{\n  \"users\": [\n    { \"id\": 1, \"name\": \"Alice\", \"active\": true },\n    { \"id\": 2, \"name\": \"Bob\", \"active\": false },\n    { \"id\": 3, \"name\": \"Charlie\", \"active\": true }\n  ],\n  \"total\": 3,\n  \"page\": null\n}\"#;\n\n// Parse and display — notice colors for each JSON type:\n// • keys in red\n// • strings in green\n// • numbers in blue\n// • booleans/null in purple\nlet json: Json = raw.parse().unwrap();\njson\n",
+      "source": "let raw = r#\"{\n  \"users\": [\n    { \"id\": 1, \"name\": \"Alice\", \"active\": true },\n    { \"id\": 2, \"name\": \"Bob\", \"active\": false },\n    { \"id\": 3, \"name\": \"Charlie\", \"active\": true }\n  ],\n  \"total\": 3,\n  \"page\": null\n}\"#;\n\n// Parse and display \u2014 notice colors for each JSON type:\n// \u2022 keys in red\n// \u2022 strings in green\n// \u2022 numbers in blue\n// \u2022 booleans/null in purple\nlet json: Json = raw.parse().unwrap();\njson\n",
       "cargo_toml": null
     },
     {
@@ -59,7 +59,7 @@
       "order": 6,
       "label": "Structured Data",
       "cell_type": "Markdown",
-      "source": "## Typed Data → JSON\n\nYou can also serialize your own Rust structs into `Json` for display. This is handy for inspecting complex data structures.",
+      "source": "## Typed Data \u2192 JSON\n\nYou can also serialize your own Rust structs into `Json` for display. This is handy for inspecting complex data structures.",
       "cargo_toml": null
     },
     {
@@ -70,5 +70,11 @@
       "source": "use serde_json;\n\n#[derive(Serialize)]\nstruct Project {\n    name: String,\n    language: String,\n    stars: u64,\n    topics: Vec<String>,\n}\n\nlet projects = vec![\n    Project {\n        name: \"ironpad\".into(),\n        language: \"Rust\".into(),\n        stars: 128,\n        topics: vec![\"wasm\".into(), \"notebook\".into()],\n    },\n    Project {\n        name: \"plotters\".into(),\n        language: \"Rust\".into(),\n        stars: 4200,\n        topics: vec![\"visualization\".into(), \"svg\".into()],\n    },\n];\n\nJson(serde_json::to_value(&projects).unwrap())\n",
       "cargo_toml": null
     }
+  ],
+  "description": "Pretty-print and explore JSON data with syntax-highlighted output.",
+  "tags": [
+    "json",
+    "data",
+    "http"
   ]
 }

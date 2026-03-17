@@ -47,5 +47,11 @@
       "source": "## Variations & Applications\n\n### Tweak the Parameters\n- **Gravity**: set to `0.0` for zero-G particles, or positive for rain falling down\n- **Spawn rate**: more particles per step \u2192 denser fountain\n- **Lifetime**: longer life \u2192 taller arcs and more particles alive at once\n- **Initial velocity**: wider angle range \u2192 broader spray\n\n### Other Effects\n- **Explosion**: spawn all particles at once with random velocities in all directions\n- **Fire**: particles drift upward with slight randomness, color gradient from yellow \u2192 orange \u2192 red \u2192 transparent\n- **Trail / comet**: spawn particles at a moving emitter, short lifetime\n\n### Why Rust + WASM?\nParticle systems benefit from raw throughput \u2014 updating thousands of particles per frame. Rust compiled to WASM gives near-native performance right in the browser, making this kind of simulation buttery smooth.",
       "cargo_toml": null
     }
+  ],
+  "description": "Spawn, animate, and render thousands of particles with configurable physics.",
+  "tags": [
+    "creative-coding",
+    "simulation",
+    "visualization"
   ]
 }

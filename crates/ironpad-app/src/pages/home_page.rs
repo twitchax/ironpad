@@ -198,7 +198,7 @@ fn NotebookGrid(
                 }
             }
 
-            // Public notebooks (fixed order from index.json).
+            // Public notebooks (sorted alphabetically by title).
             if matches!(mode, FilterMode::All | FilterMode::Public) {
                 for nb in &public_notebooks {
                     if query.is_empty() || nb.title.to_lowercase().contains(&query) {

@@ -11,15 +11,15 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Julia Sets *\n\n**Julia sets** are close relatives of the Mandelbrot set. While the Mandelbrot iterates $z \\mapsto z^2 + c$ with $z_0 = 0$ and *varies* $c$ across the image, a Julia set *fixes* $c$ and varies the starting point $z_0$.\n\nEach point $c$ in the complex plane defines a unique Julia set. Points inside the Mandelbrot set produce *connected* Julia sets; points outside produce disconnected \"Fatou dust.\"\n\n## The Connection\n\nThe Mandelbrot set is essentially a *map* of all Julia sets — each pixel of the Mandelbrot tells you what the Julia set at that $c$ value looks like:\n- **Inside the Mandelbrot** → connected Julia set\n- **On the boundary** → maximally intricate Julia set\n- **Outside the Mandelbrot** → disconnected dust",
+      "source": "# Julia Sets *\n\n**Julia sets** are close relatives of the Mandelbrot set. While the Mandelbrot iterates $z \\mapsto z^2 + c$ with $z_0 = 0$ and *varies* $c$ across the image, a Julia set *fixes* $c$ and varies the starting point $z_0$.\n\nEach point $c$ in the complex plane defines a unique Julia set. Points inside the Mandelbrot set produce *connected* Julia sets; points outside produce disconnected \"Fatou dust.\"\n\n## The Connection\n\nThe Mandelbrot set is essentially a *map* of all Julia sets \u2014 each pixel of the Mandelbrot tells you what the Julia set at that $c$ value looks like:\n- **Inside the Mandelbrot** \u2192 connected Julia set\n- **On the boundary** \u2192 maximally intricate Julia set\n- **Outside the Mandelbrot** \u2192 disconnected dust",
       "cargo_toml": null
     },
     {
       "id": "cell_1",
       "order": 1,
-      "label": "Julia Set: c = −0.7 + 0.27i",
+      "label": "Julia Set: c = \u22120.7 + 0.27i",
       "cell_type": "Code",
-      "source": "use ironpad_cell::prelude::*;\n\n// Julia set constant: c = -0.7 + 0.27015i (dendritic/tree-like fractal)\nlet (c_re, c_im) = (-0.7_f64, 0.27015);\n\nlet (width, height) = (800u32, 600u32);\nlet max_iter = 150u32;\n\n// Symmetric view centered on the origin\nlet (x_min, x_max) = (-1.5_f64, 1.5);\nlet (y_min, y_max) = (-1.125_f64, 1.125);\n\nfn color_map(n: u32, max_n: u32) -> (u8, u8, u8) {\n    if n == max_n {\n        return (0, 0, 0);\n    }\n    let t = n as f64 / max_n as f64;\n    (\n        (9.0 * (1.0 - t) * t * t * t * 255.0) as u8,\n        (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8,\n        (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8,\n    )\n}\n\nlet canvas = Canvas::from_fn(width, height, |x, y| {\n    // For Julia sets, z₀ is the pixel coordinate\n    let mut zx = x_min + (x as f64 + 0.5) / width as f64 * (x_max - x_min);\n    let mut zy = y_min + (y as f64 + 0.5) / height as f64 * (y_max - y_min);\n\n    let mut n = 0u32;\n    while zx * zx + zy * zy <= 4.0 && n < max_iter {\n        let tmp = zx * zx - zy * zy + c_re;\n        zy = 2.0 * zx * zy + c_im;\n        zx = tmp;\n        n += 1;\n    }\n\n    color_map(n, max_iter)\n});\n\nCellOutput::from(canvas)\n",
+      "source": "use ironpad_cell::prelude::*;\n\n// Julia set constant: c = -0.7 + 0.27015i (dendritic/tree-like fractal)\nlet (c_re, c_im) = (-0.7_f64, 0.27015);\n\nlet (width, height) = (800u32, 600u32);\nlet max_iter = 150u32;\n\n// Symmetric view centered on the origin\nlet (x_min, x_max) = (-1.5_f64, 1.5);\nlet (y_min, y_max) = (-1.125_f64, 1.125);\n\nfn color_map(n: u32, max_n: u32) -> (u8, u8, u8) {\n    if n == max_n {\n        return (0, 0, 0);\n    }\n    let t = n as f64 / max_n as f64;\n    (\n        (9.0 * (1.0 - t) * t * t * t * 255.0) as u8,\n        (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8,\n        (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8,\n    )\n}\n\nlet canvas = Canvas::from_fn(width, height, |x, y| {\n    // For Julia sets, z\u2080 is the pixel coordinate\n    let mut zx = x_min + (x as f64 + 0.5) / width as f64 * (x_max - x_min);\n    let mut zy = y_min + (y as f64 + 0.5) / height as f64 * (y_max - y_min);\n\n    let mut n = 0u32;\n    while zx * zx + zy * zy <= 4.0 && n < max_iter {\n        let tmp = zx * zx - zy * zy + c_re;\n        zy = 2.0 * zx * zy + c_im;\n        zx = tmp;\n        n += 1;\n    }\n\n    color_map(n, max_iter)\n});\n\nCellOutput::from(canvas)\n",
       "cargo_toml": null
     },
     {
@@ -27,7 +27,7 @@
       "order": 2,
       "label": "Julia Set: c = 0.285 + 0.01i",
       "cell_type": "Code",
-      "source": "use ironpad_cell::prelude::*;\n\n// Julia constant: c = 0.285 + 0.01i (spiral galaxy pattern)\nlet (c_re, c_im) = (0.285_f64, 0.01);\n\nlet (width, height) = (800u32, 600u32);\nlet max_iter = 150u32;\n\nlet (x_min, x_max) = (-1.5_f64, 1.5);\nlet (y_min, y_max) = (-1.125_f64, 1.125);\n\nfn color_map(n: u32, max_n: u32) -> (u8, u8, u8) {\n    if n == max_n {\n        return (0, 0, 0);\n    }\n    let t = n as f64 / max_n as f64;\n    // Shifted palette: purple → blue → cyan\n    (\n        (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8,\n        (9.0 * (1.0 - t) * t * t * t * 255.0) as u8,\n        (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8,\n    )\n}\n\nlet canvas = Canvas::from_fn(width, height, |x, y| {\n    let mut zx = x_min + (x as f64 + 0.5) / width as f64 * (x_max - x_min);\n    let mut zy = y_min + (y as f64 + 0.5) / height as f64 * (y_max - y_min);\n\n    let mut n = 0u32;\n    while zx * zx + zy * zy <= 4.0 && n < max_iter {\n        let tmp = zx * zx - zy * zy + c_re;\n        zy = 2.0 * zx * zy + c_im;\n        zx = tmp;\n        n += 1;\n    }\n\n    color_map(n, max_iter)\n});\n\nCellOutput::from(canvas)\n",
+      "source": "use ironpad_cell::prelude::*;\n\n// Julia constant: c = 0.285 + 0.01i (spiral galaxy pattern)\nlet (c_re, c_im) = (0.285_f64, 0.01);\n\nlet (width, height) = (800u32, 600u32);\nlet max_iter = 150u32;\n\nlet (x_min, x_max) = (-1.5_f64, 1.5);\nlet (y_min, y_max) = (-1.125_f64, 1.125);\n\nfn color_map(n: u32, max_n: u32) -> (u8, u8, u8) {\n    if n == max_n {\n        return (0, 0, 0);\n    }\n    let t = n as f64 / max_n as f64;\n    // Shifted palette: purple \u2192 blue \u2192 cyan\n    (\n        (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8,\n        (9.0 * (1.0 - t) * t * t * t * 255.0) as u8,\n        (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8,\n    )\n}\n\nlet canvas = Canvas::from_fn(width, height, |x, y| {\n    let mut zx = x_min + (x as f64 + 0.5) / width as f64 * (x_max - x_min);\n    let mut zy = y_min + (y as f64 + 0.5) / height as f64 * (y_max - y_min);\n\n    let mut n = 0u32;\n    while zx * zx + zy * zy <= 4.0 && n < max_iter {\n        let tmp = zx * zx - zy * zy + c_re;\n        zy = 2.0 * zx * zy + c_im;\n        zx = tmp;\n        n += 1;\n    }\n\n    color_map(n, max_iter)\n});\n\nCellOutput::from(canvas)\n",
       "cargo_toml": null
     },
     {
@@ -35,8 +35,14 @@
       "order": 3,
       "label": "How c Changes the Shape",
       "cell_type": "Markdown",
-      "source": "## * How $c$ Changes the Shape\n\nThe parameter $c$ completely determines the Julia set's geometry:\n\n| $c$ value | Character |\n|---------|-----------|\n| $c = 0$ | Perfect circle (unit disk) |\n| $c = -1$ | \"Basilica\" — two tangent circles |\n| $c = -0.123 + 0.745i$ | \"Douady's rabbit\" — three lobes |\n| $c = i$ | Dendrite — tree-like, no interior |\n| $c = -2$ | Line segment $[-2, 2]$ |\n\nThe boundary between connected and disconnected Julia sets traces out exactly the Mandelbrot set! Try picking a $c$ value from the Mandelbrot notebook and rendering its Julia set here.",
+      "source": "## * How $c$ Changes the Shape\n\nThe parameter $c$ completely determines the Julia set's geometry:\n\n| $c$ value | Character |\n|---------|-----------|\n| $c = 0$ | Perfect circle (unit disk) |\n| $c = -1$ | \"Basilica\" \u2014 two tangent circles |\n| $c = -0.123 + 0.745i$ | \"Douady's rabbit\" \u2014 three lobes |\n| $c = i$ | Dendrite \u2014 tree-like, no interior |\n| $c = -2$ | Line segment $[-2, 2]$ |\n\nThe boundary between connected and disconnected Julia sets traces out exactly the Mandelbrot set! Try picking a $c$ value from the Mandelbrot notebook and rendering its Julia set here.",
       "cargo_toml": null
     }
+  ],
+  "description": "Explore the family of Julia set fractals by varying the complex constant parameter.",
+  "tags": [
+    "fractal",
+    "visualization",
+    "math"
   ]
 }

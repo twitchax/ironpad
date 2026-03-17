@@ -136,6 +136,10 @@ pub struct IronpadNotebook {
     pub version: u32,
     pub id: Uuid,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,6 +168,8 @@ impl IronpadNotebook {
             version: 1,
             id: Uuid::new_v4(),
             title: title.to_string(),
+            description: None,
+            tags: None,
             created_at: now,
             updated_at: now,
             shared_cargo_toml: Some(DEFAULT_SHARED_CARGO_TOML.to_string()),
@@ -203,12 +209,6 @@ pub struct PublicNotebookSummary {
     pub cell_count: usize,
     #[serde(default)]
     pub tags: Vec<String>,
-}
-
-/// Index of all available public notebooks, loaded from `index.json`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PublicNotebookIndex {
-    pub notebooks: Vec<PublicNotebookSummary>,
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -275,16 +275,6 @@ mod tests {
             .expect("could not locate workspace root");
         let notebooks_dir = workspace_root.join("public").join("notebooks");
 
-        // ── Validate index.json ──────────────────────────────────────
-        let index_path = notebooks_dir.join("index.json");
-        let index_bytes = std::fs::read(&index_path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", index_path.display()));
-        let index: PublicNotebookIndex = serde_json::from_slice(&index_bytes)
-            .unwrap_or_else(|e| panic!("index.json schema error: {e}"));
-
-        let mut indexed_filenames: std::collections::HashSet<String> =
-            index.notebooks.iter().map(|n| n.filename.clone()).collect();
-
         // ── Validate each .ironpad file ──────────────────────────────
         let mut count = 0;
         for entry in std::fs::read_dir(&notebooks_dir).expect("cannot read notebooks dir") {
@@ -310,6 +300,12 @@ mod tests {
             // Must have at least one cell.
             assert!(!nb.cells.is_empty(), "{filename}: no cells");
 
+            // Public notebooks must have a description.
+            assert!(
+                nb.description.is_some(),
+                "{filename}: missing description field"
+            );
+
             // Cell order values must be sequential starting at 0.
             for (i, cell) in nb.cells.iter().enumerate() {
                 assert_eq!(
@@ -329,34 +325,8 @@ mod tests {
                 );
             }
 
-            // The file must appear in index.json.
-            assert!(
-                indexed_filenames.remove(&filename),
-                "{filename}: present on disk but missing from index.json"
-            );
-
-            // Matching index entry must have correct cell count.
-            let summary = index
-                .notebooks
-                .iter()
-                .find(|n| n.filename == filename)
-                .unwrap();
-            assert_eq!(
-                summary.cell_count,
-                nb.cells.len(),
-                "{filename}: index says {} cells but file has {}",
-                summary.cell_count,
-                nb.cells.len()
-            );
-
             count += 1;
         }
-
-        // Every file listed in index.json must exist on disk.
-        assert!(
-            indexed_filenames.is_empty(),
-            "index.json references missing files: {indexed_filenames:?}"
-        );
 
         // Sanity: we validated at least one notebook.
         assert!(

@@ -184,25 +184,48 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 
 // ── Public notebooks ─────────────────────────────────────────────────────────
 
-/// Lists all available public notebooks from the static index.
+/// Lists all available public notebooks by enumerating `*.ironpad` files at runtime.
 #[server]
 pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, ServerFnError> {
-    use ironpad_common::PublicNotebookIndex;
+    use ironpad_common::IronpadNotebook;
 
     let leptos_options = expect_context::<LeptosOptions>();
     let site_root: &str = &leptos_options.site_root;
-    let index_path = std::path::Path::new(site_root)
-        .join("notebooks")
-        .join("index.json");
+    let notebooks_dir = std::path::Path::new(site_root).join("notebooks");
 
-    let Ok(json) = tokio::fs::read_to_string(&index_path).await else {
+    let Ok(mut read_dir) = tokio::fs::read_dir(&notebooks_dir).await else {
         return Ok(vec![]);
     };
 
-    let index: PublicNotebookIndex = serde_json::from_str(&json)
-        .map_err(|e| ServerFnError::new(format!("invalid public notebook index: {e}")))?;
+    let mut summaries = Vec::new();
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ironpad") {
+            continue;
+        }
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let Ok(bytes) = tokio::fs::read(&path).await else {
+            continue;
+        };
+        let Ok(nb) = serde_json::from_slice::<IronpadNotebook>(&bytes) else {
+            continue;
+        };
+        summaries.push(PublicNotebookSummary {
+            id: filename.clone(),
+            title: nb.title,
+            description: nb.description.unwrap_or_default(),
+            filename,
+            cell_count: nb.cells.len(),
+            tags: nb.tags.unwrap_or_default(),
+        });
+    }
 
-    Ok(index.notebooks)
+    summaries.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(summaries)
 }
 
 /// Loads a public `.ironpad` notebook from the server's static files directory.

@@ -1882,6 +1882,9 @@ samp,
     align-items: center;
     gap: 0.5rem;
     padding: 1rem;
+    max-width: 1060px;
+    margin: 0 auto;
+    width: 100%;
     border-bottom: 1px solid var(--colorNeutralStroke1);
 }
 
@@ -1916,6 +1919,8 @@ samp,
 }
 
 .view-only-cell {
+    max-width: 1060px;
+    margin: 0 auto;
     padding: 1rem;
     border-bottom: 1px solid var(--colorNeutralStroke2);
 }

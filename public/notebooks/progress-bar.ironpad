@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Progress Bar Demo ⏳\n\nThis notebook demonstrates the **progress bar** widget with real-time updates.\n\n- **Cell 1** creates a progress bar at 25%.\n- **Cell 2** adds a button that bumps the bar to 75% on click.\n\nThe progress bar outputs its ID so downstream cells can update it via `ProgressHandle`.",
+      "source": "# Progress Bar Demo \u23f3\n\nThis notebook demonstrates the **progress bar** widget with real-time updates.\n\n- **Cell 1** creates a progress bar at 25%.\n- **Cell 2** adds a button that bumps the bar to 75% on click.\n\nThe progress bar outputs its ID so downstream cells can update it via `ProgressHandle`.",
       "cargo_toml": null
     },
     {
@@ -38,5 +38,11 @@
       "source": "---\n\n## How It Works\n\n1. `ui::progress_bar()` renders a bar and outputs its **ID** as a `String`.\n2. Downstream cells deserialize that ID automatically (`cell0`) and create a `ProgressHandle`.\n3. Calling `handle.update(value)` sends a real-time message to the executor, updating the bar without re-rendering.\n\nCombine progress bars with buttons and async work to build interactive dashboards that report status as they go.",
       "cargo_toml": null
     }
+  ],
+  "description": "Create a progress bar and update it in real time from a downstream cell using ProgressHandle.",
+  "tags": [
+    "progress-bar",
+    "widgets",
+    "interactive"
   ]
 }

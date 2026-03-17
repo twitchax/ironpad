@@ -12,7 +12,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Shared Code 📦\n\nironpad lets you define a **shared Rust module** at the notebook level. Every cell can access it via `shared::function_name()`. This keeps helper functions in one place instead of duplicating them across cells.\n\nThis notebook defines `format_greeting` and `fibonacci` in the shared source panel.",
+      "source": "# Shared Code \ud83d\udce6\n\nironpad lets you define a **shared Rust module** at the notebook level. Every cell can access it via `shared::function_name()`. This keeps helper functions in one place instead of duplicating them across cells.\n\nThis notebook defines `format_greeting` and `fibonacci` in the shared source panel.",
       "cargo_toml": null
     },
     {
@@ -39,5 +39,11 @@
       "source": "let fibs: Vec<u64> = (0..=10).map(shared::fibonacci).collect();\nlet list = fibs\n    .iter()\n    .enumerate()\n    .map(|(i, v)| format!(\"fib({i}) = {v}\"))\n    .collect::<Vec<_>>()\n    .join(\", \");\n\nlet greeting = shared::format_greeting(\"Rustacean\");\n\nMd(format!(\n    \"## Results\\n\\n\\\n     {greeting}\\n\\n\\\n     **First 11 Fibonacci numbers:** {list}\"\n))\n",
       "cargo_toml": null
     }
+  ],
+  "description": "Define reusable helper functions in a shared module accessible from every cell.",
+  "tags": [
+    "shared-source",
+    "modules",
+    "reuse"
   ]
 }

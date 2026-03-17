@@ -47,5 +47,11 @@
       "source": "## The Algorithm in Depth\n\n### Why Recursive Backtracker?\n\nThe recursive backtracker creates mazes with **long, winding corridors** because it carves as deep as possible before backtracking. This produces:\n- Few short dead ends\n- Long paths that feel satisfying to navigate\n- A \"river-like\" structure\n\n### Other Maze Algorithms\n\n| Algorithm | Character | Complexity |\n|-----------|-----------|------------|\n| **Recursive Backtracker** | Long corridors, few dead ends | O(n) time, O(n) stack |\n| **Kruskal's** | Many short dead ends, uniform feel | O(n log n) |\n| **Prim's** | Branching, tree-like structure | O(n log n) |\n| **Aldous-Broder** | Perfectly uniform | O(n\u00b2) expected |\n| **Wilson's** | Perfectly uniform | O(n\u00b2) worst case |\n\n### The BFS Solver\n\nBreadth-first search finds the **shortest path** in an unweighted graph. It explores all cells at distance 1 before distance 2, ensuring the first path found to the goal is optimal.\n\nFor weighted mazes (where passages have different costs), you'd use **Dijkstra's** or **A\\*** instead.",
       "cargo_toml": null
     }
+  ],
+  "description": "Generate and solve random mazes using recursive backtracking.",
+  "tags": [
+    "creative-coding",
+    "algorithm",
+    "visualization"
   ]
 }

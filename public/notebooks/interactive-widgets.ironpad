@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Interactive Widgets 🎛️\n\nironpad supports **interactive widgets** that let you build reactive notebooks. Each widget produces a typed value that flows to downstream cells. Adjust the inputs, then press the **button** to re-run all downstream cells with the new values.\n\nThis notebook builds a **Tip Calculator** using all seven widget types: `slider`, `dropdown`, `number`, `switch`, `button`, `text_input`, and `checkbox`.",
+      "source": "# Interactive Widgets \ud83c\udf9b\ufe0f\n\nironpad supports **interactive widgets** that let you build reactive notebooks. Each widget produces a typed value that flows to downstream cells. Adjust the inputs, then press the **button** to re-run all downstream cells with the new values.\n\nThis notebook builds a **Tip Calculator** using all seven widget types: `slider`, `dropdown`, `number`, `switch`, `button`, `text_input`, and `checkbox`.",
       "cargo_toml": null
     },
     {
@@ -51,7 +51,7 @@
       "order": 5,
       "label": "Calculate Tip",
       "cell_type": "Code",
-      "source": "ui::button(\"Calculate Tip ▶\")\n",
+      "source": "ui::button(\"Calculate Tip \u25b6\")\n",
       "cargo_toml": null
     },
     {
@@ -67,7 +67,7 @@
       "order": 7,
       "label": "Personalize",
       "cell_type": "Markdown",
-      "source": "---\n\n## Personalize Your Receipt ✏️\n\nAdd your name and choose whether to see a detailed breakdown. These widgets demonstrate `text_input` and `checkbox`. Press the button below to generate a styled receipt.",
+      "source": "---\n\n## Personalize Your Receipt \u270f\ufe0f\n\nAdd your name and choose whether to see a detailed breakdown. These widgets demonstrate `text_input` and `checkbox`. Press the button below to generate a styled receipt.",
       "cargo_toml": null
     },
     {
@@ -91,7 +91,7 @@
       "order": 10,
       "label": "Generate Receipt",
       "cell_type": "Code",
-      "source": "ui::button(\"Generate Receipt ▶\")\n",
+      "source": "ui::button(\"Generate Receipt \u25b6\")\n",
       "cargo_toml": null
     },
     {
@@ -102,5 +102,11 @@
       "source": "// cell1: f64 (bill), cell2: String (tip %), cell3: f64 (people)\n// cell4: bool (round up), cell8: String (name), cell9: bool (detailed)\n\nlet name = if cell8.is_empty() { \"Guest\" } else { &cell8 };\n\nlet tip_rate = cell2\n    .trim_end_matches('%')\n    .parse::<f64>()\n    .unwrap_or(18.0)\n    / 100.0;\n\nlet tip = cell1 * tip_rate;\nlet mut total = cell1 + tip;\nif cell4 {\n    total = total.ceil();\n}\nlet per_person = total / cell3;\n\nlet detail = if cell9 {\n    let tax_est = cell1 * 0.08;\n    format!(\n        \"<tr><td colspan='2' style='padding-top:12px;border-top:1px dashed #555;'>\\\n         <strong>\\u{1f4cb} Breakdown</strong><br/>\\\n         Food &amp; drink: <code>${:.2}</code><br/>\\\n         Est. tax (8%): <code>${:.2}</code><br/>\\\n         Tip ({}): <code>${:.2}</code><br/>\\\n         <em>Grand total: <code>${:.2}</code></em>\\\n         </td></tr>\",\n        cell1, tax_est, cell2, tip, total,\n    )\n} else {\n    String::new()\n};\n\nHtml(format!(\n    \"<div style='padding:1.2rem;background:linear-gradient(135deg,#1a1a2e,#16213e);\\\n     border-radius:10px;font-family:monospace;color:#eaeaea;max-width:380px;'>\\\n     <h2 style='margin:0 0 0.8rem;color:#e94560;'>\\u{1f9fe} Receipt for {}</h2>\\\n     <table style='width:100%;border-collapse:collapse;'>\\\n     <tr><td>Subtotal</td><td style='text-align:right;'>${:.2}</td></tr>\\\n     <tr><td>Tip ({})</td><td style='text-align:right;'>${:.2}</td></tr>\\\n     <tr style='border-top:2px solid #e94560;font-weight:bold;'>\\\n     <td>Total{}</td><td style='text-align:right;'>${:.2}</td></tr>\\\n     <tr><td>Per person (\\u{00f7}{:.0})</td>\\\n     <td style='text-align:right;font-size:1.2em;color:#4ecca3;'>${:.2}</td></tr>\\\n     {}</table></div>\",\n    name, cell1, cell2, tip,\n    if cell4 { \" \\u{2b06}\" } else { \"\" },\n    total, cell3, per_person, detail,\n))\n",
       "cargo_toml": null
     }
+  ],
+  "description": "Build a reactive tip calculator using all six widget types: slider, dropdown, number, switch, text input, and checkbox.",
+  "tags": [
+    "widgets",
+    "interactive",
+    "ui"
   ]
 }

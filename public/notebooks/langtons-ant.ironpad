@@ -30,5 +30,11 @@
       "source": "## The Highway Phenomenon\n\nAfter approximately 10,000 steps of seemingly chaotic wandering, the ant discovers a periodic diagonal highway and begins extending it indefinitely. This highway:\n\n- Has a **period of 104 steps** \u2014 after 104 moves, the pattern repeats, shifted diagonally.\n- Emerges **regardless of starting conditions** (as far as anyone has tested), though the onset time varies.\n- Remains **unproven** \u2014 no mathematical proof explains why the transition always occurs.\n\nThe messy region in the center is the initial chaotic phase. The diagonal stripe extending from it is the highway.\n\n### Try Modifying\n\n- Increase the step count to 50,000+ to see a longer highway.\n- Try starting on a non-blank grid (random initial cells) \u2014 the highway still emerges!\n- Implement **multi-color extensions** (e.g., \"LLRR\" or \"LRRRRRLLR\" rule strings) for dramatically different behavior.\n",
       "cargo_toml": null
     }
+  ],
+  "description": "Watch Langton's Ant traverse a grid, producing surprising order from simple turn rules.",
+  "tags": [
+    "cellular-automata",
+    "simulation",
+    "visualization"
   ]
 }

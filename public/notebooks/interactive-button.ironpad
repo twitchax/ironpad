@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Interactive Button ▶️\n\nThe **button** widget lets you trigger downstream cell execution on demand. Pair it with other widgets like sliders to build interactive compute-on-click workflows.\n\nTry changing the slider value, then click the button to recalculate.",
+      "source": "# Interactive Button \u25b6\ufe0f\n\nThe **button** widget lets you trigger downstream cell execution on demand. Pair it with other widgets like sliders to build interactive compute-on-click workflows.\n\nTry changing the slider value, then click the button to recalculate.",
       "cargo_toml": null
     },
     {
@@ -38,5 +38,11 @@
       "source": "let value = cell1;\nlet squared = value * value;\nlet cubed = value * value * value;\n\nMd(format!(\n    \"## Results for {value:.0}\\n\\n\\\n     | Operation | Result |\\n\\\n     |---|---:|\\n\\\n     | **Square** | {squared:.0} |\\n\\\n     | **Cube** | {cubed:.0} |\\n\\\n     | **Square root** | {sr:.4} |\",\n    sr = value.sqrt(),\n))\n",
       "cargo_toml": null
     }
+  ],
+  "description": "Use a button widget to trigger downstream computation on demand with a slider input.",
+  "tags": [
+    "button",
+    "widgets",
+    "interactive"
   ]
 }

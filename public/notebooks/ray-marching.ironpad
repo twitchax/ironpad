@@ -39,5 +39,11 @@
       "source": "## How It Works\n\n### Signed Distance Functions (SDFs)\n\nEach primitive is a simple function returning the distance to the nearest surface:\n\n| Primitive | SDF |\n|-----------|-----|\n| Sphere | `\\|p - center\\| - radius` |\n| Plane | `p.y - height` |\n| Box | `length(max(abs(p - center) - half_size, 0))` + interior term |\n\n### CSG Operations\n\nCombine primitives with set operations:\n- **Union**: `min(a, b)` \u2014 merges two objects\n- **Smooth union**: blends the surfaces with a smoothing factor `k`\n- **Intersection**: `max(a, b)` \u2014 keeps only the overlap\n- **Subtraction**: `max(a, -b)` \u2014 carves one from another\n\n### Extending the Renderer\n\nTry modifying the scene function to:\n- Add a **torus**: `sdf_torus(p, major_r, minor_r) = length(vec2(length(p.xz) - major_r, p.y)) - minor_r`\n- Use **repetition**: `sdf(mod(p, period) - period/2)` for infinite copies\n- Add **ambient occlusion**: sample the SDF at increasing distances from the surface along the normal",
       "cargo_toml": null
     }
+  ],
+  "description": "Render 3D scenes by marching rays through signed distance fields.",
+  "tags": [
+    "creative-coding",
+    "3d",
+    "visualization"
   ]
 }

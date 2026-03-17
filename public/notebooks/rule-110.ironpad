@@ -30,5 +30,11 @@
       "source": "## Patterns & Turing Completeness\n\nThe triangular structures you see are **nested**, reminiscent of Sierpinski triangles. Rule 110 produces a rich mixture of:\n\n- **Regular triangular regions** that tile the space.\n- **Glider-like structures** that propagate and interact.\n- **Complex boundaries** where different regions collide.\n\nIt is precisely these glider interactions that enable Turing completeness \u2014 information can be encoded in the gliders, and their collisions can implement logic gates.\n\n### Try Modifying\n\n- Change the initial conditions: try multiple active cells, or a random start.\n- Implement other rules: **Rule 30** produces pseudorandom output, **Rule 90** generates a perfect Sierpinski triangle.\n- Vary the tape width and number of generations to see larger-scale structure.\n",
       "cargo_toml": null
     }
+  ],
+  "description": "Run the Turing-complete Rule 110 elementary cellular automaton and visualize its evolution.",
+  "tags": [
+    "cellular-automata",
+    "simulation",
+    "visualization"
   ]
 }
