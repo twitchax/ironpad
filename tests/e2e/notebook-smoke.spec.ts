@@ -68,7 +68,12 @@ test.describe("Notebook smoke tests", () => {
     expect(jsErrors).toEqual([]);
   });
 
-  test("game of life notebook compiles and renders cell images", async ({
+  // In CI, run only one smoke test to stay within time limits. The mandelbrot
+  // test above exercises the full pipeline; these add coverage for different
+  // output types but triple the CI time due to crate downloads.
+  const ciTest = process.env.CI ? test.skip : test;
+
+  ciTest("game of life notebook compiles and renders cell images", async ({
     page,
   }) => {
     test.setTimeout(NOTEBOOK_TIMEOUT);
@@ -107,7 +112,7 @@ test.describe("Notebook smoke tests", () => {
     expect(jsErrors).toEqual([]);
   });
 
-  test("fourier series notebook compiles and renders interactive visualization", async ({
+  ciTest("fourier series notebook compiles and renders interactive visualization", async ({
     page,
   }) => {
     test.setTimeout(NOTEBOOK_TIMEOUT);

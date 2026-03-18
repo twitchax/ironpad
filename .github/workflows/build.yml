@@ -61,7 +61,7 @@ jobs:
           node-version: '20'
       - run: npm install
       - run: npx playwright install --with-deps chromium
-      - run: npx playwright test notebook-smoke
+      - run: npx playwright test notebook-smoke --retries=0
 
   docker:
     needs: test
