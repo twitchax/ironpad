@@ -28,9 +28,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// Build a minimal `AppState` (no Leptos SSR routes needed).
 fn test_state() -> AppState {
     AppState {
-        leptos_options: LeptosOptions::builder()
-            .output_name("ironpad-test")
-            .build(),
+        leptos_options: LeptosOptions::builder().output_name("ironpad-test").build(),
         config: AppConfig {
             data_dir: PathBuf::from("/tmp"),
             cache_dir: PathBuf::from("/tmp"),
@@ -186,7 +184,10 @@ async fn relay_integration_round_trip() {
     let host_msg = parse_msg(&host_recv);
     assert_eq!(host_msg.id, "m-1");
     assert!(
-        matches!(host_msg.kind, MessageKind::Mutation(Mutation::CellAdd { .. })),
+        matches!(
+            host_msg.kind,
+            MessageKind::Mutation(Mutation::CellAdd { .. })
+        ),
         "expected CellAdd mutation, got {:?}",
         host_msg.kind
     );

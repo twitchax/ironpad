@@ -1,10 +1,10 @@
-# ironpad
-
-An interactive Rust notebook environment that compiles cells to WebAssembly and executes them entirely in the browser ([live playground](https://ironpad.twitchax.com)).
-
 [![Build and Test](https://github.com/twitchax/ironpad/actions/workflows/build.yml/badge.svg)](https://github.com/twitchax/ironpad/actions/workflows/build.yml)
 [![codecov](https://codecov.io/gh/twitchax/ironpad/graph/badge.svg?token=PLACEHOLDER)](https://codecov.io/gh/twitchax/ironpad)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+# ironpad
+
+An interactive Rust notebook environment that compiles cells to WebAssembly and executes them entirely in the browser ([live playground](https://ironpad.twitchax.com)).
 
 ## Features
 

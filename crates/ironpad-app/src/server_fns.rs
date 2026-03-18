@@ -423,12 +423,10 @@ mod tests {
         let result = share_notebook_core(dir.path(), "not json").await;
 
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("invalid notebook JSON")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid notebook JSON"));
     }
 
     // ── get_shared_notebook_core ─────────────────────────────────────

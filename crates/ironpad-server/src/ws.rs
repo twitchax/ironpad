@@ -413,9 +413,7 @@ mod tests {
     /// Build a minimal `AppState` suitable for WS handler tests.
     fn test_state() -> AppState {
         AppState {
-            leptos_options: LeptosOptions::builder()
-                .output_name("ironpad-test")
-                .build(),
+            leptos_options: LeptosOptions::builder().output_name("ironpad-test").build(),
             config: AppConfig {
                 data_dir: PathBuf::from("/tmp"),
                 cache_dir: PathBuf::from("/tmp"),
@@ -516,7 +514,10 @@ mod tests {
         let received = guest_rx.try_recv().expect("guest should receive response");
         let msg: protocol::Message = serde_json::from_str(&received).unwrap();
         assert_eq!(msg.id, "q-42");
-        assert!(matches!(msg.kind, MessageKind::Response(Response::CellsList { .. })));
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Response(Response::CellsList { .. })
+        ));
     }
 
     #[tokio::test]
@@ -668,14 +669,12 @@ mod tests {
         ));
 
         // Session should be invalidated.
-        assert!(
-            state
-                .ws
-                .sessions
-                .get_session(&session.session_id)
-                .await
-                .is_none()
-        );
+        assert!(state
+            .ws
+            .sessions
+            .get_session(&session.session_id)
+            .await
+            .is_none());
     }
 
     // ── Guest message tests ─────────────────────────────────────────────
@@ -720,14 +719,24 @@ mod tests {
             }),
         );
 
-        handle_guest_message(&mutation_json, nb, &session.session_id, "guest-1", &perms, &state)
-            .await;
+        handle_guest_message(
+            &mutation_json,
+            nb,
+            &session.session_id,
+            "guest-1",
+            &perms,
+            &state,
+        )
+        .await;
 
         // Host should receive the forwarded mutation.
         let received = host_rx.try_recv().expect("host should receive mutation");
         let msg: protocol::Message = serde_json::from_str(&received).unwrap();
         assert_eq!(msg.id, "m-1");
-        assert!(matches!(msg.kind, MessageKind::Mutation(Mutation::CellAdd { .. })));
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Mutation(Mutation::CellAdd { .. })
+        ));
     }
 
     #[tokio::test]
@@ -759,8 +768,15 @@ mod tests {
 
         let query_json = to_json("q-1", MessageKind::Query(Query::CellsList));
 
-        handle_guest_message(&query_json, nb, &session.session_id, "guest-1", &perms, &state)
-            .await;
+        handle_guest_message(
+            &query_json,
+            nb,
+            &session.session_id,
+            "guest-1",
+            &perms,
+            &state,
+        )
+        .await;
 
         // Host should receive the forwarded query.
         let received = host_rx.try_recv().expect("host should receive query");
@@ -806,8 +822,15 @@ mod tests {
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
 
-        handle_guest_message(&mutation_json, nb, &session.session_id, "guest-1", &perms, &state)
-            .await;
+        handle_guest_message(
+            &mutation_json,
+            nb,
+            &session.session_id,
+            "guest-1",
+            &perms,
+            &state,
+        )
+        .await;
 
         // Host should NOT receive it.
         assert!(
@@ -858,8 +881,15 @@ mod tests {
 
         let query_json = to_json("q-1", MessageKind::Query(Query::NotebookGet));
 
-        handle_guest_message(&query_json, nb, &session.session_id, "guest-1", &perms, &state)
-            .await;
+        handle_guest_message(
+            &query_json,
+            nb,
+            &session.session_id,
+            "guest-1",
+            &perms,
+            &state,
+        )
+        .await;
 
         assert!(host_rx.try_recv().is_err(), "host should not receive query");
 
@@ -943,8 +973,15 @@ mod tests {
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
 
-        handle_guest_message(&mutation_json, nb, &session.session_id, "guest-1", &perms, &state)
-            .await;
+        handle_guest_message(
+            &mutation_json,
+            nb,
+            &session.session_id,
+            "guest-1",
+            &perms,
+            &state,
+        )
+        .await;
 
         // Guest should receive a SessionNotFound error.
         let received = guest_rx
@@ -985,8 +1022,15 @@ mod tests {
 
         let query_json = to_json("q-1", MessageKind::Query(Query::CellsList));
 
-        handle_guest_message(&query_json, nb, &session.session_id, "guest-1", &perms, &state)
-            .await;
+        handle_guest_message(
+            &query_json,
+            nb,
+            &session.session_id,
+            "guest-1",
+            &perms,
+            &state,
+        )
+        .await;
 
         // Guest should receive a SessionNotFound error.
         let received = guest_rx.try_recv().expect("guest should receive error");

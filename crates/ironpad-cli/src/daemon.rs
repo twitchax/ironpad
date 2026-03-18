@@ -592,7 +592,7 @@ fn translate_response(msg: protocol::Message) -> IpcResponse {
 mod tests {
     use super::*;
     use ironpad_common::protocol::{
-        ErrorCode, EventEnvelope, Event, ClientId, MutationResult, Response,
+        ClientId, ErrorCode, Event, EventEnvelope, MutationResult, Response,
     };
     use ironpad_common::{CellType, IronpadCell, IronpadNotebook};
     use serde_json::json;
@@ -739,10 +739,7 @@ mod tests {
 
     #[test]
     fn translate_cells_reorder() {
-        let req = ipc(
-            "cells.reorder",
-            json!({"cell_ids": ["c", "a", "b"]}),
-        );
+        let req = ipc("cells.reorder", json!({"cell_ids": ["c", "a", "b"]}));
         let kind = translate_command(&req).unwrap();
 
         match kind {
