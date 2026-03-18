@@ -184,14 +184,11 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 
 // ── Public notebooks ─────────────────────────────────────────────────────────
 
-/// Lists all available public notebooks by enumerating `*.ironpad` files at runtime.
-#[server]
-pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, ServerFnError> {
-    use ironpad_common::IronpadNotebook;
-
-    let leptos_options = expect_context::<LeptosOptions>();
-    let site_root: &str = &leptos_options.site_root;
-    let notebooks_dir = std::path::Path::new(site_root).join("notebooks");
+#[cfg(feature = "ssr")]
+pub(crate) async fn list_public_notebooks_core(
+    site_root: &std::path::Path,
+) -> anyhow::Result<Vec<PublicNotebookSummary>> {
+    let notebooks_dir = site_root.join("notebooks");
 
     let Ok(mut read_dir) = tokio::fs::read_dir(&notebooks_dir).await else {
         return Ok(vec![]);
@@ -228,33 +225,79 @@ pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, Serve
     Ok(summaries)
 }
 
+/// Lists all available public notebooks by enumerating `*.ironpad` files at runtime.
+#[server]
+pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, ServerFnError> {
+    let leptos_options = expect_context::<LeptosOptions>();
+    let site_root = leptos_options.site_root.as_ref();
+    list_public_notebooks_core(std::path::Path::new(site_root))
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn get_public_notebook_core(
+    site_root: &std::path::Path,
+    filename: &str,
+) -> anyhow::Result<IronpadNotebook> {
+    // Reject path traversal attempts.
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        anyhow::bail!("invalid filename");
+    }
+
+    let path = site_root.join("notebooks").join(filename);
+
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| anyhow::anyhow!("notebook not found: {e}"))?;
+
+    let notebook: IronpadNotebook = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow::anyhow!("invalid notebook file: {e}"))?;
+
+    Ok(notebook)
+}
+
 /// Loads a public `.ironpad` notebook from the server's static files directory.
 ///
 /// The `filename` must end with `.ironpad` and may not contain path separators.
 #[server]
 pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, ServerFnError> {
-    // Reject path traversal attempts.
-    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
-        return Err(ServerFnError::new("invalid filename"));
-    }
-
     let leptos_options = expect_context::<LeptosOptions>();
-    let site_root: &str = &leptos_options.site_root;
-    let path = std::path::Path::new(site_root)
-        .join("notebooks")
-        .join(&filename);
-
-    let bytes = tokio::fs::read(&path)
+    let site_root = leptos_options.site_root.as_ref();
+    get_public_notebook_core(std::path::Path::new(site_root), &filename)
         .await
-        .map_err(|e| ServerFnError::new(format!("notebook not found: {e}")))?;
-
-    let notebook: IronpadNotebook = serde_json::from_slice(&bytes)
-        .map_err(|e| ServerFnError::new(format!("invalid notebook file: {e}")))?;
-
-    Ok(notebook)
+        .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 // ── Shared notebooks ─────────────────────────────────────────────────────────
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn share_notebook_core(
+    data_dir: &std::path::Path,
+    notebook_json: &str,
+) -> anyhow::Result<String> {
+    // Validate the JSON is a valid IronpadNotebook.
+    let _: IronpadNotebook = serde_json::from_str(notebook_json)
+        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+
+    // Compute blake3 hash (first 16 hex chars).
+    let hash = blake3::hash(notebook_json.as_bytes());
+    let hash_hex = &hash.to_hex()[..16];
+
+    let shares_dir = data_dir.join("shares");
+    tokio::fs::create_dir_all(&shares_dir)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to create shares dir: {e}"))?;
+
+    let path = shares_dir.join(format!("{hash_hex}.json"));
+    tokio::fs::write(&path, notebook_json.as_bytes())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to write shared notebook: {e}"))?;
+
+    tracing::info!(hash = %hash_hex, "notebook shared");
+
+    Ok(hash_hex.to_string())
+}
 
 /// Uploads a notebook for sharing. Returns the blake3 content hash (16 hex chars).
 ///
@@ -263,29 +306,32 @@ pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, Se
 pub async fn share_notebook(notebook_json: String) -> Result<String, ServerFnError> {
     use ironpad_common::AppConfig;
 
-    // Validate the JSON is a valid IronpadNotebook.
-    let _: IronpadNotebook = serde_json::from_str(&notebook_json)
-        .map_err(|e| ServerFnError::new(format!("invalid notebook JSON: {e}")))?;
-
     let config = expect_context::<AppConfig>();
-
-    // Compute blake3 hash (first 16 hex chars).
-    let hash = blake3::hash(notebook_json.as_bytes());
-    let hash_hex = &hash.to_hex()[..16];
-
-    let shares_dir = config.data_dir.join("shares");
-    tokio::fs::create_dir_all(&shares_dir)
+    share_notebook_core(&config.data_dir, &notebook_json)
         .await
-        .map_err(|e| ServerFnError::new(format!("failed to create shares dir: {e}")))?;
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
 
-    let path = shares_dir.join(format!("{hash_hex}.json"));
-    tokio::fs::write(&path, notebook_json.as_bytes())
+#[cfg(feature = "ssr")]
+pub(crate) async fn get_shared_notebook_core(
+    data_dir: &std::path::Path,
+    hash: &str,
+) -> anyhow::Result<IronpadNotebook> {
+    // Reject path traversal attempts.
+    if hash.contains('/') || hash.contains('\\') || hash.contains("..") {
+        anyhow::bail!("invalid share hash");
+    }
+
+    let path = data_dir.join("shares").join(format!("{hash}.json"));
+
+    let bytes = tokio::fs::read(&path)
         .await
-        .map_err(|e| ServerFnError::new(format!("failed to write shared notebook: {e}")))?;
+        .map_err(|e| anyhow::anyhow!("shared notebook not found: {e}"))?;
 
-    tracing::info!(hash = %hash_hex, "notebook shared");
+    let notebook: IronpadNotebook = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow::anyhow!("invalid shared notebook: {e}"))?;
 
-    Ok(hash_hex.to_string())
+    Ok(notebook)
 }
 
 /// Retrieves a shared notebook by its blake3 content hash.
@@ -295,20 +341,211 @@ pub async fn share_notebook(notebook_json: String) -> Result<String, ServerFnErr
 pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, ServerFnError> {
     use ironpad_common::AppConfig;
 
-    // Reject path traversal attempts.
-    if hash.contains('/') || hash.contains('\\') || hash.contains("..") {
-        return Err(ServerFnError::new("invalid share hash"));
+    let config = expect_context::<AppConfig>();
+    get_shared_notebook_core(&config.data_dir, &hash)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "ssr"))]
+mod tests {
+    use super::*;
+
+    const VALID_NOTEBOOK_JSON: &str = r#"{
+        "version": 1,
+        "id": "00000000-0000-0000-0000-000000000001",
+        "title": "Test Notebook",
+        "description": "A test notebook",
+        "tags": ["test"],
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "cells": [
+            {
+                "id": "cell-1",
+                "order": 0,
+                "label": "Cell 1",
+                "cell_type": "Code",
+                "source": "let x = 42;",
+                "version": 0
+            }
+        ]
+    }"#;
+
+    fn second_notebook_json() -> String {
+        serde_json::to_string(&IronpadNotebook::new("Second")).unwrap()
     }
 
-    let config = expect_context::<AppConfig>();
-    let path = config.data_dir.join("shares").join(format!("{hash}.json"));
+    // ── share_notebook_core ──────────────────────────────────────────
 
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|e| ServerFnError::new(format!("shared notebook not found: {e}")))?;
+    #[tokio::test]
+    async fn server_fn_core_share_notebook_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
 
-    let notebook: IronpadNotebook = serde_json::from_slice(&bytes)
-        .map_err(|e| ServerFnError::new(format!("invalid shared notebook: {e}")))?;
+        assert_eq!(hash.len(), 16, "hash should be 16 hex chars");
+        let path = dir.path().join("shares").join(format!("{hash}.json"));
+        assert!(path.exists(), "share file should exist on disk");
+    }
 
-    Ok(notebook)
+    #[tokio::test]
+    async fn server_fn_core_share_notebook_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let h1 = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
+        let h2 = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
+
+        assert_eq!(h1, h2, "same content should produce the same hash");
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_share_notebook_different_content_different_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let h1 = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
+        let h2 = share_notebook_core(dir.path(), &second_notebook_json())
+            .await
+            .unwrap();
+
+        assert_ne!(h1, h2, "different content should produce different hashes");
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_share_notebook_rejects_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = share_notebook_core(dir.path(), "not json").await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid notebook JSON")
+        );
+    }
+
+    // ── get_shared_notebook_core ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn server_fn_core_get_shared_notebook_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
+
+        let nb = get_shared_notebook_core(dir.path(), &hash).await.unwrap();
+        assert_eq!(nb.title, "Test Notebook");
+        assert_eq!(nb.cells.len(), 1);
+        assert_eq!(nb.cells[0].source, "let x = 42;");
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_get_shared_notebook_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = get_shared_notebook_core(dir.path(), "deadbeefdeadbeef").await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_get_shared_notebook_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["../etc/passwd", "foo/bar", "foo\\bar", ".."] {
+            let result = get_shared_notebook_core(dir.path(), bad).await;
+            assert!(result.is_err(), "should reject traversal: {bad}");
+        }
+    }
+
+    // ── list_public_notebooks_core ──────────────────────────────────
+
+    #[tokio::test]
+    async fn server_fn_core_list_public_notebooks_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("notebooks")).unwrap();
+
+        let result = list_public_notebooks_core(dir.path()).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_list_public_notebooks_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // No "notebooks" subdirectory — should return empty, not error.
+        let result = list_public_notebooks_core(dir.path()).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_list_public_notebooks_finds_ironpad_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let nb_dir = dir.path().join("notebooks");
+        std::fs::create_dir_all(&nb_dir).unwrap();
+
+        // Write two valid .ironpad files.
+        std::fs::write(nb_dir.join("alpha.ironpad"), VALID_NOTEBOOK_JSON).unwrap();
+        let nb2 = IronpadNotebook::new("Zeta Notebook");
+        std::fs::write(
+            nb_dir.join("zeta.ironpad"),
+            serde_json::to_string(&nb2).unwrap(),
+        )
+        .unwrap();
+
+        // Write a non-.ironpad file that should be ignored.
+        std::fs::write(nb_dir.join("readme.txt"), "ignored").unwrap();
+
+        let summaries = list_public_notebooks_core(dir.path()).await.unwrap();
+        assert_eq!(summaries.len(), 2);
+
+        // Results are sorted by title.
+        assert_eq!(summaries[0].title, "Test Notebook");
+        assert_eq!(summaries[0].filename, "alpha.ironpad");
+        assert_eq!(summaries[0].cell_count, 1);
+
+        assert_eq!(summaries[1].title, "Zeta Notebook");
+        assert_eq!(summaries[1].filename, "zeta.ironpad");
+    }
+
+    // ── get_public_notebook_core ────────────────────────────────────
+
+    #[tokio::test]
+    async fn server_fn_core_get_public_notebook_returns_notebook() {
+        let dir = tempfile::tempdir().unwrap();
+        let nb_dir = dir.path().join("notebooks");
+        std::fs::create_dir_all(&nb_dir).unwrap();
+        std::fs::write(nb_dir.join("demo.ironpad"), VALID_NOTEBOOK_JSON).unwrap();
+
+        let nb = get_public_notebook_core(dir.path(), "demo.ironpad")
+            .await
+            .unwrap();
+        assert_eq!(nb.title, "Test Notebook");
+        assert_eq!(nb.cells.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_get_public_notebook_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("notebooks")).unwrap();
+
+        let result = get_public_notebook_core(dir.path(), "nope.ironpad").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_get_public_notebook_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["../secret.ironpad", "sub/file.ironpad", "a\\b", ".."] {
+            let result = get_public_notebook_core(dir.path(), bad).await;
+            assert!(result.is_err(), "should reject traversal: {bad}");
+            assert!(result.unwrap_err().to_string().contains("invalid filename"));
+        }
+    }
 }

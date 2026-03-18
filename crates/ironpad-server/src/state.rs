@@ -204,3 +204,220 @@ impl WsState {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ironpad_common::protocol::Permissions;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn register_and_unregister_host() {
+        let ws = WsState::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        ws.register_host("nb-1", "conn-1", tx).await;
+        assert!(ws.hosts.read().await.contains_key("nb-1"));
+
+        let conn_id = ws.unregister_host("nb-1").await;
+        assert_eq!(conn_id.as_deref(), Some("conn-1"));
+        assert!(!ws.hosts.read().await.contains_key("nb-1"));
+    }
+
+    #[tokio::test]
+    async fn unregister_host_returns_none_for_unknown() {
+        let ws = WsState::default();
+        assert_eq!(ws.unregister_host("no-such-nb").await, None);
+    }
+
+    #[tokio::test]
+    async fn register_host_replaces_existing() {
+        let ws = WsState::default();
+        let (tx1, _rx1) = mpsc::unbounded_channel();
+        let (tx2, _rx2) = mpsc::unbounded_channel();
+
+        ws.register_host("nb-1", "conn-1", tx1).await;
+        ws.register_host("nb-1", "conn-2", tx2).await;
+
+        // Should have replaced — unregister returns the new connection_id.
+        let conn_id = ws.unregister_host("nb-1").await;
+        assert_eq!(conn_id.as_deref(), Some("conn-2"));
+    }
+
+    #[tokio::test]
+    async fn send_to_host_delivers_message() {
+        let ws = WsState::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        ws.register_host("nb-1", "conn-1", tx).await;
+        assert!(ws.send_to_host("nb-1", "hello").await);
+        assert_eq!(rx.recv().await.unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn send_to_host_returns_false_for_unknown() {
+        let ws = WsState::default();
+        assert!(!ws.send_to_host("no-such-nb", "hello").await);
+    }
+
+    #[tokio::test]
+    async fn register_and_unregister_guest() {
+        let ws = WsState::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        ws.register_guest("sess-1", "client-1", tx).await;
+        assert!(ws.guests.read().await.contains_key("sess-1"));
+
+        ws.unregister_guest("sess-1", "client-1").await;
+        // Session entry removed when last guest leaves.
+        assert!(!ws.guests.read().await.contains_key("sess-1"));
+    }
+
+    #[tokio::test]
+    async fn unregister_guest_leaves_others() {
+        let ws = WsState::default();
+        let (tx1, _rx1) = mpsc::unbounded_channel();
+        let (tx2, _rx2) = mpsc::unbounded_channel();
+
+        ws.register_guest("sess-1", "client-1", tx1).await;
+        ws.register_guest("sess-1", "client-2", tx2).await;
+
+        ws.unregister_guest("sess-1", "client-1").await;
+
+        let guests = ws.guests.read().await;
+        let list = guests.get("sess-1").expect("session still has a guest");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].client_id, "client-2");
+    }
+
+    #[tokio::test]
+    async fn broadcast_to_guests_delivers_to_all() {
+        let ws = WsState::default();
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+
+        ws.register_guest("sess-1", "client-1", tx1).await;
+        ws.register_guest("sess-1", "client-2", tx2).await;
+
+        ws.broadcast_to_guests("sess-1", "update").await;
+
+        assert_eq!(rx1.recv().await.unwrap(), "update");
+        assert_eq!(rx2.recv().await.unwrap(), "update");
+    }
+
+    #[tokio::test]
+    async fn broadcast_to_guests_noop_for_unknown_session() {
+        let ws = WsState::default();
+        // Should not panic.
+        ws.broadcast_to_guests("no-such-sess", "msg").await;
+    }
+
+    #[tokio::test]
+    async fn broadcast_to_notebook_guests_across_sessions() {
+        let ws = WsState::default();
+
+        // Create two sessions for the same notebook.
+        let r1 = ws
+            .sessions
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+        let r2 = ws
+            .sessions
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+
+        ws.register_guest(&r1.session_id, "client-1", tx1).await;
+        ws.register_guest(&r2.session_id, "client-2", tx2).await;
+
+        ws.broadcast_to_notebook_guests("nb-1", "nb-update").await;
+
+        assert_eq!(rx1.recv().await.unwrap(), "nb-update");
+        assert_eq!(rx2.recv().await.unwrap(), "nb-update");
+    }
+
+    #[tokio::test]
+    async fn broadcast_to_notebook_guests_ignores_other_notebooks() {
+        let ws = WsState::default();
+
+        let r1 = ws
+            .sessions
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+        let r2 = ws
+            .sessions
+            .create_session("nb-2".into(), "conn-1".into(), Permissions::default())
+            .await;
+
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+
+        ws.register_guest(&r1.session_id, "client-1", tx1).await;
+        ws.register_guest(&r2.session_id, "client-2", tx2).await;
+
+        ws.broadcast_to_notebook_guests("nb-1", "only-nb1").await;
+
+        assert_eq!(rx1.recv().await.unwrap(), "only-nb1");
+        // rx2 should have nothing.
+        assert!(rx2.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn send_to_guest_delivers_to_specific_client() {
+        let ws = WsState::default();
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+
+        ws.register_guest("sess-1", "client-1", tx1).await;
+        ws.register_guest("sess-1", "client-2", tx2).await;
+
+        assert!(ws.send_to_guest("client-2", "targeted").await);
+
+        assert!(rx1.try_recv().is_err());
+        assert_eq!(rx2.recv().await.unwrap(), "targeted");
+    }
+
+    #[tokio::test]
+    async fn send_to_guest_returns_false_for_unknown() {
+        let ws = WsState::default();
+        assert!(!ws.send_to_guest("no-such-client", "msg").await);
+    }
+
+    #[tokio::test]
+    async fn disconnect_guests_drops_all_channels() {
+        let ws = WsState::default();
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+
+        ws.register_guest("sess-1", "client-1", tx1).await;
+        ws.register_guest("sess-1", "client-2", tx2).await;
+
+        ws.disconnect_guests("sess-1").await;
+
+        // Session removed from map.
+        assert!(!ws.guests.read().await.contains_key("sess-1"));
+        // Channels closed — recv returns None.
+        assert!(rx1.recv().await.is_none());
+        assert!(rx2.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn track_and_resolve_query() {
+        let ws = WsState::default();
+
+        ws.track_query("msg-42", "client-7").await;
+        let resolved = ws.resolve_query("msg-42").await;
+        assert_eq!(resolved.as_deref(), Some("client-7"));
+
+        // Second resolve returns None (consumed).
+        assert_eq!(ws.resolve_query("msg-42").await, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_query_returns_none_for_unknown() {
+        let ws = WsState::default();
+        assert_eq!(ws.resolve_query("no-such-msg").await, None);
+    }
+}

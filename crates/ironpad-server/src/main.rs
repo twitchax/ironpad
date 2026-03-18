@@ -1,7 +1,4 @@
 mod config;
-pub(crate) mod sessions;
-pub(crate) mod state;
-pub(crate) mod ws;
 
 use std::net::SocketAddr;
 
@@ -13,9 +10,10 @@ use leptos_axum::{generate_route_list, LeptosRoutes};
 
 use ironpad_app::*;
 use ironpad_common::AppConfig;
+use ironpad_server::state::{AppState, WsState};
+use ironpad_server::ws;
 
 use crate::config::CliArgs;
-use crate::state::{AppState, WsState};
 
 #[tokio::main]
 async fn main() {

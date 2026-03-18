@@ -585,3 +585,330 @@ fn translate_response(msg: protocol::Message) -> IpcResponse {
         _ => IpcResponse::error("unexpected response type"),
     }
 }
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ironpad_common::protocol::{
+        ErrorCode, EventEnvelope, Event, ClientId, MutationResult, Response,
+    };
+    use ironpad_common::{CellType, IronpadCell, IronpadNotebook};
+    use serde_json::json;
+
+    // ── helpers ─────────────────────────────────────────────────────────
+
+    fn ipc(command: &str, args: serde_json::Value) -> IpcRequest {
+        IpcRequest {
+            command: command.to_string(),
+            args,
+        }
+    }
+
+    fn make_cell(id: &str, order: u32) -> IronpadCell {
+        IronpadCell {
+            id: id.to_string(),
+            order,
+            label: format!("Cell {id}"),
+            cell_type: CellType::Code,
+            source: String::new(),
+            cargo_toml: None,
+            version: 1,
+        }
+    }
+
+    // ── translate_command ────────────────────────────────────────────────
+
+    #[test]
+    fn translate_cells_add_defaults() {
+        let req = ipc("cells.add", json!({}));
+        let kind = translate_command(&req).unwrap();
+
+        match kind {
+            MessageKind::Mutation(protocol::Mutation::CellAdd {
+                cell,
+                after_cell_id,
+            }) => {
+                assert_eq!(cell.source, "");
+                assert!(matches!(cell.cell_type, CellType::Code));
+                assert_eq!(cell.label, "New Cell");
+                assert!(cell.cargo_toml.is_none());
+                assert!(after_cell_id.is_none());
+            }
+            other => panic!("expected CellAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_cells_add_full() {
+        let req = ipc(
+            "cells.add",
+            json!({
+                "source": "let x = 1;",
+                "type": "markdown",
+                "label": "My Cell",
+                "after_cell_id": "cell-0",
+                "cargo_toml": "[dependencies]",
+            }),
+        );
+        let kind = translate_command(&req).unwrap();
+
+        match kind {
+            MessageKind::Mutation(protocol::Mutation::CellAdd {
+                cell,
+                after_cell_id,
+            }) => {
+                assert_eq!(cell.source, "let x = 1;");
+                assert!(matches!(cell.cell_type, CellType::Markdown));
+                assert_eq!(cell.label, "My Cell");
+                assert_eq!(cell.cargo_toml.as_deref(), Some("[dependencies]"));
+                assert_eq!(after_cell_id.as_deref(), Some("cell-0"));
+            }
+            other => panic!("expected CellAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_cells_update() {
+        let req = ipc(
+            "cells.update",
+            json!({
+                "cell_id": "c1",
+                "source": "new code",
+                "version": 3,
+            }),
+        );
+        let kind = translate_command(&req).unwrap();
+
+        match kind {
+            MessageKind::Mutation(protocol::Mutation::CellUpdate {
+                cell_id,
+                source,
+                cargo_toml,
+                label,
+                version,
+            }) => {
+                assert_eq!(cell_id, "c1");
+                assert_eq!(source.as_deref(), Some("new code"));
+                assert!(cargo_toml.is_none());
+                assert!(label.is_none());
+                assert_eq!(version, 3);
+            }
+            other => panic!("expected CellUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_cells_update_missing_cell_id() {
+        let req = ipc("cells.update", json!({"version": 1}));
+        assert!(translate_command(&req).is_err());
+    }
+
+    #[test]
+    fn translate_cells_update_missing_version() {
+        let req = ipc("cells.update", json!({"cell_id": "c1"}));
+        assert!(translate_command(&req).is_err());
+    }
+
+    #[test]
+    fn translate_cells_delete() {
+        let req = ipc("cells.delete", json!({"cell_id": "c1", "version": 5}));
+        let kind = translate_command(&req).unwrap();
+
+        match kind {
+            MessageKind::Mutation(protocol::Mutation::CellDelete { cell_id, version }) => {
+                assert_eq!(cell_id, "c1");
+                assert_eq!(version, 5);
+            }
+            other => panic!("expected CellDelete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_cells_delete_missing_cell_id() {
+        let req = ipc("cells.delete", json!({"version": 1}));
+        assert!(translate_command(&req).is_err());
+    }
+
+    #[test]
+    fn translate_cells_delete_missing_version() {
+        let req = ipc("cells.delete", json!({"cell_id": "c1"}));
+        assert!(translate_command(&req).is_err());
+    }
+
+    #[test]
+    fn translate_cells_reorder() {
+        let req = ipc(
+            "cells.reorder",
+            json!({"cell_ids": ["c", "a", "b"]}),
+        );
+        let kind = translate_command(&req).unwrap();
+
+        match kind {
+            MessageKind::Mutation(protocol::Mutation::CellReorder { cell_ids }) => {
+                assert_eq!(cell_ids, vec!["c", "a", "b"]);
+            }
+            other => panic!("expected CellReorder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_cells_reorder_missing_ids_defaults_empty() {
+        let req = ipc("cells.reorder", json!({}));
+        let kind = translate_command(&req).unwrap();
+
+        match kind {
+            MessageKind::Mutation(protocol::Mutation::CellReorder { cell_ids }) => {
+                assert!(cell_ids.is_empty());
+            }
+            other => panic!("expected CellReorder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_unknown_command() {
+        let req = ipc("nope.nope", json!({}));
+        let err = translate_command(&req).unwrap_err();
+        assert!(err.contains("unknown command"), "got: {err}");
+    }
+
+    // ── translate_response ──────────────────────────────────────────────
+
+    fn wrap(kind: MessageKind) -> protocol::Message {
+        protocol::Message {
+            id: "resp-1".into(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn response_notebook() {
+        let nb: IronpadNotebook = serde_json::from_value(json!({
+            "version": 1,
+            "id": "00000000-0000-0000-0000-000000000000",
+            "title": "Test",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z",
+            "cells": [],
+        }))
+        .unwrap();
+        let resp = translate_response(wrap(MessageKind::Response(Response::Notebook {
+            notebook: nb,
+        })));
+        assert!(resp.ok);
+        assert_eq!(resp.data.as_ref().unwrap()["title"], "Test");
+    }
+
+    #[test]
+    fn response_cell() {
+        let cell = make_cell("c1", 0);
+        let resp = translate_response(wrap(MessageKind::Response(Response::Cell {
+            cell: cell.clone(),
+        })));
+        assert!(resp.ok);
+        assert_eq!(resp.data.as_ref().unwrap()["id"], "c1");
+    }
+
+    #[test]
+    fn response_cells_list() {
+        let cells = vec![ironpad_common::types::CellManifest {
+            id: "c1".into(),
+            order: 0,
+            label: "First".into(),
+            cell_type: CellType::Code,
+        }];
+        let resp = translate_response(wrap(MessageKind::Response(Response::CellsList { cells })));
+        assert!(resp.ok);
+        let arr = resp.data.unwrap();
+        assert_eq!(arr.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn response_session_status() {
+        let resp = translate_response(wrap(MessageKind::Response(Response::SessionStatus {
+            session_id: "s1".into(),
+            connected_clients: 3,
+        })));
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+        assert_eq!(data["session_id"], "s1");
+        assert_eq!(data["connected_clients"], 3);
+    }
+
+    #[test]
+    fn response_mutation_ok() {
+        let resp = translate_response(wrap(MessageKind::Response(Response::MutationOk {
+            detail: MutationResult::CellAdded {
+                cell_id: "c1".into(),
+                version: 1,
+            },
+        })));
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+        assert_eq!(data["cell_id"], "c1");
+    }
+
+    #[test]
+    fn response_error() {
+        let resp = translate_response(wrap(MessageKind::Response(Response::Error {
+            code: ErrorCode::PermissionDenied,
+            message: "denied".into(),
+        })));
+        assert!(!resp.ok);
+        assert_eq!(resp.error.as_deref(), Some("denied"));
+        assert_eq!(resp.code.as_deref(), Some("PermissionDenied"));
+    }
+
+    #[test]
+    fn response_event_passthrough() {
+        let resp = translate_response(wrap(MessageKind::Event(EventEnvelope {
+            by: ClientId::browser(),
+            event: Event::CellDeleted {
+                cell_id: "c1".into(),
+            },
+        })));
+        assert!(resp.ok);
+    }
+
+    #[test]
+    fn response_unexpected_type() {
+        let resp = translate_response(wrap(MessageKind::Query(Query::NotebookGet)));
+        assert!(!resp.ok);
+        assert!(resp.error.as_deref().unwrap().contains("unexpected"));
+    }
+
+    // ── renumber ────────────────────────────────────────────────────────
+
+    #[test]
+    fn renumber_empty() {
+        let mut cells = vec![];
+        renumber(&mut cells);
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn renumber_single() {
+        let mut cells = vec![make_cell("a", 42)];
+        renumber(&mut cells);
+        assert_eq!(cells[0].order, 0);
+    }
+
+    #[test]
+    fn renumber_multiple_with_gaps() {
+        let mut cells = vec![make_cell("a", 10), make_cell("b", 5), make_cell("c", 99)];
+        renumber(&mut cells);
+        assert_eq!(cells[0].order, 0);
+        assert_eq!(cells[1].order, 1);
+        assert_eq!(cells[2].order, 2);
+    }
+
+    #[test]
+    fn renumber_already_ordered() {
+        let mut cells = vec![make_cell("a", 0), make_cell("b", 1), make_cell("c", 2)];
+        renumber(&mut cells);
+        assert_eq!(cells[0].order, 0);
+        assert_eq!(cells[1].order, 1);
+        assert_eq!(cells[2].order, 2);
+    }
+}

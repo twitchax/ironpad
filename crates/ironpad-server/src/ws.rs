@@ -43,6 +43,7 @@ pub struct GuestParams {
 // ── Host handler ────────────────────────────────────────────────────────────
 
 /// WebSocket upgrade for browser hosts: `GET /ws/host?notebook_id=<id>`.
+#[allow(clippy::unused_async)] // Axum handler signature requires async.
 pub async fn ws_host_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<HostParams>,
@@ -387,5 +388,618 @@ async fn handle_guest_message(
         MessageKind::Event(_) | MessageKind::Response(_) | MessageKind::Control(_) => {
             tracing::debug!(client_id = %client_id, "guest sent unexpected message type");
         }
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ironpad_common::protocol::{
+        self, ClientId, ControlMessage, Event, EventEnvelope, MessageKind, Mutation, NewCell,
+        Permissions, Query, Response,
+    };
+    use ironpad_common::types::CellType;
+    use ironpad_common::AppConfig;
+    use leptos::config::LeptosOptions;
+    use tokio::sync::mpsc;
+
+    use crate::state::{AppState, WsState};
+
+    use super::{handle_guest_message, handle_host_message};
+
+    /// Build a minimal `AppState` suitable for WS handler tests.
+    fn test_state() -> AppState {
+        AppState {
+            leptos_options: LeptosOptions::builder()
+                .output_name("ironpad-test")
+                .build(),
+            config: AppConfig {
+                data_dir: PathBuf::from("/tmp"),
+                cache_dir: PathBuf::from("/tmp"),
+                port: 0,
+                ironpad_cell_path: PathBuf::from("/tmp"),
+            },
+            ws: WsState::default(),
+        }
+    }
+
+    /// Serialize a protocol message to JSON.
+    fn to_json(id: &str, kind: MessageKind) -> String {
+        serde_json::to_string(&protocol::Message {
+            id: id.to_string(),
+            kind,
+        })
+        .unwrap()
+    }
+
+    // ── Host message tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn host_event_broadcasts_to_guests() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        // Register host.
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        // Create a session so `broadcast_to_notebook_guests` can find guests.
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        // Register a guest on that session.
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // Host sends an event.
+        let event_json = to_json(
+            "evt-1",
+            MessageKind::Event(EventEnvelope {
+                by: ClientId::browser(),
+                event: Event::CellDeleted {
+                    cell_id: "c1".into(),
+                },
+            }),
+        );
+
+        handle_host_message(&event_json, nb, conn, &state).await;
+
+        // Guest should receive the broadcast.
+        let received = guest_rx.try_recv().expect("guest should receive event");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert!(matches!(msg.kind, MessageKind::Event(_)));
+    }
+
+    #[tokio::test]
+    async fn host_response_routes_to_querying_guest() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // Simulate a tracked query from guest-1 with message id "q-42".
+        state.ws.track_query("q-42", "guest-1").await;
+
+        // Host sends a response with matching id.
+        let response_json = to_json(
+            "q-42",
+            MessageKind::Response(Response::CellsList { cells: vec![] }),
+        );
+
+        handle_host_message(&response_json, nb, conn, &state).await;
+
+        // Guest should receive the routed response.
+        let received = guest_rx.try_recv().expect("guest should receive response");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert_eq!(msg.id, "q-42");
+        assert!(matches!(msg.kind, MessageKind::Response(Response::CellsList { .. })));
+    }
+
+    #[tokio::test]
+    async fn host_response_untracked_is_dropped() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // No tracked query — response with unknown id should be dropped.
+        let response_json = to_json(
+            "unknown-id",
+            MessageKind::Response(Response::CellsList { cells: vec![] }),
+        );
+
+        handle_host_message(&response_json, nb, conn, &state).await;
+
+        assert!(
+            guest_rx.try_recv().is_err(),
+            "guest should NOT receive untracked response"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_mutation_is_ignored() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // Hosts should not send mutations; they should be silently ignored.
+        let mutation_json = to_json(
+            "m-1",
+            MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
+        );
+
+        handle_host_message(&mutation_json, nb, conn, &state).await;
+
+        assert!(
+            guest_rx.try_recv().is_err(),
+            "unexpected mutation from host should not be forwarded"
+        );
+    }
+
+    // ── Control message tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn host_create_session_sends_session_created() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let create_msg = to_json(
+            "ctrl-1",
+            MessageKind::Control(ControlMessage::CreateSession {
+                permissions: Permissions::default(),
+            }),
+        );
+
+        handle_host_message(&create_msg, nb, conn, &state).await;
+
+        // Host should receive a SessionCreated response.
+        let received = host_rx
+            .try_recv()
+            .expect("host should receive SessionCreated");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert_eq!(msg.id, "ctrl-1");
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Control(ControlMessage::SessionCreated { .. })
+        ));
+
+        // Session should exist in the store.
+        let sessions = state.ws.sessions.all_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].notebook_id, nb);
+    }
+
+    #[tokio::test]
+    async fn host_end_session_broadcasts_and_disconnects() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // Host ends the session.
+        let end_msg = to_json(
+            "ctrl-2",
+            MessageKind::Control(ControlMessage::EndSession {
+                session_id: session.session_id.clone(),
+            }),
+        );
+
+        handle_host_message(&end_msg, nb, conn, &state).await;
+
+        // Guest should receive SessionEnded.
+        let received = guest_rx
+            .try_recv()
+            .expect("guest should receive SessionEnded");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Control(ControlMessage::SessionEnded { .. })
+        ));
+
+        // Session should be invalidated.
+        assert!(
+            state
+                .ws
+                .sessions
+                .get_session(&session.session_id)
+                .await
+                .is_none()
+        );
+    }
+
+    // ── Guest message tests ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn guest_mutation_forwarded_to_host() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        let (guest_tx, _guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        let perms = Permissions {
+            read: true,
+            write: true,
+            execute: false,
+        };
+
+        let mutation_json = to_json(
+            "m-1",
+            MessageKind::Mutation(Mutation::CellAdd {
+                cell: NewCell {
+                    source: "let x = 1;".into(),
+                    cell_type: CellType::Code,
+                    label: "Test".into(),
+                    cargo_toml: None,
+                },
+                after_cell_id: None,
+            }),
+        );
+
+        handle_guest_message(&mutation_json, nb, &session.session_id, "guest-1", &perms, &state)
+            .await;
+
+        // Host should receive the forwarded mutation.
+        let received = host_rx.try_recv().expect("host should receive mutation");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert_eq!(msg.id, "m-1");
+        assert!(matches!(msg.kind, MessageKind::Mutation(Mutation::CellAdd { .. })));
+    }
+
+    #[tokio::test]
+    async fn guest_query_forwarded_and_tracked() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        let (guest_tx, _guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        let perms = Permissions {
+            read: true,
+            write: false,
+            execute: false,
+        };
+
+        let query_json = to_json("q-1", MessageKind::Query(Query::CellsList));
+
+        handle_guest_message(&query_json, nb, &session.session_id, "guest-1", &perms, &state)
+            .await;
+
+        // Host should receive the forwarded query.
+        let received = host_rx.try_recv().expect("host should receive query");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert_eq!(msg.id, "q-1");
+        assert!(matches!(msg.kind, MessageKind::Query(Query::CellsList)));
+
+        // Query should be tracked for response routing.
+        let tracked = state.ws.resolve_query("q-1").await;
+        assert_eq!(tracked.as_deref(), Some("guest-1"));
+    }
+
+    #[tokio::test]
+    async fn guest_mutation_denied_without_write() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // Read-only permissions — no write.
+        let perms = Permissions {
+            read: true,
+            write: false,
+            execute: false,
+        };
+
+        let mutation_json = to_json(
+            "m-1",
+            MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
+        );
+
+        handle_guest_message(&mutation_json, nb, &session.session_id, "guest-1", &perms, &state)
+            .await;
+
+        // Host should NOT receive it.
+        assert!(
+            host_rx.try_recv().is_err(),
+            "host should NOT receive permission-denied mutation"
+        );
+
+        // Guest should receive a PermissionDenied error.
+        let received = guest_rx
+            .try_recv()
+            .expect("guest should receive error response");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert_eq!(msg.id, "m-1");
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Response(Response::Error {
+                code: ironpad_common::protocol::ErrorCode::PermissionDenied,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn guest_query_denied_without_read() {
+        let state = test_state();
+        let nb = "nb-1";
+
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, "conn-1", host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), "conn-1".into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        let perms = Permissions {
+            read: false,
+            write: true,
+            execute: false,
+        };
+
+        let query_json = to_json("q-1", MessageKind::Query(Query::NotebookGet));
+
+        handle_guest_message(&query_json, nb, &session.session_id, "guest-1", &perms, &state)
+            .await;
+
+        assert!(host_rx.try_recv().is_err(), "host should not receive query");
+
+        let received = guest_rx.try_recv().expect("guest should receive error");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Response(Response::Error {
+                code: ironpad_common::protocol::ErrorCode::PermissionDenied,
+                ..
+            })
+        ));
+    }
+
+    // ── Invalid JSON handling ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn host_invalid_json_does_not_crash() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        // Malformed JSON — should be silently ignored.
+        handle_host_message("{not valid json", nb, conn, &state).await;
+    }
+
+    #[tokio::test]
+    async fn guest_invalid_json_does_not_crash() {
+        let state = test_state();
+
+        let perms = Permissions::default();
+
+        // Malformed JSON — should be silently ignored.
+        handle_guest_message("{bad", "nb-1", "sess-1", "guest-1", &perms, &state).await;
+    }
+
+    #[tokio::test]
+    async fn host_structurally_valid_but_wrong_schema_does_not_crash() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        // Valid JSON but missing required protocol fields.
+        handle_host_message(r#"{"foo": "bar"}"#, nb, conn, &state).await;
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn guest_mutation_when_host_disconnected() {
+        let state = test_state();
+        let nb = "nb-1";
+
+        // No host registered — guest sends mutation.
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), "conn-1".into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        let perms = Permissions {
+            read: true,
+            write: true,
+            execute: false,
+        };
+
+        let mutation_json = to_json(
+            "m-1",
+            MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
+        );
+
+        handle_guest_message(&mutation_json, nb, &session.session_id, "guest-1", &perms, &state)
+            .await;
+
+        // Guest should receive a SessionNotFound error.
+        let received = guest_rx
+            .try_recv()
+            .expect("guest should receive error when host is disconnected");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Response(Response::Error {
+                code: ironpad_common::protocol::ErrorCode::SessionNotFound,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn guest_query_when_host_disconnected() {
+        let state = test_state();
+        let nb = "nb-1";
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), "conn-1".into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        let perms = Permissions {
+            read: true,
+            write: false,
+            execute: false,
+        };
+
+        let query_json = to_json("q-1", MessageKind::Query(Query::CellsList));
+
+        handle_guest_message(&query_json, nb, &session.session_id, "guest-1", &perms, &state)
+            .await;
+
+        // Guest should receive a SessionNotFound error.
+        let received = guest_rx.try_recv().expect("guest should receive error");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Response(Response::Error {
+                code: ironpad_common::protocol::ErrorCode::SessionNotFound,
+                ..
+            })
+        ));
+
+        // Query should NOT remain tracked (cleaned up on failure).
+        assert!(state.ws.resolve_query("q-1").await.is_none());
     }
 }
