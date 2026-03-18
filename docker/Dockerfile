@@ -25,6 +25,7 @@ COPY . .
 
 RUN cargo leptos build --release
 RUN cargo build --release -p ironpad-cli
+RUN cargo build --release -p ironpad-proxy
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ WORKDIR /app
 # Copy the compiled binaries.
 COPY --from=builder /build/target/release/ironpad-server /app/ironpad-server
 COPY --from=builder /build/target/release/ironpad-cli /app/ironpad-cli
+COPY --from=builder /build/target/release/ironpad-proxy /app/ironpad-proxy
 
 # Copy the site assets (CSS, JS, WASM frontend bundle).
 COPY --from=builder /build/target/site /app/target/site
@@ -66,6 +68,8 @@ ENV IRONPAD_DATA_DIR=/ironpad/data
 ENV IRONPAD_CACHE_DIR=/ironpad/cache
 ENV IRONPAD_PORT=3111
 ENV IRONPAD_CELL_PATH=/app/crates/ironpad-cell
+ENV IRONPAD_COMPILATION_PROXY=http://127.0.0.1:3112
+ENV IRONPAD_PROXY_ALLOWLIST=crates.io,github.com,githubusercontent.com
 ENV RUST_LOG=info
 ENV LEPTOS_SITE_ROOT=/app/target/site
 
@@ -73,4 +77,4 @@ EXPOSE 3111
 
 VOLUME ["/ironpad"]
 
-CMD ["/app/ironpad-server"]
+CMD ["/bin/sh", "-c", "/app/ironpad-proxy & exec /app/ironpad-server"]

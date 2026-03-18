@@ -1445,6 +1445,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironpad-proxy"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ironpad-server"
 version = "0.1.0"
 dependencies = [

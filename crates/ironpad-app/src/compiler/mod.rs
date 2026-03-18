@@ -356,7 +356,7 @@ mod e2e_tests {
         assert!(crate_dir.join("src/lib.rs").is_file());
 
         // Build to WASM.
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
             .await
             .expect("build_micro_crate should not return an infra error");
 
@@ -420,7 +420,7 @@ mod e2e_tests {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
             .await
             .expect("build_micro_crate should not return an infra error");
 
@@ -479,7 +479,7 @@ mod e2e_tests {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
             .await
             .expect("build should not return an infra error");
 
@@ -577,7 +577,7 @@ impl Simulation for BusSim {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
             .await
             .expect("build_micro_crate should not return an infra error");
 
@@ -664,7 +664,7 @@ impl LiveView for Counter {
             "generated lib.rs should use __IRONPAD_LIVE_VIEW__ static"
         );
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
             .await
             .expect("build_micro_crate should not return an infra error");
 
@@ -797,7 +797,7 @@ impl LiveView for Counter {
                 };
 
                 let result =
-                    check_micro_crate(&crate_dir, &cache_dir, session_id, &unique_id).await;
+                    check_micro_crate(&crate_dir, &cache_dir, session_id, &unique_id, None).await;
 
                 match result {
                     Ok(CheckResult::Ok) => {

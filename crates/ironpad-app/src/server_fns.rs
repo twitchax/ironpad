@@ -69,10 +69,15 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 
     // Build.
 
-    let build_result =
-        build_micro_crate(&crate_dir, &config.cache_dir, session_id, &request.cell_id)
-            .await
-            .map_err(|e| ServerFnError::new(format!("build invocation failed: {e}")))?;
+    let build_result = build_micro_crate(
+        &crate_dir,
+        &config.cache_dir,
+        session_id,
+        &request.cell_id,
+        config.compilation_proxy.as_deref(),
+    )
+    .await
+    .map_err(|e| ServerFnError::new(format!("build invocation failed: {e}")))?;
 
     match build_result {
         BuildResult::Success {

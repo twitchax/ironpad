@@ -4,6 +4,7 @@ members = [
     "crates/ironpad-app",
     "crates/ironpad-cli",
     "crates/ironpad-frontend",
+    "crates/ironpad-proxy",
     "crates/ironpad-server",
     "crates/ironpad-cell",
     "crates/ironpad-common",

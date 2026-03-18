@@ -34,6 +34,7 @@ fn test_state() -> AppState {
             cache_dir: PathBuf::from("/tmp"),
             port: 0,
             ironpad_cell_path: PathBuf::from("/tmp"),
+            compilation_proxy: None,
         },
         ws: WsState::default(),
     }

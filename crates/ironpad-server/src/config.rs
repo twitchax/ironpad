@@ -26,6 +26,11 @@ pub struct CliArgs {
         env = "IRONPAD_CELL_PATH"
     )]
     pub ironpad_cell_path: PathBuf,
+
+    /// Optional HTTPS proxy URL for cargo builds (e.g., `http://127.0.0.1:3112`).
+    /// When set, user cell compilations route through this proxy for domain filtering.
+    #[arg(long, env = "IRONPAD_COMPILATION_PROXY")]
+    pub compilation_proxy: Option<String>,
 }
 
 impl From<CliArgs> for AppConfig {
@@ -35,6 +40,7 @@ impl From<CliArgs> for AppConfig {
             cache_dir: args.cache_dir,
             port: args.port,
             ironpad_cell_path: args.ironpad_cell_path,
+            compilation_proxy: args.compilation_proxy,
         }
     }
 }
@@ -54,6 +60,7 @@ mod tests {
             args.ironpad_cell_path,
             PathBuf::from("./crates/ironpad-cell")
         );
+        assert_eq!(args.compilation_proxy, None);
     }
 
     #[test]
@@ -68,12 +75,18 @@ mod tests {
             "8080",
             "--ironpad-cell-path",
             "/opt/ironpad-cell",
+            "--compilation-proxy",
+            "http://127.0.0.1:3112",
         ]);
 
         assert_eq!(args.data_dir, PathBuf::from("/tmp/ironpad-data"));
         assert_eq!(args.cache_dir, PathBuf::from("/tmp/ironpad-cache"));
         assert_eq!(args.port, 8080);
         assert_eq!(args.ironpad_cell_path, PathBuf::from("/opt/ironpad-cell"));
+        assert_eq!(
+            args.compilation_proxy,
+            Some("http://127.0.0.1:3112".to_string())
+        );
     }
 
     #[test]
@@ -88,5 +101,6 @@ mod tests {
             config.ironpad_cell_path,
             PathBuf::from("./crates/ironpad-cell")
         );
+        assert_eq!(config.compilation_proxy, None);
     }
 }

@@ -56,6 +56,7 @@ pub async fn build_micro_crate(
     cache_dir: &Path,
     session_id: &str,
     cell_id: &str,
+    compilation_proxy: Option<&str>,
 ) -> anyhow::Result<BuildResult> {
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = target_dir(cache_dir, session_id);
@@ -76,8 +77,8 @@ pub async fn build_micro_crate(
     );
 
     let output = tokio::time::timeout(BUILD_TIMEOUT, {
-        Command::new("cargo")
-            .arg("build")
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build")
             .arg("--target")
             .arg("wasm32-unknown-unknown")
             .arg("--release")
@@ -89,8 +90,14 @@ pub async fn build_micro_crate(
             // (e.g. cargo-leptos setting RUSTFLAGS with `-fuse-ld=mold`).
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .env_remove("CARGO_BUILD_RUSTFLAGS")
-            .output()
+            .env_remove("CARGO_BUILD_RUSTFLAGS");
+
+        if let Some(proxy) = compilation_proxy {
+            cmd.env("HTTPS_PROXY", proxy);
+            cmd.env("HTTP_PROXY", proxy);
+        }
+
+        cmd.output()
     })
     .await
     .map_err(|_| {
@@ -187,6 +194,7 @@ pub async fn check_micro_crate(
     cache_dir: &Path,
     session_id: &str,
     _cell_id: &str,
+    compilation_proxy: Option<&str>,
 ) -> anyhow::Result<CheckResult> {
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = target_dir(cache_dir, session_id);
@@ -198,8 +206,8 @@ pub async fn check_micro_crate(
     let target_dir = std::fs::canonicalize(&target_dir)?;
 
     let output = tokio::time::timeout(BUILD_TIMEOUT, {
-        Command::new("cargo")
-            .arg("check")
+        let mut cmd = Command::new("cargo");
+        cmd.arg("check")
             .arg("--target")
             .arg("wasm32-unknown-unknown")
             .arg("--release")
@@ -209,8 +217,14 @@ pub async fn check_micro_crate(
             .env("CARGO_TARGET_DIR", &target_dir)
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .env_remove("CARGO_BUILD_RUSTFLAGS")
-            .output()
+            .env_remove("CARGO_BUILD_RUSTFLAGS");
+
+        if let Some(proxy) = compilation_proxy {
+            cmd.env("HTTPS_PROXY", proxy);
+            cmd.env("HTTP_PROXY", proxy);
+        }
+
+        cmd.output()
     })
     .await
     .map_err(|_| anyhow::anyhow!("cargo check timed out after {}s", BUILD_TIMEOUT.as_secs()))?

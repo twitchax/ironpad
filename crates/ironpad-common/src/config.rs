@@ -10,4 +10,7 @@ pub struct AppConfig {
     pub cache_dir: PathBuf,
     pub port: u16,
     pub ironpad_cell_path: PathBuf,
+    /// Optional HTTPS proxy URL for cargo builds (e.g., `http://127.0.0.1:3112`).
+    /// When set, user cell compilations route through this proxy for domain filtering.
+    pub compilation_proxy: Option<String>,
 }

@@ -540,6 +540,58 @@ services:
 
 ---
 
+## Compilation Security
+
+ironpad compiles arbitrary user-provided Rust code server-side, including user-specified `Cargo.toml` dependencies. Any dependency can include a `build.rs` script that executes during compilation with full network access. In a deployment environment (e.g., Fly.io), a malicious `build.rs` could probe internal networks, access metadata services, or exfiltrate data.
+
+### The Proxy: `ironpad-proxy`
+
+`ironpad-proxy` is a lightweight CONNECT-only proxy that filters outbound connections by domain during `cargo build`. When enabled, the compiler sets `HTTPS_PROXY` on the child cargo process, routing all HTTPS traffic through the proxy. Only connections to allowlisted domains are permitted; everything else gets a `403 Forbidden`.
+
+```
+cargo build  ──HTTPS_PROXY──►  ironpad-proxy (127.0.0.1:3112)
+                                     │
+                                     ├─ CONNECT crates.io:443  → ✅ tunnel
+                                     ├─ CONNECT github.com:443 → ✅ tunnel
+                                     └─ CONNECT evil.com:443   → ❌ 403
+```
+
+### Configuration
+
+| Env Var | Purpose | Default |
+|---|---|---|
+| `IRONPAD_COMPILATION_PROXY` | Proxy URL (e.g., `http://127.0.0.1:3112`). Set to enable; unset to disable. | *unset* |
+| `IRONPAD_PROXY_ALLOWLIST` | Comma-separated domains. Uses suffix matching: `crates.io` also allows `static.crates.io`. | `crates.io,github.com,githubusercontent.com` |
+
+The default allowlist covers the standard Cargo ecosystem:
+- `crates.io` → `static.crates.io`, `index.crates.io`
+- `github.com` → git dependencies
+- `githubusercontent.com` → `raw.githubusercontent.com`, `objects.githubusercontent.com`
+
+### Local Development
+
+The proxy is **opt-in**. If `IRONPAD_COMPILATION_PROXY` is not set, compilation works exactly as before with no proxy involvement. You only need to configure it if you want to test proxy behavior locally:
+
+```bash
+# Terminal 1: start the proxy
+cargo run -p ironpad-proxy
+
+# Terminal 2: start the server with proxy enabled
+IRONPAD_COMPILATION_PROXY=http://127.0.0.1:3112 cargo make dev
+```
+
+### Deployment
+
+In Docker and Fly.io, the proxy runs alongside the server and is enabled by default. The Dockerfile starts `ironpad-proxy` in the background before exec-ing the main server, and sets `IRONPAD_COMPILATION_PROXY` and `IRONPAD_PROXY_ALLOWLIST` as environment variables.
+
+### Limitations
+
+- The proxy cannot inspect TLS traffic — it only sees the target hostname from the CONNECT request.
+- Suffix matching means `github.com` also matches `evil-github.com`. The actual Cargo ecosystem only uses well-known domains, so this is acceptable for the threat model.
+- `build.rs` scripts using raw TCP (not via cargo's HTTPS) bypass the proxy. The proxy secures cargo's own fetching, not arbitrary network code.
+
+---
+
 ## Agent Collaboration
 
 ironpad supports real-time collaboration between a human user in the browser and AI agents connected via CLI.
