@@ -44,7 +44,7 @@ jobs:
     needs: test
     name: Playwright
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.0
@@ -55,6 +55,7 @@ jobs:
         with:
           cache-all-crates: "true"
       - run: cargo install cargo-leptos --locked
+      - run: cargo leptos build --release
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
