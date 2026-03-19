@@ -13,7 +13,7 @@ import { test, expect } from "@playwright/test";
 
 // First compilation in a session downloads crates — allow plenty of time.
 const NOTEBOOK_TIMEOUT = 600_000; // 10 min per test
-const CELL_OUTPUT_TIMEOUT = 300_000; // 5 min per cell output
+const CELL_OUTPUT_TIMEOUT = 480_000; // 8 min for all cells to compile+run
 
 /** Collect JS errors during page lifetime, ignoring known WASM hydration noise. */
 function trackJsErrors(page: import("@playwright/test").Page): string[] {
