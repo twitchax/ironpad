@@ -12,7 +12,14 @@ use anyhow::Context;
 use tokio::process::Command;
 
 /// Hard timeout for a single `cargo build` invocation.
-const BUILD_TIMEOUT: Duration = Duration::from_secs(60);
+/// Override with `IRONPAD_BUILD_TIMEOUT_SECS` env var (default: 300s).
+fn build_timeout() -> Duration {
+    let secs = std::env::var("IRONPAD_BUILD_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(300);
+    Duration::from_secs(secs)
+}
 
 // ── Build Result ─────────────────────────────────────────────────────────────
 
@@ -76,7 +83,8 @@ pub async fn build_micro_crate(
         "starting WASM build",
     );
 
-    let output = tokio::time::timeout(BUILD_TIMEOUT, {
+    let timeout = build_timeout();
+    let output = tokio::time::timeout(timeout, {
         let mut cmd = Command::new("cargo");
         cmd.arg("build")
             .arg("--target")
@@ -101,8 +109,8 @@ pub async fn build_micro_crate(
     })
     .await
     .map_err(|_| {
-        tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", BUILD_TIMEOUT.as_secs());
-        anyhow::anyhow!("compilation timed out after {}s", BUILD_TIMEOUT.as_secs())
+        tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", timeout.as_secs());
+        anyhow::anyhow!("compilation timed out after {}s", timeout.as_secs())
     })?
     .map_err(|e| {
         tracing::error!(cell_id = %cell_id, error = %e, "failed to spawn cargo");
@@ -205,7 +213,8 @@ pub async fn check_micro_crate(
     let cargo_home = std::fs::canonicalize(&cargo_home)?;
     let target_dir = std::fs::canonicalize(&target_dir)?;
 
-    let output = tokio::time::timeout(BUILD_TIMEOUT, {
+    let timeout = build_timeout();
+    let output = tokio::time::timeout(timeout, {
         let mut cmd = Command::new("cargo");
         cmd.arg("check")
             .arg("--target")
@@ -227,7 +236,7 @@ pub async fn check_micro_crate(
         cmd.output()
     })
     .await
-    .map_err(|_| anyhow::anyhow!("cargo check timed out after {}s", BUILD_TIMEOUT.as_secs()))?
+    .map_err(|_| anyhow::anyhow!("cargo check timed out after {}s", timeout.as_secs()))?
     .map_err(|e| anyhow::anyhow!("failed to spawn cargo: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
