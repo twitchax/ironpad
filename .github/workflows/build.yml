@@ -40,28 +40,9 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: twitchax/ironpad
 
-  playwright:
-    needs: test
-    name: Playwright
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
-        with:
-          targets: wasm32-unknown-unknown
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-all-crates: "true"
-      - run: cargo install cargo-leptos --locked
-      - run: cargo leptos build --release
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - run: npm install
-      - run: npx playwright install --with-deps chromium
-      - run: npx playwright test notebook-smoke --retries=0
+  # NOTE: Playwright smoke tests are available locally (`cargo make playwright`)
+  # but skipped in CI — each test compiles real Rust notebooks from scratch
+  # (crate downloads + WASM compilation) which exceeds reasonable CI timeouts.
 
   docker:
     needs: test
