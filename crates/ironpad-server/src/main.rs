@@ -2,11 +2,13 @@ mod config;
 
 use std::net::SocketAddr;
 
+use axum::http::{HeaderName, HeaderValue};
 use axum::routing::get;
 use axum::Router;
 use clap::Parser;
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use ironpad_app::*;
 use ironpad_common::AppConfig;
@@ -68,7 +70,15 @@ async fn main() {
             },
         )
         .fallback(leptos_axum::file_and_error_handler::<AppState, _>(shell))
-        .with_state(app_state);
+        .with_state(app_state)
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("cross-origin-opener-policy"),
+            HeaderValue::from_static("same-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("cross-origin-embedder-policy"),
+            HeaderValue::from_static("require-corp"),
+        ));
 
     tracing::info!("listening on http://{}", &addr);
     let listener = tokio::net::TcpListener::bind(&addr)

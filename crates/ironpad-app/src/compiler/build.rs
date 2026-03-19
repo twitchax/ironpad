@@ -64,9 +64,14 @@ pub async fn build_micro_crate(
     session_id: &str,
     cell_id: &str,
     compilation_proxy: Option<&str>,
+    needs_atomics: bool,
 ) -> anyhow::Result<BuildResult> {
     let cargo_home = cargo_home_dir(cache_dir);
-    let target_dir = target_dir(cache_dir, session_id);
+    let target_dir = if needs_atomics {
+        atomics_target_dir(cache_dir)
+    } else {
+        target_dir(cache_dir, session_id)
+    };
 
     std::fs::create_dir_all(&cargo_home)?;
     std::fs::create_dir_all(&target_dir)?;
@@ -80,6 +85,7 @@ pub async fn build_micro_crate(
         crate_dir = %crate_dir.display(),
         cargo_home = %cargo_home.display(),
         target_dir = %target_dir.display(),
+        needs_atomics = needs_atomics,
         "starting WASM build",
     );
 
@@ -103,6 +109,13 @@ pub async fn build_micro_crate(
         if let Some(proxy) = compilation_proxy {
             cmd.env("HTTPS_PROXY", proxy);
             cmd.env("HTTP_PROXY", proxy);
+        }
+
+        if needs_atomics {
+            cmd.env(
+                "RUSTFLAGS",
+                "-C target-feature=+atomics,+bulk-memory,+mutable-globals",
+            );
         }
 
         cmd.output()
@@ -203,9 +216,14 @@ pub async fn check_micro_crate(
     session_id: &str,
     _cell_id: &str,
     compilation_proxy: Option<&str>,
+    needs_atomics: bool,
 ) -> anyhow::Result<CheckResult> {
     let cargo_home = cargo_home_dir(cache_dir);
-    let target_dir = target_dir(cache_dir, session_id);
+    let target_dir = if needs_atomics {
+        atomics_target_dir(cache_dir)
+    } else {
+        target_dir(cache_dir, session_id)
+    };
 
     std::fs::create_dir_all(&cargo_home)?;
     std::fs::create_dir_all(&target_dir)?;
@@ -231,6 +249,13 @@ pub async fn check_micro_crate(
         if let Some(proxy) = compilation_proxy {
             cmd.env("HTTPS_PROXY", proxy);
             cmd.env("HTTP_PROXY", proxy);
+        }
+
+        if needs_atomics {
+            cmd.env(
+                "RUSTFLAGS",
+                "-C target-feature=+atomics,+bulk-memory,+mutable-globals",
+            );
         }
 
         cmd.output()
@@ -268,6 +293,14 @@ pub fn cargo_home_dir(cache_dir: &Path) -> PathBuf {
 /// Per-session `CARGO_TARGET_DIR` for incremental build reuse.
 pub fn target_dir(cache_dir: &Path, session_id: &str) -> PathBuf {
     cache_dir.join("targets").join(session_id)
+}
+
+/// Shared target directory for atomics-enabled builds.
+///
+/// All rayon cells share this directory so they benefit from a pre-built
+/// std sysroot with atomics support.
+pub fn atomics_target_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("targets").join("atomics-shared")
 }
 
 /// Compute the expected path to the compiled `.wasm` blob.
@@ -311,6 +344,14 @@ mod tests {
         let a = target_dir(Path::new("/cache"), "sess-a");
         let b = target_dir(Path::new("/cache"), "sess-b");
         assert_ne!(a, b);
+    }
+
+    // ── atomics_target_dir ──────────────────────────────────────────────
+
+    #[test]
+    fn atomics_target_dir_is_shared() {
+        let dir = atomics_target_dir(Path::new("/cache"));
+        assert_eq!(dir, PathBuf::from("/cache/targets/atomics-shared"));
     }
 
     // ── expected_wasm_path ──────────────────────────────────────────────

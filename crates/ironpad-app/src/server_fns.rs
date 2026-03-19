@@ -22,14 +22,31 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
     let config = expect_context::<AppConfig>();
     let session_id = "default";
 
+    // Scaffold first so we can detect rayon (needs_atomics) before hashing.
+
+    let (crate_dir, preamble_lines, _is_async, _is_simulation, needs_atomics) =
+        scaffold_micro_crate(
+            &config.cache_dir,
+            &config.ironpad_cell_path,
+            session_id,
+            &request.cell_id,
+            &request.source,
+            &request.cargo_toml,
+            &request.previous_cell_types,
+            request.shared_cargo_toml.as_deref(),
+            request.shared_source.as_deref(),
+        )
+        .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
+
     let hash = content_hash(
         &request.source,
         &request.cargo_toml,
         &request.previous_cell_types,
         request.shared_cargo_toml.as_deref(),
         request.shared_source.as_deref(),
+        needs_atomics,
     );
-    tracing::info!(cell_id = %request.cell_id, hash = %hash, "compile_cell started");
+    tracing::info!(cell_id = %request.cell_id, hash = %hash, needs_atomics, "compile_cell started");
 
     // Cache check (skipped when force-recompile is requested).
 
@@ -52,21 +69,6 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
         tracing::info!(cell_id = %request.cell_id, "cache miss — compiling");
     }
 
-    // Scaffold micro-crate.
-
-    let (crate_dir, preamble_lines, _is_async, _is_simulation) = scaffold_micro_crate(
-        &config.cache_dir,
-        &config.ironpad_cell_path,
-        session_id,
-        &request.cell_id,
-        &request.source,
-        &request.cargo_toml,
-        &request.previous_cell_types,
-        request.shared_cargo_toml.as_deref(),
-        request.shared_source.as_deref(),
-    )
-    .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
-
     // Build.
 
     let build_result = build_micro_crate(
@@ -75,6 +77,7 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
         session_id,
         &request.cell_id,
         config.compilation_proxy.as_deref(),
+        needs_atomics,
     )
     .await
     .map_err(|e| ServerFnError::new(format!("build invocation failed: {e}")))?;
@@ -94,8 +97,12 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 
             // Best-effort optimization (runs on the wasm-bindgen _bg.wasm).
 
-            let wasm_blob =
-                optimize_wasm(&wasm_bytes, crate_dir.parent().unwrap_or(&crate_dir)).await;
+            let wasm_blob = optimize_wasm(
+                &wasm_bytes,
+                crate_dir.parent().unwrap_or(&crate_dir),
+                needs_atomics,
+            )
+            .await;
 
             // Cache the result (WASM blob + JS glue).
 

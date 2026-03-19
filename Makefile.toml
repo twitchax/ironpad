@@ -135,6 +135,38 @@ description = "Build the ironpad-cli binary (release)"
 command = "cargo"
 args = ["build", "--release", "-p", "ironpad-cli"]
 
+[tasks.warmup-atomics]
+description = "Pre-build std with atomics support for rayon cells (one-time, ~30-60s)"
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Determine the cache directory (same logic as the server).
+CACHE_DIR="${IRONPAD_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/ironpad}"
+TARGET_DIR="$CACHE_DIR/targets/atomics-shared"
+
+echo "==> Pre-building std with atomics support..."
+echo "    Target dir: $TARGET_DIR"
+
+# Create a temporary micro-crate that depends on ironpad-cell + rayon.
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+cp -r crates/ironpad-cell "$TMPDIR/crates/ironpad-cell"
+cp docker/warmup-Cargo.toml "$TMPDIR/Cargo.toml"
+mkdir -p "$TMPDIR/src"
+echo "" > "$TMPDIR/src/lib.rs"
+
+cd "$TMPDIR"
+CARGO_TARGET_DIR="$TARGET_DIR" \
+    RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals" \
+    cargo +nightly build --target wasm32-unknown-unknown --release \
+    -Zbuild-std=std,panic_abort
+
+echo "==> Atomics sysroot pre-built at: $TARGET_DIR"
+echo "    Rayon cells will now compile without rebuilding std."
+'''
+
 # ── Playwright ───────────────────────────────────────────────────────────────
 
 [tasks.playwright-install]

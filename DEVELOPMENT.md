@@ -353,6 +353,55 @@ let decoded: T = bincode::serde::decode_from_slice(&bytes, bincode::config::stan
 
 ---
 
+## Rayon / Multi-Core Parallelism
+
+ironpad supports multi-core parallelism in cells via [rayon](https://docs.rs/rayon) and [wasm-bindgen-rayon](https://github.com/nickhobbs94/nickhobbs94.github.io).
+
+### How It Works
+
+1. **Automatic detection**: When a cell's dependencies include `rayon`, the compiler pipeline automatically enables atomics support.
+2. **COOP/COEP headers**: The server sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers, enabling `SharedArrayBuffer` in the browser.
+3. **Build flags**: Rayon cells are compiled with `RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals"` and use a shared target directory (`{cache_dir}/targets/atomics-shared/`).
+4. **Thread pool**: After loading a rayon cell's WASM module, the executor calls `initThreadPool(navigator.hardwareConcurrency)` to spawn Web Workers for the rayon thread pool.
+
+### Using Rayon in Cells
+
+Add `rayon = "1"` to your cell's Cargo.toml, then use `rayon::prelude::*`:
+
+```rust
+// Cargo.toml:
+// [dependencies]
+// rayon = "1"
+
+use rayon::prelude::*;
+
+let sum: i64 = (0..1_000_000i64).into_par_iter().sum();
+CellOutput::text(format!("Parallel sum: {sum}"))
+```
+
+### Local Atomics Sysroot Warmup
+
+The first rayon cell compilation needs a pre-built std with atomics support. In Docker, this is pre-warmed during image build. For local development:
+
+```bash
+cargo make warmup-atomics
+```
+
+This one-time step takes 30-60 seconds and caches the result in `{cache_dir}/targets/atomics-shared/`.
+
+### Architecture
+
+```
+Browser (crossOriginIsolated = true)
+  └─ Web Worker (cell executor)
+       └─ WASM module (compiled with +atomics)
+            └─ rayon thread pool (sub-Workers via SharedArrayBuffer)
+                 ├─ Thread 1
+                 ├─ Thread N (navigator.hardwareConcurrency)
+```
+
+---
+
 ## Notebook Storage & Sharing
 
 ### Client-Side Storage (IndexedDB)

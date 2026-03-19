@@ -25,7 +25,7 @@ mod pipeline_tests {
         let source = "    CellOutput::text(\"hello\")";
         let cargo_toml = "[dependencies]\nserde = \"1\"";
 
-        let (crate_dir, _preamble_lines, _is_async, _) = scaffold_micro_crate(
+        let (crate_dir, _preamble_lines, _is_async, _, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "sess-1",
@@ -79,8 +79,8 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]\nrand = \"0.8\"";
 
         // Hashes must match.
-        let hash_a = content_hash(source, cargo_toml, &[], None, None);
-        let hash_b = content_hash(source, cargo_toml, &[], None, None);
+        let hash_a = content_hash(source, cargo_toml, &[], None, None, false);
+        let hash_b = content_hash(source, cargo_toml, &[], None, None, false);
         assert_eq!(hash_a, hash_b, "same inputs must produce identical hashes");
 
         // Scaffolded content must be identical for the same inputs.
@@ -125,8 +125,8 @@ mod pipeline_tests {
     #[test]
     fn changed_source_invalidates_hash() {
         let cargo = "[dependencies]";
-        let hash_v1 = content_hash("    let x = 1;", cargo, &[], None, None);
-        let hash_v2 = content_hash("    let x = 2;", cargo, &[], None, None);
+        let hash_v1 = content_hash("    let x = 1;", cargo, &[], None, None, false);
+        let hash_v2 = content_hash("    let x = 2;", cargo, &[], None, None, false);
         assert_ne!(
             hash_v1, hash_v2,
             "different source must produce different hashes"
@@ -136,8 +136,22 @@ mod pipeline_tests {
     #[test]
     fn changed_cargo_toml_invalidates_hash() {
         let source = "    CellOutput::empty()";
-        let hash_a = content_hash(source, "[dependencies]\nserde = \"1\"", &[], None, None);
-        let hash_b = content_hash(source, "[dependencies]\nrand = \"0.8\"", &[], None, None);
+        let hash_a = content_hash(
+            source,
+            "[dependencies]\nserde = \"1\"",
+            &[],
+            None,
+            None,
+            false,
+        );
+        let hash_b = content_hash(
+            source,
+            "[dependencies]\nrand = \"0.8\"",
+            &[],
+            None,
+            None,
+            false,
+        );
         assert_ne!(
             hash_a, hash_b,
             "different Cargo.toml must produce different hashes"
@@ -192,7 +206,7 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input.
-        let hash = content_hash(source, cargo_toml, &[], None, None);
+        let hash = content_hash(source, cargo_toml, &[], None, None, false);
         assert_eq!(hash.len(), 64, "blake3 hash should be 64 hex chars");
         assert!(
             hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -268,7 +282,7 @@ mod pipeline_tests {
 
         let source = "    CellOutput::text(\"cached\")";
         let cargo = "[dependencies]";
-        let hash = content_hash(source, cargo, &[], None, None);
+        let hash = content_hash(source, cargo, &[], None, None, false);
 
         let cache_dir = tempdir();
         let fake_wasm = b"\x00asm\x01\x00\x00\x00fake-wasm-bytes";
@@ -290,6 +304,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            false,
         );
         assert!(try_cache_hit(&cache_dir, &different_hash).is_none());
     }
@@ -356,7 +371,7 @@ mod e2e_tests {
         assert!(crate_dir.join("src/lib.rs").is_file());
 
         // Build to WASM.
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
             .await
             .expect("build_micro_crate should not return an infra error");
 
@@ -420,7 +435,7 @@ mod e2e_tests {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
             .await
             .expect("build_micro_crate should not return an infra error");
 
@@ -459,7 +474,7 @@ mod e2e_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input (should be a cache miss).
-        let hash = content_hash(source, cargo_toml, &[], None, None);
+        let hash = content_hash(source, cargo_toml, &[], None, None, false);
         assert!(
             try_cache_hit(&cache_dir, &hash).is_none(),
             "should be a cache miss before compilation",
@@ -479,7 +494,7 @@ mod e2e_tests {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
             .await
             .expect("build should not return an infra error");
 
@@ -518,6 +533,7 @@ mod e2e_tests {
             &[],
             None,
             None,
+            false,
         );
         assert!(
             try_cache_hit(&cache_dir, &different_hash).is_none(),
@@ -577,7 +593,7 @@ impl Simulation for BusSim {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
             .await
             .expect("build_micro_crate should not return an infra error");
 
@@ -632,7 +648,7 @@ impl LiveView for Counter {
 "#;
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, _preamble, _is_async, is_sim) = scaffold_micro_crate(
+        let (crate_dir, _preamble, _is_async, is_sim, _) = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -664,7 +680,7 @@ impl LiveView for Counter {
             "generated lib.rs should use __IRONPAD_LIVE_VIEW__ static"
         );
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None)
+        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
             .await
             .expect("build_micro_crate should not return an infra error");
 
@@ -797,7 +813,8 @@ impl LiveView for Counter {
                 };
 
                 let result =
-                    check_micro_crate(&crate_dir, &cache_dir, session_id, &unique_id, None).await;
+                    check_micro_crate(&crate_dir, &cache_dir, session_id, &unique_id, None, false)
+                        .await;
 
                 match result {
                     Ok(CheckResult::Ok) => {

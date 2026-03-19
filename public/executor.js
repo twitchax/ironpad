@@ -245,6 +245,13 @@
         // It returns the raw WASM exports object.
         var wasm = await mod.default({ module_or_path: wasmBytes });
 
+        // If the cell exports initThreadPool (wasm-bindgen-rayon), initialize
+        // the rayon thread pool with the available hardware concurrency.
+        if (typeof mod.initThreadPool === "function") {
+          var concurrency = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
+          await mod.initThreadPool(concurrency);
+        }
+
         this.modules.set(cellId, {
           hash: hash,
           type: "bindgen",

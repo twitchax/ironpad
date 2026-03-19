@@ -34,6 +34,15 @@ FROM rust:1.93.0-slim AS runtime
 # The runtime needs the Rust toolchain + wasm target for compiling user cells.
 RUN rustup target add wasm32-unknown-unknown
 
+# rust-src is needed to rebuild std with atomics flags (for rayon cells).
+RUN rustup component add rust-src
+
+# Nightly toolchain + rust-src for pre-building the atomics sysroot at image build time.
+# Cell compilation at runtime uses stable; it reuses the pre-built artifacts.
+RUN rustup toolchain install nightly \
+    && rustup target add wasm32-unknown-unknown --toolchain nightly \
+    && rustup component add rust-src --toolchain nightly
+
 # Copy tool binaries from builder (avoids recompiling / reinstalling in runtime).
 COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-bindgen
 COPY --from=builder /usr/bin/wasm-opt /usr/bin/wasm-opt
@@ -47,6 +56,19 @@ RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
     && cargo build --target wasm32-unknown-unknown --release 2>/dev/null || true \
     && rm -rf /tmp/warmup \
     && rm -rf /usr/local/cargo/registry/src
+
+# Pre-build atomics sysroot for rayon-enabled cells.
+# Uses nightly -Zbuild-std to compile std with atomics support; cell compilation
+# at runtime points CARGO_TARGET_DIR here and reuses these artifacts via stable.
+COPY crates/ironpad-cell /tmp/warmup-atomics/crates/ironpad-cell
+COPY docker/warmup-Cargo.toml /tmp/warmup-atomics/Cargo.toml
+RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs \
+    && cd /tmp/warmup-atomics \
+    && CARGO_TARGET_DIR=/ironpad/cache/targets/atomics-shared \
+       RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals" \
+       cargo +nightly build --target wasm32-unknown-unknown --release \
+       -Zbuild-std=std,panic_abort 2>/dev/null || true \
+    && rm -rf /tmp/warmup-atomics
 
 WORKDIR /app
 

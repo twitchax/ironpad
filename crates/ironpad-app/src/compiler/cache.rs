@@ -25,6 +25,7 @@ pub fn content_hash(
     previous_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
+    needs_atomics: bool,
 ) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(source.as_bytes());
@@ -42,6 +43,12 @@ pub fn content_hash(
         hasher.update(b"\x02");
         hasher.update(shared.as_bytes());
     }
+    hasher.update(b"\x03");
+    hasher.update(if needs_atomics {
+        b"atomics=1"
+    } else {
+        b"atomics=0"
+    });
     hasher.finalize().to_hex().to_string()
 }
 
@@ -141,29 +148,43 @@ mod tests {
 
     #[test]
     fn hash_is_deterministic() {
-        let a = content_hash("fn main() {}", "[dependencies]", &[], None, None);
-        let b = content_hash("fn main() {}", "[dependencies]", &[], None, None);
+        let a = content_hash("fn main() {}", "[dependencies]", &[], None, None, false);
+        let b = content_hash("fn main() {}", "[dependencies]", &[], None, None, false);
         assert_eq!(a, b);
     }
 
     #[test]
     fn hash_changes_when_source_changes() {
-        let a = content_hash("fn main() { 1 }", "[dependencies]", &[], None, None);
-        let b = content_hash("fn main() { 2 }", "[dependencies]", &[], None, None);
+        let a = content_hash("fn main() { 1 }", "[dependencies]", &[], None, None, false);
+        let b = content_hash("fn main() { 2 }", "[dependencies]", &[], None, None, false);
         assert_ne!(a, b);
     }
 
     #[test]
     fn hash_changes_when_cargo_toml_changes() {
         let source = "fn main() {}";
-        let a = content_hash(source, r#"[dependencies]\nserde = "1""#, &[], None, None);
-        let b = content_hash(source, r#"[dependencies]\nrand = "0.8""#, &[], None, None);
+        let a = content_hash(
+            source,
+            r#"[dependencies]\nserde = "1""#,
+            &[],
+            None,
+            None,
+            false,
+        );
+        let b = content_hash(
+            source,
+            r#"[dependencies]\nrand = "0.8""#,
+            &[],
+            None,
+            None,
+            false,
+        );
         assert_ne!(a, b);
     }
 
     #[test]
     fn hash_is_64_hex_chars() {
-        let h = content_hash("x", "y", &[], None, None);
+        let h = content_hash("x", "y", &[], None, None, false);
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -174,9 +195,9 @@ mod tests {
     fn hash_changes_when_previous_types_change() {
         let s = "let x = 1;";
         let c = "[dependencies]";
-        let a = content_hash(s, c, &[], None, None);
-        let b = content_hash(s, c, &["u32".into()], None, None);
-        let d = content_hash(s, c, &["String".into()], None, None);
+        let a = content_hash(s, c, &[], None, None, false);
+        let b = content_hash(s, c, &["u32".into()], None, None, false);
+        let d = content_hash(s, c, &["String".into()], None, None, false);
         assert_ne!(a, b);
         assert_ne!(b, d);
     }
@@ -185,8 +206,8 @@ mod tests {
     fn hash_distinguishes_type_positions() {
         let s = "x";
         let c = "y";
-        let a = content_hash(s, c, &["u32".into(), String::new()], None, None);
-        let b = content_hash(s, c, &[String::new(), "u32".into()], None, None);
+        let a = content_hash(s, c, &["u32".into(), String::new()], None, None, false);
+        let b = content_hash(s, c, &[String::new(), "u32".into()], None, None, false);
         assert_ne!(a, b);
     }
 
@@ -196,9 +217,23 @@ mod tests {
     fn hash_changes_when_shared_cargo_toml_changes() {
         let s = "let x = 1;";
         let c = "[dependencies]";
-        let a = content_hash(s, c, &[], None, None);
-        let b = content_hash(s, c, &[], Some("[dependencies]\nserde = \"1\""), None);
-        let d = content_hash(s, c, &[], Some("[dependencies]\nrand = \"0.8\""), None);
+        let a = content_hash(s, c, &[], None, None, false);
+        let b = content_hash(
+            s,
+            c,
+            &[],
+            Some("[dependencies]\nserde = \"1\""),
+            None,
+            false,
+        );
+        let d = content_hash(
+            s,
+            c,
+            &[],
+            Some("[dependencies]\nrand = \"0.8\""),
+            None,
+            false,
+        );
         assert_ne!(a, b);
         assert_ne!(b, d);
     }
@@ -207,8 +242,8 @@ mod tests {
     fn hash_with_none_shared_differs_from_empty_shared() {
         let s = "x";
         let c = "y";
-        let a = content_hash(s, c, &[], None, None);
-        let b = content_hash(s, c, &[], Some(""), None);
+        let a = content_hash(s, c, &[], None, None, false);
+        let b = content_hash(s, c, &[], Some(""), None, false);
         assert_ne!(a, b);
     }
 
@@ -279,7 +314,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let source = "let x = 42;";
         let cargo = "[dependencies]";
-        let hash = content_hash(source, cargo, &[], None, None);
+        let hash = content_hash(source, cargo, &[], None, None, false);
         let blob = vec![0u8; 256];
         let glue = "// js glue content";
 
@@ -294,7 +329,7 @@ mod tests {
 
     #[test]
     fn hash_empty_source_is_valid() {
-        let h = content_hash("", "", &[], None, None);
+        let h = content_hash("", "", &[], None, None, false);
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -302,8 +337,8 @@ mod tests {
     #[test]
     fn hash_same_shared_cargo_toml_is_deterministic() {
         let shared = "[dependencies]\nserde = \"1\"";
-        let a = content_hash("x", "y", &[], Some(shared), None);
-        let b = content_hash("x", "y", &[], Some(shared), None);
+        let a = content_hash("x", "y", &[], Some(shared), None, false);
+        let b = content_hash("x", "y", &[], Some(shared), None, false);
         assert_eq!(a, b);
     }
 
@@ -337,5 +372,16 @@ mod tests {
         store_blob(dir.path(), hash, b"wasm", Some("glue()")).unwrap();
         let hit = try_cache_hit(dir.path(), hash).unwrap();
         assert_eq!(hit.js_glue.as_deref(), Some("glue()"));
+    }
+
+    // ── T-002: needs_atomics flag ────────────────────────────────────────
+
+    #[test]
+    fn hash_changes_with_needs_atomics() {
+        let s = "x";
+        let c = "y";
+        let a = content_hash(s, c, &[], None, None, false);
+        let b = content_hash(s, c, &[], None, None, true);
+        assert_ne!(a, b);
     }
 }

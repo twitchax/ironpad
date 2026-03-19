@@ -15,8 +15,8 @@ use tracing::{debug, info, warn};
 ///
 /// Returns the (possibly optimized) bytes. If `wasm-opt` is unavailable
 /// or fails, returns the original bytes unchanged.
-pub async fn optimize_wasm(wasm_bytes: &[u8], work_dir: &Path) -> Vec<u8> {
-    match try_optimize(wasm_bytes, work_dir).await {
+pub async fn optimize_wasm(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bool) -> Vec<u8> {
+    match try_optimize(wasm_bytes, work_dir, needs_atomics).await {
         Ok(optimized) => {
             // WASM blob sizes are always well within i64 range.
             #[allow(clippy::cast_possible_wrap)]
@@ -36,18 +36,22 @@ pub async fn optimize_wasm(wasm_bytes: &[u8], work_dir: &Path) -> Vec<u8> {
     }
 }
 
-async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path) -> Result<Vec<u8>> {
+async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bool) -> Result<Vec<u8>> {
     let input_path = work_dir.join("pre_opt.wasm");
     let output_path = work_dir.join("post_opt.wasm");
 
     tokio::fs::write(&input_path, wasm_bytes).await?;
 
-    let output = tokio::process::Command::new("wasm-opt")
-        .arg("-O3")
-        .arg("--debuginfo")
-        .arg(&input_path)
-        .arg("-o")
-        .arg(&output_path)
+    let mut cmd = tokio::process::Command::new("wasm-opt");
+    cmd.arg("-O3").arg("--debuginfo");
+
+    if needs_atomics {
+        cmd.arg("--enable-threads");
+    }
+
+    cmd.arg(&input_path).arg("-o").arg(&output_path);
+
+    let output = cmd
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("wasm-opt not available: {e}"))?;
@@ -77,7 +81,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let fake_wasm = b"not-a-real-wasm-file";
 
-        let result = optimize_wasm(fake_wasm, dir.path()).await;
+        let result = optimize_wasm(fake_wasm, dir.path(), false).await;
 
         // Should return original bytes since wasm-opt either isn't installed
         // or will fail on invalid input.

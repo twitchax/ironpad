@@ -35,7 +35,7 @@ pub fn scaffold_micro_crate(
     previous_cell_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
-) -> anyhow::Result<(PathBuf, u32, bool, bool)> {
+) -> anyhow::Result<(PathBuf, u32, bool, bool, bool)> {
     let crate_dir = cache_dir.join("workspaces").join(session_id).join(cell_id);
 
     let src_dir = crate_dir.join("src");
@@ -47,6 +47,8 @@ pub fn scaffold_micro_crate(
         // Fall back to the raw path if canonicalize fails (e.g. path doesn't exist yet).
         ironpad_cell_path.to_path_buf()
     });
+
+    let needs_atomics = merged_deps_contain_rayon(shared_cargo_toml, cargo_toml);
 
     let generated_cargo_toml =
         generate_cargo_toml(cell_id, cargo_toml, &absolute_cell_path, shared_cargo_toml);
@@ -60,7 +62,13 @@ pub fn scaffold_micro_crate(
         std::fs::write(src_dir.join("shared.rs"), shared)?;
     }
 
-    Ok((crate_dir, preamble_lines, is_async, is_simulation))
+    Ok((
+        crate_dir,
+        preamble_lines,
+        is_async,
+        is_simulation,
+        needs_atomics,
+    ))
 }
 
 // ── Cargo.toml Generation ────────────────────────────────────────────────────
@@ -191,6 +199,18 @@ fn merge_dependencies(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) ->
         .map(|(_, line)| line)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Returns `true` if the merged dependency set (shared + cell) contains `rayon`.
+///
+/// Used to set the `needs_atomics` flag on the compilation pipeline so
+/// downstream stages can enable the atomics WASM feature.
+pub fn merged_deps_contain_rayon(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> bool {
+    let merged = merge_dependencies(shared_cargo_toml, cell_cargo_toml);
+    merged
+        .lines()
+        .filter_map(crate_name_from_dep_line)
+        .any(|name| name == "rayon")
 }
 
 /// Extract non-`[dependencies]` sections from the shared and cell Cargo.toml
@@ -817,7 +837,7 @@ serde = { version = "1", features = ["derive"] }
 serde = "1"
 "#;
 
-        let (crate_dir, preamble_lines, is_async, _) = scaffold_micro_crate(
+        let (crate_dir, preamble_lines, is_async, _, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
@@ -1042,7 +1062,7 @@ serde = "1"
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (_, _, is_async, _) = scaffold_micro_crate(
+        let (_, _, is_async, _, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -1056,7 +1076,7 @@ serde = "1"
         .unwrap();
         assert!(!is_async);
 
-        let (_, _, is_async, _) = scaffold_micro_crate(
+        let (_, _, is_async, _, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -1556,5 +1576,39 @@ impl LiveView for Dashboard {
         // Should use simulation path, not live view.
         assert!(lib_rs.contains("__IRONPAD_SIM__"));
         assert!(!lib_rs.contains("__IRONPAD_LIVE_VIEW__"));
+    }
+
+    // ── merged_deps_contain_rayon ────────────────────────────────────────
+
+    #[test]
+    fn merged_deps_contain_rayon_detects_simple() {
+        assert!(merged_deps_contain_rayon(
+            None,
+            "[dependencies]\nrayon = \"1\""
+        ));
+    }
+
+    #[test]
+    fn merged_deps_contain_rayon_detects_in_shared() {
+        assert!(merged_deps_contain_rayon(
+            Some("[dependencies]\nrayon = \"1\""),
+            "[dependencies]"
+        ));
+    }
+
+    #[test]
+    fn merged_deps_contain_rayon_false_when_absent() {
+        assert!(!merged_deps_contain_rayon(
+            None,
+            "[dependencies]\nserde = \"1\""
+        ));
+    }
+
+    #[test]
+    fn merged_deps_contain_rayon_detects_table_form() {
+        assert!(merged_deps_contain_rayon(
+            None,
+            "[dependencies]\nrayon = { version = \"1\", features = [\"x\"] }"
+        ));
     }
 }
