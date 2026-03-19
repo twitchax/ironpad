@@ -65,6 +65,11 @@ test.describe("Notebook smoke tests", () => {
     const errorPanels = page.locator(".view-only-error");
     expect(await errorPanels.count()).toBe(0);
 
+    // Rayon validation: the Mandelbrot notebook uses par_iter, so
+    // crossOriginIsolated must be true (SharedArrayBuffer required for threads).
+    const isolated = await page.evaluate(() => window.crossOriginIsolated);
+    expect(isolated).toBe(true);
+
     expect(jsErrors).toEqual([]);
   });
 

@@ -28,7 +28,7 @@ references:
 acceptance_tests:
 - id: uat-001
   name: "crossOriginIsolated is true in the browser"
-  command: cargo make uat
+  command: cargo make playwright
   uat_status: unverified
 - id: uat-002
   name: "Non-rayon cells compile and run identically to before (no regressions)"
@@ -36,7 +36,7 @@ acceptance_tests:
   uat_status: verified
 - id: uat-003
   name: "A cell using rayon par_iter compiles and executes correctly"
-  command: cargo make test-integration
+  command: cargo make playwright
   uat_status: unverified
 - id: uat-004
   name: "Rayon cell cache key differs from non-rayon cell with same source"
