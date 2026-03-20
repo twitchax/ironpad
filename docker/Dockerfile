@@ -65,7 +65,14 @@ COPY docker/warmup-atomics-Cargo.toml /tmp/warmup-atomics/Cargo.toml
 RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs \
     && cd /tmp/warmup-atomics \
     && CARGO_TARGET_DIR=/warmup-cache/targets/atomics-shared \
-       RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals" \
+       RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
+                  -C link-arg=--shared-memory \
+                  -C link-arg=--max-memory=1073741824 \
+                  -C link-arg=--import-memory \
+                  -C link-arg=--export=__wasm_init_tls \
+                  -C link-arg=--export=__tls_size \
+                  -C link-arg=--export=__tls_align \
+                  -C link-arg=--export=__tls_base" \
        cargo +nightly build --target wasm32-unknown-unknown --release \
        -Zbuild-std=std,panic_abort 2>/dev/null || true \
     && rm -rf /tmp/warmup-atomics

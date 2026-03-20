@@ -11,6 +11,21 @@ use std::time::Duration;
 use anyhow::Context;
 use tokio::process::Command;
 
+/// Full RUSTFLAGS for atomics/shared-memory WASM builds (rayon cells).
+///
+/// Required by wasm-bindgen-rayon: enables atomics target features AND linker
+/// flags for shared memory, imported memory, and TLS exports so that the
+/// resulting WASM module can be shared across Web Workers via `postMessage`.
+const ATOMICS_RUSTFLAGS: &str = "\
+    -C target-feature=+atomics,+bulk-memory,+mutable-globals \
+    -C link-arg=--shared-memory \
+    -C link-arg=--max-memory=1073741824 \
+    -C link-arg=--import-memory \
+    -C link-arg=--export=__wasm_init_tls \
+    -C link-arg=--export=__tls_size \
+    -C link-arg=--export=__tls_align \
+    -C link-arg=--export=__tls_base";
+
 /// Hard timeout for a single `cargo build` invocation.
 /// Override with `IRONPAD_BUILD_TIMEOUT_SECS` env var (default: 300s).
 fn build_timeout() -> Duration {
@@ -121,10 +136,7 @@ pub async fn build_micro_crate(
 
         if needs_atomics {
             cmd.arg("-Zbuild-std=std,panic_abort");
-            cmd.env(
-                "RUSTFLAGS",
-                "-C target-feature=+atomics,+bulk-memory,+mutable-globals",
-            );
+            cmd.env("RUSTFLAGS", ATOMICS_RUSTFLAGS);
         }
 
         cmd.output()
@@ -267,10 +279,7 @@ pub async fn check_micro_crate(
 
         if needs_atomics {
             cmd.arg("-Zbuild-std=std,panic_abort");
-            cmd.env(
-                "RUSTFLAGS",
-                "-C target-feature=+atomics,+bulk-memory,+mutable-globals",
-            );
+            cmd.env("RUSTFLAGS", ATOMICS_RUSTFLAGS);
         }
 
         cmd.output()
