@@ -86,12 +86,20 @@ pub async fn build_micro_crate(
         cargo_home = %cargo_home.display(),
         target_dir = %target_dir.display(),
         needs_atomics = needs_atomics,
+        rustup_toolchain = %std::env::var("RUSTUP_TOOLCHAIN").unwrap_or_default(),
         "starting WASM build",
     );
 
     let timeout = build_timeout();
     let output = tokio::time::timeout(timeout, {
         let mut cmd = Command::new("cargo");
+
+        if needs_atomics {
+            cmd.arg("+nightly");
+            // Ensure the rustup shim respects +nightly over any inherited override.
+            cmd.env_remove("RUSTUP_TOOLCHAIN");
+        }
+
         cmd.arg("build")
             .arg("--target")
             .arg("wasm32-unknown-unknown")
@@ -112,6 +120,7 @@ pub async fn build_micro_crate(
         }
 
         if needs_atomics {
+            cmd.arg("-Zbuild-std=std,panic_abort");
             cmd.env(
                 "RUSTFLAGS",
                 "-C target-feature=+atomics,+bulk-memory,+mutable-globals",
@@ -234,6 +243,11 @@ pub async fn check_micro_crate(
     let timeout = build_timeout();
     let output = tokio::time::timeout(timeout, {
         let mut cmd = Command::new("cargo");
+
+        if needs_atomics {
+            cmd.arg("+nightly");
+        }
+
         cmd.arg("check")
             .arg("--target")
             .arg("wasm32-unknown-unknown")
@@ -252,6 +266,7 @@ pub async fn check_micro_crate(
         }
 
         if needs_atomics {
+            cmd.arg("-Zbuild-std=std,panic_abort");
             cmd.env(
                 "RUSTFLAGS",
                 "-C target-feature=+atomics,+bulk-memory,+mutable-globals",

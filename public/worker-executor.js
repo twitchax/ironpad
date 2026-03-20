@@ -84,7 +84,7 @@
       : (entry.instance && entry.instance.exports.memory);
     if (!memory) return;
 
-    var bytes = new Uint8Array(memory.buffer, ptr, len);
+    var bytes = new Uint8Array(memory.buffer, ptr, len).slice();
     var text = new TextDecoder().decode(bytes);
 
     try {
@@ -112,7 +112,7 @@
       : (entry.instance && entry.instance.exports.ironpad_alloc);
     if (!memory || !alloc) return 0;
 
-    var keyBytes = new Uint8Array(memory.buffer, keyPtr, keyLen);
+    var keyBytes = new Uint8Array(memory.buffer, keyPtr, keyLen).slice();
     var key = new TextDecoder().decode(keyBytes);
 
     var busEntry = this._simBus.get(key);
@@ -144,7 +144,7 @@
       : (entry.instance && entry.instance.exports.ironpad_alloc);
     if (!memory || !alloc) return 0;
 
-    var keyBytes = new Uint8Array(memory.buffer, keyPtr, keyLen);
+    var keyBytes = new Uint8Array(memory.buffer, keyPtr, keyLen).slice();
     var key = new TextDecoder().decode(keyBytes);
 
     var busEntry = this._simBus.get(key);
@@ -218,13 +218,74 @@
         }
       );
 
+      // 1b) Replace wasm-bindgen-rayon snippet imports with an inline
+      //     startWorkers implementation.  The snippet lives at a relative
+      //     path like `./snippets/wasm-bindgen-rayon-HASH/src/workerHelpers.js`
+      //     which cannot be resolved when the glue is loaded from a blob URL.
+      //
+      //     Our inline version creates rayon sub-workers from blob URLs,
+      //     passing the rewritten glue code so each sub-worker can import
+      //     it and call `pkg.default(init)` + `pkg.wbg_rayon_start_worker`.
+      jsGlue = jsGlue.replace(
+        /import\s*\{\s*startWorkers\s*\}\s+from\s+['"][^'"]*wasm-bindgen-rayon[^'"]*workerHelpers\.js['"];?/g,
+        "\n" +
+        "var _rayonWorkers;\n" +
+        "function _waitForMsgType(target, type) {\n" +
+        "  return new Promise(function(resolve) {\n" +
+        "    target.addEventListener('message', function onMsg(event) {\n" +
+        "      if (!event.data || event.data.type !== type) return;\n" +
+        "      target.removeEventListener('message', onMsg);\n" +
+        "      resolve(event.data);\n" +
+        "    });\n" +
+        "  });\n" +
+        "}\n" +
+        "async function startWorkers(module, memory, builder) {\n" +
+        "  if (builder.numThreads() === 0) throw new Error('num_threads must be > 0');\n" +
+        "  var glueCode = self.__ironpadRayonGlue;\n" +
+        "  var workerInit = {\n" +
+        "    type: 'wasm_bindgen_worker_init',\n" +
+        "    init: { module_or_path: module, memory: memory },\n" +
+        "    receiver: builder.receiver()\n" +
+        "  };\n" +
+        "  _rayonWorkers = await Promise.all(\n" +
+        "    Array.from({ length: builder.numThreads() }, async function() {\n" +
+        "      var subWorkerCode =\n" +
+        "        'self.onmessage = async function(e) {' +\n" +
+        "        '  if (e.data && e.data.type === \"wasm_bindgen_worker_init\") {' +\n" +
+        "        '    var blob = new Blob([e.data.glueCode], {type:\"application/javascript\"});' +\n" +
+        "        '    var url = URL.createObjectURL(blob);' +\n" +
+        "        '    try {' +\n" +
+        "        '      var pkg = await import(url);' +\n" +
+        "        '      await pkg.default(e.data.init);' +\n" +
+        "        '      self.postMessage({type:\"wasm_bindgen_worker_ready\"});' +\n" +
+        "        '      pkg.wbg_rayon_start_worker(e.data.receiver);' +\n" +
+        "        '    } finally {' +\n" +
+        "        '      URL.revokeObjectURL(url);' +\n" +
+        "        '    }' +\n" +
+        "        '  }' +\n" +
+        "        '};';\n" +
+        "      var subBlob = new Blob([subWorkerCode], {type:'application/javascript'});\n" +
+        "      var subUrl = URL.createObjectURL(subBlob);\n" +
+        "      var worker = new Worker(subUrl, {type:'module'});\n" +
+        "      URL.revokeObjectURL(subUrl);\n" +
+        "      var msg = { type: workerInit.type, init: workerInit.init,\n" +
+        "                   receiver: workerInit.receiver, glueCode: glueCode };\n" +
+        "      worker.postMessage(msg);\n" +
+        "      await _waitForMsgType(worker, 'wasm_bindgen_worker_ready');\n" +
+        "      return worker;\n" +
+        "    })\n" +
+        "  );\n" +
+        "  builder.build();\n" +
+        "}\n"
+      );
+
       // 2) Preamble: wrap __wbg_get_imports (fallback for older wasm-bindgen).
       var preamble =
         "var __ironpad_cell_id = " + escapedCellId + ";\n" +
         "if (typeof __wbg_get_imports === 'function') {\n" +
         "  var __ironpad_orig_get_imports = __wbg_get_imports;\n" +
-        "  __wbg_get_imports = function() {\n" +
-        "    var imports = __ironpad_orig_get_imports();\n" +
+        "  __wbg_get_imports = function(memory) {\n" +
+        "    var imports = __ironpad_orig_get_imports(memory);\n" +
         "    if (!imports.env) imports.env = {};\n" +
         "    imports.env.ironpad_host_message = function(ptr, len) {\n" +
         "      if (self._ironpadExecutor) {\n" +
@@ -248,12 +309,24 @@
       // glue module (which runs in its own module scope) can reach it.
       self._ironpadExecutor = executor;
 
+      // Stash the rewritten glue code so inline startWorkers (rayon thread
+      // pool) can pass it to sub-workers via postMessage.
+      self.__ironpadRayonGlue = augmentedGlue;
+
       try {
         var mod = await import(/* webpackIgnore: true */ jsUrl);
 
         // wasm-bindgen's default export is the init function.
         // It returns the raw WASM exports object.
         var wasm = await mod.default({ module_or_path: wasmBytes });
+
+        // If the cell exports initThreadPool (wasm-bindgen-rayon), initialize
+        // the rayon thread pool before any cell_main execution.
+        if (typeof mod.initThreadPool === "function") {
+          var concurrency =
+            (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
+          await mod.initThreadPool(concurrency);
+        }
 
         this.modules.set(cellId, {
           hash: hash,
@@ -459,12 +532,12 @@
 
     // Decode display text from UTF-8.
     var displayText = displayLen > 0
-      ? new TextDecoder().decode(new Uint8Array(memory.buffer, displayPtr, displayLen))
+      ? new TextDecoder().decode(new Uint8Array(memory.buffer, displayPtr, displayLen).slice())
       : null;
 
     // Decode type tag from UTF-8.
     var typeTag = typeTagLen > 0
-      ? new TextDecoder().decode(new Uint8Array(memory.buffer, typeTagPtr, typeTagLen))
+      ? new TextDecoder().decode(new Uint8Array(memory.buffer, typeTagPtr, typeTagLen).slice())
       : null;
 
     // ── Clean up all WASM allocations ────────────────────────────────────
@@ -609,7 +682,7 @@
 
     // Decode content string from UTF-8.
     var content = contentLen > 0
-      ? new TextDecoder().decode(new Uint8Array(memory.buffer, contentPtr, contentLen))
+      ? new TextDecoder().decode(new Uint8Array(memory.buffer, contentPtr, contentLen).slice())
       : "";
 
     // ── Clean up WASM allocations ──────────────────────────────────────
