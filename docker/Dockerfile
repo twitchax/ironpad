@@ -64,7 +64,7 @@ COPY crates/ironpad-cell /tmp/warmup-atomics/crates/ironpad-cell
 COPY docker/warmup-Cargo.toml /tmp/warmup-atomics/Cargo.toml
 RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs \
     && cd /tmp/warmup-atomics \
-    && CARGO_TARGET_DIR=/ironpad/cache/targets/atomics-shared \
+    && CARGO_TARGET_DIR=/warmup-cache/targets/atomics-shared \
        RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals" \
        cargo +nightly build --target wasm32-unknown-unknown --release \
        -Zbuild-std=std,panic_abort 2>/dev/null || true \
@@ -86,6 +86,10 @@ COPY crates/ironpad-cell /app/crates/ironpad-cell
 # Copy the Leptos configuration so the server can find site assets.
 COPY Cargo.toml /app/Cargo.toml
 
+# Copy the entrypoint script.
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 ENV IRONPAD_DATA_DIR=/ironpad/data
 ENV IRONPAD_CACHE_DIR=/ironpad/cache
 ENV IRONPAD_PORT=3111
@@ -99,4 +103,4 @@ EXPOSE 3111
 
 VOLUME ["/ironpad"]
 
-CMD ["/bin/sh", "-c", "/app/ironpad-proxy & exec /app/ironpad-server"]
+CMD ["/app/entrypoint.sh"]
