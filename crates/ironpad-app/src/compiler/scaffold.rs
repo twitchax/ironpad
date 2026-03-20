@@ -50,8 +50,13 @@ pub fn scaffold_micro_crate(
 
     let needs_atomics = merged_deps_contain_rayon(shared_cargo_toml, cargo_toml);
 
-    let generated_cargo_toml =
-        generate_cargo_toml(cell_id, cargo_toml, &absolute_cell_path, shared_cargo_toml);
+    let generated_cargo_toml = generate_cargo_toml(
+        cell_id,
+        cargo_toml,
+        &absolute_cell_path,
+        shared_cargo_toml,
+        needs_atomics,
+    );
     std::fs::write(crate_dir.join("Cargo.toml"), generated_cargo_toml)?;
 
     let (lib_rs, preamble_lines, is_async, is_simulation) =
@@ -88,12 +93,19 @@ fn generate_cargo_toml(
     user_cargo_toml: &str,
     ironpad_cell_path: &Path,
     shared_cargo_toml: Option<&str>,
+    needs_atomics: bool,
 ) -> String {
     let merged_deps = merge_dependencies(shared_cargo_toml, user_cargo_toml);
     let extra_sections = extract_extra_sections(shared_cargo_toml, user_cargo_toml);
 
     // Escape backslashes for Windows path compatibility in TOML strings.
     let cell_path_str = ironpad_cell_path.display().to_string().replace('\\', "/");
+
+    let cell_dep = if needs_atomics {
+        format!(r#"ironpad-cell = {{ path = "{cell_path_str}", features = ["rayon"] }}"#)
+    } else {
+        format!(r#"ironpad-cell = {{ path = "{cell_path_str}" }}"#)
+    };
 
     let mut toml = format!(
         r#"[package]
@@ -107,7 +119,7 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
-ironpad-cell = {{ path = "{cell_path_str}" }}
+{cell_dep}
 wasm-bindgen = "0.2"
 "#
     );
@@ -699,7 +711,7 @@ serde = "1"
 serde = { version = "1", features = ["derive"] }
 "#;
 
-        let result = generate_cargo_toml("abc123", user_toml, &cell_path, None);
+        let result = generate_cargo_toml("abc123", user_toml, &cell_path, None, false);
 
         assert!(result.contains(r#"name = "cell-abc123""#));
         assert!(result.contains(r#"crate-type = ["cdylib"]"#));
@@ -710,11 +722,28 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn cargo_toml_with_no_user_deps() {
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let result = generate_cargo_toml("cell0", "", &cell_path, None);
+        let result = generate_cargo_toml("cell0", "", &cell_path, None, false);
 
         assert!(result.contains(r#"name = "cell-cell0""#));
         assert!(result.contains(r#"crate-type = ["cdylib"]"#));
         assert!(result.contains("ironpad-cell"));
+        assert!(!result.contains(r#"features = ["rayon"]"#));
+    }
+
+    #[test]
+    fn cargo_toml_with_rayon_enables_feature() {
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let result = generate_cargo_toml("cell0", "rayon = \"1\"", &cell_path, None, true);
+
+        assert!(result.contains(r#"features = ["rayon"]"#));
+    }
+
+    #[test]
+    fn cargo_toml_without_rayon_omits_feature() {
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let result = generate_cargo_toml("cell0", "serde = \"1\"", &cell_path, None, false);
+
+        assert!(!result.contains(r#"features = ["rayon"]"#));
     }
 
     // ── generate_lib_rs ─────────────────────────────────────────────────
@@ -1178,7 +1207,7 @@ opt-level = 1
 lto = false
 codegen-units = 16
 ";
-        let result = generate_cargo_toml("abc", "", &cell_path, Some(shared));
+        let result = generate_cargo_toml("abc", "", &cell_path, Some(shared), false);
         assert!(result.contains("[profile.release]"));
         assert!(result.contains("opt-level = 1"));
         assert!(result.contains("serde"));

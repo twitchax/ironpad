@@ -1,0 +1,18 @@
+# Warmup Cargo.toml for atomics/rayon — used during Docker build to
+# pre-build std with atomics support and cache rayon dependencies.
+
+[package]
+name = "ironpad-warmup-atomics"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ironpad-cell = { path = "crates/ironpad-cell", features = ["rayon"] }
+rayon = "1"
+
+[profile.release]
+opt-level = "z"

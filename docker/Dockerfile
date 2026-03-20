@@ -61,7 +61,7 @@ RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
 # Uses nightly -Zbuild-std to compile std with atomics support; cell compilation
 # at runtime points CARGO_TARGET_DIR here and reuses these artifacts via stable.
 COPY crates/ironpad-cell /tmp/warmup-atomics/crates/ironpad-cell
-COPY docker/warmup-Cargo.toml /tmp/warmup-atomics/Cargo.toml
+COPY docker/warmup-atomics-Cargo.toml /tmp/warmup-atomics/Cargo.toml
 RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs \
     && cd /tmp/warmup-atomics \
     && CARGO_TARGET_DIR=/warmup-cache/targets/atomics-shared \

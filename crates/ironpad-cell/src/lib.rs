@@ -60,9 +60,9 @@ pub mod prelude {
 
     #[cfg(target_arch = "wasm32")]
     pub use js_sys;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "rayon"))]
     pub use rayon;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "rayon"))]
     pub use rayon::prelude::*;
     #[cfg(target_arch = "wasm32")]
     pub use reqwest;
@@ -70,7 +70,7 @@ pub mod prelude {
     pub use wasm_bindgen::prelude::*;
     #[cfg(target_arch = "wasm32")]
     pub use wasm_bindgen_futures;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "rayon"))]
     pub use wasm_bindgen_rayon::init_thread_pool;
 
     pub use console_error_panic_hook;

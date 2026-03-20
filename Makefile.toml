@@ -153,7 +153,7 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 cp -r crates/ironpad-cell "$TMPDIR/crates/ironpad-cell"
-cp docker/warmup-Cargo.toml "$TMPDIR/Cargo.toml"
+cp docker/warmup-atomics-Cargo.toml "$TMPDIR/Cargo.toml"
 mkdir -p "$TMPDIR/src"
 echo "" > "$TMPDIR/src/lib.rs"
 
