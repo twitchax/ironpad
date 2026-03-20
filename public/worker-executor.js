@@ -50,6 +50,43 @@
 
   var LIVE_TICK_RESULT_SIZE = 12;
 
+  // ── WASM trap diagnostics ─────────────────────────────────────────────────
+  //
+  // When a WASM module traps, the JS engine throws a WebAssembly.RuntimeError
+  // with a terse message like "unreachable".  This helper inspects the error
+  // and the module's memory state to produce a more actionable description.
+
+  function _describeWasmTrap(e, memory) {
+    var raw = (e && e.message) ? e.message : String(e);
+
+    // Report current linear-memory size for context.
+    var memHint = "";
+    if (memory) {
+      var bytes = memory.buffer.byteLength;
+      var mb = (bytes / (1024 * 1024)).toFixed(0);
+      memHint = " (linear memory: " + mb + " MB)";
+    }
+
+    if (/out of bounds memory access/i.test(raw)) {
+      return "Out-of-bounds memory access" + memHint +
+        " — the cell tried to read or write outside allocated memory.";
+    }
+
+    if (/call stack exhausted/i.test(raw) || /stack overflow/i.test(raw) ||
+        /Maximum call stack/i.test(raw)) {
+      return "Stack overflow — the cell likely has unbounded or very deep recursion.";
+    }
+
+    if (/unreachable/i.test(raw)) {
+      return "Execution trapped" + memHint +
+        " — this usually means the cell ran out of memory. " +
+        "Try reducing the problem size (e.g., lower the resolution or iteration count).";
+    }
+
+    // Fall back to the raw message with memory context.
+    return raw + memHint;
+  }
+
   // ── CellExecutor ───────────────────────────────────────────────────────────
 
   function CellExecutor() {
@@ -422,7 +459,7 @@
       resultPtr = await mod.cell_main(inputPtr, inputLen);
     } catch (e) {
       if (inputPtr !== 0) dealloc(inputPtr, inputLen);
-      throw new Error("WASM execution trapped: " + e.message);
+      throw new Error(_describeWasmTrap(e, memory));
     }
 
     if (!resultPtr) {
@@ -500,7 +537,7 @@
       // Clean up on WASM trap.
       if (inputPtr !== 0) dealloc(inputPtr, inputLen);
       if (useSret && retptr) dealloc(retptr, CELL_RESULT_SIZE);
-      throw new Error("WASM execution trapped: " + e.message);
+      throw new Error(_describeWasmTrap(e, memory));
     }
 
     // ── Read CellResult from WASM memory ─────────────────────────────────
