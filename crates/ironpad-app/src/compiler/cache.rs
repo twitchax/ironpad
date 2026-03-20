@@ -10,6 +10,13 @@ use std::path::{Path, PathBuf};
 /// change automatically invalidates existing entries.
 const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 
+/// Monotonic epoch counter baked into the cache key.
+///
+/// Bump this whenever the compilation pipeline changes in a way that should
+/// invalidate all cached blobs (e.g. RUSTFLAGS changes, wasm-bindgen
+/// post-processing changes, scaffold template changes).
+const CACHE_EPOCH: u32 = 1;
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Compute a deterministic blake3 content hash from cell source, Cargo.toml,
@@ -49,6 +56,8 @@ pub fn content_hash(
     } else {
         b"atomics=0"
     });
+    hasher.update(b"\x04");
+    hasher.update(&CACHE_EPOCH.to_le_bytes());
     hasher.finalize().to_hex().to_string()
 }
 
