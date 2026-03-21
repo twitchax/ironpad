@@ -452,28 +452,73 @@
   };
 
   /// Process any deferred GPU readback requests after cell_main returns.
-  /// Modifies cellResult.displayText in-place with rendered image data.
+  /// Replaces placeholder BlobImage panels in the structured JSON displayText
+  /// with the actual GPU-rendered image data.
   CellExecutor.prototype._processGpuReadbacks = async function (cellResult) {
     if (!this._pendingGpuReadbacks || this._pendingGpuReadbacks.length === 0) {
       return cellResult;
     }
+
+    // Parse the structured panels JSON so we can replace BlobImage panels.
+    var panels = null;
+    if (cellResult.displayText) {
+      try { panels = JSON.parse(cellResult.displayText); } catch (e) { panels = null; }
+    }
+
     for (var rb of this._pendingGpuReadbacks) {
       var rgb = await _gpuReadPixels(
         rb.output_handle, rb.staging_handle, rb.width, rb.height
       );
       if (rgb) {
         var bmp = _gpuBuildBmp(rb.width, rb.height, rgb);
-        var dataUrl = _gpuBmpToBase64DataUrl(bmp);
-        var imgTag = '<img src="' + dataUrl + '" width="' + rb.width +
-          '" height="' + rb.height + '" />';
-        if (cellResult.displayText) {
-          var replaced = cellResult.displayText.replace("<!-- gpu_pending -->", imgTag);
-          cellResult.displayText = replaced !== cellResult.displayText
-            ? replaced : cellResult.displayText + imgTag;
+        // Extract raw base64 (no data URL prefix) for the BlobImage panel.
+        var binary = "";
+        for (var i = 0; i < bmp.length; i++) {
+          binary += String.fromCharCode(bmp[i]);
+        }
+        var base64 = btoa(binary);
+
+        if (panels && Array.isArray(panels)) {
+          // Find the first BlobImage panel matching this readback's dimensions
+          // and replace its placeholder base64_data with the real GPU output.
+          var found = false;
+          for (var j = 0; j < panels.length; j++) {
+            var p = panels[j];
+            if (p && p.BlobImage &&
+                p.BlobImage.width === rb.width &&
+                p.BlobImage.height === rb.height) {
+              p.BlobImage.base64_data = base64;
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            // No matching placeholder — append a new BlobImage panel.
+            panels.push({
+              BlobImage: {
+                mime_type: "image/bmp",
+                base64_data: base64,
+                width: rb.width,
+                height: rb.height
+              }
+            });
+          }
         } else {
-          cellResult.displayText = imgTag;
+          // No valid panels array — create one with the GPU result.
+          panels = [{
+            BlobImage: {
+              mime_type: "image/bmp",
+              base64_data: base64,
+              width: rb.width,
+              height: rb.height
+            }
+          }];
         }
       }
+    }
+
+    if (panels) {
+      cellResult.displayText = JSON.stringify(panels);
     }
     this._pendingGpuReadbacks = [];
     return cellResult;
