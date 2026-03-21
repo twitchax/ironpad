@@ -81,6 +81,7 @@ pub mod prelude {
     pub use crate::sim;
     pub use crate::ui;
     pub use crate::ui::{sim_slider, ProgressHandle, SimSlider};
+    pub use crate::timing::Stopwatch;
     pub use crate::{host_message, host_message_json};
     pub use crate::{
         CellInput, CellInputs, CellOutput, CellResult, DisplayPanel, Html, IntoPanels, Json,
@@ -96,6 +97,7 @@ pub mod canvas;
 pub mod gpu;
 pub mod plot;
 pub mod sim;
+pub mod timing;
 pub mod ui;
 
 #[cfg(target_arch = "wasm32")]
