@@ -420,6 +420,14 @@
 
   // ── GPU executor methods (resolve WASM memory per cell) ─────────────────
 
+  CellExecutor.prototype._gpuAvailableSync = function () {
+    return _gpuAvailableSync();
+  };
+
+  CellExecutor.prototype._gpuCreateBuffer = function (size, usage) {
+    return _gpuCreateBuffer(size, usage);
+  };
+
   CellExecutor.prototype._gpuWriteBufferForCell = function (cellId, handle, ptr, len) {
     var entry = this.modules.get(cellId);
     if (!entry) return;
@@ -519,8 +527,8 @@
         "ironpad_sim_read_all: function(ptr, len) { " +
         "return self._ironpadExecutor ? self._ironpadExecutor._simReadAll(" +
         escapedCellId + ", ptr, len) : 0; }, " +
-        "ironpad_gpu_available: function() { return _gpuAvailableSync(); }, " +
-        "ironpad_gpu_create_buffer: function(s, u) { return _gpuCreateBuffer(s, u); }, " +
+        "ironpad_gpu_available: function() { return self._ironpadExecutor._gpuAvailableSync(); }, " +
+        "ironpad_gpu_create_buffer: function(s, u) { return self._ironpadExecutor._gpuCreateBuffer(s, u); }, " +
         "ironpad_gpu_write_buffer: function(h, p, l) { " +
         "if (self._ironpadExecutor) self._ironpadExecutor._gpuWriteBufferForCell(" +
         escapedCellId + ", h, p, l); }, " +
@@ -614,8 +622,8 @@
         "    imports.env.ironpad_sim_read_all = function(ptr, len) {\n" +
         "      return self._ironpadExecutor ? self._ironpadExecutor._simReadAll(__ironpad_cell_id, ptr, len) : 0;\n" +
         "    };\n" +
-        "    imports.env.ironpad_gpu_available = function() { return _gpuAvailableSync(); };\n" +
-        "    imports.env.ironpad_gpu_create_buffer = function(s, u) { return _gpuCreateBuffer(s, u); };\n" +
+        "    imports.env.ironpad_gpu_available = function() { return self._ironpadExecutor._gpuAvailableSync(); };\n" +
+        "    imports.env.ironpad_gpu_create_buffer = function(s, u) { return self._ironpadExecutor._gpuCreateBuffer(s, u); };\n" +
         "    imports.env.ironpad_gpu_write_buffer = function(h, p, l) {\n" +
         "      if (self._ironpadExecutor) self._ironpadExecutor._gpuWriteBufferForCell(__ironpad_cell_id, h, p, l);\n" +
         "    };\n" +
