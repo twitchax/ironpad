@@ -76,26 +76,36 @@
 
     var self = this;
     return new Promise(function (resolve, reject) {
-      var script = document.createElement("script");
-      // executor.js sets window.IronpadExecutor, but we already own that
-      // global.  We load it, grab the CellExecutor from the temporary
-      // overwrite, then restore our bridge instance.
-      var prev = window.IronpadExecutor;
-      script.src = "/executor.js";
-      script.onload = function () {
-        self._mainExecutor = window.IronpadExecutor;
-        window.IronpadExecutor = prev;
-        // Register host message handlers on the main-thread executor so
-        // progress bars etc. work in fallback mode too.
-        for (var type in self._messageHandlers) {
-          self._mainExecutor.onHostMessage(type, self._messageHandlers[type]);
-        }
-        resolve(self._mainExecutor);
+      // executor.js depends on executor-core.js (reads self.__IronpadExecutorCore),
+      // so we must load core first.
+      var coreScript = document.createElement("script");
+      coreScript.src = "/executor-core.js";
+      coreScript.onload = function () {
+        var script = document.createElement("script");
+        // executor.js sets window.IronpadExecutor, but we already own that
+        // global.  We load it, grab the CellExecutor from the temporary
+        // overwrite, then restore our bridge instance.
+        var prev = window.IronpadExecutor;
+        script.src = "/executor.js";
+        script.onload = function () {
+          self._mainExecutor = window.IronpadExecutor;
+          window.IronpadExecutor = prev;
+          // Register host message handlers on the main-thread executor so
+          // progress bars etc. work in fallback mode too.
+          for (var type in self._messageHandlers) {
+            self._mainExecutor.onHostMessage(type, self._messageHandlers[type]);
+          }
+          resolve(self._mainExecutor);
+        };
+        script.onerror = function () {
+          reject(new Error("Failed to load fallback executor"));
+        };
+        document.head.appendChild(script);
       };
-      script.onerror = function () {
-        reject(new Error("Failed to load fallback executor"));
+      coreScript.onerror = function () {
+        reject(new Error("Failed to load executor-core.js"));
       };
-      document.head.appendChild(script);
+      document.head.appendChild(coreScript);
     });
   };
 
