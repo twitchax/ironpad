@@ -47,17 +47,24 @@ pub fn pid_path() -> PathBuf {
 // ── Daemon state ────────────────────────────────────────────────────────────
 
 struct DaemonState {
+    /// Whether the WebSocket is connected.
+    connected: RwLock<bool>,
     /// Cached notebook (populated on connect via `NotebookGet` query).
     notebook: RwLock<Option<IronpadNotebook>>,
     /// Pending request-response pairs keyed by message ID.
     pending: RwLock<HashMap<String, oneshot::Sender<String>>>,
-    /// Channel to send messages over the WebSocket.
-    ws_tx: mpsc::UnboundedSender<String>,
+    /// Channel to send messages over the WebSocket. `None` until connected.
+    ws_tx: RwLock<Option<mpsc::UnboundedSender<String>>>,
 }
 
 // ── Run daemon ──────────────────────────────────────────────────────────────
 
-/// Start the daemon: connect to the server, listen on Unix socket, run forever.
+/// Start the daemon: bind Unix socket, connect to the server, run forever.
+///
+/// The socket is bound **before** the WebSocket connection so that CLI
+/// commands (e.g. `status`) are reachable even while the WS handshake is
+/// in progress. Commands that require a live WS return an error until the
+/// connection is established.
 pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
     // Ensure daemon directory exists.
     let dir = daemon_dir();
@@ -73,81 +80,19 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
     let pid = pid_path();
     tokio::fs::write(&pid, std::process::id().to_string()).await?;
 
-    // Connect WebSocket.
-    let ws_url = format!("{host}/ws/connect?token={token}");
-    tracing::info!(url = %ws_url, "connecting to server");
-
-    let (ws_stream, _response) = tokio_tungstenite::connect_async(&ws_url).await?;
-    tracing::info!("WebSocket connected");
-
-    let (mut ws_sink, mut ws_source) = ws_stream.split();
-    let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<String>();
-
-    let state = Arc::new(DaemonState {
-        notebook: RwLock::new(None),
-        pending: RwLock::new(HashMap::new()),
-        ws_tx: ws_tx.clone(),
-    });
-
-    // Request initial notebook state.
-    let init_id = uuid::Uuid::new_v4().to_string();
-    let init_msg = protocol::Message {
-        id: init_id.clone(),
-        kind: MessageKind::Query(Query::NotebookGet),
-    };
-    let (init_tx, init_rx) = oneshot::channel::<String>();
-    state.pending.write().await.insert(init_id, init_tx);
-    if ws_tx.send(serde_json::to_string(&init_msg)?).is_err() {
-        tracing::warn!("failed to send initial NotebookGet query — WS channel closed");
-    }
-
-    // ── Task: forward channel → WebSocket ───────────────────────────────
-
-    let ws_send_task = tokio::spawn(async move {
-        while let Some(msg) = ws_rx.recv().await {
-            if ws_sink
-                .send(tungstenite::Message::Text(msg.into()))
-                .await
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-
-    // ── Task: read WebSocket → dispatch ─────────────────────────────────
-
-    let state_ws = Arc::clone(&state);
-    let ws_recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ws_source.next().await {
-            if let tungstenite::Message::Text(text) = msg {
-                handle_ws_message(&text, &state_ws).await;
-            }
-        }
-        tracing::info!("WebSocket closed");
-    });
-
-    // Wait for initial notebook fetch.
-    match tokio::time::timeout(std::time::Duration::from_secs(10), init_rx).await {
-        Ok(Ok(text)) => match serde_json::from_str::<protocol::Message>(&text) {
-            Ok(msg) => {
-                if let MessageKind::Response(protocol::Response::Notebook { notebook }) = msg.kind {
-                    *state.notebook.write().await = Some(notebook);
-                    tracing::info!("notebook state cached");
-                } else {
-                    tracing::warn!("unexpected response kind for NotebookGet: {:?}", msg.kind);
-                }
-            }
-            Err(e) => tracing::warn!("failed to parse NotebookGet response: {e}"),
-        },
-        Ok(Err(_)) => tracing::warn!("NotebookGet response channel closed"),
-        Err(_) => tracing::warn!("timed out waiting for initial notebook state"),
-    }
-
-    // ── Task: Unix socket listener ──────────────────────────────────────
+    // ── Bind Unix socket FIRST ──────────────────────────────────────────
 
     let listener = UnixListener::bind(&sock)?;
     tracing::info!(path = %sock.display(), "listening on Unix socket");
+
+    let state = Arc::new(DaemonState {
+        connected: RwLock::new(false),
+        notebook: RwLock::new(None),
+        pending: RwLock::new(HashMap::new()),
+        ws_tx: RwLock::new(None),
+    });
+
+    // ── Task: Unix socket listener ──────────────────────────────────────
 
     let state_ipc = Arc::clone(&state);
     let ipc_task = tokio::spawn(async move {
@@ -165,13 +110,107 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
         }
     });
 
+    // ── Connect WebSocket ───────────────────────────────────────────────
+
+    let ws_url = format!("{host}/ws/connect?token={token}");
+    tracing::info!(url = %ws_url, "connecting to server");
+
+    let ws_result = tokio_tungstenite::connect_async(&ws_url).await;
+
+    let ws_tasks = match ws_result {
+        Ok((ws_stream, _response)) => {
+            tracing::info!("WebSocket connected");
+
+            let (mut ws_sink, mut ws_source) = ws_stream.split();
+            let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<String>();
+
+            // Publish the WS sender so IPC handlers can use it.
+            *state.ws_tx.write().await = Some(ws_tx.clone());
+            *state.connected.write().await = true;
+
+            // Request initial notebook state.
+            let init_id = uuid::Uuid::new_v4().to_string();
+            let init_msg = protocol::Message {
+                id: init_id.clone(),
+                kind: MessageKind::Query(Query::NotebookGet),
+            };
+            let (init_tx, init_rx) = oneshot::channel::<String>();
+            state.pending.write().await.insert(init_id, init_tx);
+            if ws_tx.send(serde_json::to_string(&init_msg)?).is_err() {
+                tracing::warn!("failed to send initial NotebookGet query — WS channel closed");
+            }
+
+            // ── Task: forward channel → WebSocket ───────────────────────
+            let ws_send_task = tokio::spawn(async move {
+                while let Some(msg) = ws_rx.recv().await {
+                    if ws_sink
+                        .send(tungstenite::Message::Text(msg.into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+
+            // ── Task: read WebSocket → dispatch ─────────────────────────
+            let state_ws = Arc::clone(&state);
+            let ws_recv_task = tokio::spawn(async move {
+                while let Some(Ok(msg)) = ws_source.next().await {
+                    if let tungstenite::Message::Text(text) = msg {
+                        handle_ws_message(&text, &state_ws).await;
+                    }
+                }
+                tracing::info!("WebSocket closed");
+            });
+
+            // Wait for initial notebook fetch.
+            match tokio::time::timeout(std::time::Duration::from_secs(10), init_rx).await {
+                Ok(Ok(text)) => match serde_json::from_str::<protocol::Message>(&text) {
+                    Ok(msg) => {
+                        if let MessageKind::Response(protocol::Response::Notebook { notebook }) =
+                            msg.kind
+                        {
+                            *state.notebook.write().await = Some(notebook);
+                            tracing::info!("notebook state cached");
+                        } else {
+                            tracing::warn!(
+                                "unexpected response kind for NotebookGet: {:?}",
+                                msg.kind
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!("failed to parse NotebookGet response: {e}"),
+                },
+                Ok(Err(_)) => tracing::warn!("NotebookGet response channel closed"),
+                Err(_) => tracing::warn!("timed out waiting for initial notebook state"),
+            }
+
+            Some((ws_send_task, ws_recv_task))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to connect WebSocket — daemon will accept IPC but cannot reach server");
+            None
+        }
+    };
+
     // ── Wait for shutdown ───────────────────────────────────────────────
 
-    tokio::select! {
-        _ = ws_send_task => tracing::info!("WS send task ended"),
-        _ = ws_recv_task => tracing::info!("WS recv task ended"),
-        _ = ipc_task => tracing::info!("IPC task ended"),
-        _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT"),
+    match ws_tasks {
+        Some((ws_send_task, ws_recv_task)) => {
+            tokio::select! {
+                _ = ws_send_task => tracing::info!("WS send task ended"),
+                _ = ws_recv_task => tracing::info!("WS recv task ended"),
+                _ = ipc_task => tracing::info!("IPC task ended"),
+                _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT"),
+            }
+        }
+        None => {
+            tokio::select! {
+                _ = ipc_task => tracing::info!("IPC task ended"),
+                _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT"),
+            }
+        }
     }
 
     // Cleanup.
@@ -389,7 +428,7 @@ async fn handle_ipc_request(line: &str, state: &DaemonState) -> IpcResponse {
             }
         }
         "status" => IpcResponse::success(serde_json::json!({
-            "connected": true,
+            "connected": *state.connected.read().await,
             "cached": state.notebook.read().await.is_some(),
         })),
 
@@ -400,6 +439,15 @@ async fn handle_ipc_request(line: &str, state: &DaemonState) -> IpcResponse {
 
 /// Forward an IPC command to the server via the WebSocket and wait for the response.
 async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
+    // Check that the WebSocket is connected.
+    let ws_tx = {
+        let guard = state.ws_tx.read().await;
+        match guard.as_ref() {
+            Some(tx) => tx.clone(),
+            None => return IpcResponse::error("WebSocket not yet connected"),
+        }
+    };
+
     // Translate IPC command → protocol message.
     let msg_id = uuid::Uuid::new_v4().to_string();
     let kind = match translate_command(req) {
@@ -425,7 +473,7 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
     state.pending.write().await.insert(msg_id.clone(), tx);
 
     // Send over WebSocket.
-    if state.ws_tx.send(json).is_err() {
+    if ws_tx.send(json).is_err() {
         state.pending.write().await.remove(&msg_id);
         return IpcResponse::error("WebSocket disconnected");
     }

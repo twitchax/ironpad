@@ -2,9 +2,9 @@ import { test, expect } from "@playwright/test";
 import { startSession, endSession } from "./helpers/session";
 import { connectCli, cliExec, cliExecRaw, stopCli, CliHandle } from "./helpers/cli";
 
-// Skipped: all tests require the ironpad-cli binary at target/release/ironpad-cli.
-// Build it with `cargo make build-cli` before running these tests.
-test.describe.skip("Agent Session", () => {
+// Session tests share a single daemon socket (~/.ironpad/daemon.sock)
+// and must run serially to avoid conflicts.
+test.describe.serial("Agent Session", () => {
   let cliHandle: CliHandle | null = null;
 
   test.afterEach(async () => {
@@ -115,7 +115,7 @@ test.describe.skip("Agent Session", () => {
 
     // Verify browser shows the new cell.
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1, {
-      timeout: 5_000,
+      timeout: 15_000,
     });
 
     // List and verify.
@@ -128,7 +128,7 @@ test.describe.skip("Agent Session", () => {
 
     // Verify browser shows no cells.
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(0, {
-      timeout: 5_000,
+      timeout: 15_000,
     });
   });
 

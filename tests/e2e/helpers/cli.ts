@@ -32,10 +32,16 @@ export async function connectCli(
   const child = spawn(CLI_BIN, ["--host", host, "--token", token, "daemon"], {
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
+    env: { ...process.env, RUST_LOG: "ironpad=debug" },
   });
 
-  // Wait for the socket to appear (daemon is ready).
-  await waitForSocket(sockPath, 15_000);
+  // Surface daemon errors in test output for debugging.
+  child.stderr?.on("data", (data: Buffer) => {
+    console.error(`[daemon] ${data.toString().trimEnd()}`);
+  });
+
+  // Wait for the daemon to be fully connected.
+  await waitForDaemonReady(sockPath, 30_000);
 
   return { process: child, token };
 }
@@ -81,17 +87,40 @@ export function stopCli(handle: CliHandle): void {
   } catch {}
 }
 
-/** Wait for a Unix socket file to appear. */
-async function waitForSocket(
+/** Wait for the daemon socket to appear and report connected status. */
+async function waitForDaemonReady(
   sockPath: string,
   timeoutMs: number
 ): Promise<void> {
   const start = Date.now();
+
+  // Phase 1: wait for the socket file to exist.
   while (Date.now() - start < timeoutMs) {
     if (fs.existsSync(sockPath)) {
-      return;
+      break;
     }
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error(`Timed out waiting for daemon socket at ${sockPath}`);
+  if (!fs.existsSync(sockPath)) {
+    throw new Error(`Timed out waiting for daemon socket at ${sockPath}`);
+  }
+
+  // Phase 2: poll `status` until the daemon reports connected.
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const status = JSON.parse(
+        execSync([CLI_BIN, "status"].join(" "), {
+          encoding: "utf-8",
+          timeout: 5_000,
+        }).trim()
+      );
+      if (status.connected) {
+        return;
+      }
+    } catch {
+      // Daemon not ready yet — retry.
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error("Timed out waiting for daemon to report connected status");
 }

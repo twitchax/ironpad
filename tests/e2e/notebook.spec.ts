@@ -1,11 +1,32 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, Page, Locator } from "@playwright/test";
+
+/** Set a cell's Monaco editor content via the Monaco API. */
+async function setCellSource(page: Page, cell: Locator, source: string) {
+  const cellHandle = await cell.elementHandle();
+  await page.evaluate(
+    ([el, src]) => {
+      const editors = (window as any).monaco.editor.getEditors();
+      for (const editor of editors) {
+        if ((el as Element).contains(editor.getDomNode())) {
+          editor.getModel()?.setValue(src as string);
+          return;
+        }
+      }
+      throw new Error("No Monaco editor found in cell");
+    },
+    [cellHandle, source] as const
+  );
+}
 
 test.describe("Notebook", () => {
   test("create notebook and add cell", async ({ page }) => {
-    // Collect JS errors during the test (filter known WASM hydration noise).
+    // Collect JS errors during the test (filter known noise).
     const jsErrors: string[] = [];
     page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
+      if (
+        !error.message.includes("unreachable") &&
+        !error.message.includes("Canceled")
+      ) {
         jsErrors.push(error.message);
       }
     });
@@ -103,22 +124,19 @@ test.describe("Notebook", () => {
     expect(jsErrors).toEqual([]);
   });
 
-  // Skipped: relies on server-side filesystem notebook storage (data/notebooks/)
-  // which no longer exists — private notebooks are stored in IndexedDB.
-  test.skip("two-cell data flow via bincode", async ({ page }) => {
+  test("two-cell data flow via bincode", async ({ page }) => {
     // Two compilations back-to-back — generous timeout.
     test.setTimeout(300_000);
 
-    // Collect JS errors (filter known WASM hydration noise).
     const jsErrors: string[] = [];
     page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
+      if (
+        !error.message.includes("unreachable") &&
+        !error.message.includes("Canceled")
+      ) {
         jsErrors.push(error.message);
       }
     });
-
-    const fs = await import("fs");
-    const path = await import("path");
 
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");
@@ -127,70 +145,43 @@ test.describe("Notebook", () => {
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
-    // Extract notebook ID from URL.
-    const notebookId = page.url().split("/notebook/")[1];
-
     // ── Add Cell 0 (producer) ───────────────────────────────────────────
-    await page.locator(".ironpad-add-cell-btn").first().click();
-    const cell0 = page.locator(".ironpad-cell-card").nth(0);
-    await expect(cell0).toBeVisible();
-
-    // ── Add Cell 1 (consumer) ───────────────────────────────────────────
-    await page.locator(".ironpad-add-cell-btn").last().click();
-    const cell1 = page.locator(".ironpad-cell-card").nth(1);
-    await expect(cell1).toBeVisible();
-
-    // Wait briefly for cells to persist to disk.
-    await page.waitForTimeout(1_000);
-
-    // ── Inject cell source via filesystem ───────────────────────────────
-    // Read the notebook manifest to discover cell IDs.
-    const dataDir = path.join(process.cwd(), "data", "notebooks", notebookId);
-    const manifest = JSON.parse(
-      fs.readFileSync(path.join(dataDir, "ironpad.json"), "utf-8")
-    );
-    const cellIds = manifest.cells.map((c: { id: string }) => c.id);
-    expect(cellIds.length).toBe(2);
-
-    // Cell 0: serialize Vec<i32> with display text.
-    const cell0Source = [
-      '    let data: Vec<i32> = vec![1, 2, 3, 4, 5];',
-      '    CellOutput::new(&data).unwrap().with_display(format!("Sent: {:?}", data)).into()',
-    ].join("\n");
-    fs.writeFileSync(
-      path.join(dataDir, "cells", cellIds[0], "source.rs"),
-      cell0Source
-    );
-
-    // Cell 1: deserialize Vec<i32> from Cell 0 and compute sum.
-    const cell1Source = [
-      "    let input = CellInput::new(unsafe { std::slice::from_raw_parts(input_ptr, input_len) });",
-      "    let data: Vec<i32> = input.deserialize().unwrap();",
-      "    let sum: i32 = data.iter().sum();",
-      '    CellOutput::text(format!("Sum: {}", sum)).into()',
-    ].join("\n");
-    fs.writeFileSync(
-      path.join(dataDir, "cells", cellIds[1], "source.rs"),
-      cell1Source
-    );
-
-    // ── Reload the page to pick up new source from server ───────────────
-    await page.reload();
-    await expect(page.locator(".ironpad-editor")).toBeVisible();
-
-    // Re-query cell cards after reload.
-    const cells = page.locator(".ironpad-cell-card");
-    await expect(cells).toHaveCount(2, { timeout: 10_000 });
-    const c0 = cells.nth(0);
-    const c1 = cells.nth(1);
-
-    // Wait for Monaco editors to mount in both cells.
+    await page.locator("button", { hasText: "+ Code" }).first().click();
+    const c0 = page.locator(".ironpad-cell-card").nth(0);
+    await expect(c0).toBeVisible();
     await expect(c0.locator(".monaco-editor").first()).toBeVisible({
       timeout: 15_000,
     });
+
+    // ── Add Cell 1 (consumer) ───────────────────────────────────────────
+    await page.locator("button", { hasText: "+ Code" }).last().click();
+    const c1 = page.locator(".ironpad-cell-card").nth(1);
+    await expect(c1).toBeVisible();
     await expect(c1.locator(".monaco-editor").first()).toBeVisible({
       timeout: 15_000,
     });
+
+    // ── Set cell sources via Monaco API ──────────────────────────────────
+    // The scaffold wraps source in `({ source }).into()`, so the last
+    // expression must be convertible to CellOutput.
+    await setCellSource(
+      page,
+      c0,
+      [
+        'let data: Vec<i32> = vec![1, 2, 3, 4, 5];',
+        'CellOutput::new(&data).unwrap().with_display(format!("Sent: {:?}", data))',
+      ].join("\n")
+    );
+
+    await setCellSource(
+      page,
+      c1,
+      [
+        "let data: Vec<i32> = __ironpad_inputs__.get(0).deserialize().unwrap();",
+        "let sum: i32 = data.iter().sum();",
+        'CellOutput::text(format!("Sum: {}", sum))',
+      ].join("\n")
+    );
 
     // ── Run all cells via Ctrl+Shift+Enter ──────────────────────────────
     await page.keyboard.press("Control+Shift+Enter");
@@ -313,24 +304,17 @@ test.describe("Notebook", () => {
     expect(jsErrors).toEqual([]);
   });
 
-  // Skipped: relies on server-side filesystem notebook storage (data/notebooks/)
-  // which no longer exists — private notebooks are stored in IndexedDB.
-  test.skip("compiler errors render inline in Monaco with span highlighting", async ({
+  test("compiler errors render inline in Monaco with span highlighting", async ({
     page,
   }) => {
-    // Compilation of intentionally broken code — generous timeout.
     test.setTimeout(180_000);
 
-    // Collect JS errors (filter known WASM hydration noise).
     const jsErrors: string[] = [];
     page.on("pageerror", (error) => {
       if (!error.message.includes("unreachable")) {
         jsErrors.push(error.message);
       }
     });
-
-    const fs = await import("fs");
-    const path = await import("path");
 
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");
@@ -339,73 +323,52 @@ test.describe("Notebook", () => {
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
-    const notebookId = page.url().split("/notebook/")[1];
-
     // ── Add a cell ──────────────────────────────────────────────────────
     await page.locator(".ironpad-add-cell-btn").first().click();
     const cell = page.locator(".ironpad-cell-card").first();
     await expect(cell).toBeVisible();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
 
-    // Wait for the cell to persist to disk.
-    await page.waitForTimeout(1_000);
-
-    // ── Inject invalid Rust code via filesystem ─────────────────────────
-    const dataDir = path.join(process.cwd(), "data", "notebooks", notebookId);
-    const manifest = JSON.parse(
-      fs.readFileSync(path.join(dataDir, "ironpad.json"), "utf-8")
+    // ── Set broken Rust source via Monaco API ───────────────────────────
+    await setCellSource(
+      page,
+      cell,
+      [
+        'let x: i32 = "not a number";',
+        'CellOutput::text(format!("{}", x))',
+      ].join("\n")
     );
-    const cellId = manifest.cells[0].id;
-
-    // Type mismatch: assigning a string literal to an i32 variable.
-    const brokenSource = [
-      '    let x: i32 = "not a number";',
-      '    CellOutput::text(format!("{}", x)).into()',
-    ].join("\n");
-    fs.writeFileSync(
-      path.join(dataDir, "cells", cellId, "source.rs"),
-      brokenSource
-    );
-
-    // Reload to pick up the new source.
-    await page.reload();
-    await expect(page.locator(".ironpad-editor")).toBeVisible();
-
-    const reloadedCell = page.locator(".ironpad-cell-card").first();
-    await expect(reloadedCell).toBeVisible({ timeout: 10_000 });
-    await expect(
-      reloadedCell.locator(".monaco-editor").first()
-    ).toBeVisible({ timeout: 15_000 });
 
     // ── Run the cell ────────────────────────────────────────────────────
-    const runButton = reloadedCell
-      .locator(".ironpad-cell-actions button")
-      .first();
+    const runButton = page.locator('button[title="Run cell"]').first();
     await expect(runButton).toBeVisible();
     await runButton.click();
 
     // Wait for compilation to start.
     await expect(
-      reloadedCell.locator(".ironpad-cell-status--compiling")
+      cell.locator(".ironpad-cell-status--compiling")
     ).toBeVisible({ timeout: 5_000 });
 
     // Wait for compilation to finish.
     await expect(
-      reloadedCell.locator(".ironpad-cell-status--compiling")
+      cell.locator(".ironpad-cell-status--compiling")
     ).toBeHidden({ timeout: 120_000 });
 
     // ── Verify error state ──────────────────────────────────────────────
     await expect(
-      reloadedCell.locator(".ironpad-cell-status--error")
+      cell.locator(".ironpad-cell-status--error")
     ).toBeVisible({ timeout: 5_000 });
 
     // ── Verify Monaco inline error markers (squiggly underlines) ────────
     // Monaco renders error markers with the `.squiggly-error` CSS class.
     await expect(
-      reloadedCell.locator(".monaco-editor .squiggly-error")
+      cell.locator(".monaco-editor .squiggly-error")
     ).toBeVisible({ timeout: 10_000 });
 
     // ── Verify error panel with diagnostics ─────────────────────────────
-    const errorPanel = reloadedCell.locator(".ironpad-error-panel");
+    const errorPanel = cell.locator(".ironpad-error-panel");
     await expect(errorPanel).toBeVisible({ timeout: 5_000 });
 
     // The error panel should mention "mismatched types" (rustc E0308).
