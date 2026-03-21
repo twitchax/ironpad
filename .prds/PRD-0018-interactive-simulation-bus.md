@@ -1,7 +1,7 @@
 ---
 id: PRD-0018
 title: "Interactive Simulation Bus: emit/read IPC + Slider Integration"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-16
 updated: 2026-03-17

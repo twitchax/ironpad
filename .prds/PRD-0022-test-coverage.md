@@ -1,7 +1,7 @@
 ---
 id: PRD-0022
 title: "Test Coverage: Server, WebSocket, and CLI Tests"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-18
 updated: 2026-03-18

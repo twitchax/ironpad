@@ -1,7 +1,7 @@
 ---
 id: PRD-0023
 title: "Domain-Filtering Forward Proxy for Compilation Security"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-18
 updated: 2026-03-18

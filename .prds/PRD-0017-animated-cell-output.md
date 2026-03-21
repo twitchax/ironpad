@@ -1,7 +1,7 @@
 ---
 id: PRD-0017
 title: "Animated Cell Output: Frame Sequences and Live Simulations"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2025-03-15
 updated: 2025-07-15

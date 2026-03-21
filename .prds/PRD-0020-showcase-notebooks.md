@@ -1,7 +1,7 @@
 ---
 id: PRD-0020
 title: "Showcase Public Notebooks"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-16
 updated: 2026-03-16

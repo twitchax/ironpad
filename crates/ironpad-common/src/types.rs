@@ -146,6 +146,9 @@ pub struct IronpadNotebook {
     pub shared_cargo_toml: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_source: Option<String>,
+    /// When `true`, editing a cell auto-re-executes downstream cells after a debounce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactive_mode: Option<bool>,
     pub cells: Vec<IronpadCell>,
 }
 
@@ -174,6 +177,7 @@ impl IronpadNotebook {
             updated_at: now,
             shared_cargo_toml: Some(DEFAULT_SHARED_CARGO_TOML.to_string()),
             shared_source: None,
+            reactive_mode: None,
             cells: Vec::new(),
         }
     }
@@ -260,6 +264,58 @@ mod tests {
         let json = serde_json::to_string(&cell).unwrap();
         // version:0 should be present (not skipped).
         assert!(json.contains("\"version\":0"));
+    }
+
+    // ── reactive_mode field ────────────────────────────────────────────
+
+    #[test]
+    fn notebook_without_reactive_mode_defaults_to_none() {
+        let json = r#"{
+            "version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "title": "Test",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z",
+            "cells": []
+        }"#;
+        let nb: IronpadNotebook = serde_json::from_str(json).unwrap();
+        assert_eq!(nb.reactive_mode, None);
+    }
+
+    #[test]
+    fn notebook_with_reactive_mode_true_round_trips() {
+        let mut nb = IronpadNotebook::new("Reactive");
+        nb.reactive_mode = Some(true);
+        let json = serde_json::to_string(&nb).unwrap();
+        assert!(json.contains("\"reactive_mode\":true"));
+        let back: IronpadNotebook = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.reactive_mode, Some(true));
+    }
+
+    #[test]
+    fn notebook_with_reactive_mode_false_round_trips() {
+        let mut nb = IronpadNotebook::new("Non-Reactive");
+        nb.reactive_mode = Some(false);
+        let json = serde_json::to_string(&nb).unwrap();
+        assert!(json.contains("\"reactive_mode\":false"));
+        let back: IronpadNotebook = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.reactive_mode, Some(false));
+    }
+
+    #[test]
+    fn notebook_reactive_mode_none_is_omitted_from_json() {
+        let nb = IronpadNotebook::new("Default");
+        let json = serde_json::to_string(&nb).unwrap();
+        assert!(
+            !json.contains("reactive_mode"),
+            "reactive_mode=None should be skipped"
+        );
+    }
+
+    #[test]
+    fn notebook_new_defaults_reactive_mode_to_none() {
+        let nb = IronpadNotebook::new("Fresh");
+        assert_eq!(nb.reactive_mode, None);
     }
 
     /// Verify every `.ironpad` file in `public/notebooks/` deserializes as a

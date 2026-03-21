@@ -1,7 +1,7 @@
 ---
 id: PRD-0024
 title: "Rayon Multi-Core Parallelism for Cells"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-19
 updated: 2026-03-19

@@ -88,7 +88,10 @@ impl NotebookModel {
                 title,
                 shared_cargo_toml,
                 shared_source,
-            } => self.notebook_update_meta(title, shared_cargo_toml, shared_source)?,
+                reactive_mode,
+            } => {
+                self.notebook_update_meta(title, shared_cargo_toml, shared_source, reactive_mode)?
+            }
             Mutation::CellCompile { .. } | Mutation::CellExecute { .. } => {
                 return Err(ModelError {
                     code: ErrorCode::InvalidMessage,
@@ -441,6 +444,7 @@ impl NotebookModel {
         title: Option<String>,
         shared_cargo_toml: Option<Option<String>>,
         shared_source: Option<Option<String>>,
+        reactive_mode: Option<bool>,
     ) -> Result<(MutationResult, Event), ModelError> {
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
@@ -452,6 +456,9 @@ impl NotebookModel {
             }
             if let Some(ref ss) = shared_source {
                 nb.shared_source.clone_from(ss);
+            }
+            if let Some(rm) = reactive_mode {
+                nb.reactive_mode = if rm { Some(true) } else { None };
             }
         });
 
@@ -465,6 +472,7 @@ impl NotebookModel {
                 title,
                 shared_cargo_toml,
                 shared_source,
+                reactive_mode,
             },
         ))
     }

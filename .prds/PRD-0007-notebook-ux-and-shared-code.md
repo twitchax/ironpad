@@ -1,7 +1,7 @@
 ---
 id: PRD-0007
 title: "Notebook UX: Run All, Shared Code, Button Widget & Auto-Run"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-11
 updated: 2026-03-11

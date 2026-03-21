@@ -76,6 +76,7 @@ pub mod prelude {
     pub use console_error_panic_hook;
 
     pub use crate::canvas::{Animation, Canvas};
+    pub use crate::gpu::{gpu_available, GpuCanvas, GpuSimulation};
     pub use crate::plot::Plot;
     pub use crate::sim;
     pub use crate::ui;
@@ -92,6 +93,7 @@ pub mod prelude {
 }
 
 pub mod canvas;
+pub mod gpu;
 pub mod plot;
 pub mod sim;
 pub mod ui;
@@ -596,6 +598,13 @@ impl From<canvas::Canvas> for CellOutput {
     }
 }
 
+impl From<gpu::GpuCanvas> for CellOutput {
+    fn from(gpu_canvas: gpu::GpuCanvas) -> Self {
+        let canvas = gpu_canvas.render();
+        Self::from(canvas)
+    }
+}
+
 impl From<canvas::Animation> for CellOutput {
     fn from(value: canvas::Animation) -> Self {
         let panels = value.into_panels();
@@ -720,6 +729,15 @@ impl IntoPanels for canvas::Canvas {
     }
 }
 
+impl IntoPanels for gpu::GpuCanvas {
+    fn into_panels(&self) -> Vec<DisplayPanel> {
+        // GpuCanvas can't render without consuming self, so return placeholder.
+        vec![DisplayPanel::Text(
+            "[GpuCanvas: call .render() or convert to CellOutput]".into(),
+        )]
+    }
+}
+
 impl IntoPanels for canvas::Animation {
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_possible_truncation)]
@@ -830,6 +848,12 @@ impl TypeTag for canvas::Canvas {
 impl TypeTag for canvas::Animation {
     fn type_tag() -> String {
         "Animation".into()
+    }
+}
+
+impl TypeTag for gpu::GpuCanvas {
+    fn type_tag() -> String {
+        "GpuCanvas".into()
     }
 }
 

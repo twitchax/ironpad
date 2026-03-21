@@ -285,6 +285,7 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             title,
             shared_cargo_toml,
             shared_source,
+            reactive_mode,
         } => {
             if let Some(t) = title {
                 nb.title.clone_from(t);
@@ -294,6 +295,9 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             }
             if let Some(ss) = shared_source {
                 nb.shared_source.clone_from(ss);
+            }
+            if let Some(rm) = reactive_mode {
+                nb.reactive_mode = if *rm { Some(true) } else { None };
             }
         }
         // Compilation/execution events don't affect the notebook structure.

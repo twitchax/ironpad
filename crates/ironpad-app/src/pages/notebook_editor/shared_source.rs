@@ -45,6 +45,7 @@ pub(super) fn SharedSourcePanel() -> impl IntoView {
                     title: None,
                     shared_cargo_toml: None,
                     shared_source: Some(Some(content)),
+                    reactive_mode: None,
                 },
                 ironpad_common::protocol::ClientId::browser(),
             )

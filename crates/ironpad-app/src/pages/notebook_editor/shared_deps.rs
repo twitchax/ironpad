@@ -49,6 +49,7 @@ pub(super) fn SharedDepsPanel() -> impl IntoView {
                     title: None,
                     shared_cargo_toml: Some(Some(content)),
                     shared_source: None,
+                    reactive_mode: None,
                 },
                 ironpad_common::protocol::ClientId::browser(),
             )

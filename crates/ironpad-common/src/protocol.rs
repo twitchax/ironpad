@@ -97,6 +97,8 @@ pub enum Mutation {
         shared_cargo_toml: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shared_source: Option<Option<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reactive_mode: Option<bool>,
     },
 }
 
@@ -184,6 +186,8 @@ pub enum Event {
         shared_cargo_toml: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shared_source: Option<Option<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reactive_mode: Option<bool>,
     },
     Error {
         code: ErrorCode,
@@ -371,6 +375,7 @@ mod tests {
                 title: Some("New Title".into()),
                 shared_cargo_toml: Some(Some("toml content".into())),
                 shared_source: None,
+                reactive_mode: None,
             }),
         };
         round_trip(&msg);
@@ -567,5 +572,85 @@ mod tests {
         assert_eq!(cell.cell_type, CellType::Code);
         assert_eq!(cell.label, "New Cell");
         assert!(cell.cargo_toml.is_none());
+    }
+
+    // ── reactive_mode in protocol messages ──────────────────────────────
+
+    #[test]
+    fn mutation_notebook_update_meta_with_reactive_mode() {
+        let msg = Message {
+            id: "req-reactive".into(),
+            kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
+                title: None,
+                shared_cargo_toml: None,
+                shared_source: None,
+                reactive_mode: Some(true),
+            }),
+        };
+        round_trip(&msg);
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"reactive_mode\":true"));
+    }
+
+    #[test]
+    fn mutation_notebook_update_meta_omits_none_reactive_mode() {
+        let msg = Message {
+            id: "req-no-reactive".into(),
+            kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
+                title: Some("Title".into()),
+                shared_cargo_toml: None,
+                shared_source: None,
+                reactive_mode: None,
+            }),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("reactive_mode"),
+            "reactive_mode=None should be omitted"
+        );
+        round_trip(&msg);
+    }
+
+    #[test]
+    fn event_notebook_meta_updated_with_reactive_mode() {
+        let msg = Message {
+            id: "evt-reactive".into(),
+            kind: MessageKind::Event(EventEnvelope {
+                by: ClientId::browser(),
+                event: Event::NotebookMetaUpdated {
+                    title: None,
+                    shared_cargo_toml: None,
+                    shared_source: None,
+                    reactive_mode: Some(false),
+                },
+            }),
+        };
+        round_trip(&msg);
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"reactive_mode\":false"));
+    }
+
+    #[test]
+    fn event_notebook_meta_updated_omits_none_reactive_mode() {
+        let msg = Message {
+            id: "evt-no-reactive".into(),
+            kind: MessageKind::Event(EventEnvelope {
+                by: ClientId::agent("bot"),
+                event: Event::NotebookMetaUpdated {
+                    title: Some("New".into()),
+                    shared_cargo_toml: None,
+                    shared_source: None,
+                    reactive_mode: None,
+                },
+            }),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("reactive_mode"),
+            "reactive_mode=None should be omitted from event"
+        );
+        round_trip(&msg);
     }
 }

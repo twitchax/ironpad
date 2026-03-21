@@ -348,6 +348,24 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         }
     });
 
+    // ── Blocked-by watcher ──────────────────────────────────────────────
+    //
+    // When this cell appears in `cell_blocked_by`, show a Blocked status.
+    // When it is removed (e.g. the blocking cell re-runs successfully, or
+    // reactive mode is toggled off), revert to Idle.
+
+    let cell_id_for_blocked = StoredValue::new(cell.id.clone());
+
+    Effect::new(move || {
+        let blocked = state.cell_blocked_by.get();
+        let cid = cell_id_for_blocked.get_value();
+        if blocked.contains_key(&cid) {
+            cell_status.set(CellStatus::Blocked);
+        } else if cell_status.get_untracked() == CellStatus::Blocked {
+            cell_status.set(CellStatus::Idle);
+        }
+    });
+
     // ── Run All Below trigger ───────────────────────────────────────────
 
     let cell_id_for_run_all = StoredValue::new(cell.id.clone());
@@ -598,6 +616,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                                     stale.remove(&cell_id_for_exec);
                                                 });
 
+                                                // Clear blocked-by entries that referenced this cell.
+                                                state.cell_blocked_by.update(|blocked| {
+                                                    blocked.retain(|_, blocker| {
+                                                        *blocker != cell_id_for_exec
+                                                    });
+                                                });
+
                                                 // Advance run-all queue on success.
                                                 state.run_all_queue.update(|q| {
                                                     if q.first()
@@ -631,6 +656,18 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                     cell_status.set(CellStatus::Error);
 
                                     // Stop run-all on execution error.
+                                    // In reactive mode, mark remaining queued cells as blocked.
+                                    let queue = state.run_all_queue.get_untracked();
+                                    if state.reactive_mode.get_untracked() && queue.len() > 1 {
+                                        state.cell_blocked_by.update(|blocked| {
+                                            for queued_id in &queue[1..] {
+                                                blocked.insert(
+                                                    queued_id.clone(),
+                                                    cell_id_for_exec.clone(),
+                                                );
+                                            }
+                                        });
+                                    }
                                     state.run_all_queue.set(vec![]);
                                 }
                             }
@@ -646,6 +683,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                 stale.remove(&cell_id_for_exec);
                             });
 
+                            // Clear blocked-by entries that referenced this cell (SSR path).
+                            state.cell_blocked_by.update(|blocked| {
+                                blocked.retain(|_, blocker| *blocker != cell_id_for_exec);
+                            });
+
                             // Advance run-all queue (SSR path).
                             state.run_all_queue.update(|q| {
                                 if q.first().is_some_and(|id| id == &cell_id_for_exec) {
@@ -658,6 +700,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         last_compile.set(Some(response));
 
                         // Stop run-all on compile error.
+                        // In reactive mode, mark remaining queued cells as blocked.
+                        let queue = state.run_all_queue.get_untracked();
+                        if state.reactive_mode.get_untracked() && queue.len() > 1 {
+                            state.cell_blocked_by.update(|blocked| {
+                                for queued_id in &queue[1..] {
+                                    blocked.insert(queued_id.clone(), cell_id_for_exec.clone());
+                                }
+                            });
+                        }
                         state.run_all_queue.set(vec![]);
                     }
                 }
@@ -677,6 +728,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     }));
 
                     // Stop run-all on server error.
+                    // In reactive mode, mark remaining queued cells as blocked.
+                    let queue = state.run_all_queue.get_untracked();
+                    if state.reactive_mode.get_untracked() && queue.len() > 1 {
+                        state.cell_blocked_by.update(|blocked| {
+                            for queued_id in &queue[1..] {
+                                blocked.insert(queued_id.clone(), cell_id_for_exec.clone());
+                            }
+                        });
+                    }
                     state.run_all_queue.set(vec![]);
                 }
             }
@@ -1192,7 +1252,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             .get(&cell_id_for_stale_header)
                             .copied()
                             .unwrap_or(false);
-                        if is_stale {
+                        if is_stale && state.reactive_mode.get() {
+                            view! { <span class="ironpad-stale-indicator ironpad-stale-indicator--pending" title="Pending re-execution (reactive mode)">"⏳"</span> }.into_any()
+                        } else if is_stale {
                             view! { <span class="ironpad-stale-indicator" title="Cell output is stale">"⟳"</span> }.into_any()
                         } else {
                             view! { <span /> }.into_any()
@@ -1217,6 +1279,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Running => "running",
                                         CellStatus::Success => "success",
                                         CellStatus::Error => "error",
+                                        CellStatus::Blocked => "blocked",
                                     };
                                     format!("ironpad-cell-status ironpad-cell-status--{suffix}")
                                 })
@@ -1237,6 +1300,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                             }
                                         }
                                         CellStatus::Error => "✕ error".to_string(),
+                                        CellStatus::Blocked => "⛔ blocked".to_string(),
                                     }
                                 }}
                             </Tag>

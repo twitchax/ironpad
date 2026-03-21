@@ -1,7 +1,7 @@
 ---
 id: PRD-0015
 title: "Canvas Rendering & Demo Notebook Improvements"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-14
 updated: 2026-03-15

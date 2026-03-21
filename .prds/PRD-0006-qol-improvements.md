@@ -1,7 +1,7 @@
 ---
 id: PRD-0006
 title: "QoL Improvements & View Mode Polish"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-10
 updated: 2026-03-10

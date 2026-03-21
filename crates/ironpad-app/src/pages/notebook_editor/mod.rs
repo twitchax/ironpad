@@ -57,6 +57,9 @@ pub fn NotebookEditorPage() -> impl IntoView {
         editor_handles: RwSignal::new(HashMap::new()),
         is_view_mode: RwSignal::new(false),
         force_recompile: RwSignal::new(false),
+        reactive_mode: RwSignal::new(false),
+        reactive_timer: RwSignal::new(None),
+        cell_blocked_by: RwSignal::new(HashMap::new()),
     };
     let model = NotebookModel::new(state.notebook, state.cells, state.cell_stale);
     let session_state = SessionState::new();
@@ -90,6 +93,15 @@ pub fn NotebookEditorPage() -> impl IntoView {
             state.notebook_id.set(nb.id.to_string());
             state.shared_cargo_toml.set(nb.shared_cargo_toml.clone());
             state.shared_source.set(nb.shared_source.clone());
+            state.reactive_mode.set(nb.reactive_mode.unwrap_or(false));
+        }
+    });
+
+    // Clear blocked-by state when reactive mode is turned off.
+    Effect::new(move || {
+        let reactive = state.reactive_mode.get();
+        if !reactive {
+            state.cell_blocked_by.set(HashMap::new());
         }
     });
 
@@ -200,6 +212,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
                     title: Some(title),
                     shared_cargo_toml: None,
                     shared_source: None,
+                    reactive_mode: None,
                 },
                 ironpad_common::protocol::ClientId::browser(),
             );
@@ -440,6 +453,17 @@ fn NotebookContent() -> impl IntoView {
             if !cell_ids.is_empty() {
                 state.run_all_queue.set(cell_ids);
             }
+        }
+    });
+
+    // ── Reactive dataflow: schedule re-execution when cells go stale ────
+
+    Effect::new(move || {
+        let stale = state.cell_stale.get();
+        let reactive = state.reactive_mode.get_untracked();
+
+        if reactive && stale.values().any(|&s| s) {
+            state.schedule_reactive_execution();
         }
     });
 
@@ -732,6 +756,20 @@ fn NotebookContent() -> impl IntoView {
                                                 "↻ Force Recompile ✓"
                                             } else {
                                                 "↻ Force Recompile"
+                                            }
+                                        }}
+                                    </button>
+                                    <button
+                                        class="ironpad-toolbar-dropdown-item"
+                                        on:click=move |_| {
+                                            state.reactive_mode.update(|v| *v = !*v);
+                                        }
+                                    >
+                                        {move || {
+                                            if state.reactive_mode.get() {
+                                                "⚡ Reactive Mode (On)"
+                                            } else {
+                                                "⚡ Reactive Mode"
                                             }
                                         }}
                                     </button>

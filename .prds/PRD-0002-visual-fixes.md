@@ -1,7 +1,7 @@
 ---
 id: PRD-0002
 title: "Visual & UX Polish"
-status: active
+status: done
 owner: Aaron Roney
 created: 2026-03-09
 updated: 2026-03-09

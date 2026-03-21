@@ -144,27 +144,31 @@ pub fn ViewOnlyNotebook(
         running_all.set(!empty);
     });
 
-    // Auto-execute all code cells on page load (hydrate-only, fires once).
+    // Auto-execute all code cells on page load when reactive mode is enabled
+    // (hydrate-only, fires once).
     #[cfg(feature = "hydrate")]
     {
-        let auto_run_done = RwSignal::new(false);
-        Effect::new(move || {
-            if auto_run_done.get_untracked() {
-                return;
-            }
-            auto_run_done.set(true);
+        let is_reactive = notebook.with_value(|nb| nb.reactive_mode.unwrap_or(false));
+        if is_reactive {
+            let auto_run_done = RwSignal::new(false);
+            Effect::new(move || {
+                if auto_run_done.get_untracked() {
+                    return;
+                }
+                auto_run_done.set(true);
 
-            let cell_ids: Vec<String> = notebook.with_value(|nb| {
-                nb.cells
-                    .iter()
-                    .filter(|c| c.cell_type == CellType::Code)
-                    .map(|c| c.id.clone())
-                    .collect()
+                let cell_ids: Vec<String> = notebook.with_value(|nb| {
+                    nb.cells
+                        .iter()
+                        .filter(|c| c.cell_type == CellType::Code)
+                        .map(|c| c.id.clone())
+                        .collect()
+                });
+                if !cell_ids.is_empty() {
+                    run_all_queue.set(cell_ids);
+                }
             });
-            if !cell_ids.is_empty() {
-                run_all_queue.set(cell_ids);
-            }
-        });
+        }
     }
 
     // Run All handler — collect all code cell IDs and enqueue them.

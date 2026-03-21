@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "id": "00000000-0000-0000-0000-000000000301",
+  "title": "Reactive Dataflow Demo",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z",
+  "reactive_mode": true,
+  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "# ⚡ Reactive Dataflow\n\nThis notebook has **reactive mode** enabled. When you edit an upstream cell, all downstream cells that depend on its output are automatically re-executed after a short debounce.\n\nTry editing the **Parameters** cell below and watch the downstream cells update instantly!"
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Parameters",
+      "cell_type": "Code",
+      "source": "// Change these values — downstream cells re-execute automatically!\nlet count: u32 = 10;\nlet multiplier: u32 = 3;\n\n(count, multiplier)\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "Sequence Generator",
+      "cell_type": "Code",
+      "source": "let (count, multiplier) = cell1;\n\nlet sequence: Vec<u32> = (1..=count)\n    .map(|i| i * multiplier)\n    .collect();\n\nsequence\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Summary Display",
+      "cell_type": "Code",
+      "source": "let (count, multiplier) = cell1;\nlet total: u32 = cell2.iter().sum();\nlet max = cell2.iter().max().copied().unwrap_or(0);\n\nHtml(format!(\n    \"<div style='padding:1rem; background:linear-gradient(135deg, #1a1a2e, #16213e); border-radius:8px;'>\\\n        <h3 style='color:#e94560; margin:0 0 0.5rem;'>⚡ Reactive Pipeline Result</h3>\\\n        <p style='color:#eaeaea;'>Generated <strong>{count}</strong> values with multiplier <strong>×{multiplier}</strong></p>\\\n        <p style='color:#eaeaea;'>Sequence: <code style='color:#e94560;'>{seq:?}</code></p>\\\n        <p style='color:#eaeaea;'>Sum: <code style='color:#e94560;'>{total}</code> · Max: <code style='color:#e94560;'>{max}</code></p>\\\n    </div>\",\n    seq = cell2,\n))\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_4",
+      "order": 4,
+      "label": "How It Works",
+      "cell_type": "Markdown",
+      "source": "## How Reactive Mode Works\n\n1. **Edit** the Parameters cell above — change `count` or `multiplier`\n2. **Debounce** — ironpad waits 500 ms for you to stop typing\n3. **Cascade** — Sequence Generator and Summary Display re-execute in order\n4. **Error halt** — if any cell errors, downstream cells stop and show a blocked state\n\nReactive mode is opt-in per notebook. Toggle it with the ⚡ button in the toolbar."
+    }
+  ],
+  "description": "Demonstrates reactive dataflow: editing an upstream cell auto-executes all downstream cells.",
+  "tags": ["reactive", "dataflow", "beginner"]
+}

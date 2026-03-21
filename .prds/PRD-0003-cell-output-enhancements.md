@@ -1,7 +1,7 @@
 ---
 id: PRD-0003
 title: "Cell Output Enhancements & Editor UX"
-status: draft
+status: done
 owner: Aaron Roney
 created: 2026-03-10
 updated: 2026-03-10

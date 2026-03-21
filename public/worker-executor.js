@@ -87,6 +87,216 @@
     return raw + memHint;
   }
 
+  // ── GPU state ──────────────────────────────────────────────────────────────
+  //
+  // WebGPU capability detection, device initialization, handle registry, and
+  // FFI helpers.  All GPU handles live in a flat Map so WASM cells can
+  // reference them by integer handle.
+
+  var _gpuDevice = null;
+  var _gpuAvailable = null; // null = not yet probed, true/false = result
+  var _gpuHandles = new Map();
+  var _gpuNextHandle = 1;
+
+  async function _initGpu() {
+    if (_gpuAvailable !== null) return _gpuAvailable;
+    try {
+      if (typeof navigator === "undefined" || !navigator.gpu) {
+        _gpuAvailable = false;
+        return false;
+      }
+      var adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        _gpuAvailable = false;
+        return false;
+      }
+      _gpuDevice = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize,
+        },
+      });
+      _gpuDevice.lost.then(function (info) {
+        console.warn("ironpad: GPU device lost:", info.message);
+        _gpuDevice = null;
+        _gpuAvailable = null;
+      });
+      _gpuAvailable = true;
+      return true;
+    } catch (e) {
+      console.warn("ironpad: GPU init failed:", e);
+      _gpuAvailable = false;
+      return false;
+    }
+  }
+
+  function _gpuCleanupHandles(handles) {
+    for (var h of handles) {
+      var res = _gpuHandles.get(h);
+      if (res) {
+        if (res.destroy) res.destroy();
+        _gpuHandles.delete(h);
+      }
+    }
+  }
+
+  // ── GPU FFI helpers ────────────────────────────────────────────────────────
+
+  function _gpuAvailableSync() {
+    return _gpuAvailable === true ? 1 : 0;
+  }
+
+  function _gpuCreateBuffer(size, usage) {
+    // usage: 0=STORAGE, 1=STORAGE|COPY_SRC, 2=MAP_READ|COPY_DST, 3=STORAGE|COPY_DST
+    if (!_gpuDevice) return 0;
+    var gpuUsage;
+    switch (usage) {
+      case 0: gpuUsage = GPUBufferUsage.STORAGE; break;
+      case 1: gpuUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC; break;
+      case 2: gpuUsage = GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST; break;
+      case 3: gpuUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST; break;
+      default: gpuUsage = GPUBufferUsage.STORAGE; break;
+    }
+    try {
+      var buf = _gpuDevice.createBuffer({ size: size, usage: gpuUsage });
+      var handle = _gpuNextHandle++;
+      _gpuHandles.set(handle, buf);
+      return handle;
+    } catch (e) {
+      console.error("ironpad: GPU createBuffer failed:", e);
+      return 0;
+    }
+  }
+
+  function _gpuWriteBuffer(handle, srcPtr, srcLen, memory) {
+    if (!_gpuDevice) return;
+    var buf = _gpuHandles.get(handle);
+    if (!buf) return;
+    var data = new Uint8Array(memory.buffer, srcPtr, srcLen);
+    _gpuDevice.queue.writeBuffer(buf, 0, data);
+  }
+
+  function _gpuDispatchComputeSync(
+    shaderPtr, shaderLen, uniformHandle, outputHandle, width, height, memory
+  ) {
+    if (!_gpuDevice) return 1;
+    try {
+      var shaderBytes = new Uint8Array(memory.buffer, shaderPtr, shaderLen);
+      var shaderCode = new TextDecoder().decode(shaderBytes);
+
+      var shaderModule = _gpuDevice.createShaderModule({ code: shaderCode });
+
+      var uniformBuf = _gpuHandles.get(uniformHandle);
+      var outputBuf = _gpuHandles.get(outputHandle);
+      if (!uniformBuf || !outputBuf) return 1;
+
+      var bindGroupLayout = _gpuDevice.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+          { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        ],
+      });
+
+      var bindGroup = _gpuDevice.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: uniformBuf } },
+          { binding: 1, resource: { buffer: outputBuf } },
+        ],
+      });
+
+      var pipeline = _gpuDevice.createComputePipeline({
+        layout: _gpuDevice.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+        compute: { module: shaderModule, entryPoint: "main" },
+      });
+
+      var commandEncoder = _gpuDevice.createCommandEncoder();
+      var pass = commandEncoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(Math.ceil(width / 16), Math.ceil(height / 16));
+      pass.end();
+      _gpuDevice.queue.submit([commandEncoder.finish()]);
+      return 0;
+    } catch (e) {
+      console.error("ironpad: GPU dispatch failed:", e);
+      return 1;
+    }
+  }
+
+  // ── GPU async readback (called after cell_main returns) ────────────────────
+
+  async function _gpuReadPixels(outputHandle, stagingHandle, width, height) {
+    if (!_gpuDevice) return null;
+    var outputBuf = _gpuHandles.get(outputHandle);
+    var stagingBuf = _gpuHandles.get(stagingHandle);
+    if (!outputBuf || !stagingBuf) return null;
+    try {
+      var byteSize = width * height * 16; // vec4<f32> = 16 bytes per pixel
+      var commandEncoder = _gpuDevice.createCommandEncoder();
+      commandEncoder.copyBufferToBuffer(outputBuf, 0, stagingBuf, 0, byteSize);
+      _gpuDevice.queue.submit([commandEncoder.finish()]);
+
+      await stagingBuf.mapAsync(GPUMapMode.READ);
+      var mapped = new Float32Array(stagingBuf.getMappedRange());
+
+      var pixelCount = width * height;
+      var rgb = new Uint8Array(pixelCount * 3);
+      for (var i = 0; i < pixelCount; i++) {
+        rgb[i * 3] = Math.min(255, Math.max(0, Math.round(mapped[i * 4] * 255)));
+        rgb[i * 3 + 1] = Math.min(255, Math.max(0, Math.round(mapped[i * 4 + 1] * 255)));
+        rgb[i * 3 + 2] = Math.min(255, Math.max(0, Math.round(mapped[i * 4 + 2] * 255)));
+      }
+      stagingBuf.unmap();
+      return rgb;
+    } catch (e) {
+      console.error("ironpad: GPU readPixels failed:", e);
+      return null;
+    }
+  }
+
+  // ── BMP construction (used for GPU canvas output) ──────────────────────────
+
+  function _gpuBuildBmp(width, height, rgb) {
+    var rowStride = Math.ceil((width * 3) / 4) * 4;
+    var pixelDataSize = rowStride * height;
+    var fileSize = 54 + pixelDataSize;
+    var bmp = new Uint8Array(fileSize);
+    var view = new DataView(bmp.buffer);
+
+    // BMP file header (14 bytes).
+    bmp[0] = 0x42; bmp[1] = 0x4d; // "BM"
+    view.setUint32(2, fileSize, true);
+    view.setUint32(10, 54, true);
+
+    // DIB header (BITMAPINFOHEADER, 40 bytes).
+    view.setUint32(14, 40, true);
+    view.setInt32(18, width, true);
+    view.setInt32(22, -height, true); // negative = top-down row order
+    view.setUint16(26, 1, true);
+    view.setUint16(28, 24, true);
+    view.setUint32(34, pixelDataSize, true);
+
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        var srcIdx = (y * width + x) * 3;
+        var dstIdx = 54 + y * rowStride + x * 3;
+        bmp[dstIdx] = rgb[srcIdx + 2];     // B
+        bmp[dstIdx + 1] = rgb[srcIdx + 1]; // G
+        bmp[dstIdx + 2] = rgb[srcIdx];     // R
+      }
+    }
+    return bmp;
+  }
+
+  function _gpuBmpToBase64DataUrl(bmp) {
+    var binary = "";
+    for (var i = 0; i < bmp.length; i++) {
+      binary += String.fromCharCode(bmp[i]);
+    }
+    return "data:image/bmp;base64," + btoa(binary);
+  }
+
   // ── CellExecutor ───────────────────────────────────────────────────────────
 
   function CellExecutor() {
@@ -126,6 +336,14 @@
 
     try {
       var msg = JSON.parse(text);
+
+      // GPU readback requests are deferred until after cell_main returns.
+      if (msg.type === "gpu_read_pixels") {
+        if (!this._pendingGpuReadbacks) this._pendingGpuReadbacks = [];
+        this._pendingGpuReadbacks.push(msg);
+        return;
+      }
+
       var handler = this._messageHandlers[msg.type];
       if (handler) {
         handler(msg, cellId);
@@ -200,6 +418,59 @@
     return ptr;
   };
 
+  // ── GPU executor methods (resolve WASM memory per cell) ─────────────────
+
+  CellExecutor.prototype._gpuWriteBufferForCell = function (cellId, handle, ptr, len) {
+    var entry = this.modules.get(cellId);
+    if (!entry) return;
+    var memory = entry.type === "bindgen"
+      ? (entry.wasm && entry.wasm.memory)
+      : (entry.instance && entry.instance.exports.memory);
+    if (memory) _gpuWriteBuffer(handle, ptr, len, memory);
+  };
+
+  CellExecutor.prototype._gpuDispatchComputeForCell = function (
+    cellId, shaderPtr, shaderLen, uniformHandle, outputHandle, width, height
+  ) {
+    var entry = this.modules.get(cellId);
+    if (!entry) return 1;
+    var memory = entry.type === "bindgen"
+      ? (entry.wasm && entry.wasm.memory)
+      : (entry.instance && entry.instance.exports.memory);
+    if (!memory) return 1;
+    return _gpuDispatchComputeSync(
+      shaderPtr, shaderLen, uniformHandle, outputHandle, width, height, memory
+    );
+  };
+
+  /// Process any deferred GPU readback requests after cell_main returns.
+  /// Modifies cellResult.displayText in-place with rendered image data.
+  CellExecutor.prototype._processGpuReadbacks = async function (cellResult) {
+    if (!this._pendingGpuReadbacks || this._pendingGpuReadbacks.length === 0) {
+      return cellResult;
+    }
+    for (var rb of this._pendingGpuReadbacks) {
+      var rgb = await _gpuReadPixels(
+        rb.output_handle, rb.staging_handle, rb.width, rb.height
+      );
+      if (rgb) {
+        var bmp = _gpuBuildBmp(rb.width, rb.height, rgb);
+        var dataUrl = _gpuBmpToBase64DataUrl(bmp);
+        var imgTag = '<img src="' + dataUrl + '" width="' + rb.width +
+          '" height="' + rb.height + '" />';
+        if (cellResult.displayText) {
+          var replaced = cellResult.displayText.replace("<!-- gpu_pending -->", imgTag);
+          cellResult.displayText = replaced !== cellResult.displayText
+            ? replaced : cellResult.displayText + imgTag;
+        } else {
+          cellResult.displayText = imgTag;
+        }
+      }
+    }
+    this._pendingGpuReadbacks = [];
+    return cellResult;
+  };
+
   /// Load a compiled WASM blob for a cell.
   ///
   /// If `jsGlue` is provided, uses the wasm-bindgen path: dynamic-imports the
@@ -247,7 +518,15 @@
         escapedCellId + ", ptr, len) : 0; }, " +
         "ironpad_sim_read_all: function(ptr, len) { " +
         "return self._ironpadExecutor ? self._ironpadExecutor._simReadAll(" +
-        escapedCellId + ", ptr, len) : 0; }";
+        escapedCellId + ", ptr, len) : 0; }, " +
+        "ironpad_gpu_available: function() { return _gpuAvailableSync(); }, " +
+        "ironpad_gpu_create_buffer: function(s, u) { return _gpuCreateBuffer(s, u); }, " +
+        "ironpad_gpu_write_buffer: function(h, p, l) { " +
+        "if (self._ironpadExecutor) self._ironpadExecutor._gpuWriteBufferForCell(" +
+        escapedCellId + ", h, p, l); }, " +
+        "ironpad_gpu_dispatch_compute: function(sp, sl, uh, oh, w, h) { " +
+        "return self._ironpadExecutor ? self._ironpadExecutor._gpuDispatchComputeForCell(" +
+        escapedCellId + ", sp, sl, uh, oh, w, h) : 1; }";
       jsGlue = jsGlue.replace(
         /import\s*\*\s*as\s+(\w+)\s+from\s+['"]env['"]\s*;?/g,
         function (_match, starName) {
@@ -335,6 +614,14 @@
         "    imports.env.ironpad_sim_read_all = function(ptr, len) {\n" +
         "      return self._ironpadExecutor ? self._ironpadExecutor._simReadAll(__ironpad_cell_id, ptr, len) : 0;\n" +
         "    };\n" +
+        "    imports.env.ironpad_gpu_available = function() { return _gpuAvailableSync(); };\n" +
+        "    imports.env.ironpad_gpu_create_buffer = function(s, u) { return _gpuCreateBuffer(s, u); };\n" +
+        "    imports.env.ironpad_gpu_write_buffer = function(h, p, l) {\n" +
+        "      if (self._ironpadExecutor) self._ironpadExecutor._gpuWriteBufferForCell(__ironpad_cell_id, h, p, l);\n" +
+        "    };\n" +
+        "    imports.env.ironpad_gpu_dispatch_compute = function(sp, sl, uh, oh, w, h) {\n" +
+        "      return self._ironpadExecutor ? self._ironpadExecutor._gpuDispatchComputeForCell(__ironpad_cell_id, sp, sl, uh, oh, w, h) : 1;\n" +
+        "    };\n" +
         "    return imports;\n" +
         "  };\n" +
         "}\n";
@@ -389,6 +676,18 @@
           ironpad_sim_read_all: function (ptr, len) {
             return rawSelf._simReadAll(rawCellId, ptr, len);
           },
+          ironpad_gpu_available: function () {
+            return _gpuAvailableSync();
+          },
+          ironpad_gpu_create_buffer: function (size, usage) {
+            return _gpuCreateBuffer(size, usage);
+          },
+          ironpad_gpu_write_buffer: function (handle, ptr, len) {
+            rawSelf._gpuWriteBufferForCell(rawCellId, handle, ptr, len);
+          },
+          ironpad_gpu_dispatch_compute: function (sp, sl, uh, oh, w, h) {
+            return rawSelf._gpuDispatchComputeForCell(rawCellId, sp, sl, uh, oh, w, h);
+          },
         },
       };
       var result = await WebAssembly.instantiate(wasmBytes, imports);
@@ -407,6 +706,9 @@
   /// Always async: wasm-bindgen cells may have async cell_main (via
   /// wasm-bindgen-futures), and the raw path is wrapped transparently.
   CellExecutor.prototype.execute = async function (cellId, inputBytes) {
+    // Ensure GPU device is initialized (no-op after first call).
+    await _initGpu();
+
     var entry = this.modules.get(cellId);
     if (!entry) {
       throw new Error("Cell " + cellId + " not loaded");
@@ -469,14 +771,20 @@
 
     // ── Read CellResult from WASM memory ─────────────────────────────────
 
-    return this._readCellResult(memory, alloc, dealloc, resultPtr, inputPtr, inputLen, false);
+    var cellResult = this._readCellResult(memory, alloc, dealloc, resultPtr, inputPtr, inputLen, false);
+
+    // ── GPU post-processing ──────────────────────────────────────────────
+
+    cellResult = await this._processGpuReadbacks(cellResult);
+    _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
+    return cellResult;
   };
 
   // ── Legacy raw WASM execution path ───────────────────────────────────────
   //
   // Direct WebAssembly instance access with sret calling convention detection.
 
-  CellExecutor.prototype._executeRaw = function (entry, inputBytes) {
+  CellExecutor.prototype._executeRaw = async function (entry, inputBytes) {
     var instance = entry.instance;
     var memory = instance.exports.memory;
     var alloc = instance.exports.ironpad_alloc;
@@ -542,7 +850,13 @@
 
     // ── Read CellResult from WASM memory ─────────────────────────────────
 
-    return this._readCellResult(memory, alloc, dealloc, retptr, inputPtr, inputLen, useSret);
+    var cellResult = this._readCellResult(memory, alloc, dealloc, retptr, inputPtr, inputLen, useSret);
+
+    // ── GPU post-processing ──────────────────────────────────────────────
+
+    cellResult = await this._processGpuReadbacks(cellResult);
+    _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
+    return cellResult;
   };
 
   // ── Shared CellResult reader ─────────────────────────────────────────────

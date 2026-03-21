@@ -1,7 +1,7 @@
 ---
 id: PRD-0004
 title: "Cell Builtins, Test Coverage & Editor Refactor"
-status: active
+status: done
 owner: Aaron Roney
 created: 2026-03-10
 updated: 2026-03-10

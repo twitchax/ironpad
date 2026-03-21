@@ -1,7 +1,7 @@
 ---
 id: PRD-0021
 title: "Release Preparation: Test Coverage, README, and Site Promotion"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-17
 updated: 2026-03-17

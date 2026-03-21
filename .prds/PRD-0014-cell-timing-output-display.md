@@ -1,7 +1,7 @@
 ---
 id: PRD-0014
 title: "Cell Timing & Output Display Polish"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-14
 updated: 2026-03-15

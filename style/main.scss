@@ -923,6 +923,12 @@ a:focus-visible {
     background: rgba(var(--ip-error-rgb), 0.15);
 }
 
+.ironpad-cell-status--blocked {
+    color: var(--ip-error);
+    background: rgba(var(--ip-error-rgb), 0.1);
+    opacity: 0.75;
+}
+
 /* ── Cell body / collapse ───────────────────────────────────────────── */
 
 .ironpad-cell-body {
@@ -1867,6 +1873,11 @@ samp,
     cursor: help;
     vertical-align: middle;
     line-height: inherit;
+}
+
+.ironpad-stale-indicator--pending {
+    color: var(--ip-warning);
+    animation: ironpad-status-pulse 1.5s ease-in-out infinite;
 }
 
 // ── View-only notebook ──────────────────────────────────────────────────────

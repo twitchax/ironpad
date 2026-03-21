@@ -1,7 +1,7 @@
 ---
 id: PRD-0016
 title: "Per-Cell Cargo.toml Fix & Shared Deps Migration"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-03-14
 updated: 2026-03-15
