@@ -397,7 +397,13 @@ a:focus-visible {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     margin-bottom: 24px;
+}
+
+.ironpad-home-header-text {
+    display: flex;
+    flex-direction: column;
 }
 
 .ironpad-home-header h1 {
@@ -410,7 +416,7 @@ a:focus-visible {
 .ironpad-home-tagline {
     color: var(--ip-text-secondary);
     font-size: 0.95rem;
-    margin: 0;
+    margin: 4px 0 0;
     font-weight: 400;
 }
 

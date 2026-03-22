@@ -22,6 +22,14 @@ pub fn PublicNotebookPage() -> impl IntoView {
 
     let notebook_resource = Resource::new(move || filename.clone(), get_public_notebook);
 
+    // Update footer cell count when the resource resolves (Effect runs on the
+    // client, avoiding the SSR Suspense-boundary signal propagation issue).
+    Effect::new(move || {
+        if let Some(Ok(nb)) = notebook_resource.get() {
+            ctx.cell_count.set(nb.cells.len());
+        }
+    });
+
     view! {
         <Suspense fallback=move || {
             view! {

@@ -101,8 +101,10 @@ pub fn HomePage() -> impl IntoView {
     view! {
         <div class="ironpad-home">
             <div class="ironpad-home-header">
-                <h1>"Notebooks"</h1>
-                <p class="ironpad-home-tagline">"Interactive Rust notebooks — compile to WebAssembly, run in the browser."</p>
+                <div class="ironpad-home-header-text">
+                    <h1>"Notebooks"</h1>
+                    <p class="ironpad-home-tagline">"Interactive Rust notebooks — compile to WebAssembly, run in the browser."</p>
+                </div>
                 <div class="ironpad-home-actions">
                     <Button
                         appearance=ButtonAppearance::Primary

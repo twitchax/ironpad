@@ -21,6 +21,13 @@ pub fn SharedNotebookPage() -> impl IntoView {
 
     let notebook_resource = Resource::new(move || hash.clone(), get_shared_notebook);
 
+    // Update footer cell count when the resource resolves.
+    Effect::new(move || {
+        if let Some(Ok(nb)) = notebook_resource.get() {
+            ctx.cell_count.set(nb.cells.len());
+        }
+    });
+
     view! {
         <Suspense fallback=move || {
             view! {
