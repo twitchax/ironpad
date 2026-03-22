@@ -62,6 +62,9 @@ pub fn AppLayout(children: Children) -> impl IntoView {
     let ctx = LayoutContext::new();
     provide_context(ctx);
 
+    let location = leptos_router::hooks::use_location();
+    let show_footer = Memo::new(move |_| location.pathname.get() != "/");
+
     view! {
         <div class="ironpad-root-layout">
             <header class="ironpad-header">
@@ -72,9 +75,11 @@ pub fn AppLayout(children: Children) -> impl IntoView {
                 {children()}
             </div>
 
-            <footer class="ironpad-status-bar">
-                <StatusBar ctx />
-            </footer>
+            {move || show_footer.get().then(|| view! {
+                <footer class="ironpad-status-bar">
+                    <StatusBar ctx />
+                </footer>
+            })}
         </div>
     }
 }

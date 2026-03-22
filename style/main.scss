@@ -407,6 +407,13 @@ a:focus-visible {
     color: var(--ip-text-primary);
 }
 
+.ironpad-home-tagline {
+    color: var(--ip-text-secondary);
+    font-size: 0.95rem;
+    margin: 0;
+    font-weight: 400;
+}
+
 .ironpad-home-actions {
     display: flex;
     gap: 8px;
@@ -514,6 +521,11 @@ a:focus-visible {
     border-radius: var(--ip-radius-lg);
     transition: border-color var(--ip-transition-normal);
     cursor: pointer;
+}
+
+[data-theme="light"] .ironpad-notebook-card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
+    border-color: rgba(0, 0, 0, 0.12);
 }
 
 .ironpad-notebook-badge {
