@@ -273,77 +273,119 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
         protocol::Event::CellAdded {
             cell,
             after_cell_id,
-        } => {
-            if let Some(after_id) = after_cell_id {
-                if let Some(idx) = nb.cells.iter().position(|c| c.id == *after_id) {
-                    nb.cells.insert(idx + 1, cell.clone());
-                } else {
-                    nb.cells.push(cell.clone());
-                }
-            } else {
-                nb.cells.insert(0, cell.clone());
-            }
-            renumber(&mut nb.cells);
-        }
+        } => apply_cell_added(nb, cell, after_cell_id.as_deref()),
         protocol::Event::CellUpdated {
             cell_id,
             source,
             cargo_toml,
             label,
             version,
-        } => {
-            if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == *cell_id) {
-                if let Some(src) = source {
-                    cell.source.clone_from(src);
-                }
-                if let Some(ct) = cargo_toml {
-                    cell.cargo_toml.clone_from(ct);
-                }
-                if let Some(lbl) = label {
-                    cell.label.clone_from(lbl);
-                }
-                cell.version = *version;
-            }
-        }
-        protocol::Event::CellDeleted { cell_id } => {
-            nb.cells.retain(|c| c.id != *cell_id);
-            renumber(&mut nb.cells);
-        }
-        protocol::Event::CellReordered { cell_ids } => {
-            let mut reordered = Vec::with_capacity(cell_ids.len());
-            for id in cell_ids {
-                if let Some(pos) = nb.cells.iter().position(|c| c.id == *id) {
-                    reordered.push(nb.cells.remove(pos));
-                }
-            }
-            reordered.append(&mut nb.cells);
-            nb.cells = reordered;
-            renumber(&mut nb.cells);
-        }
+        } => apply_cell_updated(
+            nb,
+            cell_id,
+            source.as_ref(),
+            cargo_toml.as_ref(),
+            label.as_ref(),
+            *version,
+        ),
+        protocol::Event::CellDeleted { cell_id } => apply_cell_deleted(nb, cell_id),
+        protocol::Event::CellReordered { cell_ids } => apply_cell_reordered(nb, cell_ids),
         protocol::Event::NotebookMetaUpdated {
             title,
             shared_cargo_toml,
             shared_source,
             reactive_mode,
-        } => {
-            if let Some(t) = title {
-                nb.title.clone_from(t);
-            }
-            if let Some(sct) = shared_cargo_toml {
-                nb.shared_cargo_toml.clone_from(sct);
-            }
-            if let Some(ss) = shared_source {
-                nb.shared_source.clone_from(ss);
-            }
-            if let Some(rm) = reactive_mode {
-                nb.reactive_mode = if *rm { Some(true) } else { None };
-            }
-        }
+        } => apply_notebook_meta_updated(
+            nb,
+            title.as_ref(),
+            shared_cargo_toml.as_ref(),
+            shared_source.as_ref(),
+            *reactive_mode,
+        ),
         // Compilation/execution events don't affect the notebook structure.
         protocol::Event::CellCompiling { .. }
         | protocol::Event::CellCompiled { .. }
         | protocol::Event::CellExecuted { .. }
         | protocol::Event::Error { .. } => {}
+    }
+}
+
+// ── Per-event cache update handlers ─────────────────────────────────────────
+
+fn apply_cell_added(
+    nb: &mut IronpadNotebook,
+    cell: &ironpad_common::IronpadCell,
+    after_cell_id: Option<&str>,
+) {
+    if let Some(after_id) = after_cell_id {
+        if let Some(idx) = nb.cells.iter().position(|c| c.id == after_id) {
+            nb.cells.insert(idx + 1, cell.clone());
+        } else {
+            nb.cells.push(cell.clone());
+        }
+    } else {
+        nb.cells.insert(0, cell.clone());
+    }
+    renumber(&mut nb.cells);
+}
+
+fn apply_cell_updated(
+    nb: &mut IronpadNotebook,
+    cell_id: &str,
+    source: Option<&String>,
+    cargo_toml: Option<&Option<String>>,
+    label: Option<&String>,
+    version: u64,
+) {
+    if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cell_id) {
+        if let Some(src) = source {
+            cell.source.clone_from(src);
+        }
+        if let Some(ct) = cargo_toml {
+            cell.cargo_toml.clone_from(ct);
+        }
+        if let Some(lbl) = label {
+            cell.label.clone_from(lbl);
+        }
+        cell.version = version;
+    }
+}
+
+fn apply_cell_deleted(nb: &mut IronpadNotebook, cell_id: &str) {
+    nb.cells.retain(|c| c.id != *cell_id);
+    renumber(&mut nb.cells);
+}
+
+fn apply_cell_reordered(nb: &mut IronpadNotebook, cell_ids: &[String]) {
+    let mut reordered = Vec::with_capacity(cell_ids.len());
+    for id in cell_ids {
+        if let Some(pos) = nb.cells.iter().position(|c| c.id == *id) {
+            reordered.push(nb.cells.remove(pos));
+        }
+    }
+    reordered.append(&mut nb.cells);
+    nb.cells = reordered;
+    renumber(&mut nb.cells);
+}
+
+fn apply_notebook_meta_updated(
+    nb: &mut IronpadNotebook,
+    title: Option<&String>,
+    shared_cargo_toml: Option<&Option<String>>,
+    shared_source: Option<&Option<String>>,
+    reactive_mode: Option<bool>,
+) {
+    if let Some(t) = title {
+        nb.title.clone_from(t);
+    }
+    if let Some(sct) = shared_cargo_toml {
+        nb.shared_cargo_toml.clone_from(sct);
+    }
+    if let Some(ss) = shared_source {
+        nb.shared_source.clone_from(ss);
+    }
+    if let Some(rm) = reactive_mode {
+        nb.reactive_mode = if rm { Some(true) } else { None };
     }
 }
 
@@ -378,63 +420,70 @@ async fn handle_ipc_request(line: &str, state: &DaemonState) -> IpcResponse {
     };
 
     match req.command.as_str() {
-        // ── Read commands (served from cache) ───────────────────────────
-        "notebook.get" => {
-            let nb = state.notebook.read().await;
-            match nb.as_ref() {
-                Some(notebook) => IpcResponse::success(
-                    serde_json::to_value(notebook).expect("notebook serialization"),
-                ),
-                None => IpcResponse::error("no notebook cached"),
-            }
-        }
-        "cells.list" => {
-            let nb = state.notebook.read().await;
-            match nb.as_ref() {
-                Some(notebook) => {
-                    let cells: Vec<serde_json::Value> = notebook
-                        .cells
-                        .iter()
-                        .map(|c| {
-                            serde_json::json!({
-                                "id": c.id,
-                                "order": c.order,
-                                "label": c.label,
-                                "cell_type": c.cell_type,
-                                "source_preview": c.source.chars().take(80).collect::<String>(),
-                                "version": c.version,
-                            })
-                        })
-                        .collect();
-                    IpcResponse::success(serde_json::Value::Array(cells))
-                }
-                None => IpcResponse::error("no notebook cached"),
-            }
-        }
-        "cells.get" => {
-            let cell_id = req.args.get("cell_id").and_then(|v| v.as_str());
-            let Some(cell_id) = cell_id else {
-                return IpcResponse::error("missing cell_id argument");
-            };
-            let nb = state.notebook.read().await;
-            match nb
-                .as_ref()
-                .and_then(|nb| nb.cells.iter().find(|c| c.id == cell_id))
-            {
-                Some(cell) => {
-                    IpcResponse::success(serde_json::to_value(cell).expect("cell serialization"))
-                }
-                None => IpcResponse::error_with_code("cell not found", "CellNotFound"),
-            }
-        }
-        "status" => IpcResponse::success(serde_json::json!({
-            "connected": *state.connected.read().await,
-            "cached": state.notebook.read().await.is_some(),
-        })),
-
-        // ── Write commands (forwarded via WebSocket) ────────────────────
+        "notebook.get" => serve_notebook_get(state).await,
+        "cells.list" => serve_cells_list(state).await,
+        "cells.get" => serve_cells_get(&req, state).await,
+        "status" => serve_status(state).await,
         _ => forward_to_server(&req, state).await,
     }
+}
+
+// ── Per-command IPC handlers ────────────────────────────────────────────────
+
+async fn serve_notebook_get(state: &DaemonState) -> IpcResponse {
+    let nb = state.notebook.read().await;
+    match nb.as_ref() {
+        Some(notebook) => {
+            IpcResponse::success(serde_json::to_value(notebook).expect("notebook serialization"))
+        }
+        None => IpcResponse::error("no notebook cached"),
+    }
+}
+
+async fn serve_cells_list(state: &DaemonState) -> IpcResponse {
+    let nb = state.notebook.read().await;
+    match nb.as_ref() {
+        Some(notebook) => {
+            let cells: Vec<serde_json::Value> = notebook
+                .cells
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "id": c.id,
+                        "order": c.order,
+                        "label": c.label,
+                        "cell_type": c.cell_type,
+                        "source_preview": c.source.chars().take(80).collect::<String>(),
+                        "version": c.version,
+                    })
+                })
+                .collect();
+            IpcResponse::success(serde_json::Value::Array(cells))
+        }
+        None => IpcResponse::error("no notebook cached"),
+    }
+}
+
+async fn serve_cells_get(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
+    let cell_id = req.args.get("cell_id").and_then(|v| v.as_str());
+    let Some(cell_id) = cell_id else {
+        return IpcResponse::error("missing cell_id argument");
+    };
+    let nb = state.notebook.read().await;
+    match nb
+        .as_ref()
+        .and_then(|nb| nb.cells.iter().find(|c| c.id == cell_id))
+    {
+        Some(cell) => IpcResponse::success(serde_json::to_value(cell).expect("cell serialization")),
+        None => IpcResponse::error_with_code("cell not found", "CellNotFound"),
+    }
+}
+
+async fn serve_status(state: &DaemonState) -> IpcResponse {
+    IpcResponse::success(serde_json::json!({
+        "connected": *state.connected.read().await,
+        "cached": state.notebook.read().await.is_some(),
+    }))
 }
 
 /// Forward an IPC command to the server via the WebSocket and wait for the response.

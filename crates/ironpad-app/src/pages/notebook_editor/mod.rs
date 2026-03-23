@@ -2,6 +2,7 @@ mod cell_item;
 mod cell_output;
 mod export;
 mod shared_deps;
+mod shared_editor_panel;
 mod shared_source;
 mod skeleton;
 pub(crate) mod state;
@@ -23,6 +24,9 @@ use crate::components::session_panel::SessionButton;
 
 use self::cell_item::CellItem;
 use self::shared_deps::SharedDepsPanel;
+
+/// Delay (ms) before resetting the save status indicator back to idle.
+const SAVE_STATUS_RESET_MS: i32 = 2_000;
 use self::shared_source::SharedSourcePanel;
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
 use self::state::{persist_notebook, NotebookState};
@@ -45,7 +49,6 @@ pub fn NotebookEditorPage() -> impl IntoView {
         notebook_id: RwSignal::new(notebook_id.clone()),
         cells: RwSignal::new(Vec::new()),
         active_cell: RwSignal::new(None),
-        refresh_generation: RwSignal::new(0),
         pending_focus_cell: RwSignal::new(None),
         cell_outputs: RwSignal::new(HashMap::new()),
         save_generation: RwSignal::new(0),
@@ -246,7 +249,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
                 .unwrap()
                 .set_timeout_with_callback_and_timeout_and_arguments_0(
                     reset_closure.as_ref().unchecked_ref(),
-                    2_000,
+                    SAVE_STATUS_RESET_MS,
                 );
             reset_closure.forget();
         });

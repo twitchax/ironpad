@@ -135,6 +135,17 @@ enum CellsCommand {
     },
 }
 
+// ── Exit codes ──────────────────────────────────────────────────────────────
+
+/// Named exit codes for consistent CLI error reporting.
+#[repr(i32)]
+enum CliExitCode {
+    GenericError = 1,
+    VersionConflict = 2,
+    PermissionDenied = 3,
+    ConnectionError = 4,
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -223,16 +234,8 @@ async fn main() {
 
 async fn handle_cells_command(cmd: CellsCommand) {
     match cmd {
-        CellsCommand::List => {
-            let response = send_ipc("cells.list", serde_json::Value::Null).await;
-            print_response(&response);
-        }
-
-        CellsCommand::Get { cell_id } => {
-            let response = send_ipc("cells.get", serde_json::json!({ "cell_id": cell_id })).await;
-            print_response(&response);
-        }
-
+        CellsCommand::List => handle_cells_list().await,
+        CellsCommand::Get { cell_id } => handle_cells_get(&cell_id).await,
         CellsCommand::Add {
             source,
             source_file,
@@ -240,22 +243,7 @@ async fn handle_cells_command(cmd: CellsCommand) {
             label,
             after,
             cargo_toml,
-        } => {
-            let source = resolve_source(source, source_file);
-            let response = send_ipc(
-                "cells.add",
-                serde_json::json!({
-                    "source": source.unwrap_or_default(),
-                    "type": r#type.as_str(),
-                    "label": label.unwrap_or_else(|| "New Cell".to_string()),
-                    "after_cell_id": after,
-                    "cargo_toml": cargo_toml,
-                }),
-            )
-            .await;
-            print_response(&response);
-        }
-
+        } => handle_cells_add(source, source_file, r#type, label, after, cargo_toml).await,
         CellsCommand::Update {
             cell_id,
             source,
@@ -263,55 +251,100 @@ async fn handle_cells_command(cmd: CellsCommand) {
             cargo_toml,
             label,
             version,
-        } => {
-            let source = resolve_source(source, source_file);
-
-            let version = match version {
-                Some(v) => v,
-                None => fetch_cell_version(&cell_id).await,
-            };
-
-            let mut args = serde_json::json!({
-                "cell_id": cell_id,
-                "version": version,
-            });
-            if let Some(src) = source {
-                args["source"] = serde_json::Value::String(src);
-            }
-            if let Some(ct) = cargo_toml {
-                args["cargo_toml"] = serde_json::Value::String(ct);
-            }
-            if let Some(lbl) = label {
-                args["label"] = serde_json::Value::String(lbl);
-            }
-
-            let response = send_ipc("cells.update", args).await;
-            print_response(&response);
-        }
-
+        } => handle_cells_update(cell_id, source, source_file, cargo_toml, label, version).await,
         CellsCommand::Delete { cell_id, version } => {
-            let version = match version {
-                Some(v) => v,
-                None => fetch_cell_version(&cell_id).await,
-            };
-
-            let response = send_ipc(
-                "cells.delete",
-                serde_json::json!({
-                    "cell_id": cell_id,
-                    "version": version,
-                }),
-            )
-            .await;
-            print_response(&response);
+            handle_cells_delete(cell_id, version).await;
         }
-
-        CellsCommand::Reorder { cell_ids } => {
-            let response =
-                send_ipc("cells.reorder", serde_json::json!({ "cell_ids": cell_ids })).await;
-            print_response(&response);
-        }
+        CellsCommand::Reorder { cell_ids } => handle_cells_reorder(cell_ids).await,
     }
+}
+
+async fn handle_cells_list() {
+    let response = send_ipc("cells.list", serde_json::Value::Null).await;
+    print_response(&response);
+}
+
+async fn handle_cells_get(cell_id: &str) {
+    let response = send_ipc("cells.get", serde_json::json!({ "cell_id": cell_id })).await;
+    print_response(&response);
+}
+
+async fn handle_cells_add(
+    source: Option<String>,
+    source_file: Option<String>,
+    r#type: CellTypeArg,
+    label: Option<String>,
+    after: Option<String>,
+    cargo_toml: Option<String>,
+) {
+    let source = resolve_source(source, source_file);
+    let response = send_ipc(
+        "cells.add",
+        serde_json::json!({
+            "source": source.unwrap_or_default(),
+            "type": r#type.as_str(),
+            "label": label.unwrap_or_else(|| "New Cell".to_string()),
+            "after_cell_id": after,
+            "cargo_toml": cargo_toml,
+        }),
+    )
+    .await;
+    print_response(&response);
+}
+
+async fn handle_cells_update(
+    cell_id: String,
+    source: Option<String>,
+    source_file: Option<String>,
+    cargo_toml: Option<String>,
+    label: Option<String>,
+    version: Option<u64>,
+) {
+    let source = resolve_source(source, source_file);
+
+    let version = match version {
+        Some(v) => v,
+        None => fetch_cell_version(&cell_id).await,
+    };
+
+    let mut args = serde_json::json!({
+        "cell_id": cell_id,
+        "version": version,
+    });
+    if let Some(src) = source {
+        args["source"] = serde_json::Value::String(src);
+    }
+    if let Some(ct) = cargo_toml {
+        args["cargo_toml"] = serde_json::Value::String(ct);
+    }
+    if let Some(lbl) = label {
+        args["label"] = serde_json::Value::String(lbl);
+    }
+
+    let response = send_ipc("cells.update", args).await;
+    print_response(&response);
+}
+
+async fn handle_cells_delete(cell_id: String, version: Option<u64>) {
+    let version = match version {
+        Some(v) => v,
+        None => fetch_cell_version(&cell_id).await,
+    };
+
+    let response = send_ipc(
+        "cells.delete",
+        serde_json::json!({
+            "cell_id": cell_id,
+            "version": version,
+        }),
+    )
+    .await;
+    print_response(&response);
+}
+
+async fn handle_cells_reorder(cell_ids: Vec<String>) {
+    let response = send_ipc("cells.reorder", serde_json::json!({ "cell_ids": cell_ids })).await;
+    print_response(&response);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -372,22 +405,24 @@ fn print_response(response: &IpcResponse) {
         );
 
         let exit_code = match response.code.as_deref() {
-            Some("VersionConflict") => 2,
-            Some("PermissionDenied") => 3,
-            Some(c) if c.contains("connect") || c.contains("disconnect") => 4,
+            Some("VersionConflict") => CliExitCode::VersionConflict,
+            Some("PermissionDenied") => CliExitCode::PermissionDenied,
+            Some(c) if c.contains("connect") || c.contains("disconnect") => {
+                CliExitCode::ConnectionError
+            }
             _ => {
                 if response
                     .error
                     .as_deref()
                     .is_some_and(|e| e.contains("daemon") || e.contains("socket"))
                 {
-                    4
+                    CliExitCode::ConnectionError
                 } else {
-                    1
+                    CliExitCode::GenericError
                 }
             }
         };
-        std::process::exit(exit_code);
+        std::process::exit(exit_code as i32);
     }
 }
 

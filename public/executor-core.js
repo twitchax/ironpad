@@ -1190,18 +1190,26 @@
     return !!existing && existing.hash === hash;
   };
 
-  /// Write a value to the sim bus directly from the host (e.g. a slider or
-  /// forwarded from main thread via sim_bus_write).
-  CellExecutor.prototype.simBusWrite = function (key, value) {
-    var json = JSON.stringify(value);
-    var entry = this._simBus.get(key);
+  /// Update a sim bus Map: get-or-create the entry for `key`, set its latest
+  /// value to `json`, push to the ring buffer, and cap the ring at 1000.
+  ///
+  /// This is the single source of truth for sim bus updates — all call sites
+  /// (executor.js, executor-worker.js, executor-bridge.js) must use this helper.
+  CellExecutor.updateSimBus = function (bus, key, json) {
+    var entry = bus.get(key);
     if (!entry) {
       entry = { latest: null, ring: [] };
-      this._simBus.set(key, entry);
+      bus.set(key, entry);
     }
     entry.latest = json;
     entry.ring.push(json);
     if (entry.ring.length > 1000) entry.ring.shift();
+  };
+
+  /// Write a value to the sim bus directly from the host (e.g. a slider or
+  /// forwarded from main thread via sim_bus_write).
+  CellExecutor.prototype.simBusWrite = function (key, value) {
+    CellExecutor.updateSimBus(this._simBus, key, JSON.stringify(value));
   };
 
   /// Read the latest value from the sim bus (convenience for debugging).

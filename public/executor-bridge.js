@@ -16,6 +16,19 @@
 
   // ── BridgeExecutor ────────────────────────────────────────────────────────
 
+  // Local sim bus update helper — mirrors CellExecutor.updateSimBus from
+  // executor-core.js (which is not loaded when the bridge initializes).
+  function _updateSimBus(bus, key, json) {
+    var entry = bus.get(key);
+    if (!entry) {
+      entry = { latest: null, ring: [] };
+      bus.set(key, entry);
+    }
+    entry.latest = json;
+    entry.ring.push(json);
+    if (entry.ring.length > 1000) entry.ring.shift();
+  }
+
   function BridgeExecutor() {
     this._nextId = 1;
     this._pending = new Map();       // reqId -> { resolve, reject }
@@ -331,28 +344,14 @@
     var json = JSON.stringify(value);
 
     // Update bridge bus (main-thread side).
-    var entry = this._simBus.get(key);
-    if (!entry) {
-      entry = { latest: null, ring: [] };
-      this._simBus.set(key, entry);
-    }
-    entry.latest = json;
-    entry.ring.push(json);
-    if (entry.ring.length > 1000) entry.ring.shift();
+    _updateSimBus(this._simBus, key, json);
 
     // Forward to worker bus.
     this._worker.postMessage({ type: "sim_bus_write", key: key, json: json });
 
     // Mirror to main-thread fallback executor bus if loaded.
     if (this._mainExecutor) {
-      var fallbackEntry = this._mainExecutor._simBus.get(key);
-      if (!fallbackEntry) {
-        fallbackEntry = { latest: null, ring: [] };
-        this._mainExecutor._simBus.set(key, fallbackEntry);
-      }
-      fallbackEntry.latest = json;
-      fallbackEntry.ring.push(json);
-      if (fallbackEntry.ring.length > 1000) fallbackEntry.ring.shift();
+      _updateSimBus(this._mainExecutor._simBus, key, json);
     }
   };
 
@@ -408,16 +407,7 @@
   });
 
   executor.onHostMessage("sim_emit", function (msg, _cellId) {
-    var key = msg.key;
-    var json = JSON.stringify(msg.value);
-    var entry = executor._simBus.get(key);
-    if (!entry) {
-      entry = { latest: null, ring: [] };
-      executor._simBus.set(key, entry);
-    }
-    entry.latest = json;
-    entry.ring.push(json);
-    if (entry.ring.length > 1000) entry.ring.shift();
+    _updateSimBus(executor._simBus, msg.key, JSON.stringify(msg.value));
   });
 
   window.IronpadExecutor = executor;

@@ -243,6 +243,13 @@ fn NotebookGrid(
     }
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+fn format_cell_count(count: usize) -> String {
+    let label = if count == 1 { "cell" } else { "cells" };
+    format!("{count} {label}")
+}
+
 // ── Notebook card ───────────────────────────────────────────────────────────
 
 /// A single notebook card, rendering either a private or public variant.
@@ -260,8 +267,7 @@ fn NotebookCard(
             updated_at,
         } => {
             let href = format!("/notebook/{id}");
-            let cell_label = if cell_count == 1 { "cell" } else { "cells" };
-            let cell_text = format!("{cell_count} {cell_label}");
+            let cell_text = format_cell_count(cell_count);
 
             #[cfg(feature = "hydrate")]
             let delete_id = id.clone();
@@ -313,8 +319,7 @@ fn NotebookCard(
             tags,
         } => {
             let href = format!("/notebook/public/{filename}");
-            let cell_label = if cell_count == 1 { "cell" } else { "cells" };
-            let cell_text = format!("{cell_count} {cell_label}");
+            let cell_text = format_cell_count(cell_count);
 
             view! {
                 <div class="ironpad-notebook-card-wrapper">

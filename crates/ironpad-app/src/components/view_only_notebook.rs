@@ -12,6 +12,7 @@ use ironpad_common::CompileRequest;
 use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 
 use crate::components::animation_canvas::{AnimationCanvas, SimSliderMeta, SimulationCanvas};
+use crate::components::blob_url::{create_blob_url, revoke_blob_url};
 use crate::components::copy_button::CopyButton;
 use crate::components::live_view_panel::LiveViewPanel;
 use crate::components::markdown_cell::render_markdown;
@@ -68,47 +69,10 @@ enum DisplayPanel {
     },
 }
 
-// ── Blob URL helpers (hydrate-only) ──────────────────────────────────────────
-
-/// Decode a base64 string to raw bytes and create a Blob URL via the browser.
-#[cfg(feature = "hydrate")]
-fn create_blob_url(base64_data: &str, mime_type: &str) -> Option<String> {
-    use js_sys::Function;
-    use wasm_bindgen::JsValue;
-
-    let func = Function::new_with_args(
-        "b64,mime",
-        "var s=atob(b64);\
-         var b=new Uint8Array(s.length);\
-         for(var i=0;i<s.length;i++)b[i]=s.charCodeAt(i);\
-         return URL.createObjectURL(new Blob([b],{type:mime}))",
-    );
-
-    func.call2(
-        &JsValue::NULL,
-        &JsValue::from_str(base64_data),
-        &JsValue::from_str(mime_type),
-    )
-    .ok()
-    .and_then(|v| v.as_string())
-}
-
-#[cfg(not(feature = "hydrate"))]
-fn create_blob_url(_base64_data: &str, _mime_type: &str) -> Option<String> {
-    None
-}
-
-#[cfg(feature = "hydrate")]
-fn revoke_blob_url(url: &str) {
-    let _ = web_sys::Url::revoke_object_url(url);
-}
-
-#[cfg(not(feature = "hydrate"))]
-fn revoke_blob_url(_url: &str) {}
-
 // ── Per-cell output data ────────────────────────────────────────────────────
 
 /// Cached output from a cell execution, used for piping data to downstream cells.
+// Fields accessed under #[cfg(feature = "hydrate")]; appear dead during SSR.
 #[derive(Clone)]
 #[allow(dead_code)]
 struct CellOutputData {

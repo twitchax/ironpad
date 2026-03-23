@@ -22,7 +22,8 @@ pub(crate) struct SessionState {
     /// Whether a session is currently active.
     pub active: RwSignal<bool>,
     /// The session ID (set after `CreateSession` succeeds).
-    #[allow(dead_code)] // Read via Debug / future use.
+    // Used in session/connection.rs (hydrate-only); appears dead during SSR.
+    #[allow(dead_code)]
     pub session_id: RwSignal<Option<String>>,
     /// The plaintext token to give to the agent (shown once).
     pub token: RwSignal<Option<String>>,
@@ -36,13 +37,8 @@ pub(crate) struct SessionState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ConnectionStatus {
     Disconnected,
-    #[allow(dead_code)] // Reserved for future session lifecycle use.
     Connecting,
-    #[allow(dead_code)] // Reserved for future session lifecycle use.
     Connected,
-    /// Reserved for future reconnection logic.
-    #[allow(dead_code)]
-    Reconnecting,
 }
 
 impl SessionState {
@@ -56,7 +52,8 @@ impl SessionState {
         }
     }
 
-    #[allow(dead_code)] // Pub API for future/conditional use.
+    // Used in session/connection.rs (hydrate-only); appears dead during SSR.
+    #[allow(dead_code)]
     pub fn reset(&self) {
         self.active.set(false);
         self.session_id.set(None);

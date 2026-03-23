@@ -78,6 +78,7 @@ mod js {
 /// all operations are silent no-ops.
 #[derive(Clone, Copy)]
 pub struct MonacoEditorHandle {
+    // Accessed by all methods under #[cfg(feature = "hydrate")]; appears dead during SSR.
     #[allow(dead_code)]
     editor_id: RwSignal<Option<f64>>,
 }

@@ -5,6 +5,11 @@ use leptos::prelude::*;
 
 use crate::components::monaco_editor::MonacoEditorHandle;
 
+// ── Constants ───────────────────────────────────────────────────────────────
+
+/// Debounce delay (ms) before reactive re-evaluation after a cell edit.
+const REACTIVE_DEBOUNCE_MS: i32 = 500;
+
 // ── Cell status ─────────────────────────────────────────────────────────────
 
 /// Reactive cell execution status for the UI.
@@ -13,7 +18,6 @@ pub(super) enum CellStatus {
     Idle,
     Queued,
     Compiling,
-    #[allow(dead_code)]
     Running,
     Success,
     Error,
@@ -43,15 +47,13 @@ pub(crate) struct NotebookState {
     pub(super) cells: RwSignal<Vec<CellManifest>>,
     /// The currently selected/active cell ID.
     pub(super) active_cell: RwSignal<Option<String>>,
-    /// Triggers a notebook refetch when incremented (retained for future use).
-    #[allow(dead_code)]
-    pub(super) refresh_generation: RwSignal<u64>,
     /// Cell ID that should be scrolled to and focused after creation.
     pub(super) pending_focus_cell: RwSignal<Option<String>>,
     /// Per-cell output data from the last execution, keyed by cell ID.
     /// Used to pipe cell N's output as cell N+1's input.
     pub(super) cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     /// Triggers all cells to immediately flush their content to the server.
+    // Used in cell_item.rs under #[cfg(feature = "hydrate")]; appears dead during SSR.
     #[allow(dead_code)]
     pub(super) save_generation: RwSignal<u64>,
     /// Ordered queue of cell IDs for "Run All Below" sequential execution.
@@ -68,6 +70,7 @@ pub(crate) struct NotebookState {
     pub(super) cell_display_texts: RwSignal<HashMap<String, String>>,
     /// Per-cell source editor handles, keyed by cell ID.
     /// Used for cross-cell focus (e.g. Shift+Enter → advance to next cell).
+    // Used in cell_item.rs under #[cfg(feature = "hydrate")]; appears dead during SSR.
     #[allow(dead_code)]
     pub(super) editor_handles: RwSignal<HashMap<String, MonacoEditorHandle>>,
     /// Whether the notebook is in view mode (code hidden, output-focused).
@@ -132,9 +135,10 @@ impl NotebookState {
             }
         });
 
-        if let Ok(handle) = window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 500)
-        {
+        if let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            cb.as_ref().unchecked_ref(),
+            REACTIVE_DEBOUNCE_MS,
+        ) {
             reactive_timer.set(Some(handle));
         }
 

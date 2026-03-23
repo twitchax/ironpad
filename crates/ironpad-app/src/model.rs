@@ -11,10 +11,15 @@ use ironpad_common::protocol::*;
 use ironpad_common::{CellManifest, CellType, IronpadCell, IronpadNotebook};
 use leptos::prelude::*;
 
+// ── Constants ───────────────────────────────────────────────────────────────
+
+/// Maximum number of pending events buffered for the WebSocket bridge.
+const MAX_EVENT_BUFFER: usize = 64;
+
 // ── Error type ──────────────────────────────────────────────────────────────
 
 /// Error returned by model operations.
-// Fields are used via `Debug` formatting.
+// Fields accessed in session/connection.rs (hydrate-only); appear dead during SSR.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct ModelError {
@@ -106,7 +111,7 @@ impl NotebookModel {
         // active (nobody is draining). 64 events is plenty of headroom
         // for the bridge Effect to keep up during an active session.
         self.pending_events.update(|events| {
-            if events.len() < 64 {
+            if events.len() < MAX_EVENT_BUFFER {
                 events.push(envelope.clone());
             }
         });
@@ -116,7 +121,6 @@ impl NotebookModel {
     }
 
     /// Read-only queries against the notebook model.
-    #[allow(dead_code)] // Pub(crate) API for future/conditional use.
     pub(crate) fn query(&self, query: Query) -> Result<Response, ModelError> {
         match query {
             Query::NotebookGet => {
@@ -163,13 +167,11 @@ impl NotebookModel {
 
     /// Reactive signal that bumps when new events are pushed.
     /// The WebSocket bridge watches this to know when to drain.
-    #[allow(dead_code)] // Pub(crate) API for future/conditional use.
     pub(crate) fn event_generation(&self) -> Signal<u64> {
         self.event_generation.into()
     }
 
     /// Drain all pending events (untracked — won't re-trigger watchers).
-    #[allow(dead_code)] // Pub(crate) API for future/conditional use.
     pub(crate) fn drain_events(&self) -> Vec<EventEnvelope> {
         let mut events = Vec::new();
         self.pending_events.update(|e| {

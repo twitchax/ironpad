@@ -28,6 +28,7 @@ console.error = function () {
 importScripts("/worker-executor.js");
 
 var executor = new self.CellExecutor();
+var _updateSimBus = self.__IronpadExecutorCore.CellExecutor.updateSimBus;
 
 // ── Sim bus: update local bus on sim_emit ────────────────────────────────────
 //
@@ -36,16 +37,7 @@ var executor = new self.CellExecutor();
 // simulation cells running in this worker.
 
 executor.onHostMessage("sim_emit", function (msg, _cellId) {
-  var key = msg.key;
-  var json = JSON.stringify(msg.value);
-  var entry = executor._simBus.get(key);
-  if (!entry) {
-    entry = { latest: null, ring: [] };
-    executor._simBus.set(key, entry);
-  }
-  entry.latest = json;
-  entry.ring.push(json);
-  if (entry.ring.length > 1000) entry.ring.shift();
+  _updateSimBus(executor._simBus, msg.key, JSON.stringify(msg.value));
 });
 
 // ── Host message forwarding ─────────────────────────────────────────────────
@@ -86,16 +78,7 @@ self.onmessage = async function (e) {
   if (msg.type === "sim_bus_write") {
     // Main thread (e.g. a slider) wrote a value to the bus — mirror it here
     // so simulation cells running in this worker can read it via ironpad_sim_read.
-    var key = msg.key;
-    var json = msg.json;
-    var entry = executor._simBus.get(key);
-    if (!entry) {
-      entry = { latest: null, ring: [] };
-      executor._simBus.set(key, entry);
-    }
-    entry.latest = json;
-    entry.ring.push(json);
-    if (entry.ring.length > 1000) entry.ring.shift();
+    _updateSimBus(executor._simBus, msg.key, msg.json);
     return; // No response needed.
   }
 

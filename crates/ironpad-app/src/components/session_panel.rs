@@ -27,7 +27,6 @@ pub fn SessionButton() -> impl IntoView {
                 }
             }
             ConnectionStatus::Connecting => "Connecting...".to_string(),
-            ConnectionStatus::Reconnecting => "Reconnecting...".to_string(),
             ConnectionStatus::Disconnected => "Disconnected".to_string(),
         }
     });

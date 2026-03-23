@@ -408,7 +408,7 @@ mod tests {
 
     use crate::state::{AppState, WsState};
 
-    use super::{handle_guest_message, handle_host_message};
+    use super::{handle_guest_message, handle_host_message, wire_msg};
 
     /// Build a minimal `AppState` suitable for WS handler tests.
     fn test_state() -> AppState {
@@ -423,15 +423,6 @@ mod tests {
             },
             ws: WsState::default(),
         }
-    }
-
-    /// Serialize a protocol message to JSON.
-    fn to_json(id: &str, kind: MessageKind) -> String {
-        serde_json::to_string(&protocol::Message {
-            id: id.to_string(),
-            kind,
-        })
-        .unwrap()
     }
 
     // ── Host message tests ──────────────────────────────────────────────
@@ -461,7 +452,7 @@ mod tests {
             .await;
 
         // Host sends an event.
-        let event_json = to_json(
+        let event_json = wire_msg(
             "evt-1",
             MessageKind::Event(EventEnvelope {
                 by: ClientId::browser(),
@@ -504,7 +495,7 @@ mod tests {
         state.ws.track_query("q-42", "guest-1").await;
 
         // Host sends a response with matching id.
-        let response_json = to_json(
+        let response_json = wire_msg(
             "q-42",
             MessageKind::Response(Response::CellsList { cells: vec![] }),
         );
@@ -543,7 +534,7 @@ mod tests {
             .await;
 
         // No tracked query — response with unknown id should be dropped.
-        let response_json = to_json(
+        let response_json = wire_msg(
             "unknown-id",
             MessageKind::Response(Response::CellsList { cells: vec![] }),
         );
@@ -578,7 +569,7 @@ mod tests {
             .await;
 
         // Hosts should not send mutations; they should be silently ignored.
-        let mutation_json = to_json(
+        let mutation_json = wire_msg(
             "m-1",
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
@@ -602,7 +593,7 @@ mod tests {
         let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
         state.ws.register_host(nb, conn, host_tx).await;
 
-        let create_msg = to_json(
+        let create_msg = wire_msg(
             "ctrl-1",
             MessageKind::Control(ControlMessage::CreateSession {
                 permissions: Permissions::default(),
@@ -650,7 +641,7 @@ mod tests {
             .await;
 
         // Host ends the session.
-        let end_msg = to_json(
+        let end_msg = wire_msg(
             "ctrl-2",
             MessageKind::Control(ControlMessage::EndSession {
                 session_id: session.session_id.clone(),
@@ -707,7 +698,7 @@ mod tests {
             execute: false,
         };
 
-        let mutation_json = to_json(
+        let mutation_json = wire_msg(
             "m-1",
             MessageKind::Mutation(Mutation::CellAdd {
                 cell: NewCell {
@@ -767,7 +758,7 @@ mod tests {
             execute: false,
         };
 
-        let query_json = to_json("q-1", MessageKind::Query(Query::CellsList));
+        let query_json = wire_msg("q-1", MessageKind::Query(Query::CellsList));
 
         handle_guest_message(
             &query_json,
@@ -818,7 +809,7 @@ mod tests {
             execute: false,
         };
 
-        let mutation_json = to_json(
+        let mutation_json = wire_msg(
             "m-1",
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
@@ -880,7 +871,7 @@ mod tests {
             execute: false,
         };
 
-        let query_json = to_json("q-1", MessageKind::Query(Query::NotebookGet));
+        let query_json = wire_msg("q-1", MessageKind::Query(Query::NotebookGet));
 
         handle_guest_message(
             &query_json,
@@ -969,7 +960,7 @@ mod tests {
             execute: false,
         };
 
-        let mutation_json = to_json(
+        let mutation_json = wire_msg(
             "m-1",
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
@@ -1021,7 +1012,7 @@ mod tests {
             execute: false,
         };
 
-        let query_json = to_json("q-1", MessageKind::Query(Query::CellsList));
+        let query_json = wire_msg("q-1", MessageKind::Query(Query::CellsList));
 
         handle_guest_message(
             &query_json,

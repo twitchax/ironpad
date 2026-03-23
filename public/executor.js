@@ -30,16 +30,7 @@
   });
 
   executor.onHostMessage("sim_emit", function (msg, _cellId) {
-    var key = msg.key;
-    var json = JSON.stringify(msg.value);
-    var entry = executor._simBus.get(key);
-    if (!entry) {
-      entry = { latest: null, ring: [] };
-      executor._simBus.set(key, entry);
-    }
-    entry.latest = json;
-    entry.ring.push(json);
-    if (entry.ring.length > 1000) entry.ring.shift();
+    CellExecutor.updateSimBus(executor._simBus, msg.key, JSON.stringify(msg.value));
   });
 
   window.IronpadExecutor = executor;

@@ -247,15 +247,22 @@ pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, Serve
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
+/// Rejects path segments that contain directory separators or `..` traversal.
+#[cfg(feature = "ssr")]
+fn validate_safe_path_segment(s: &str) -> anyhow::Result<()> {
+    if s.contains('/') || s.contains('\\') || s.contains("..") {
+        anyhow::bail!("invalid filename: must not contain separators or '..'");
+    }
+    Ok(())
+}
+
 #[cfg(feature = "ssr")]
 pub(crate) async fn get_public_notebook_core(
     site_root: &std::path::Path,
     filename: &str,
 ) -> anyhow::Result<IronpadNotebook> {
     // Reject path traversal attempts.
-    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
-        anyhow::bail!("invalid filename");
-    }
+    validate_safe_path_segment(filename)?;
 
     let path = site_root.join("notebooks").join(filename);
 
@@ -330,9 +337,7 @@ pub(crate) async fn get_shared_notebook_core(
     hash: &str,
 ) -> anyhow::Result<IronpadNotebook> {
     // Reject path traversal attempts.
-    if hash.contains('/') || hash.contains('\\') || hash.contains("..") {
-        anyhow::bail!("invalid share hash");
-    }
+    validate_safe_path_segment(hash)?;
 
     let path = data_dir.join("shares").join(format!("{hash}.json"));
 
