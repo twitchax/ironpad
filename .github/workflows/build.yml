@@ -34,7 +34,7 @@ jobs:
           )
           TIMESTAMP=$(date +%s)
           KEYFILE=$(mktemp)
-          echo "$CHANNEL_PRIVATE_KEY" > "$KEYFILE"
+          printenv CHANNEL_PRIVATE_KEY > "$KEYFILE"
           SIGNATURE=$(printf '%s' "${TIMESTAMP}.${BODY}" \
             | openssl pkeyutl -sign -inkey "$KEYFILE" \
             | base64 -w0)
