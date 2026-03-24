@@ -19,6 +19,29 @@ jobs:
       - run: cargo install --locked cargo-nextest
       - run: cargo make ci
 
+      - name: Notify channel
+        if: always()
+        env:
+          CHANNEL_PRIVATE_KEY: ${{ secrets.CHANNEL_PRIVATE_KEY }}
+        run: |
+          STATUS="${{ job.status }}"
+          BODY=$(cat <<EOF
+          ironpad build #${{ github.run_number }} on ${{ github.ref_name }} (${{ github.sha }}): ${STATUS}
+          Commit: ${{ github.event.head_commit.message }}
+          Author: ${{ github.event.head_commit.author.name }}
+          Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )
+          TIMESTAMP=$(date +%s)
+          SIGNATURE=$(printf '%s' "${TIMESTAMP}.${BODY}" \
+            | openssl pkeyutl -sign -inkey <(echo "$CHANNEL_PRIVATE_KEY") \
+            | base64 -w0)
+          curl -sf -X POST "https://channel.server.sno.twitchax.com/github" \
+            -H "X-Channel-Key-Id: github-ironpod" \
+            -H "X-Channel-Timestamp: ${TIMESTAMP}" \
+            -H "X-Channel-Signature: ${SIGNATURE}" \
+            -d "${BODY}" || echo "Channel notification failed (non-fatal)"
+
   codecov:
     needs: test
     name: Code Coverage
