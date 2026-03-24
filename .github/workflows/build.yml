@@ -33,9 +33,12 @@ jobs:
           EOF
           )
           TIMESTAMP=$(date +%s)
+          KEYFILE=$(mktemp)
+          echo "$CHANNEL_PRIVATE_KEY" > "$KEYFILE"
           SIGNATURE=$(printf '%s' "${TIMESTAMP}.${BODY}" \
-            | openssl pkeyutl -sign -inkey <(echo "$CHANNEL_PRIVATE_KEY") \
+            | openssl pkeyutl -sign -inkey "$KEYFILE" \
             | base64 -w0)
+          rm -f "$KEYFILE"
           curl -sf -X POST "https://channel.server.sno.twitchax.com/github" \
             -H "X-Channel-Key-Id: github-ironpod" \
             -H "X-Channel-Timestamp: ${TIMESTAMP}" \
