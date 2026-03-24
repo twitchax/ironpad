@@ -99,9 +99,15 @@
     box-sizing: border-box;
 }
 
+html,
 body {
     margin: 0;
     padding: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+body {
     font-family: var(--ip-font-sans);
     background: var(--ip-bg-primary);
     color: var(--ip-text-primary);
