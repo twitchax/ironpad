@@ -15,8 +15,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
-      - run: cargo install cargo-make
-      - run: cargo install --locked cargo-nextest
+      - run: cargo install cargo-binstall
+      - run: cargo binstall -y cargo-make cargo-nextest
       - run: cargo make ci
 
       - name: Notify channel
@@ -36,7 +36,7 @@ jobs:
           KEYFILE=$(mktemp)
           echo "$CHANNEL_PRIVATE_KEY" | base64 -d > "$KEYFILE"
           SIGNATURE=$(printf '%s' "${TIMESTAMP}.${BODY}" \
-            | openssl pkeyutl -sign -inkey "$KEYFILE" \
+            | openssl pkeyutl -sign -rawin -inkey "$KEYFILE" \
             | base64 -w0)
           rm -f "$KEYFILE"
           curl -sf -X POST "https://channel.server.sno.twitchax.com/github" \
@@ -58,8 +58,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
-      - run: cargo install cargo-llvm-cov
-      - run: cargo install --locked cargo-nextest
+      - run: cargo install cargo-binstall
+      - run: cargo binstall -y cargo-llvm-cov cargo-nextest
       - run: cargo llvm-cov nextest --workspace --lcov --output-path coverage.lcov
       - uses: codecov/codecov-action@v5
         with:
