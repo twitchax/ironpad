@@ -36,7 +36,6 @@ WORKDIR /build
 # Cook dependencies first (cached until Cargo.toml/Cargo.lock change).
 COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
-RUN cargo chef cook --release --target wasm32-unknown-unknown --recipe-path recipe.json
 
 # Now copy source and build (only recompiles our code).
 COPY . .
