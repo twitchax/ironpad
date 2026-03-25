@@ -2,13 +2,24 @@
 # ── ironpad Dockerfile ────────────────────────────────────────────────────────
 #
 # Multi-stage build:
-#   Stage 1 (builder): Compile the ironpad server + frontend WASM via cargo-leptos.
-#   Stage 2 (runtime): Slim Rust toolchain (needed for cell compilation) + built artifacts.
+#   Stage 1a (planner): Generate cargo-chef recipe for dependency caching.
+#   Stage 1b (builder): Cook deps (cached), then compile ironpad.
+#   Stage 2  (runtime): Slim Rust toolchain (needed for cell compilation) + built artifacts.
 #
 # Build context is the repo root:
 #   docker build -f docker/Dockerfile -t ironpad .
 
-# ── Stage 1: Builder ─────────────────────────────────────────────────────────
+# ── Stage 1a: Planner (cargo-chef recipe) ────────────────────────────────
+
+FROM rust:1.93.0 AS planner
+
+RUN cargo install cargo-chef
+
+WORKDIR /build
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 1b: Builder ────────────────────────────────────────────────────
 
 FROM rust:1.93.0 AS builder
 
@@ -18,16 +29,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     binaryen \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-leptos wasm-bindgen-cli
+RUN cargo install cargo-chef cargo-leptos wasm-bindgen-cli
 
 WORKDIR /build
+
+# Cook dependencies first (cached until Cargo.toml/Cargo.lock change).
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --target wasm32-unknown-unknown --recipe-path recipe.json
+
+# Now copy source and build (only recompiles our code).
 COPY . .
 
 RUN cargo leptos build --release
 RUN cargo build --release -p ironpad-cli
 RUN cargo build --release -p ironpad-proxy
 
-# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
+# ── Stage 2: Runtime ─────────────────────────────────────────────────────
 
 FROM rust:1.93.0-slim AS runtime
 
