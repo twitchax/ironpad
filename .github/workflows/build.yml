@@ -15,7 +15,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
-      - run: cargo install cargo-binstall
+      - uses: cargo-bins/cargo-binstall@main
       - run: cargo binstall -y cargo-make cargo-nextest
       - run: cargo make ci
 
@@ -58,7 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
-      - run: cargo install cargo-binstall
+      - uses: cargo-bins/cargo-binstall@main
       - run: cargo binstall -y cargo-llvm-cov cargo-nextest
       - run: cargo llvm-cov nextest --workspace --lcov --output-path coverage.lcov
       - uses: codecov/codecov-action@v5
