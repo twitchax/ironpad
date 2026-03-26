@@ -20,7 +20,7 @@
       "order": 1,
       "label": "Controls",
       "cell_type": "Code",
-      "source": "(\n    ui::slider(\"speed\", 1.0, 20.0)\n        .step(1.0)\n        .label(\"Simulation Speed\")\n        .default_value(5.0),\n)",
+      "source": "ui::slider(\"speed\", 1.0, 20.0)\n    .step(1.0)\n    .label(\"Simulation Speed\")\n    .default_value(5.0)",
       "cargo_toml": null
     },
     {
