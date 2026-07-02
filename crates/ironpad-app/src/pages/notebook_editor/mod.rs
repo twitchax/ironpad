@@ -255,15 +255,21 @@ pub fn NotebookEditorPage() -> impl IntoView {
         });
     }
 
+    // Gate on a memoized boolean so NotebookContent is built once when the
+    // notebook loads, not rebuilt on every content mutation. cell_add/delete/
+    // reorder/meta all call the tracked notebook.update; reading notebook
+    // directly here tore down and rebuilt every CellItem (resetting its local
+    // status/output/diagnostics signals). The inner <For> reacts to
+    // state.cells incrementally, so nothing else is needed to keep the list live.
+    let notebook_loaded = Memo::new(move |_| state.notebook.with(Option::is_some));
     view! {
         <div class="ironpad-editor">
-            {move || {
-                if state.notebook.get().is_some() {
-                    view! { <NotebookContent /> }.into_any()
-                } else {
-                    view! { <NotebookEditorSkeleton /> }.into_any()
-                }
-            }}
+            <Show
+                when=move || notebook_loaded.get()
+                fallback=|| view! { <NotebookEditorSkeleton /> }
+            >
+                <NotebookContent />
+            </Show>
         </div>
     }
 }

@@ -37,6 +37,22 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_output = cell.id.clone();
     let cell_id_for_markdown = StoredValue::new(cell.id.clone());
 
+    // Live-derived order: after T-001, NotebookContent (and this CellItem) is
+    // built once and not rebuilt on reorder, so the `cell.order` captured by
+    // value would go stale. Look it up from state.cells (kept live by
+    // sync_from_notebook) on every render instead, falling back to the
+    // initially-captured order if the cell is momentarily missing (e.g. mid-delete).
+    let cell_id_for_order = cell.id.clone();
+    let initial_order = cell.order;
+    let order_display = Signal::derive(move || {
+        state.cells.with(|cells| {
+            cells
+                .iter()
+                .find(|c| c.id == cell_id_for_order)
+                .map_or(initial_order, |c| c.order)
+        })
+    });
+
     let is_markdown = cell.cell_type == CellType::Markdown;
 
     let is_active = move || state.active_cell.get().as_deref() == Some(cell_id.as_str());
@@ -1226,7 +1242,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     </button>
 
                     <span class="ironpad-cell-order">
-                        {format!("[{}]", cell.order)}
+                        {move || format!("[{}]", order_display.get())}
                     </span>
 
                     <input
