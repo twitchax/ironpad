@@ -1333,6 +1333,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             source=source.get_untracked()
                             on_change=on_source_change
                             cell_id=cell_id_for_markdown.get_value()
+                            is_view_mode=state.is_view_mode
                         />
                     </div>
                 }.into_any()

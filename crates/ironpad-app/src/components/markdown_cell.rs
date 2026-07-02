@@ -28,8 +28,9 @@ pub fn render_markdown(source: &str) -> String {
 ///
 /// - **Preview mode** (default): rendered markdown via `inner_html`.
 ///   Double-click switches to edit mode.
-/// - **Edit mode**: Monaco editor. Escape saves changes and
-///   switches back to preview mode.
+/// - **Edit mode**: Monaco editor. Escape or clicking away (blur) saves
+///   changes and switches back to preview mode. Switching the notebook to
+///   view mode also forces a commit back to preview, even mid-edit.
 #[component]
 #[allow(clippy::needless_pass_by_value)]
 pub fn MarkdownCell(
@@ -42,6 +43,10 @@ pub fn MarkdownCell(
     /// Unique cell identifier (used for keying).
     #[prop(into)]
     cell_id: String,
+    /// When the notebook is in view mode, the cell must render (never stay
+    /// in the Monaco editor).
+    #[prop(into)]
+    is_view_mode: Signal<bool>,
 ) -> impl IntoView {
     let editing = RwSignal::new(false);
     let current_source = RwSignal::new(source.clone());
@@ -98,10 +103,26 @@ pub fn MarkdownCell(
         });
     }
 
+    // Force a commit back to preview if the notebook switches to view mode
+    // while this cell is mid-edit. Uses `commit` (not `editing.set(false)`)
+    // so the in-progress edit is saved, not discarded.
+    #[cfg(feature = "hydrate")]
+    {
+        let commit_for_view = commit;
+        Effect::new(move || {
+            if is_view_mode.get() && editing.get_untracked() {
+                commit_for_view();
+            }
+        });
+    }
+
+    // Commit on blur (clicking away from the editor).
+    let commit_for_blur = commit;
+
     // Suppress unused warnings during SSR.
     #[cfg(not(feature = "hydrate"))]
     {
-        let _ = (&editor_handle, &commit, &cell_id);
+        let _ = (&editor_handle, &commit, &cell_id, &is_view_mode);
     }
 
     // Consume cell_id to avoid unused warning (reserved for future keying).
@@ -112,7 +133,7 @@ pub fn MarkdownCell(
             {move || {
                 if editing.get() {
                     view! {
-                        <div class="ironpad-markdown-cell-editor">
+                        <div class="ironpad-markdown-cell-editor" on:focusout=move |_| commit_for_blur()>
                             <MonacoEditor
                                 initial_value=current_source.get_untracked()
                                 language="markdown"
@@ -121,7 +142,7 @@ pub fn MarkdownCell(
                             />
                         </div>
                         <div class="ironpad-markdown-cell-hint">
-                            "Press Escape to save and return to preview"
+                            "Press Escape or click away to save"
                         </div>
                     }.into_any()
                 } else {
