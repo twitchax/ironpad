@@ -107,6 +107,8 @@ fn generate_cargo_toml(
         format!(r#"ironpad-cell = {{ path = "{cell_path_str}" }}"#)
     };
 
+    let wasm_bindgen_dep = wasm_bindgen_dependency_line();
+
     let mut toml = format!(
         r#"[package]
 name = "cell-{cell_id}"
@@ -120,7 +122,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 {cell_dep}
-wasm-bindgen = "0.2"
+{wasm_bindgen_dep}
 "#
     );
 
@@ -301,6 +303,27 @@ fn collect_extra_sections(cargo_toml: &str) -> Vec<(String, String)> {
     }
 
     sections
+}
+
+/// Build the `wasm-bindgen` dependency line for the scaffolded Cargo.toml.
+///
+/// Pins to the exact host `wasm-bindgen` CLI version (`=X.Y.Z`) so the
+/// resolved crate matches the CLI that `compiler/build.rs` shells out to for
+/// post-processing — a version mismatch trips wasm-bindgen's exact-schema
+/// check and breaks every cell. Falls back to the previous floating `"0.2"`
+/// requirement (and logs a warning) if the CLI version can't be determined;
+/// the build stage surfaces a clear error if the CLI is truly absent.
+fn wasm_bindgen_dependency_line() -> String {
+    if let Some(version) = super::toolchain::wasm_bindgen_cli_version() {
+        return format!(r#"wasm-bindgen = "={version}""#);
+    }
+
+    tracing::warn!(
+        "could not determine host wasm-bindgen CLI version; falling back to \
+         floating \"0.2\" requirement, which may drift from the CLI used for \
+         post-processing"
+    );
+    r#"wasm-bindgen = "0.2""#.to_string()
 }
 
 /// Extract the crate name from a TOML dependency line.
@@ -744,6 +767,22 @@ serde = { version = "1", features = ["derive"] }
         let result = generate_cargo_toml("cell0", "serde = \"1\"", &cell_path, None, false);
 
         assert!(!result.contains(r#"features = ["rayon"]"#));
+    }
+
+    // ── T-002: wasm-bindgen version pin ─────────────────────────────────
+
+    #[test]
+    fn cargo_toml_pins_wasm_bindgen_to_exact_cli_version() {
+        // The wasm-bindgen CLI is installed in this test environment (see
+        // unit-b-brief.md), so the scaffold should emit an exact-version pin
+        // rather than the old floating "0.2" requirement.
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let result = generate_cargo_toml("cell0", "", &cell_path, None, false);
+
+        assert!(
+            result.contains(r#"wasm-bindgen = "=0.2.126""#),
+            "expected exact wasm-bindgen pin matching host CLI, got:\n{result}"
+        );
     }
 
     // ── generate_lib_rs ─────────────────────────────────────────────────

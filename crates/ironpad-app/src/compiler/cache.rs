@@ -1,10 +1,16 @@
 //! Blake3 content-hash caching for compiled WASM blobs.
 //!
-//! Hashes `source || cargo_toml || "wasm32-unknown-unknown" || previous_types`
-//! with blake3 and stores/retrieves compiled `.wasm` blobs under
-//! `{cache_dir}/blobs/{hash}.wasm`.
+//! Hashes `source || cargo_toml || "wasm32-unknown-unknown" || previous_types
+//! || toolchain_fingerprint` with blake3 and stores/retrieves compiled
+//! `.wasm` blobs under `{cache_dir}/blobs/{hash}.wasm`. The toolchain
+//! fingerprint (rustc version + host wasm-bindgen CLI version, see
+//! `compiler/toolchain.rs`) ensures a toolchain upgrade invalidates stale
+//! cached blobs instead of silently serving output built against a
+//! different, possibly incompatible, toolchain.
 
 use std::path::{Path, PathBuf};
+
+use super::toolchain::toolchain_fingerprint;
 
 /// The compilation target baked into the cache key so that a future target
 /// change automatically invalidates existing entries.
@@ -14,8 +20,14 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 ///
 /// Bump this whenever the compilation pipeline changes in a way that should
 /// invalidate all cached blobs (e.g. RUSTFLAGS changes, wasm-bindgen
-/// post-processing changes, scaffold template changes).
-const CACHE_EPOCH: u32 = 1;
+/// post-processing changes, scaffold template changes, `ironpad-cell` source
+/// edits — there is no automatic hash of the injected `ironpad-cell` crate's
+/// contents, so bump this manually when it changes).
+///
+/// Bumped 1 -> 2 for PRD-0031 T-003: folding the toolchain fingerprint into
+/// the key (see [`toolchain_fingerprint`]) should invalidate all pre-existing
+/// blobs once, since their toolchain provenance is unknown.
+const CACHE_EPOCH: u32 = 2;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -25,7 +37,9 @@ const CACHE_EPOCH: u32 = 1;
 /// The hash includes the fixed target triple so any future target change
 /// naturally invalidates the cache.  Each previous type tag is followed by a
 /// NUL separator so that `["u32", ""]` and `["", "u32"]` produce distinct
-/// hashes.
+/// hashes. Also folds in the process-cached toolchain fingerprint (rustc
+/// version + host wasm-bindgen CLI version, see [`toolchain_fingerprint`]) so
+/// a toolchain upgrade invalidates stale cached blobs.
 pub fn content_hash(
     source: &str,
     cargo_toml: &str,
@@ -33,6 +47,30 @@ pub fn content_hash(
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
     needs_atomics: bool,
+) -> String {
+    content_hash_inner(
+        source,
+        cargo_toml,
+        previous_types,
+        shared_cargo_toml,
+        shared_source,
+        needs_atomics,
+        toolchain_fingerprint(),
+    )
+}
+
+/// Core hashing logic, parameterized on an explicit toolchain fingerprint so
+/// it's unit-testable without depending on the process-global cache. See
+/// [`content_hash`] for the public entry point.
+#[allow(clippy::too_many_arguments)]
+fn content_hash_inner(
+    source: &str,
+    cargo_toml: &str,
+    previous_types: &[String],
+    shared_cargo_toml: Option<&str>,
+    shared_source: Option<&str>,
+    needs_atomics: bool,
+    toolchain: &str,
 ) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(source.as_bytes());
@@ -58,6 +96,8 @@ pub fn content_hash(
     });
     hasher.update(b"\x04");
     hasher.update(&CACHE_EPOCH.to_le_bytes());
+    hasher.update(b"\x05");
+    hasher.update(toolchain.as_bytes());
     hasher.finalize().to_hex().to_string()
 }
 
@@ -392,5 +432,31 @@ mod tests {
         let a = content_hash(s, c, &[], None, None, false);
         let b = content_hash(s, c, &[], None, None, true);
         assert_ne!(a, b);
+    }
+
+    // ── T-003: toolchain fingerprint folded into the cache key ───────────
+
+    #[test]
+    fn inner_hash_changes_when_toolchain_fingerprint_changes() {
+        let a = content_hash_inner("x", "y", &[], None, None, false, "toolchain-a");
+        let b = content_hash_inner("x", "y", &[], None, None, false, "toolchain-b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn inner_hash_is_deterministic_for_same_toolchain() {
+        let a = content_hash_inner("x", "y", &[], None, None, false, "toolchain-a");
+        let b = content_hash_inner("x", "y", &[], None, None, false, "toolchain-a");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn public_content_hash_still_deterministic_across_two_calls() {
+        // The public `content_hash` must remain deterministic within a process
+        // even though it now delegates to `content_hash_inner` with the
+        // process-cached toolchain fingerprint.
+        let a = content_hash("fn main() {}", "[dependencies]", &[], None, None, false);
+        let b = content_hash("fn main() {}", "[dependencies]", &[], None, None, false);
+        assert_eq!(a, b);
     }
 }
