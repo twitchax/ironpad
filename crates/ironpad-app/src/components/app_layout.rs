@@ -103,17 +103,15 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
     // ── Inline-editable title state ─────────────────────────────────────
 
     let editing = RwSignal::new(false);
-
-    let save_title = Action::new(move |_new_title: &String| {
-        async move {
-            // Title is persisted client-side via IndexedDB; no server call needed.
-        }
-    });
+    let edit_start_title = RwSignal::new(None::<String>);
 
     let commit_edit = move || {
         editing.set(false);
-        if let Some(current) = ctx.notebook_title.get_untracked() {
-            save_title.dispatch(current);
+        // Persist only if the title changed. Bumping save_generation triggers
+        // the editor's save watcher (notebook_editor/mod.rs), which applies
+        // NotebookUpdateMeta { title } through the model and persists to IndexedDB.
+        if ctx.notebook_title.get_untracked() != edit_start_title.get_untracked() {
+            ctx.save_generation.update(|g| *g += 1);
         }
     };
 
@@ -126,6 +124,7 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
             ev.prevent_default();
             commit_edit();
         } else if ev.key() == "Escape" {
+            ctx.notebook_title.set(edit_start_title.get_untracked());
             editing.set(false);
         }
     };
@@ -187,7 +186,10 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                         view! {
                             <span
                                 class="ironpad-notebook-title ironpad-notebook-title--editable"
-                                on:click=move |_| editing.set(true)
+                                on:click=move |_| {
+                                    edit_start_title.set(ctx.notebook_title.get_untracked());
+                                    editing.set(true);
+                                }
                             >
                                 {title}
                             </span>
