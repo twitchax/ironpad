@@ -31,6 +31,48 @@ use self::shared_source::SharedSourcePanel;
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
 use self::state::{persist_notebook, NotebookState};
 
+// ── Flush-before-serialize helper (PRD-0032 T-007) ──────────────────────────
+//
+// Share, Export HTML, and Download .ironpad all serialize the notebook from
+// `state.notebook`. Each cell's live editor content only reaches that signal
+// on a 1s debounce or when `state.save_generation` bumps (see the flush
+// effect in `cell_item.rs`). Bumping the generation alone isn't enough,
+// though: Leptos effects run queued, not synchronously on `signal.update()`,
+// so callers must yield before re-reading the notebook.
+
+/// Delay (ms) after bumping `state.save_generation` before re-reading the
+/// notebook, giving the per-cell flush effects time to run. Used by Share
+/// and Export HTML, which only need the in-memory model flushed.
+#[cfg(feature = "hydrate")]
+const CELL_FLUSH_YIELD_MS: i32 = 120;
+
+/// Delay (ms) used by Download .ironpad, which bumps `layout.save_generation`
+/// instead (flushing cells AND persisting to `IndexedDB` via
+/// `persist_notebook`), so it needs extra time for the `IndexedDB` write.
+#[cfg(feature = "hydrate")]
+const CELL_FLUSH_PERSIST_YIELD_MS: i32 = 200;
+
+/// Awaits a `setTimeout` so queued Leptos effects — in particular each
+/// cell's notebook-level save-flush effect (`cell_item.rs`) — get a chance
+/// to run before the caller re-reads `state.notebook`. There's no
+/// async-timer dependency in this workspace, so this wraps `setTimeout` in a
+/// `Promise` (mirrors the `set_timeout_with_callback_and_timeout_and_arguments_0`
+/// usage elsewhere in this file, e.g. the save-status reset above). The
+/// delays are a pragmatic yield for the effect queue, not a correctness
+/// guarantee — see `CELL_FLUSH_YIELD_MS`/`CELL_FLUSH_PERSIST_YIELD_MS` docs.
+#[cfg(feature = "hydrate")]
+async fn yield_for_cell_flush(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        } else {
+            // No window (shouldn't happen in hydrate) — resolve immediately.
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 // ── Notebook editor page ────────────────────────────────────────────────────
 
 /// Route component for `/notebook/{id}`.
@@ -281,6 +323,11 @@ pub fn NotebookEditorPage() -> impl IntoView {
 fn NotebookContent() -> impl IntoView {
     let state = expect_context::<NotebookState>();
     let model = expect_context::<NotebookModel>();
+    // Only the Download .ironpad handler needs this (to flush + persist via
+    // the layout save watcher); avoid an unused-variable warning on ssr-only
+    // builds where that handler's body is compiled out entirely.
+    #[cfg(feature = "hydrate")]
+    let layout = expect_context::<LayoutContext>();
 
     // ── Shared deps panel toggle ────────────────────────────────────────
 
@@ -525,34 +572,43 @@ fn NotebookContent() -> impl IntoView {
                                         class="ironpad-toolbar-dropdown-item"
                                         on:click=move |_| {
                                             hamburger_open.set(false);
-                                            let notebook = state.notebook.get_untracked();
-                                            if let Some(nb) = notebook {
-                                                let toaster =
-                                                    expect_context::<ToasterInjection>();
-                                                leptos::task::spawn_local(async move {
-                                                    let json =
-                                                        match serde_json::to_string(&nb) {
-                                                            Ok(j) => j,
-                                                            Err(e) => {
-                                                                toaster.dispatch_toast(
-                                                                    move || {
-                                                                        view! {
-                                                                            <Toast>
-                                                                                <ToastTitle>"Share Failed"</ToastTitle>
-                                                                                <ToastBody>
-                                                                                    {format!(
-                                                                                        "Failed to serialize: {e}"
-                                                                                    )}
-                                                                                </ToastBody>
-                                                                            </Toast>
-                                                                        }
-                                                                    },
-                                                                    thaw::ToastOptions::default(),
-                                                                );
-                                                                return;
-                                                            }
-                                                        };
-                                                    match share_notebook(json).await {
+                                            // Flush cells' in-progress editor content into the
+                                            // model before serializing, so "type then
+                                            // immediately Share" doesn't produce a stale
+                                            // artifact (PRD-0032 T-007). The notebook is
+                                            // re-read below, AFTER the yield, not captured here.
+                                            state.save_generation.update(|g| *g += 1);
+                                            let toaster = expect_context::<ToasterInjection>();
+                                            leptos::task::spawn_local(async move {
+                                                #[cfg(feature = "hydrate")]
+                                                yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
+                                                let notebook = state.notebook.get_untracked();
+                                                let Some(nb) = notebook else {
+                                                    return;
+                                                };
+                                                let json =
+                                                    match serde_json::to_string(&nb) {
+                                                        Ok(j) => j,
+                                                        Err(e) => {
+                                                            toaster.dispatch_toast(
+                                                                move || {
+                                                                    view! {
+                                                                        <Toast>
+                                                                            <ToastTitle>"Share Failed"</ToastTitle>
+                                                                            <ToastBody>
+                                                                                {format!(
+                                                                                    "Failed to serialize: {e}"
+                                                                                )}
+                                                                            </ToastBody>
+                                                                        </Toast>
+                                                                    }
+                                                                },
+                                                                thaw::ToastOptions::default(),
+                                                            );
+                                                            return;
+                                                        }
+                                                    };
+                                                match share_notebook(json).await {
                                                         Ok(hash) => {
                                                             #[cfg(target_arch = "wasm32")]
                                                             let origin = web_sys::window()
@@ -617,7 +673,6 @@ fn NotebookContent() -> impl IntoView {
                                                         }
                                                     }
                                                 });
-                                            }
                                         }
                                     >
                                         "↗ Share"
@@ -629,14 +684,23 @@ fn NotebookContent() -> impl IntoView {
                                             hamburger_open.set(false);
                                             #[cfg(feature = "hydrate")]
                                             {
-                                                let nb = state.notebook.get_untracked();
-                                                if let Some(nb) = nb {
-                                                    let display_texts =
-                                                        state.cell_display_texts.get_untracked();
-                                                    let html =
-                                                        export::build_export_html(&nb, &display_texts);
-                                                    export::trigger_html_download(&html, &nb.title);
-                                                }
+                                                // Flush cells' in-progress editor content
+                                                // before building the export, so "type then
+                                                // immediately Export" doesn't produce a stale
+                                                // artifact (PRD-0032 T-007).
+                                                state.save_generation.update(|g| *g += 1);
+                                                leptos::task::spawn_local(async move {
+                                                    yield_for_cell_flush(CELL_FLUSH_YIELD_MS)
+                                                        .await;
+                                                    let nb = state.notebook.get_untracked();
+                                                    if let Some(nb) = nb {
+                                                        let display_texts =
+                                                            state.cell_display_texts.get_untracked();
+                                                        let html =
+                                                            export::build_export_html(&nb, &display_texts);
+                                                        export::trigger_html_download(&html, &nb.title);
+                                                    }
+                                                });
                                             }
                                         }
                                     >
@@ -656,7 +720,19 @@ fn NotebookContent() -> impl IntoView {
                                                         |n| n.title.clone(),
                                                     )
                                                 });
+                                                // Download reads from IndexedDB
+                                                // (export_notebook), so the flush must reach
+                                                // persistence, not just the in-memory model.
+                                                // Bumping layout.save_generation runs the same
+                                                // watcher the Save button uses: it flushes
+                                                // cells into the model AND calls
+                                                // persist_notebook (PRD-0032 T-007).
+                                                layout.save_generation.update(|g| *g += 1);
                                                 leptos::task::spawn_local(async move {
+                                                    yield_for_cell_flush(
+                                                        CELL_FLUSH_PERSIST_YIELD_MS,
+                                                    )
+                                                    .await;
                                                     if let Some(json) =
                                                         crate::storage::client::export_notebook(
                                                             &nb_id,
