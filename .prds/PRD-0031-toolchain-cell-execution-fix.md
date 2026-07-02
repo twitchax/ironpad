@@ -1,7 +1,7 @@
 ---
 id: PRD-0031
 title: "Toolchain & cell execution fix (P0 — un-break every cell)"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-02
 updated: 2026-07-02
@@ -43,13 +43,13 @@ tasks:
 - id: T-002
   title: "Pin scaffolded wasm-bindgen to the exact host CLI version"
   priority: 1
-  status: todo
-  notes: "scaffold.rs:123 injects floating wasm-bindgen = \"0.2\" while build.rs:182 shells out to the fixed host `wasm-bindgen` CLI; schema mismatch breaks all cells in both directions. Read `wasm-bindgen --version` once at startup and inject an exact `=X.Y.Z` pin into the generated Cargo.toml. Consider the same for wasm-bindgen-futures if it participates in the schema."
+  status: done
+  notes: "DONE (commit bcba479; test hardening b7b3637). New compiler/toolchain.rs reads `wasm-bindgen --version` once (LazyLock) and the scaffold emits `wasm-bindgen = \"=X.Y.Z\"` (=0.2.126 here), falling back to \"0.2\" + tracing::warn if unreadable. Prewarmed at server startup (main.rs, spawn_blocking) so the shell-out never blocks the async request path."
 - id: T-003
   title: "Fold toolchain identity into the blake3 cache key"
   priority: 1
-  status: todo
-  notes: "cache.rs:29-62 omits rustc version, wasm-bindgen CLI version, and ironpad-cell source contents, so stale/incompatible blobs are served until CACHE_EPOCH is bumped by hand (CLAUDE.md pitfall). Fold `rustc --version`, `wasm-bindgen --version`, and a hash of the ironpad-cell crate sources into content_hash. Overlaps PRD-0036 T-? (cache correctness) — do this one here."
+  status: done
+  notes: "DONE (commit bcba479). content_hash delegates to a private content_hash_inner that folds in a toolchain fingerprint (rustc --version + wasm-bindgen CLI version) — public signature unchanged (25 call sites). CACHE_EPOCH bumped 1->2. ironpad-cell *source* hashing intentionally deferred (no path in content_hash; dev/Docker paths differ); CACHE_EPOCH remains the documented manual lever for ironpad-cell edits. See PRD-0036 for the broader cache-correctness items (atomic writes, etc.)."
 - id: T-004
   title: "Add an integration test that compiles a sim/host_message cell"
   priority: 1
@@ -140,3 +140,7 @@ Add an integration test (mirroring existing `compiler/mod.rs` e2e tests) that sc
 - **T-001/T-004/T-005** (commit 28e3d41): added `#[link(wasm_import_module = "env")]` to the bare host-import `extern` blocks in `ironpad-cell` (`sim.rs`, `lib.rs`, and `gpu.rs` — the audit found a fourth block). Added the `compile_cell_with_host_imports_links_successfully` regression test, which failed pre-fix with `undefined symbol: ironpad_sim_read`/`ironpad_host_message` on the 2026-06-01 nightly and passes post-fix. Corrected the CLAUDE.md known-issue section. Task review: **Approved** (one Important finding — the implementer's clippy self-check used `--all-targets`, which never cross-compiles the wasm32-gated code; 5 pre-existing pedantic warnings surfaced under a real `--target wasm32` run).
 - **T-006** (toolchain pin): while verifying T-001, confirmed the default `nightly-2026-06-01` cannot compile the `thaw` dep (`queries overflow the depth limit!`), which breaks the cold build/test gate. Added `rust-toolchain.toml` pinning `nightly-2025-12-22` (installed, has wasm32, verified to compile thaw + build/link cells). Cleared the 5 pre-existing wasm32 clippy warnings from the T-001 finding. Verification of the full gate on the pinned toolchain (fmt-check + clippy + compiler e2e incl. the regression test) in progress at time of writing.
 - **Remaining:** T-002 (pin scaffolded wasm-bindgen to host CLI version) and T-003 (fold toolchain identity into the cache key) — Unit B.
+
+## 2026-07-02 — Unit B (T-002, T-003) complete
+- **T-002/T-003** (impl commit bcba479; review-fix commit b7b3637): added `compiler/toolchain.rs` (reads + caches `wasm-bindgen --version` and a rustc+wasm-bindgen fingerprint); scaffold now emits `wasm-bindgen = "=0.2.126"` (exact pin) with a safe `"0.2"` fallback; `content_hash` folds the toolchain fingerprint in via a private `content_hash_inner` (public signature unchanged), `CACHE_EPOCH` 1→2. Task review **Approved** with 2 Important findings — (1) the new `--version` shell-outs blocked the async runtime on first compile → fixed by pre-warming both statics at server startup on a blocking thread (`main.rs` + `toolchain::prewarm()`); (2) the scaffold test hardcoded `=0.2.126` → rewritten to derive the expected pin from `wasm_bindgen_cli_version()`. Minor: removed a duplicate determinism test. Verified: `cargo make fmt`/`clippy` clean, `cargo make test` 490 pass, `cargo build -p ironpad-server` compiles.
+- **PRD-0031 status: done.** All tasks (T-001..T-006) complete. Gate verified on the pinned toolchain (fmt-check + clippy + compiler e2e 6/6 incl. the host-import regression test). Proceeding to the final whole-branch review before merge.
