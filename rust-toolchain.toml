@@ -1,0 +1,10 @@
+# Pinned to a nightly that compiles the `thaw` UI dependency. The 2026-06-01
+# nightly (and nearby) hit `error: queries overflow the depth limit!` while
+# codegen-ing thaw/tachys view types, which breaks `cargo make {build,test,
+# test-integration,ci,uat}` on a cold build. 2025-12-22 is the most recent
+# installed nightly verified to build the ssr harness cleanly. Bump forward
+# once thaw/leptos/tachys ship a fix for the recursion-depth regression.
+[toolchain]
+channel = "nightly-2025-12-22"
+components = ["rustfmt", "clippy", "rust-src"]
+targets = ["wasm32-unknown-unknown"]

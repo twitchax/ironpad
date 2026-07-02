@@ -31,7 +31,7 @@ unsafe extern "C" {
     /// Returns 1 if WebGPU is available, 0 otherwise.
     fn ironpad_gpu_available() -> i32;
     /// Create a GPU buffer. Returns a handle (0 = error).
-    /// Usage: 0=STORAGE, 1=STORAGE|COPY_SRC, 2=MAP_READ|COPY_DST, 3=STORAGE|COPY_DST
+    /// Usage: 0=`STORAGE`, 1=`STORAGE|COPY_SRC`, 2=`MAP_READ|COPY_DST`, 3=`STORAGE|COPY_DST`
     fn ironpad_gpu_create_buffer(size: u32, usage: u32) -> u32;
     /// Write bytes from WASM linear memory into a GPU buffer.
     fn ironpad_gpu_write_buffer(handle: u32, src_ptr: u32, src_len: u32);

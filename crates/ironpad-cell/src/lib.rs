@@ -33,6 +33,8 @@ pub fn host_message(msg: &str) {
     #[cfg(target_arch = "wasm32")]
     {
         let bytes = msg.as_bytes();
+        // `usize` is `u32` on wasm32 (the only target this block compiles for), so the cast is lossless.
+        #[allow(clippy::cast_possible_truncation)]
         unsafe {
             ironpad_host_message(bytes.as_ptr(), bytes.len() as u32);
         }

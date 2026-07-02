@@ -89,6 +89,8 @@ where
     F: FnOnce(*const u8, u32) -> u32,
 {
     let key_bytes = key.as_bytes();
+    // `usize` is `u32` on wasm32 (the only target this block compiles for), so the cast is lossless.
+    #[allow(clippy::cast_possible_truncation)]
     let ptr = ffi_fn(key_bytes.as_ptr(), key_bytes.len() as u32);
 
     if ptr == 0 {

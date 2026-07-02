@@ -134,3 +134,6 @@ Full build sandboxing (gVisor / rootless nested containers) is **explicitly out 
 
 ## 2026-07-02 -- Roadmap created
 - Created from the 2026-07-02 review. Seven epic PRDs (0031-0037) scoped; sequencing and sandboxing decision recorded above.
+
+## 2026-07-02 -- Toolchain-pin prerequisite discovered (during PRD-0031)
+- While verifying PRD-0031, found the default `nightly-2026-06-01` cannot compile the `thaw` UI dependency (`error: queries overflow the depth limit!`), which breaks `cargo make {build,test,test-integration,ci,uat}` on any cold build (it had only been working via a stale cached `thaw` rlib). This blocks the verification gate for **every** epic, so PRD-0031 T-006 pins `rust-toolchain.toml` to `nightly-2025-12-22` as a cross-cutting prerequisite. All subsequent epics assume this pin is in place. Bump the pin forward once thaw/leptos/tachys ship a fix.
