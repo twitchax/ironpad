@@ -197,6 +197,12 @@
       cellId: cellId,
       inputBytes: inputBytes,
     }).catch(async function (workerError) {
+      // A deliberate cancellation (terminate() rejects pending requests with an
+      // AbortError) must NOT fall back to the main thread — re-running a runaway
+      // cell there would freeze the tab. Rethrow so the caller sees the cancel.
+      if (workerError && workerError.name === "AbortError") {
+        throw workerError;
+      }
       // Worker execution failed — fall back to main-thread execution.
       console.warn(
         "ironpad: worker execution failed for " + cellId +
@@ -230,6 +236,10 @@
       type: "tick",
       cellId: cellId,
     }).catch(async function (workerError) {
+      // Deliberate cancellation (AbortError) must not fall back — see execute().
+      if (workerError && workerError.name === "AbortError") {
+        throw workerError;
+      }
       // Worker tick failed — fall back to main-thread execution.
       console.warn(
         "ironpad: worker tick failed for " + cellId +
@@ -264,6 +274,10 @@
       type: "tick_live",
       cellId: cellId,
     }).catch(async function (workerError) {
+      // Deliberate cancellation (AbortError) must not fall back — see execute().
+      if (workerError && workerError.name === "AbortError") {
+        throw workerError;
+      }
       console.warn(
         "ironpad: worker tickLive failed for " + cellId +
         ", retrying on main thread. Worker error: " + workerError.message
