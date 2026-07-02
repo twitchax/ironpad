@@ -6,6 +6,7 @@
 // ── FFI imports (wasm32 only) ────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
 extern "C" {
     /// Read the latest value for `key` from the JS sim bus.
     ///

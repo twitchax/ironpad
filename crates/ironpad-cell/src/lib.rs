@@ -16,6 +16,7 @@
 // ── Host messaging FFI ───────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
 extern "C" {
     /// Send a JSON-encoded message to the host runtime.
     fn ironpad_host_message(ptr: *const u8, len: u32);

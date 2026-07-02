@@ -26,6 +26,7 @@ use crate::SimSliderMeta;
 // ── GPU FFI declarations ────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     /// Returns 1 if WebGPU is available, 0 otherwise.
     fn ironpad_gpu_available() -> i32;

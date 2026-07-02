@@ -509,14 +509,11 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 ### Known Issue: `rust-lld` Linking Failures During Cell Evaluation
 
-Cell compilation targets `wasm32-unknown-unknown`, which uses `rust-lld` as the default linker. If `rust-lld` is not properly installed or accessible in the Rust toolchain, cells will fail to link even though `cargo build` of the ironpad project itself succeeds (since the host target uses `clang`+`mold`).
+Cell compilation targets `wasm32-unknown-unknown`, which uses `rust-lld` as the default linker. On current nightly toolchains, `rust-lld` for this target no longer defaults to `--allow-undefined`, so any bare `extern "C"` block in `ironpad-cell` declaring a host-provided import (e.g. `ironpad_sim_read`, `ironpad_host_message`, the `ironpad_gpu_*` functions) fails to link with an error like `rust-lld: error: undefined symbol: ironpad_sim_read` — even though `cargo build` of the ironpad project itself succeeds (the host target uses `clang`+`mold` and isn't affected).
 
-**Diagnosis**: Run `rustup component list --installed | grep llvm` to check LLVM tools availability. The `rust-lld` binary lives inside the toolchain sysroot at `$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld`.
+**Root cause**: the browser executor supplies these host functions under the WASM import module `env` (see `public/executor-core.js`), but the `extern "C"` blocks in `ironpad-cell` (`sim.rs`, `lib.rs`, `gpu.rs`) didn't tell rustc which import module to target, so the linker couldn't resolve them once `--allow-undefined` stopped being the default.
 
-**Potential fixes**:
-- Ensure `llvm-tools` or `llvm-tools-preview` component is installed: `rustup component add llvm-tools-preview`
-- Or set a `.cargo/config.toml` in the project root to explicitly configure the WASM linker
-- Or pass explicit `RUSTFLAGS` in the build command to specify the linker path
+**Fix**: annotate each host-import `extern "C"` block with `#[link(wasm_import_module = "env")]` (PRD-0031 T-001). This is a compile-time hint, not a linker flag — no `.cargo/config.toml` or `RUSTFLAGS` changes are needed. Regression coverage lives in `crates/ironpad-app/src/compiler/mod.rs::e2e_tests::compile_cell_with_host_imports_links_successfully`.
 
 ### PRD / microralph
 
