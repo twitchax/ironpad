@@ -505,6 +505,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         // Used inside #[cfg(feature = "hydrate")] below.
         let _ = &input_bytes;
 
+        // Mark compiling BEFORE invalidating outputs so the downstream-clear effect
+        // (see below) can tell this cell's own re-run (status == Compiling) apart from
+        // an upstream re-run that invalidated us (status still Idle/Success/Error).
+        cell_status.set(CellStatus::Compiling);
+
         // Invalidate downstream Code cells' cached outputs (this cell and all after it).
         {
             let cells = state.cells.get_untracked();
@@ -526,7 +531,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             });
         }
 
-        cell_status.set(CellStatus::Compiling);
         last_compile.set(None);
         compile_time_ms.set(None);
 
@@ -1153,6 +1157,34 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             {
                 source_dirty.set(false);
                 cargo_toml_dirty.set(false);
+            }
+        });
+    }
+
+    // ── Clear stale local output when invalidated by an upstream re-run ──
+    //
+    // When an upstream cell re-runs, it removes this (downstream) cell's cached
+    // output from the page-level `cell_outputs` map. The Output/CompileResult
+    // panels render from this cell's *local* `execution_result`, which would
+    // otherwise keep showing the now-stale result until this cell re-runs. Clear
+    // it when our cached output disappears while we're idle — but NOT during this
+    // cell's own re-run (status is set to Compiling before it invalidates itself).
+
+    #[cfg(feature = "hydrate")]
+    {
+        let cid_invalidate = StoredValue::new(cell.id.clone());
+        Effect::new(move || {
+            let has_output = state
+                .cell_outputs
+                .with(|m| m.contains_key(&cid_invalidate.get_value()));
+            if !has_output
+                && execution_result.get_untracked().is_some()
+                && !matches!(
+                    cell_status.get_untracked(),
+                    CellStatus::Compiling | CellStatus::Running | CellStatus::Queued
+                )
+            {
+                execution_result.set(None);
             }
         });
     }
