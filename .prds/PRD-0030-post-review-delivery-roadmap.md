@@ -30,13 +30,13 @@ tasks:
 - id: T-001
   title: "PRD-0031 Toolchain & cell execution (P0 — un-break everything)"
   priority: 1
-  status: todo
-  notes: "Ship first. Blocks meaningful verification of every other epic. See PRD-0031."
+  status: done
+  notes: "DONE + merged to main (commits ..1c2a8c5). Fixed host-import linking + wasm-bindgen drift; pinned nightly-2025-12-22 (T-006) which unblocked the whole build/test gate. Final review: ready to merge. See PRD-0031."
 - id: T-002
   title: "PRD-0032 Editor UX bugs (E1-E11)"
   priority: 2
-  status: todo
-  notes: "Depends on 0031 for browser verification. Highest user-visible payoff. See PRD-0032."
+  status: in-progress
+  notes: "Depends on 0031 for browser verification. Highest user-visible payoff. Started on branch fix/prd-0032-editor-ux-bugs. See PRD-0032."
 - id: T-003
   title: "PRD-0033 Data safety: storage & executor robustness"
   priority: 2
