@@ -404,9 +404,18 @@ fn update_cell_output(
         }
     });
 
+    // Mark strictly-downstream Code cells stale so the reactive runner
+    // re-executes the cells that consume this widget's value. The old code only
+    // flipped *existing* cell_stale keys, but a clean run removes a cell's entry
+    // — so after any successful run the map was empty and nothing downstream
+    // re-ran. We skip the widget's own cell: its output is set directly above.
+    let cells = ctx.cells.get_untracked();
+    let my_idx = cells.iter().position(|c| &c.id == cid).unwrap_or(0);
     ctx.cell_stale.update(|map| {
-        for val in map.values_mut() {
-            *val = true;
+        for cell in cells.iter().skip(my_idx + 1) {
+            if cell.cell_type == CellType::Code {
+                map.insert(cell.id.clone(), true);
+            }
         }
     });
 }
