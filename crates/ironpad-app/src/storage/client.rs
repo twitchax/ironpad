@@ -32,10 +32,35 @@ extern "C" {
 
 // ── Typed Rust API ──────────────────────────────────────────────────────────
 
+/// Deserialize a JS array of notebooks element-by-element, skipping (and logging)
+/// any record that fails to deserialize.
+///
+/// This is deliberately resilient: deserializing the whole array as
+/// `Vec<IronpadNotebook>` in one shot means a single malformed or old-schema
+/// record errors the entire batch and hides *every* notebook. Per-element
+/// deserialization drops only the bad record.
+fn deserialize_notebook_array(val: &JsValue) -> Vec<IronpadNotebook> {
+    if !js_sys::Array::is_array(val) {
+        // Not an array (null/undefined/unexpected shape) — treat as empty.
+        return Vec::new();
+    }
+    js_sys::Array::from(val)
+        .iter()
+        .filter_map(
+            |item| match serde_wasm_bindgen::from_value::<IronpadNotebook>(item) {
+                Ok(nb) => Some(nb),
+                Err(e) => {
+                    leptos::logging::warn!("skipping malformed notebook record in IndexedDB: {e}");
+                    None
+                }
+            },
+        )
+        .collect()
+}
+
 /// Lists all private notebooks from `IndexedDB`, sorted by `updated_at` descending.
 pub async fn list_notebooks() -> Vec<IronpadNotebook> {
-    let val = js_list_notebooks().await;
-    serde_wasm_bindgen::from_value(val).unwrap_or_default()
+    deserialize_notebook_array(&js_list_notebooks().await)
 }
 
 /// Retrieves a single notebook by ID, or `None` if not found.
@@ -60,8 +85,7 @@ pub async fn delete_notebook(id: &str) {
 
 /// Searches notebooks by title substring.
 pub async fn search_notebooks(query: &str) -> Vec<IronpadNotebook> {
-    let val = js_search_notebooks(query).await;
-    serde_wasm_bindgen::from_value(val).unwrap_or_default()
+    deserialize_notebook_array(&js_search_notebooks(query).await)
 }
 
 /// Exports a notebook as a JSON string, or `None` if not found.
