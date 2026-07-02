@@ -43,6 +43,13 @@ async fn main() {
         ws: WsState::default(),
     };
 
+    // Pre-warm the toolchain fingerprint / wasm-bindgen CLI version caches on a
+    // blocking thread so the first cell compile doesn't block a tokio worker
+    // thread on `wasm-bindgen --version` / `rustc --version` shell-outs.
+    tokio::task::spawn_blocking(ironpad_app::compiler::toolchain::prewarm)
+        .await
+        .ok();
+
     // Thaw's `ToasterProvider` creates an effect that calls `spawn_local` during
     // route generation. Entering a `LocalSet` gives `spawn_local` a valid context;
     // the spawned tasks are never driven since we only need the route list.

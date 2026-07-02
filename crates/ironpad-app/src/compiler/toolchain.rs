@@ -74,6 +74,19 @@ pub fn toolchain_fingerprint() -> &'static str {
     &TOOLCHAIN_FINGERPRINT
 }
 
+/// Force both `LazyLock` statics to initialize.
+///
+/// Their first access shells out to `wasm-bindgen --version` and
+/// `rustc --version` via blocking `std::process::Command`. Left to
+/// initialize lazily, that first access would happen inside the async
+/// `compile_cell` server fn, blocking a tokio worker thread. Call this once
+/// at server startup (on a blocking thread) so the async request path never
+/// pays the process-spawn cost.
+pub fn prewarm() {
+    let _ = wasm_bindgen_cli_version();
+    let _ = toolchain_fingerprint();
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

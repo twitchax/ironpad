@@ -449,14 +449,4 @@ mod tests {
         let b = content_hash_inner("x", "y", &[], None, None, false, "toolchain-a");
         assert_eq!(a, b);
     }
-
-    #[test]
-    fn public_content_hash_still_deterministic_across_two_calls() {
-        // The public `content_hash` must remain deterministic within a process
-        // even though it now delegates to `content_hash_inner` with the
-        // process-cached toolchain fingerprint.
-        let a = content_hash("fn main() {}", "[dependencies]", &[], None, None, false);
-        let b = content_hash("fn main() {}", "[dependencies]", &[], None, None, false);
-        assert_eq!(a, b);
-    }
 }

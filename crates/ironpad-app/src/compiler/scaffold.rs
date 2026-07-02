@@ -773,16 +773,22 @@ serde = { version = "1", features = ["derive"] }
 
     #[test]
     fn cargo_toml_pins_wasm_bindgen_to_exact_cli_version() {
-        // The wasm-bindgen CLI is installed in this test environment (see
-        // unit-b-brief.md), so the scaffold should emit an exact-version pin
-        // rather than the old floating "0.2" requirement.
+        // Derive the expectation from the toolchain module under test rather
+        // than hardcoding a version, so this doesn't break on a wasm-bindgen
+        // CLI upgrade or a differently-pinned CI image.
         let cell_path = PathBuf::from("/opt/ironpad-cell");
         let result = generate_cargo_toml("cell0", "", &cell_path, None, false);
 
-        assert!(
-            result.contains(r#"wasm-bindgen = "=0.2.126""#),
-            "expected exact wasm-bindgen pin matching host CLI, got:\n{result}"
-        );
+        match super::super::toolchain::wasm_bindgen_cli_version() {
+            Some(v) => assert!(
+                result.contains(&format!(r#"wasm-bindgen = "={v}""#)),
+                "expected exact wasm-bindgen pin matching host CLI {v}, got:\n{result}"
+            ),
+            None => assert!(
+                result.contains(r#"wasm-bindgen = "0.2""#),
+                "expected floating wasm-bindgen fallback, got:\n{result}"
+            ),
+        }
     }
 
     // ── generate_lib_rs ─────────────────────────────────────────────────
