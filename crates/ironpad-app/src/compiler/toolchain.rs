@@ -54,13 +54,24 @@ static TOOLCHAIN_FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
 /// `"wasm-bindgen 0.2.126\n"` -> `Some("0.2.126")`.
 ///
 /// Returns `None` if the output doesn't match the expected `wasm-bindgen X.Y.Z`
-/// shape.
+/// shape, or if the version token isn't a bare dotted-numeric version (e.g. a
+/// future CLI printing a build hash like `"0.2.126 (abc1234)"`). Emitting a
+/// non-semver token here would produce an invalid exact requirement
+/// (`wasm-bindgen = "=0.2.126 (abc1234)"`) that breaks every cell — worse
+/// than falling back to the floating `"0.2"` requirement.
 fn parse_wasm_bindgen_version(stdout: &str) -> Option<&str> {
     let version = stdout.trim().strip_prefix("wasm-bindgen ")?.trim();
-    if version.is_empty() {
+    if version.is_empty() || !is_bare_semver(version) {
         return None;
     }
     Some(version)
+}
+
+/// True if `s` looks like a bare dotted-numeric version (e.g. `"0.2.126"`):
+/// only ASCII digits and `.`, with no interior whitespace or other trailing
+/// content (such as a build hash in parentheses).
+fn is_bare_semver(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
 }
 
 /// Cached host `wasm-bindgen` CLI version (e.g. `"0.2.126"`), or `None` if it
@@ -131,6 +142,16 @@ mod tests {
     fn parse_wasm_bindgen_version_returns_none_for_prefix_only() {
         assert_eq!(parse_wasm_bindgen_version("wasm-bindgen "), None);
         assert_eq!(parse_wasm_bindgen_version("wasm-bindgen"), None);
+    }
+
+    #[test]
+    fn parse_wasm_bindgen_version_returns_none_for_non_semver_suffix() {
+        // A hypothetical future CLI appending a build hash must not produce
+        // an invalid exact requirement like `=0.2.126 (abc1234)`.
+        assert_eq!(
+            parse_wasm_bindgen_version("wasm-bindgen 0.2.126 (abc1234)"),
+            None
+        );
     }
 
     #[test]

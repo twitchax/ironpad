@@ -4,6 +4,14 @@
 # test-integration,ci,uat}` on a cold build. 2025-12-22 is the most recent
 # installed nightly verified to build the ssr harness cleanly. Bump forward
 # once thaw/leptos/tachys ship a fix for the recursion-depth regression.
+#
+# PRD-0031 T-001 note: the wasm host-import link regression test
+# (`compile_cell_with_host_imports_links_successfully` in
+# `crates/ironpad-app/src/compiler/mod.rs`) is only *discriminating* on
+# nightlies that dropped the `--allow-undefined` default for wasm32 (this
+# pin, 2025-12-22, still allows it, so the test passes even without the
+# `#[link(wasm_import_module = "env")]` fix). When bumping this pin forward,
+# re-confirm that regression test still fails without the fix.
 [toolchain]
 channel = "nightly-2025-12-22"
 components = ["rustfmt", "clippy", "rust-src"]

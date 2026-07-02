@@ -420,6 +420,16 @@ mod e2e_tests {
     /// rejected these as undefined symbols (e.g. `undefined symbol:
     /// ironpad_sim_read`) because it no longer defaults to
     /// `--allow-undefined` for `wasm32-unknown-unknown`.
+    ///
+    /// Note: this guard only *discriminates* on nightlies that dropped the
+    /// `--allow-undefined` default for wasm32. Verified experimentally that
+    /// the pinned `nightly-2025-12-22` (see `rust-toolchain.toml`) still
+    /// allows undefined symbols, so this test passes with or without the
+    /// `#[link(...)]` fix while that pin is in place — the fix is correct
+    /// and necessary regardless, but the test's teeth return once the pin is
+    /// bumped forward to a strict nightly (e.g. 2026-06-01+). Browser-level
+    /// module-name correctness is independently covered by the Playwright
+    /// uat-003 acceptance test in PRD-0031.
     #[tokio::test]
     #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_cell_with_host_imports_links_successfully() {
