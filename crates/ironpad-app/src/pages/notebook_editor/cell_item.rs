@@ -150,6 +150,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             state.cell_display_texts.update(|map| {
                 map.remove(&cid_cleanup);
             });
+            // Drop the deleted cell from the run-all queue so a Run All that was
+            // in flight doesn't stall on a gone cell (leaving the rest "Queued").
+            state
+                .run_all_queue
+                .update(|q| q.retain(|id| id != &cid_cleanup));
             persist_notebook(&state);
         }
     };
@@ -802,7 +807,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // Find and focus the next cell's editor.
                 let cid = cell_id_for_keys.get_value();
                 let cells = state.cells.get_untracked();
-                let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+                // If this cell was removed, don't advance to the wrong index — bail.
+                let Some(my_idx) = cells.iter().position(|c| c.id == cid) else {
+                    return;
+                };
                 let handles = state.editor_handles.get_untracked();
 
                 // Look for the next cell (any type) that has a registered editor handle.

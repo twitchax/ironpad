@@ -539,6 +539,12 @@ fn ViewOnlyCodeCell(
                     {button_text}
                 </button>
                 {move || {
+                    // compile_time_ms is set even when the compile returns an empty
+                    // blob (a failed compile with diagnostics), so gate the success
+                    // (✓) badge on there being no error — the error panel shows instead.
+                    if error_message.get().is_some() {
+                        return view! { <span /> }.into_any();
+                    }
                     let compile = compile_time_ms.get();
                     let runtime = execution_result.get().map(|r| r.execution_time_ms);
                     match (compile, runtime) {
