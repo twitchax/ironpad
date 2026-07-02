@@ -44,13 +44,13 @@ tasks:
 - id: T-001
   title: "E1: Memoize the load gate so structural edits don't rebuild the whole cell tree"
   priority: 1
-  status: todo
-  notes: "mod.rs:260-266 gate tracks the entire state.notebook signal; cell_add/delete/reorder/meta use tracked notebook.update (model.rs:265,394,418,451) so <NotebookContent/> is torn down + rebuilt, resetting each CellItem's local signals (status/output/diagnostics/collapse/tab) and re-registering the outside-click listener + re-initing SortableJS each time. Fix: gate on Memo::new(|_| state.notebook.with(|n| n.is_some())) inside a <Show>. LAND WITH T-002 (this unmasks the stale badge)."
+  status: done
+  notes: "DONE (commit 7029c6c). Gate now `Memo::new(move |_| state.notebook.with(Option::is_some))` in a <Show> (mod.rs). BROWSER-VERIFIED: adding a cell preserves other cells' compile status/output/diagnostics; the inner <For key=id> updates the list incrementally."
 - id: T-002
   title: "E5: Derive cell order badge [N] and label from live position, not the once-captured cell"
   priority: 1
-  status: todo
-  notes: "cell_item.rs:26,143,1229: badge/label seeded from the cell captured at mount; masked today by E1's constant rebuild. After T-001, <For key=id> (mod.rs:823) preserves CellItem across reorder → stale badge. Derive position via Signal::derive(move || state.cells.get().iter().position(|c| c.id == cid)); reconcile label from cells on change."
+  status: done
+  notes: "DONE (commit 7029c6c). Order badge now a Signal::derive looking up this cell's order in state.cells by id (fallback to captured order mid-delete) — cell_item.rs. BROWSER-VERIFIED: badges update live on reorder ([0]<->[1]). Label reconciliation deferred (no focus guard to hook into; only affects remote/agent renames — tracked as a follow-up)."
 - id: T-003
   title: "E2: Persist notebook title on rename"
   priority: 1
