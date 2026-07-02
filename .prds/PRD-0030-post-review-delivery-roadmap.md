@@ -35,8 +35,8 @@ tasks:
 - id: T-002
   title: "PRD-0032 Editor UX bugs (E1-E11)"
   priority: 2
-  status: in-progress
-  notes: "11/12 tasks done on branch fix/prd-0032-editor-ux-bugs (T-010 deferred, minor). Units 1-3 browser-verified; 4-7 gate-green + diff-reviewed. Awaiting merge decision. See PRD-0032."
+  status: done
+  notes: "DONE + merged. All 12 tasks; uat-001/002/003/005 verified via committed e2e tests (uat-004 skipped/manual). See PRD-0032."
 - id: T-003
   title: "PRD-0033 Data safety: storage & executor robustness"
   priority: 2
