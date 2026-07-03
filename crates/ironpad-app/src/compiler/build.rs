@@ -106,49 +106,75 @@ pub async fn build_micro_crate(
     );
 
     let timeout = build_timeout();
-    let output = tokio::time::timeout(timeout, {
-        let mut cmd = Command::new("cargo");
 
-        if needs_atomics {
-            cmd.arg("+nightly");
-            // Ensure the rustup shim respects +nightly over any inherited override.
-            cmd.env_remove("RUSTUP_TOOLCHAIN");
-        }
+    let mut cmd = Command::new("cargo");
 
-        cmd.arg("build")
-            .arg("--target")
-            .arg("wasm32-unknown-unknown")
-            .arg("--release")
-            .arg("--message-format=json")
-            .current_dir(crate_dir)
-            .env("CARGO_HOME", &cargo_home)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            // Clear host-target flags that may leak from the parent process
-            // (e.g. cargo-leptos setting RUSTFLAGS with `-fuse-ld=mold`).
-            .env_remove("RUSTFLAGS")
-            .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .env_remove("CARGO_BUILD_RUSTFLAGS");
+    if needs_atomics {
+        cmd.arg("+nightly");
+        // Ensure the rustup shim respects +nightly over any inherited override.
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
+    }
 
-        if let Some(proxy) = compilation_proxy {
-            cmd.env("HTTPS_PROXY", proxy);
-            cmd.env("HTTP_PROXY", proxy);
-        }
+    cmd.arg("build")
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .arg("--release")
+        .arg("--message-format=json")
+        .current_dir(crate_dir)
+        .env("CARGO_HOME", &cargo_home)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        // Clear host-target flags that may leak from the parent process
+        // (e.g. cargo-leptos setting RUSTFLAGS with `-fuse-ld=mold`).
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_BUILD_RUSTFLAGS")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        // Backstop: if the future is dropped, kill at least the direct child.
+        .kill_on_drop(true);
 
-        if needs_atomics {
-            cmd.arg("-Zbuild-std=std,panic_abort");
-            cmd.env("RUSTFLAGS", ATOMICS_RUSTFLAGS);
-        }
+    // Run cargo as its own process-group leader so a timeout can kill cargo AND
+    // its rustc/build-script children in one killpg — killing only cargo leaves
+    // a compile-bomb's children burning CPU/RAM.
+    #[cfg(unix)]
+    cmd.process_group(0);
 
-        cmd.output()
-    })
-    .await
-    .map_err(|_| {
-        tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", timeout.as_secs());
-        anyhow::anyhow!("compilation timed out after {}s", timeout.as_secs())
-    })?
-    .map_err(|e| {
+    if let Some(proxy) = compilation_proxy {
+        cmd.env("HTTPS_PROXY", proxy);
+        cmd.env("HTTP_PROXY", proxy);
+    }
+
+    if needs_atomics {
+        cmd.arg("-Zbuild-std=std,panic_abort");
+        cmd.env("RUSTFLAGS", ATOMICS_RUSTFLAGS);
+    }
+
+    let child = cmd.spawn().map_err(|e| {
         tracing::error!(cell_id = %cell_id, error = %e, "failed to spawn cargo");
         anyhow::anyhow!("failed to spawn cargo: {e}")
+    })?;
+    let child_pid = child.id();
+
+    let Ok(wait_result) = tokio::time::timeout(timeout, child.wait_with_output()).await else {
+        // Timed out: kill the whole process group (cargo + rustc + build
+        // scripts). The negated pgid equals cargo's pid because we made it the
+        // group leader; SIGKILL can't be caught, so the tree dies.
+        #[cfg(unix)]
+        if let Some(pid) = child_pid.and_then(|p| i32::try_from(p).ok()) {
+            // SAFETY: kill(2) with a negative pid signals the process group.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+        tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", timeout.as_secs());
+        return Err(anyhow::anyhow!(
+            "compilation timed out after {}s",
+            timeout.as_secs()
+        ));
+    };
+    let output = wait_result.map_err(|e| {
+        tracing::error!(cell_id = %cell_id, error = %e, "cargo build failed to complete");
+        anyhow::anyhow!("cargo build failed: {e}")
     })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
