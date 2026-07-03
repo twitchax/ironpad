@@ -589,6 +589,21 @@ services:
       - IRONPAD_CELL_PATH=/app/crates/ironpad-cell
 ```
 
+### Observability (OpenTelemetry)
+
+The server always logs to stdout via `tracing` (level controlled by `RUST_LOG`, default `info`). OTLP **trace** export is **opt-in** and off by default — it turns on only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. A `tower-http` `TraceLayer` emits one span per HTTP request, which is what gets exported.
+
+To export to Grafana Cloud (or any OTLP backend), set the standard env vars — the exporter reads them itself, so **no credentials live in code or config**. On Fly, use secrets so the token stays in Fly's encrypted store:
+
+```bash
+# Endpoint, instance ID, and token come from your Grafana Cloud OTLP page.
+fly secrets set -c .hidden/fly.toml \
+  OTEL_EXPORTER_OTLP_ENDPOINT='https://otlp-gateway-<zone>.grafana.net/otlp' \
+  OTEL_EXPORTER_OTLP_HEADERS='Authorization=Basic <base64(instanceID:token)>'
+```
+
+For local testing, export the same two vars in your shell before `cargo make dev` (there is no `.env` auto-loading). TLS uses rustls with bundled webpki roots, so no system OpenSSL or cert store is required in the container. Metrics/logs export are easy follow-ons once traces are confirmed flowing.
+
 ---
 
 ## Compilation Security

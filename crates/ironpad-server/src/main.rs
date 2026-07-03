@@ -9,6 +9,9 @@ use clap::Parser;
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
 use tower_http::set_header::SetResponseHeaderLayer;
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 use ironpad_app::*;
 use ironpad_common::AppConfig;
@@ -19,11 +22,30 @@ use crate::config::CliArgs;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    // OpenTelemetry OTLP export is opt-in: enabled only when
+    // `OTEL_EXPORTER_OTLP_ENDPOINT` is set (e.g. a Grafana Cloud OTLP gateway,
+    // supplied via `fly secrets set`). The exporter reads the endpoint and auth
+    // headers from the standard `OTEL_EXPORTER_OTLP_*` env vars, so no
+    // credentials ever live in code or config. When unset this is a no-op and
+    // the server logs to stdout exactly as before.
+    let otel_provider = init_otel_provider();
+    let otel_layer = otel_provider.as_ref().map(|provider| {
+        use opentelemetry::trace::TracerProvider as _;
+        tracing_opentelemetry::layer().with_tracer(provider.tracer("ironpad-server"))
+    });
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(otel_layer)
         .init();
+
+    if otel_provider.is_some() {
+        tracing::info!("OpenTelemetry OTLP trace export enabled");
+    }
 
     let args = CliArgs::parse();
     let config: AppConfig = args.into();
@@ -107,7 +129,14 @@ async fn main() {
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("cross-origin-embedder-policy"),
             HeaderValue::from_static("require-corp"),
-        ));
+        ))
+        // One span per HTTP request (at INFO so it passes the default filter),
+        // which is what OpenTelemetry exports as a trace. Outermost layer so it
+        // spans the whole request.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO)),
+        );
 
     tracing::info!("listening on http://{}", &addr);
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -116,4 +145,62 @@ async fn main() {
     axum::serve(listener, app.into_make_service())
         .await
         .expect("server");
+}
+
+/// Build an OTLP tracer provider when OpenTelemetry export is configured.
+///
+/// Opt-in: returns `None` unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so the
+/// server keeps its plain stdout logging until an endpoint is provided. The
+/// OTLP exporter reads the endpoint and auth headers from the standard
+/// `OTEL_EXPORTER_OTLP_*` env vars, so no credentials live in code or config.
+fn init_otel_provider() -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
+    if !otel_export_enabled(std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").as_deref()) {
+        return None;
+    }
+
+    let exporter = match opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .build()
+    {
+        Ok(exporter) => exporter,
+        Err(err) => {
+            // The subscriber isn't initialized yet, so stderr is the only channel.
+            eprintln!("OTLP exporter init failed; trace export disabled: {err}");
+            return None;
+        }
+    };
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder()
+                .with_service_name("ironpad-server")
+                .build(),
+        )
+        .build();
+
+    Some(provider)
+}
+
+/// OTLP export is opt-in on a configured endpoint. Pulled out as a pure helper
+/// so the gating contract is unit-testable without touching process env.
+fn otel_export_enabled(endpoint: Option<&std::ffi::OsStr>) -> bool {
+    endpoint.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::otel_export_enabled;
+
+    #[test]
+    fn otel_export_is_off_without_an_endpoint() {
+        assert!(!otel_export_enabled(None));
+    }
+
+    #[test]
+    fn otel_export_is_on_with_an_endpoint() {
+        assert!(otel_export_enabled(Some(std::ffi::OsStr::new(
+            "https://otlp-gateway.grafana.net/otlp"
+        ))));
+    }
 }
