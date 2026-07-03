@@ -45,7 +45,7 @@ tasks:
 - id: T-004
   title: "PRD-0034 UI polish / stylesheet"
   priority: 3
-  status: in-progress
+  status: done
   notes: "Mostly independent of 0031; can run in parallel. Biggest visual payoff per line. See PRD-0034."
 - id: T-005
   title: "PRD-0035 Collaboration / session layer"
