@@ -32,6 +32,13 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
         )));
     }
 
+    // Serialize concurrent compiles of the same cell so their shared scaffold
+    // dir can't be overwritten mid-build (which would cache one source's output
+    // under another's hash). Held for the whole compile. Distinct cells don't
+    // contend — they scaffold into distinct directories.
+    let compile_locks = expect_context::<crate::compiler::CompileLocks>();
+    let _compile_guard = compile_locks.acquire(&request.cell_id).await;
+
     // Scaffold first so we can detect rayon (needs_atomics) before hashing.
 
     let (crate_dir, preamble_lines, _is_async, _is_simulation, needs_atomics) =

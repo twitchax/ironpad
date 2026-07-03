@@ -74,6 +74,9 @@ async fn main() {
     let _guard = local.enter();
     let routes = generate_route_list(App);
 
+    // Shared across all compile requests; serializes same-cell compiles.
+    let compile_locks = ironpad_app::compiler::CompileLocks::default();
+
     let app = Router::new()
         .route("/ws/host", get(ws::ws_host_handler))
         .route("/ws/connect", get(ws::ws_connect_handler))
@@ -83,9 +86,11 @@ async fn main() {
             {
                 let config = config.clone();
                 let leptos_options = leptos_options.clone();
+                let compile_locks = compile_locks.clone();
                 move || {
                     provide_context(config.clone());
                     provide_context(leptos_options.clone());
+                    provide_context(compile_locks.clone());
                 }
             },
             {

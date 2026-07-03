@@ -7,6 +7,67 @@ pub mod optimize;
 pub mod scaffold;
 pub mod toolchain;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// Serializes concurrent compiles that share a cell id.
+///
+/// Each cell scaffolds into `{cache}/workspaces/default/{cell_id}`, a path keyed
+/// only by `cell_id`. Two requests with the same id (the same notebook in two
+/// tabs, or an attacker-chosen id colliding with a victim's) would otherwise
+/// race: one overwrites the other's scaffolded source, and the loser builds the
+/// wrong source and caches it under its *own* content hash — cache poisoning.
+/// Holding the per-cell lock across scaffold → build → cache makes those
+/// requests run one at a time. Distinct cell ids use distinct dirs and never
+/// contend. Cloneable; all clones share one lock table.
+#[derive(Clone, Default)]
+pub struct CompileLocks {
+    locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+impl CompileLocks {
+    /// Acquire the lock for `cell_id`, awaiting any in-flight compile of the
+    /// same id. The returned guard must be held for the whole compile.
+    pub async fn acquire(&self, cell_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let cell_lock = {
+            let mut table = self.locks.lock().expect("compile-lock table poisoned");
+            table.entry(cell_id.to_string()).or_default().clone()
+        };
+        cell_lock.lock_owned().await
+    }
+}
+
+#[cfg(test)]
+mod compile_locks_tests {
+    use super::CompileLocks;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn same_cell_serializes() {
+        let locks = CompileLocks::default();
+        let guard = locks.acquire("cell-1").await;
+
+        // A second acquire of the same cell cannot complete while the first is held.
+        let blocked =
+            tokio::time::timeout(Duration::from_millis(50), locks.acquire("cell-1")).await;
+        assert!(blocked.is_err(), "same-cell acquire must block while held");
+
+        drop(guard);
+        let after = tokio::time::timeout(Duration::from_millis(500), locks.acquire("cell-1")).await;
+        assert!(after.is_ok(), "acquire should succeed after release");
+    }
+
+    #[tokio::test]
+    async fn different_cells_do_not_block() {
+        let locks = CompileLocks::default();
+        let _guard = locks.acquire("cell-1").await;
+
+        // A different cell must not contend on the first cell's lock.
+        let other = tokio::time::timeout(Duration::from_millis(500), locks.acquire("cell-2")).await;
+        assert!(other.is_ok(), "distinct cells should not block each other");
+    }
+}
+
 // ── Cross-module pipeline integration tests ─────────────────────────────────
 
 #[cfg(test)]

@@ -37,8 +37,12 @@ pub async fn optimize_wasm(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bo
 }
 
 async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bool) -> Result<Vec<u8>> {
-    let input_path = work_dir.join("pre_opt.wasm");
-    let output_path = work_dir.join("post_opt.wasm");
+    // Unique per-compile filenames: `work_dir` is shared across cells, so fixed
+    // names (`pre_opt.wasm`/`post_opt.wasm`) let concurrent compiles of
+    // different cells clobber each other's temp files mid-optimization.
+    let stem = uuid::Uuid::new_v4();
+    let input_path = work_dir.join(format!("opt-{stem}.pre.wasm"));
+    let output_path = work_dir.join(format!("opt-{stem}.post.wasm"));
 
     tokio::fs::write(&input_path, wasm_bytes).await?;
 
