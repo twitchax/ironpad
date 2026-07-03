@@ -20,20 +20,33 @@ mod js {
     }
 }
 
-// ── Markdown rendering (hydrate-only) ───────────────────────────────────────
+// ── Live content rendering ──────────────────────────────────────────────────
 
-#[cfg(feature = "hydrate")]
-fn render_markdown(source: &str) -> String {
-    use pulldown_cmark::{html, Options, Parser};
+/// How a `LiveView` cell's content should reach the DOM.
+#[cfg(any(feature = "hydrate", test))]
+enum LiveContent<'a> {
+    /// Sanitized HTML, safe to inject via `inner_html`.
+    Html(String),
+    /// Plain text, set via `text_content` (no HTML interpretation).
+    Text(&'a str),
+}
 
-    let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_TABLES);
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
-    opts.insert(Options::ENABLE_MATH);
-    let parser = Parser::new_ext(source, opts);
-    let mut html_out = String::new();
-    html::push_html(&mut html_out, parser);
-    html_out
+/// Decide how a `LiveView` cell's content renders, by kind.
+///
+/// `html` and `markdown` are sanitized: `LiveView` output is untrusted and, in a
+/// shared or public notebook, viewed by others (the same stored-XSS threat the
+/// sanitizer guards against for `Html`/`Svg` panels). Markdown routes through
+/// the shared `markdown_cell::render_markdown` so `KaTeX` math classes survive
+/// and there is a single markdown code path. No DOM calls, so the sanitization
+/// stays unit-testable.
+#[cfg(any(feature = "hydrate", test))]
+fn render_live_content<'a>(kind: &str, text: &'a str) -> LiveContent<'a> {
+    match kind {
+        "html" => LiveContent::Html(crate::sanitize::sanitize_html(text)),
+        "markdown" => LiveContent::Html(crate::components::markdown_cell::render_markdown(text)),
+        // "text" and anything else: plain text.
+        _ => LiveContent::Text(text),
+    }
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -111,18 +124,13 @@ pub fn LiveViewPanel(
             Rc::new(
                 move |el: &web_sys::HtmlElement, kind_override: Option<&str>, text: &str| {
                     let k = kind_override.unwrap_or(&kind_inner);
-                    match k {
-                        "html" => {
-                            el.set_inner_html(text);
-                        }
-                        "markdown" => {
-                            let html = render_markdown(text);
+                    match render_live_content(k, text) {
+                        LiveContent::Html(html) => {
                             el.set_inner_html(&html);
                             let _ = js::render_math_in(el);
                         }
-                        // "text" and anything else: plain text.
-                        _ => {
-                            el.set_text_content(Some(text));
+                        LiveContent::Text(t) => {
+                            el.set_text_content(Some(t));
                         }
                     }
                 },
@@ -305,5 +313,49 @@ pub fn LiveViewPanel(
             </div>
         }
         .into_any()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render_live_content, LiveContent};
+
+    #[test]
+    fn html_kind_is_sanitized() {
+        // LiveView `html` output is untrusted; script/handlers must be stripped
+        // before it is injected via inner_html into a viewer's origin.
+        let LiveContent::Html(out) = render_live_content(
+            "html",
+            r#"<p onclick="steal()">hi</p><script>steal()</script>"#,
+        ) else {
+            panic!("html kind should produce Html");
+        };
+        assert!(out.contains("hi"), "kept text: {out}");
+        assert!(!out.contains("<script"), "stripped script: {out}");
+        assert!(!out.contains("onclick"), "stripped handler: {out}");
+        assert!(!out.contains("steal"), "stripped payload: {out}");
+    }
+
+    #[test]
+    fn markdown_kind_sanitizes_and_keeps_math() {
+        // Markdown routes through the shared sanitizing renderer: raw HTML is
+        // stripped, but KaTeX math span classes survive so math still renders.
+        let LiveContent::Html(out) =
+            render_live_content("markdown", r"$e^{i\pi}+1=0$ <script>steal()</script>")
+        else {
+            panic!("markdown kind should produce Html");
+        };
+        assert!(out.contains("math-inline"), "kept math class: {out}");
+        assert!(!out.contains("<script"), "stripped script: {out}");
+        assert!(!out.contains("steal"), "stripped payload: {out}");
+    }
+
+    #[test]
+    fn text_kind_is_plain_not_html() {
+        // Unknown/text kinds are set as text content, never interpreted as HTML.
+        let LiveContent::Text(out) = render_live_content("text", "<b>not html</b>") else {
+            panic!("text kind should produce Text");
+        };
+        assert_eq!(out, "<b>not html</b>");
     }
 }
