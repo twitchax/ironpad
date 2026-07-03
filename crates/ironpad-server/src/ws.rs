@@ -99,9 +99,10 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
         _ = &mut recv_task => send_task.abort(),
     }
 
-    // Cleanup: unregister host, invalidate sessions, disconnect guests.
+    // Cleanup: unregister host (only if we're still the registered connection —
+    // a reconnect may have replaced us), invalidate sessions, disconnect guests.
     tracing::info!(notebook_id = %notebook_id, "host disconnected");
-    state.ws.unregister_host(&notebook_id).await;
+    state.ws.unregister_host(&notebook_id, &connection_id).await;
 
     let removed = state
         .ws
@@ -237,8 +238,16 @@ pub async fn ws_connect_handler(
     let session_id = session.id.clone();
     let notebook_id = session.notebook_id.clone();
     let permissions = session.permissions.clone();
+    // Make the client id unique per connection (not just the token prefix) so two
+    // connections on the same token don't collide — a collision misroutes query
+    // responses (delivered to the first match) and lets either disconnect strand
+    // the other (retain removes both handles).
     let token_prefix = params.token.get(..8).unwrap_or(&params.token);
-    let client_id = ClientId::agent(token_prefix).0;
+    let client_id = format!(
+        "{}-{}",
+        ClientId::agent(token_prefix).0,
+        uuid::Uuid::new_v4()
+    );
 
     Ok(ws.on_upgrade(move |socket| {
         handle_guest(

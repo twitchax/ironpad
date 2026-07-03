@@ -84,13 +84,21 @@ impl WsState {
         }
     }
 
-    /// Remove the host for a notebook. Returns the `connection_id` if found.
-    pub async fn unregister_host(&self, notebook_id: &str) -> Option<String> {
-        self.hosts
-            .write()
-            .await
-            .remove(notebook_id)
-            .map(|h| h.connection_id)
+    /// Remove the host for a notebook, but only if the stored connection matches
+    /// `connection_id`. This prevents an old (replaced) connection's cleanup from
+    /// evicting the *new* host after a reconnect or a second tab of the same
+    /// notebook. Returns true if a host was removed.
+    pub async fn unregister_host(&self, notebook_id: &str, connection_id: &str) -> bool {
+        let mut hosts = self.hosts.write().await;
+        if hosts
+            .get(notebook_id)
+            .is_some_and(|h| h.connection_id == connection_id)
+        {
+            hosts.remove(notebook_id);
+            true
+        } else {
+            false
+        }
     }
 
     /// Send a JSON message to the host of a notebook.
@@ -219,15 +227,14 @@ mod tests {
         ws.register_host("nb-1", "conn-1", tx).await;
         assert!(ws.hosts.read().await.contains_key("nb-1"));
 
-        let conn_id = ws.unregister_host("nb-1").await;
-        assert_eq!(conn_id.as_deref(), Some("conn-1"));
+        assert!(ws.unregister_host("nb-1", "conn-1").await);
         assert!(!ws.hosts.read().await.contains_key("nb-1"));
     }
 
     #[tokio::test]
-    async fn unregister_host_returns_none_for_unknown() {
+    async fn unregister_host_returns_false_for_unknown() {
         let ws = WsState::default();
-        assert_eq!(ws.unregister_host("no-such-nb").await, None);
+        assert!(!ws.unregister_host("no-such-nb", "conn-x").await);
     }
 
     #[tokio::test]
@@ -239,9 +246,12 @@ mod tests {
         ws.register_host("nb-1", "conn-1", tx1).await;
         ws.register_host("nb-1", "conn-2", tx2).await;
 
-        // Should have replaced — unregister returns the new connection_id.
-        let conn_id = ws.unregister_host("nb-1").await;
-        assert_eq!(conn_id.as_deref(), Some("conn-2"));
+        // The old connection's cleanup must NOT evict the new host (reconnect race).
+        assert!(!ws.unregister_host("nb-1", "conn-1").await);
+        assert!(ws.hosts.read().await.contains_key("nb-1"));
+        // The current connection can unregister itself.
+        assert!(ws.unregister_host("nb-1", "conn-2").await);
+        assert!(!ws.hosts.read().await.contains_key("nb-1"));
     }
 
     #[tokio::test]
