@@ -247,9 +247,11 @@ pub fn MonacoEditor(
                     });
                     let f: js_sys::Function =
                         closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
-                    // Prevent the closure from being dropped while the editor lives.
-                    // It will be freed when the editor is disposed (page navigation).
-                    closure.forget();
+                    // Store the closure in the reactive arena so it's dropped
+                    // (freeing its JS callback) when the editor's owner disposes.
+                    // forgetting it — the old behavior — leaked it per editor,
+                    // and js::dispose frees only the JS editor, not this closure.
+                    StoredValue::new_local(closure);
                     f
                 }
                 None => js_sys::Function::new_no_args(""),

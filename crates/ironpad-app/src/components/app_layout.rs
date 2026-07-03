@@ -364,13 +364,23 @@ fn StatusBar(ctx: LayoutContext) -> impl IntoView {
         let closure = Closure::<dyn Fn()>::new(move || {
             tick.update(|t| *t += 1);
         });
-        let _ = web_sys::window()
+        let interval_id = web_sys::window()
             .unwrap()
             .set_interval_with_callback_and_timeout_and_arguments_0(
                 closure.as_ref().unchecked_ref(),
                 30_000,
-            );
-        closure.forget();
+            )
+            .ok();
+        // Store the closure in the reactive arena so it's dropped on dispose
+        // (freeing its JS callback), and clear the interval on unmount so a
+        // remount (StatusBar is conditionally rendered) doesn't leave a timer
+        // ticking a disposed signal.
+        StoredValue::new_local(closure);
+        on_cleanup(move || {
+            if let (Some(id), Some(win)) = (interval_id, web_sys::window()) {
+                win.clear_interval_with_handle(id);
+            }
+        });
     }
 
     view! {
