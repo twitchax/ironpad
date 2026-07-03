@@ -52,12 +52,12 @@ tasks:
 - id: T-003
   title: "B2: Isolate workspace + target dir per request (fix cache-poisoning race)"
   priority: 1
-  status: todo
+  status: done
   notes: "server_fns.rs:23,27-48 + scaffold.rs:39: session hardcoded 'default', crate keyed only by cell_id, scaffolding happens before cargo's lock -> two requests sharing a cell_id (same notebook in two tabs, or attacker-chosen id) race: A writes SA, B overwrites SB, A builds SB and caches it under hash(SA) -> wrong result. One shared CARGO_TARGET_DIR also serializes ALL builds globally. Fix: per-request workspace + target dir (include content hash / UUID in the path), or a per-cell_id compile mutex."
 - id: T-004
   title: "B3: Give wasm-opt a unique per-compile work dir + filenames"
   priority: 2
-  status: todo
+  status: done
   notes: "server_fns.rs:100-105 + optimize.rs:40-41: optimize runs on crate_dir.parent() = {cache}/workspaces/default (shared) with fixed pre_opt.wasm/post_opt.wasm names, outside cargo's lock -> concurrent compiles clobber each other's temp files. Fix: unique per-compile dir (use crate_dir itself or a TempDir) + unique filenames."
 - id: T-005
   title: "B4: Atomic cache blob writes"
@@ -77,7 +77,7 @@ tasks:
 - id: T-008
   title: "S5 + B5/B6: server hardening, diagnostics cleanup, and misc correctness"
   priority: 2
-  status: todo
+  status: in-progress
   notes: "Bundle the smaller items: (S5) bound the WS relay channels + cap frame size on upgrade (ws.rs:57,264, state.rs:38-42) and add a host credential to claim a notebook_id (ws.rs:47-53, currently last-writer-wins by UUID); add a USER (non-root) directive to docker/Dockerfile as defense-in-depth. (B5) parse rustc children for help/note text and accept src/shared.rs spans (diagnostics.rs:26-31,96); cache diagnostics alongside the blob so warnings survive a cache hit (server_fns.rs:56-62); trim raw anyhow backtraces + server fs paths out of user-facing panels (confirmed live). (B6) use tokio::fs/spawn_blocking for the sync std::fs on the compile hot path; enforce the .ironpad extension in get_public_notebook (server_fns.rs:251-277); bounds-check CellInputs::from_raw (ironpad-cell/src/lib.rs:161-177); verify /proc/<pid>/cmdline before the daemon SIGTERMs a pidfile PID (ironpad-cli/src/main.rs:180-205)."
 ---
 
