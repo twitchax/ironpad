@@ -160,6 +160,36 @@ pub(crate) fn start_session(
         }
     });
 
+    // ── Heartbeat: keep the connection alive + let the server reap dead ones ─
+    //
+    // The browser WebSocket API can't send protocol-level Ping frames, so send an
+    // application-level Heartbeat every 30s. The server's read loop tears down a
+    // connection after 120s of silence (a half-open network drop).
+    let ws_for_hb = ws.clone();
+    let heartbeat = Closure::<dyn FnMut()>::new(move || {
+        if ws_for_hb.ready_state() == web_sys::WebSocket::OPEN {
+            ws_send(
+                &ws_for_hb,
+                &protocol::Message {
+                    id: String::new(),
+                    kind: MessageKind::Control(ControlMessage::Heartbeat),
+                },
+            );
+        }
+    });
+    if let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        heartbeat.as_ref().unchecked_ref(),
+        30_000,
+    ) {
+        // Store the interval id so end_session can clear it.
+        let _ = js_sys::Reflect::set(
+            &window,
+            &JsValue::from_str("__ironpad_heartbeat_interval"),
+            &JsValue::from_f64(f64::from(interval_id)),
+        );
+    }
+    heartbeat.forget();
+
     // Store the WebSocket on window so end_session can close it.
     if js_sys::Reflect::set(&window, &JsValue::from_str("__ironpad_session_ws"), &ws).is_err() {
         web_sys::console::error_1(&"failed to store WebSocket on window".into());
@@ -184,8 +214,20 @@ pub(crate) fn end_session(state: &SessionState) {
         let _ = ws.close();
     }
 
-    // Clear the stored WebSocket.
+    // Clear the stored WebSocket and the heartbeat interval.
     if let Some(window) = web_sys::window() {
+        if let Ok(id) =
+            js_sys::Reflect::get(&window, &JsValue::from_str("__ironpad_heartbeat_interval"))
+        {
+            if let Some(id) = id.as_f64() {
+                #[allow(clippy::cast_possible_truncation)]
+                window.clear_interval_with_handle(id as i32);
+            }
+        }
+        let _ = js_sys::Reflect::delete_property(
+            &window,
+            &JsValue::from_str("__ironpad_heartbeat_interval"),
+        );
         let _ =
             js_sys::Reflect::delete_property(&window, &JsValue::from_str("__ironpad_session_ws"));
     }
@@ -287,8 +329,10 @@ fn handle_incoming(
                     .connected_guests
                     .update(|guests| guests.retain(|g| g != &client_id.0));
             }
-            ControlMessage::CreateSession { .. } | ControlMessage::EndSession { .. } => {
-                // Not expected from server on the host path.
+            ControlMessage::CreateSession { .. }
+            | ControlMessage::EndSession { .. }
+            | ControlMessage::Heartbeat => {
+                // Not sent by the server to the host (Heartbeat is host → server).
             }
         },
 

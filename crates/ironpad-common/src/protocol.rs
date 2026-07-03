@@ -257,6 +257,10 @@ pub enum ControlMessage {
     GuestConnected { client_id: ClientId },
     /// Server → Host: a guest disconnected.
     GuestDisconnected { client_id: ClientId },
+    /// Host → Server: keep-alive. Lets the relay detect a half-open connection
+    /// (a network drop with no FIN) via a read-loop idle timeout and tear it
+    /// down, instead of leaving a dead host registered indefinitely.
+    Heartbeat,
 }
 
 // ── Permissions ─────────────────────────────────────────────────────────────

@@ -82,7 +82,23 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
     let conn_id = connection_id.clone();
     let st = state.clone();
     let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ws_receiver.next().await {
+        // Idle timeout: the browser host sends a Heartbeat every ~30s, so 120s
+        // of total silence means a half-open connection (a network drop without
+        // a FIN) — tear it down so the host doesn't stay registered forever.
+        const HOST_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+        loop {
+            let next = tokio::time::timeout(HOST_IDLE_TIMEOUT, ws_receiver.next()).await;
+            // Stream end (`Ok(None)`), a WS error (`Ok(Some(Err))`), or the idle
+            // timeout (`Err`) all mean we're done reading from this connection.
+            let Ok(Some(Ok(msg))) = next else {
+                if next.is_err() {
+                    tracing::warn!(
+                        notebook_id = %nb_id,
+                        "host idle timeout — closing half-open connection"
+                    );
+                }
+                break;
+            };
             match msg {
                 Message::Text(text) => {
                     handle_host_message(&text, &nb_id, &conn_id, &st).await;
@@ -206,8 +222,11 @@ async fn handle_host_control(
             state.ws.disconnect_guests(session_id).await;
         }
 
-        // These control messages are server-originated, not host-sent.
-        ControlMessage::SessionCreated { .. }
+        // Host keep-alive (Heartbeat) is a no-op here — simply receiving it
+        // resets the read-loop idle timer that reaps half-open connections. The
+        // remaining variants are server-originated and never host-sent.
+        ControlMessage::Heartbeat
+        | ControlMessage::SessionCreated { .. }
         | ControlMessage::SessionEnded { .. }
         | ControlMessage::GuestConnected { .. }
         | ControlMessage::GuestDisconnected { .. } => {}
