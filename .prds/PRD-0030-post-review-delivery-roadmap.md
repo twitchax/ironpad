@@ -55,7 +55,7 @@ tasks:
 - id: T-006
   title: "PRD-0036 Compiler/server correctness + pragmatic hardening"
   priority: 3
-  status: todo
+  status: done
   notes: "Some items (cache-key work) overlap 0031; sequence cache-key items after 0031. See PRD-0036."
 - id: T-007
   title: "PRD-0037 Leak sweep"
