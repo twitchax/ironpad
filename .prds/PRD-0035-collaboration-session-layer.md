@@ -43,7 +43,7 @@ tasks:
 - id: T-003
   title: "C3: Compare-and-remove on host unregister (fix reconnect/two-tab race)"
   priority: 1
-  status: todo
+  status: done
   notes: "ws.rs:104 + state.rs:88-94: unregister_host removes purely by notebook_id; on reconnect/two tabs, register_host replaces the handle (state.rs:72-84) then the OLD connection's cleanup removes the NEW host -> live host absent from hosts map -> guests get SessionNotFound. Fix: only remove if the stored connection_id matches the caller's."
 - id: T-004
   title: "C4: Notify host UI on agent-originated content edits"
@@ -53,7 +53,7 @@ tasks:
 - id: T-005
   title: "C5: Make client_id unique per connection, not the token prefix"
   priority: 2
-  status: todo
+  status: done
   notes: "ws.rs:240-241 + state.rs:127-169: client_id = ClientId::agent(token[..8]); two connections on one token collide -> send_to_guest delivers to the first match only, and unregister_guest's retain removes BOTH handles when either disconnects, stranding the survivor. Fix: append a per-socket UUID to client_id."
 - id: T-006
   title: "C6: Application-level heartbeat + idle timeout to detect half-open connections"
