@@ -113,7 +113,8 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
     // ── Connect WebSocket ───────────────────────────────────────────────
 
     let ws_url = format!("{host}/ws/connect?token={token}");
-    tracing::info!(url = %ws_url, "connecting to server");
+    // Redact the bearer token from logs (the full URL is only used to connect).
+    tracing::info!(url = %format!("{host}/ws/connect?token=<redacted>"), "connecting to server");
 
     let ws_result = tokio_tungstenite::connect_async(&ws_url).await;
 
