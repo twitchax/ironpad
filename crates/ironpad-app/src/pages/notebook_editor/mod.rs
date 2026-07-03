@@ -226,7 +226,20 @@ pub fn NotebookEditorPage() -> impl IntoView {
             .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())
             .unwrap();
 
-        closure.forget();
+        // Store the closure so it's dropped on dispose, and remove the listener
+        // on unmount — otherwise each notebook mount stacks another document
+        // keydown handler firing Ctrl+S / Ctrl+Shift+N against a disposed scope.
+        let stored = StoredValue::new_local(closure);
+        on_cleanup(move || {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                stored.try_with_value(|closure| {
+                    let _ = doc.remove_event_listener_with_callback(
+                        "keydown",
+                        closure.as_ref().unchecked_ref(),
+                    );
+                });
+            }
+        });
     }
 
     // ── Save-generation watcher ─────────────────────────────────────────
@@ -413,7 +426,19 @@ fn NotebookContent() -> impl IntoView {
             .unwrap()
             .add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())
             .unwrap();
-        click_closure.forget();
+        // Store the closure so it's dropped on dispose, and remove the listener
+        // on unmount so remounts don't stack stale outside-click handlers.
+        let stored = StoredValue::new_local(click_closure);
+        on_cleanup(move || {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                stored.try_with_value(|closure| {
+                    let _ = doc.remove_event_listener_with_callback(
+                        "click",
+                        closure.as_ref().unchecked_ref(),
+                    );
+                });
+            }
+        });
     }
 
     // ── SortableJS initialization ───────────────────────────────────────
