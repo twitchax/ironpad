@@ -40,12 +40,12 @@ tasks:
 - id: T-003
   title: "PRD-0033 Data safety: storage & executor robustness"
   priority: 2
-  status: todo
-  notes: "Depends on 0031. Prevents data-loss and stuck-cell states. See PRD-0033."
+  status: in-progress
+  notes: "6/8 done + merged (storage resilience + executor-bridge robustness). T-007 (GPU per-cell scoping) + rest of T-008 (rayon/panic/blob concurrency) deferred — deep executor-core, unverifiable here. See PRD-0033."
 - id: T-004
   title: "PRD-0034 UI polish / stylesheet"
   priority: 3
-  status: todo
+  status: in-progress
   notes: "Mostly independent of 0031; can run in parallel. Biggest visual payoff per line. See PRD-0034."
 - id: T-005
   title: "PRD-0035 Collaboration / session layer"
