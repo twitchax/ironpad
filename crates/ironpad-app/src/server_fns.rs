@@ -99,7 +99,7 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
             tracing::info!(cell_id = %request.cell_id, blob_size = cache_hit.wasm_bytes.len(), "cache hit");
             return Ok(CompileResponse {
                 wasm_blob: cache_hit.wasm_bytes,
-                diagnostics: vec![],
+                diagnostics: cache_hit.diagnostics,
                 cached: true,
                 preamble_lines: 0,
                 js_glue: cache_hit.js_glue,
@@ -150,7 +150,13 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 
             // Cache the result (WASM blob + JS glue).
 
-            if let Err(e) = store_blob(&config.cache_dir, &hash, &wasm_blob, Some(&js_glue)) {
+            if let Err(e) = store_blob(
+                &config.cache_dir,
+                &hash,
+                &wasm_blob,
+                Some(&js_glue),
+                &diagnostics,
+            ) {
                 tracing::warn!(error = %e, "failed to cache compiled blob");
             }
 

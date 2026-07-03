@@ -28,6 +28,16 @@ struct RustcMessage {
     level: String,
     code: Option<RustcCode>,
     spans: Vec<RustcSpan>,
+    /// Sub-diagnostics (help/note guidance rustc attaches to the main message).
+    #[serde(default)]
+    children: Vec<RustcChild>,
+}
+
+/// A rustc sub-diagnostic (a `help`/`note` line under the main message).
+#[derive(Deserialize)]
+struct RustcChild {
+    level: String,
+    message: String,
 }
 
 /// Optional error code attached to a diagnostic.
@@ -87,15 +97,42 @@ fn parse_single_line(line: &str, preamble_lines: u32) -> Option<Diagnostic> {
     // Extract the error code if present.
     let code = rustc_msg.code.as_ref().map(|c| c.code.clone());
 
-    let message = rustc_msg.message;
+    // Collect primary spans, mapping user-code (src/lib.rs) spans to cell
+    // coordinates. Track whether the error's primary span lives in the
+    // notebook's shared source (src/shared.rs) — those have no inline marker in
+    // this cell's editor, so we note it in the message instead.
+    let mut spans: Vec<Span> = Vec::new();
+    let mut shared_source_primary = false;
+    for span in rustc_msg.spans {
+        if !span.is_primary {
+            continue;
+        }
+        match span.file_name.as_str() {
+            "src/lib.rs" => {
+                if let Some(adjusted) = adjust_span(span, preamble_lines) {
+                    spans.push(adjusted);
+                }
+            }
+            "src/shared.rs" => shared_source_primary = true,
+            _ => {}
+        }
+    }
 
-    // Only include primary spans from src/lib.rs (the wrapped user code file).
-    let spans: Vec<Span> = rustc_msg
-        .spans
-        .into_iter()
-        .filter(|s| s.is_primary && s.file_name == "src/lib.rs")
-        .filter_map(|s| adjust_span(s, preamble_lines))
-        .collect();
+    let mut message = rustc_msg.message;
+
+    // Surface errors that live in the shared source, which have no marker here.
+    if shared_source_primary && spans.is_empty() {
+        message = format!("(in shared source) {message}");
+    }
+
+    // Append rustc's help/note guidance (e.g. "help: prefix it with `_`") so the
+    // suggestions rustc renders on the CLI aren't lost in the inline panel.
+    for child in &rustc_msg.children {
+        if matches!(child.level.as_str(), "help" | "note") && !child.message.is_empty() {
+            use std::fmt::Write as _;
+            let _ = write!(message, "\n{}: {}", child.level, child.message);
+        }
+    }
 
     Some(Diagnostic {
         message,
@@ -193,6 +230,34 @@ mod tests {
         // Original line 8 - 5 = line 3 in user code.
         assert_eq!(span.line_start, 3);
         assert_eq!(span.line_end, 3);
+    }
+
+    #[test]
+    fn appends_help_children_to_message() {
+        // WARNING_JSON carries a `help` child; its guidance is now surfaced.
+        let diags = parse_diagnostics(WARNING_JSON, 5);
+        assert_eq!(diags.len(), 1);
+        assert!(
+            diags[0].message.contains("help: if this is intentional"),
+            "help child not appended: {}",
+            diags[0].message
+        );
+    }
+
+    /// An error whose primary span is in the notebook's shared source.
+    const SHARED_SOURCE_SPAN_JSON: &str = r#"{"reason":"compiler-message","message":{"children":[],"code":null,"level":"error","message":"cannot find value `foo` in this scope","spans":[{"byte_end":100,"byte_start":90,"column_end":10,"column_start":5,"expansion":null,"file_name":"src/shared.rs","is_primary":true,"label":"not found","line_end":3,"line_start":3,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+
+    #[test]
+    fn notes_shared_source_errors() {
+        let diags = parse_diagnostics(SHARED_SOURCE_SPAN_JSON, 5);
+        assert_eq!(diags.len(), 1);
+        // No inline marker (shared source lines don't map to this cell's editor).
+        assert!(diags[0].spans.is_empty());
+        assert!(
+            diags[0].message.starts_with("(in shared source)"),
+            "shared-source error not noted: {}",
+            diags[0].message
+        );
     }
 
     #[test]

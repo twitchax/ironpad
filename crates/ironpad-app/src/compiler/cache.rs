@@ -115,10 +115,17 @@ pub fn cache_js_glue_path(cache_dir: &Path, hash: &str) -> PathBuf {
     cache_dir.join("blobs").join(format!("{hash}.js"))
 }
 
-/// Cached compilation result: WASM blob and optional JS glue.
+/// Path where cached diagnostics live (or would live) for the given hash.
+pub fn cache_diag_path(cache_dir: &Path, hash: &str) -> PathBuf {
+    cache_dir.join("blobs").join(format!("{hash}.diag.json"))
+}
+
+/// Cached compilation result: WASM blob, optional JS glue, and any diagnostics
+/// (warnings) from the original compile so they survive a cache hit.
 pub struct CacheHit {
     pub wasm_bytes: Vec<u8>,
     pub js_glue: Option<String>,
+    pub diagnostics: Vec<ironpad_common::Diagnostic>,
 }
 
 /// Attempt to read a cached WASM blob (and JS glue if present).
@@ -145,6 +152,13 @@ pub fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
     let js_glue_path = cache_js_glue_path(cache_dir, hash);
     let js_glue = std::fs::read_to_string(&js_glue_path).ok();
 
+    // Diagnostics are optional too (older entries, or a clean compile). A
+    // malformed file is treated as "no diagnostics" rather than a cache miss.
+    let diagnostics = std::fs::read(cache_diag_path(cache_dir, hash))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+
     tracing::info!(
         hash,
         wasm_bytes = wasm_bytes.len(),
@@ -155,6 +169,7 @@ pub fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
     Some(CacheHit {
         wasm_bytes,
         js_glue,
+        diagnostics,
     })
 }
 
@@ -175,14 +190,17 @@ fn atomic_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Store a compiled WASM blob (and optional JS glue) in the cache.
+/// Store a compiled WASM blob (plus optional JS glue and any diagnostics) in
+/// the cache.
 ///
-/// Creates the `blobs/` directory if it doesn't already exist.
+/// Creates the `blobs/` directory if it doesn't already exist. Diagnostics
+/// (warnings from a successful compile) are cached so they survive a cache hit.
 pub fn store_blob(
     cache_dir: &Path,
     hash: &str,
     wasm_bytes: &[u8],
     js_glue: Option<&str>,
+    diagnostics: &[ironpad_common::Diagnostic],
 ) -> anyhow::Result<()> {
     let path = cache_blob_path(cache_dir, hash);
 
@@ -196,6 +214,17 @@ pub fn store_blob(
         let js_path = cache_js_glue_path(cache_dir, hash);
         atomic_write(&js_path, glue.as_bytes())?;
         tracing::info!(hash, js_bytes = glue.len(), "cached JS glue");
+    }
+
+    // Only write a diagnostics file when there's something to remember.
+    if !diagnostics.is_empty() {
+        let json = serde_json::to_vec(diagnostics)?;
+        atomic_write(&cache_diag_path(cache_dir, hash), &json)?;
+        tracing::info!(
+            hash,
+            diagnostic_count = diagnostics.len(),
+            "cached diagnostics"
+        );
     }
 
     tracing::info!(
@@ -345,7 +374,7 @@ mod tests {
         let hash = "deadbeef01234567deadbeef01234567deadbeef01234567deadbeef01234567";
         let blob = b"\x00asm\x01\x00\x00\x00";
 
-        store_blob(dir.path(), hash, blob, None).unwrap();
+        store_blob(dir.path(), hash, blob, None, &[]).unwrap();
 
         let hit = try_cache_hit(dir.path(), hash);
         assert!(hit.is_some());
@@ -361,7 +390,7 @@ mod tests {
         let blob = b"\x00asm\x01\x00\x00\x00";
         let glue = "export function init() {}";
 
-        store_blob(dir.path(), hash, blob, Some(glue)).unwrap();
+        store_blob(dir.path(), hash, blob, Some(glue), &[]).unwrap();
 
         let hit = try_cache_hit(dir.path(), hash).unwrap();
         assert_eq!(hit.wasm_bytes, blob);
@@ -374,7 +403,7 @@ mod tests {
         let blobs_dir = dir.path().join("blobs");
         assert!(!blobs_dir.exists());
 
-        store_blob(dir.path(), "aabbccdd", b"wasm", None).unwrap();
+        store_blob(dir.path(), "aabbccdd", b"wasm", None, &[]).unwrap();
 
         assert!(blobs_dir.exists());
     }
@@ -388,7 +417,7 @@ mod tests {
         let blob = vec![0u8; 256];
         let glue = "// js glue content";
 
-        store_blob(dir.path(), &hash, &blob, Some(glue)).unwrap();
+        store_blob(dir.path(), &hash, &blob, Some(glue), &[]).unwrap();
 
         let hit = try_cache_hit(dir.path(), &hash).unwrap();
         assert_eq!(hit.wasm_bytes, blob);
@@ -419,11 +448,11 @@ mod tests {
         let blob_v1 = b"version-1";
         let blob_v2 = b"version-2-longer";
 
-        store_blob(dir.path(), hash, blob_v1, None).unwrap();
+        store_blob(dir.path(), hash, blob_v1, None, &[]).unwrap();
         let hit1 = try_cache_hit(dir.path(), hash).unwrap();
         assert_eq!(hit1.wasm_bytes, blob_v1);
 
-        store_blob(dir.path(), hash, blob_v2, None).unwrap();
+        store_blob(dir.path(), hash, blob_v2, None, &[]).unwrap();
         let hit2 = try_cache_hit(dir.path(), hash).unwrap();
         assert_eq!(hit2.wasm_bytes, blob_v2);
     }
@@ -431,7 +460,7 @@ mod tests {
     #[test]
     fn store_leaves_no_temp_files() {
         let dir = tempfile::tempdir().unwrap();
-        store_blob(dir.path(), "deadbeef", b"wasm", Some("glue()")).unwrap();
+        store_blob(dir.path(), "deadbeef", b"wasm", Some("glue()"), &[]).unwrap();
 
         // The atomic write renames the temp into place — no `.tmp.*` sidecar
         // should survive to be mistaken for (or read as) a cache entry.
@@ -454,14 +483,46 @@ mod tests {
         let hash = "test1234";
 
         // Store without JS glue.
-        store_blob(dir.path(), hash, b"wasm", None).unwrap();
+        store_blob(dir.path(), hash, b"wasm", None, &[]).unwrap();
         let hit = try_cache_hit(dir.path(), hash).unwrap();
         assert!(hit.js_glue.is_none());
 
         // Store again with JS glue.
-        store_blob(dir.path(), hash, b"wasm", Some("glue()")).unwrap();
+        store_blob(dir.path(), hash, b"wasm", Some("glue()"), &[]).unwrap();
         let hit = try_cache_hit(dir.path(), hash).unwrap();
         assert_eq!(hit.js_glue.as_deref(), Some("glue()"));
+    }
+
+    #[test]
+    fn diagnostics_survive_cache_round_trip() {
+        use ironpad_common::{Diagnostic, Severity};
+        let dir = tempfile::tempdir().unwrap();
+        let hash = "cafef00d";
+        let diags = vec![Diagnostic {
+            message: "unused variable: `x`".into(),
+            severity: Severity::Warning,
+            spans: vec![],
+            code: Some("unused_variables".into()),
+        }];
+
+        store_blob(dir.path(), hash, b"wasm", Some("glue()"), &diags).unwrap();
+        let hit = try_cache_hit(dir.path(), hash).unwrap();
+
+        assert_eq!(hit.diagnostics.len(), 1, "warnings survive a cache hit");
+        assert_eq!(hit.diagnostics[0].message, "unused variable: `x`");
+        assert_eq!(hit.diagnostics[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn empty_diagnostics_writes_no_file_and_reads_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        store_blob(dir.path(), "beefbeef", b"wasm", None, &[]).unwrap();
+        assert!(
+            !cache_diag_path(dir.path(), "beefbeef").exists(),
+            "no diag file when there are no diagnostics"
+        );
+        let hit = try_cache_hit(dir.path(), "beefbeef").unwrap();
+        assert!(hit.diagnostics.is_empty());
     }
 
     // ── T-002: needs_atomics flag ────────────────────────────────────────

@@ -354,7 +354,7 @@ mod pipeline_tests {
         assert!(try_cache_hit(&cache_dir, &hash).is_none());
 
         // Store and verify cache hit.
-        store_blob(&cache_dir, &hash, fake_wasm, Some(fake_js_glue)).unwrap();
+        store_blob(&cache_dir, &hash, fake_wasm, Some(fake_js_glue), &[]).unwrap();
         let hit = try_cache_hit(&cache_dir, &hash).expect("should be a cache hit");
         assert_eq!(hit.wasm_bytes, fake_wasm);
         assert_eq!(hit.js_glue.as_deref(), Some(fake_js_glue));
@@ -641,7 +641,7 @@ mod e2e_tests {
         };
 
         // Step 3: Store in cache (WASM blob + JS glue).
-        store_blob(&cache_dir, &hash, &wasm_bytes, Some(&js_glue))
+        store_blob(&cache_dir, &hash, &wasm_bytes, Some(&js_glue), &[])
             .expect("store_blob should succeed");
 
         // Step 4: Verify cache hit returns identical bytes and JS glue.
