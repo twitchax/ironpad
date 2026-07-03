@@ -58,7 +58,7 @@ tasks:
 - id: T-006
   title: "C6: Application-level heartbeat + idle timeout to detect half-open connections"
   priority: 2
-  status: todo
+  status: done
   notes: "ws.rs:84-94,298-308: no ping/pong or read timeout; a network drop without FIN leaves the host registered indefinitely, send_to_host returns true into a dead channel (agent thinks it delivered, then times out — compounds C2). Fix: periodic ping/pong with an idle timeout that tears down and runs normal cleanup."
 - id: T-007
   title: "C7: Session-store housekeeping and lifecycle cleanups"
