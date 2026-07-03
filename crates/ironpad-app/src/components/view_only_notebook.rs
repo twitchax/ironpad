@@ -155,10 +155,17 @@ pub fn ViewOnlyNotebook(
     // Fork handler — clones the notebook with a new ID and navigates to it.
     let fork_label_clone = fork_label.clone();
     let navigate = leptos_router::hooks::use_navigate();
+    let forking = RwSignal::new(false);
     let fork_action = move |_| {
+        // Guard against a double-click starting a second fork (which would
+        // create a duplicate notebook and navigate twice).
+        if forking.get_untracked() {
+            return;
+        }
         let _ = &navigate;
         #[cfg(feature = "hydrate")]
         {
+            forking.set(true);
             let navigate = navigate.clone();
             leptos::task::spawn_local(async move {
                 let mut nb = notebook.get_value();
@@ -173,6 +180,7 @@ pub fn ViewOnlyNotebook(
                         leptos_router::NavigateOptions::default(),
                     ),
                     Err(e) => {
+                        forking.set(false); // allow a retry
                         leptos::logging::error!(
                             "failed to persist forked notebook to IndexedDB: {e:?}"
                         );
@@ -207,8 +215,12 @@ pub fn ViewOnlyNotebook(
                 >
                     {move || if running_all.get() { "◐ Running…" } else { "▶▶ Run All" }}
                 </button>
-                <button class="fork-button" on:click=fork_action>
-                    {"↳ "}{fork_label_clone}
+                <button
+                    class="fork-button"
+                    on:click=fork_action
+                    disabled=move || forking.get()
+                >
+                    {move || if forking.get() { "↳ Forking…".to_string() } else { format!("↳ {fork_label_clone}") }}
                 </button>
             </div>
             <div class="view-only-cells">

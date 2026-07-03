@@ -765,6 +765,29 @@ a:focus-visible {
     gap: 0;
 }
 
+/* Empty-notebook state (shown when a notebook has no cells) */
+.ironpad-empty-notebook {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 48px 16px;
+    text-align: center;
+}
+
+.ironpad-empty-notebook-title {
+    margin: 0;
+    color: var(--ip-text-secondary);
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.ironpad-empty-notebook-hint {
+    margin: 0;
+    color: var(--ip-text-tertiary);
+    font-size: 0.875rem;
+}
+
 /* ── Cell card ───────────────────────────────────────────────────────── */
 
 .ironpad-cell-card {
@@ -1666,7 +1689,12 @@ samp,
 
 @media (max-width: 480px) {
     .ironpad-header-center {
-        display: none;
+        // Keep the notebook title visible (truncated) on small screens rather
+        // than hiding it entirely.
+        max-width: 45vw;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
     }
 
     .ironpad-home-header {

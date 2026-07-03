@@ -906,6 +906,15 @@ fn NotebookContent() -> impl IntoView {
                 <AddCellButton after_cell_id=None on_add=add_cell_cb />
             </Show>
 
+            <Show when=move || state.cells.get().is_empty() && !state.is_view_mode.get()>
+                <div class="ironpad-empty-notebook">
+                    <p class="ironpad-empty-notebook-title">"This notebook is empty"</p>
+                    <p class="ironpad-empty-notebook-hint">
+                        "Add a Code or Markdown cell above to get started."
+                    </p>
+                </div>
+            </Show>
+
             <For
                 each=move || state.cells.get()
                 key=|cell| cell.id.clone()
