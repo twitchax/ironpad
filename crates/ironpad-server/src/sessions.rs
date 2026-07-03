@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use ironpad_common::protocol::{MessageKind, Mutation, Permissions};
+use ironpad_common::protocol::{MessageKind, Permissions};
 use tokio::sync::RwLock;
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -182,14 +182,7 @@ impl SessionStore {
 pub fn check_permission(permissions: &Permissions, message: &MessageKind) -> bool {
     match message {
         MessageKind::Query(_) => permissions.read,
-        MessageKind::Mutation(mutation) => match mutation {
-            Mutation::CellCompile { .. } | Mutation::CellExecute { .. } => permissions.execute,
-            Mutation::CellAdd { .. }
-            | Mutation::CellUpdate { .. }
-            | Mutation::CellDelete { .. }
-            | Mutation::CellReorder { .. }
-            | Mutation::NotebookUpdateMeta { .. } => permissions.write,
-        },
+        MessageKind::Mutation(_) => permissions.write,
         // Events, responses, and control messages are always allowed — they
         // flow from the model/relay to clients and are not permission-gated.
         MessageKind::Event(_) | MessageKind::Response(_) | MessageKind::Control(_) => true,
@@ -217,6 +210,7 @@ fn hash_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironpad_common::protocol::Mutation;
 
     #[test]
     fn token_is_64_hex_chars() {
@@ -260,7 +254,6 @@ mod tests {
         assert_eq!(session.notebook_id, "nb-1");
         assert!(session.permissions.read);
         assert!(session.permissions.write);
-        assert!(!session.permissions.execute);
     }
 
     #[tokio::test]
@@ -364,7 +357,6 @@ mod tests {
         let perms = Permissions {
             read: true,
             write: false,
-            execute: false,
         };
         let msg = MessageKind::Query(ironpad_common::protocol::Query::CellsList);
         assert!(check_permission(&perms, &msg));
@@ -375,36 +367,19 @@ mod tests {
         let perms = Permissions {
             read: false,
             write: true,
-            execute: false,
         };
         let msg = MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] });
         assert!(check_permission(&perms, &msg));
     }
 
     #[test]
-    fn permission_write_denies_compile() {
+    fn permission_no_write_denies_mutations() {
         let perms = Permissions {
-            read: false,
-            write: true,
-            execute: false,
-        };
-        let msg = MessageKind::Mutation(Mutation::CellCompile {
-            cell_id: "c1".into(),
-        });
-        assert!(!check_permission(&perms, &msg));
-    }
-
-    #[test]
-    fn permission_execute_allows_compile() {
-        let perms = Permissions {
-            read: false,
+            read: true,
             write: false,
-            execute: true,
         };
-        let msg = MessageKind::Mutation(Mutation::CellCompile {
-            cell_id: "c1".into(),
-        });
-        assert!(check_permission(&perms, &msg));
+        let msg = MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] });
+        assert!(!check_permission(&perms, &msg));
     }
 
     #[test]
@@ -412,7 +387,6 @@ mod tests {
         let perms = Permissions {
             read: false,
             write: true,
-            execute: true,
         };
         let msg = MessageKind::Query(ironpad_common::protocol::Query::NotebookGet);
         assert!(!check_permission(&perms, &msg));

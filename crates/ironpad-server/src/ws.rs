@@ -819,7 +819,6 @@ mod tests {
         let perms = Permissions {
             read: true,
             write: true,
-            execute: false,
         };
 
         let mutation_json = wire_msg(
@@ -879,7 +878,6 @@ mod tests {
         let perms = Permissions {
             read: true,
             write: false,
-            execute: false,
         };
 
         let query_json = wire_msg("q-1", MessageKind::Query(Query::CellsList));
@@ -930,7 +928,6 @@ mod tests {
         let perms = Permissions {
             read: true,
             write: false,
-            execute: false,
         };
 
         let mutation_json = wire_msg(
@@ -992,7 +989,6 @@ mod tests {
         let perms = Permissions {
             read: false,
             write: true,
-            execute: false,
         };
 
         let query_json = wire_msg("q-1", MessageKind::Query(Query::NotebookGet));
@@ -1081,7 +1077,6 @@ mod tests {
         let perms = Permissions {
             read: true,
             write: true,
-            execute: false,
         };
 
         let mutation_json = wire_msg(
@@ -1133,7 +1128,6 @@ mod tests {
         let perms = Permissions {
             read: true,
             write: false,
-            execute: false,
         };
 
         let query_json = wire_msg("q-1", MessageKind::Query(Query::CellsList));

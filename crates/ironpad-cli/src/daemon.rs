@@ -673,13 +673,6 @@ fn translate_response(msg: protocol::Message) -> IpcResponse {
             protocol::Response::CellsList { cells } => {
                 IpcResponse::success(serde_json::to_value(cells).expect("cells serialization"))
             }
-            protocol::Response::SessionStatus {
-                session_id,
-                connected_clients,
-            } => IpcResponse::success(serde_json::json!({
-                "session_id": session_id,
-                "connected_clients": connected_clients,
-            })),
             protocol::Response::MutationOk { detail } => {
                 IpcResponse::success(serde_json::to_value(detail).expect("detail serialization"))
             }
@@ -927,18 +920,6 @@ mod tests {
         assert!(resp.ok);
         let arr = resp.data.unwrap();
         assert_eq!(arr.as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn response_session_status() {
-        let resp = translate_response(wrap(MessageKind::Response(Response::SessionStatus {
-            session_id: "s1".into(),
-            connected_clients: 3,
-        })));
-        assert!(resp.ok);
-        let data = resp.data.unwrap();
-        assert_eq!(data["session_id"], "s1");
-        assert_eq!(data["connected_clients"], 3);
     }
 
     #[test]

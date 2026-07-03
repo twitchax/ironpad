@@ -84,12 +84,6 @@ pub enum Mutation {
         /// Complete ordered list of all cell IDs.
         cell_ids: Vec<String>,
     },
-    CellCompile {
-        cell_id: String,
-    },
-    CellExecute {
-        cell_id: String,
-    },
     NotebookUpdateMeta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
@@ -127,7 +121,6 @@ pub enum Query {
     NotebookGet,
     CellGet { cell_id: String },
     CellsList,
-    SessionStatus,
 }
 
 // ── Events (model → all clients) ────────────────────────────────────────────
@@ -210,10 +203,6 @@ pub enum Response {
     CellsList {
         cells: Vec<CellManifest>,
     },
-    SessionStatus {
-        session_id: String,
-        connected_clients: u32,
-    },
     MutationOk {
         /// Echoed back so the client knows which mutation succeeded.
         detail: MutationResult,
@@ -272,8 +261,6 @@ pub struct Permissions {
     pub read: bool,
     /// Can mutate cells (add, update, delete, reorder, update metadata).
     pub write: bool,
-    /// Can trigger compilation and execution.
-    pub execute: bool,
 }
 
 impl Default for Permissions {
@@ -281,7 +268,6 @@ impl Default for Permissions {
         Self {
             read: true,
             write: true,
-            execute: false,
         }
     }
 }
@@ -527,7 +513,6 @@ mod tests {
         let perms = Permissions::default();
         assert!(perms.read);
         assert!(perms.write);
-        assert!(!perms.execute);
     }
 
     #[test]
@@ -564,7 +549,6 @@ mod tests {
         let perms = Permissions {
             read: true,
             write: false,
-            execute: true,
         };
         round_trip(&perms);
     }

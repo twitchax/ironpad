@@ -120,7 +120,6 @@ async fn relay_integration_round_trip() {
             permissions: Permissions {
                 read: true,
                 write: true,
-                execute: false,
             },
         }),
     );

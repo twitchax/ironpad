@@ -107,12 +107,6 @@ impl NotebookModel {
             } => {
                 self.notebook_update_meta(title, shared_cargo_toml, shared_source, reactive_mode)?
             }
-            Mutation::CellCompile { .. } | Mutation::CellExecute { .. } => {
-                return Err(ModelError {
-                    code: ErrorCode::InvalidMessage,
-                    message: "Compile/Execute are handled by the execution layer".into(),
-                });
-            }
         };
         let envelope = EventEnvelope { by, event };
 
@@ -168,10 +162,6 @@ impl NotebookModel {
                 let cells = self.cells.get_untracked();
                 Ok(Response::CellsList { cells })
             }
-            Query::SessionStatus => Err(ModelError {
-                code: ErrorCode::InvalidMessage,
-                message: "SessionStatus is handled by the session layer".into(),
-            }),
         }
     }
 
