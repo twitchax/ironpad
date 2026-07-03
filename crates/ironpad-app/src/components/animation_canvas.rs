@@ -191,6 +191,9 @@ pub fn AnimationCanvas(
         let playing = RwSignal::new(true);
         let current_frame = RwSignal::new(0u32);
         let raf_id_signal = RwSignal::new(Option::<i32>::None);
+        // Holds the rAF closure so on_cleanup can break its Rc cycle
+        // (cb -> Closure -> cb_clone) — cancelling the frame alone leaks it.
+        let cb_holder = StoredValue::new_local(Option::<RafClosure>::None);
 
         // Decode all frames to RGBA entirely in JS — never copies bulk pixel
         // data into WASM linear memory.
@@ -230,6 +233,8 @@ pub fn AnimationCanvas(
 
             let cb: RafClosure = Rc::new(RefCell::new(None));
             let cb_clone = cb.clone();
+            // Share the closure with on_cleanup so it can break the cycle.
+            cb_holder.set_value(Some(cb.clone()));
 
             let total = frames_loop.length();
             *cb.borrow_mut() = Some(Closure::new(move |timestamp: f64| {
@@ -271,10 +276,17 @@ pub fn AnimationCanvas(
             };
         });
 
-        // Cancel rAF on cleanup (T-012).
+        // Cancel rAF and break the closure's Rc cycle on cleanup.
         on_cleanup(move || {
             cancel_raf(raf_id_signal.get_untracked());
             raf_id_signal.set(None);
+            // Drop the stored closure so the cb <-> Closure cycle is broken and
+            // the captured data is freed (cancelling the frame alone doesn't).
+            cb_holder.try_update_value(|slot| {
+                if let Some(rc) = slot.as_ref() {
+                    *rc.borrow_mut() = None;
+                }
+            });
         });
 
         let toggle_play = move |_| {
@@ -345,6 +357,8 @@ pub fn SimulationCanvas(
         let playing = RwSignal::new(true);
         let frame_number = RwSignal::new(0u32);
         let raf_id_signal = RwSignal::new(Option::<i32>::None);
+        // Holds the rAF closure so on_cleanup can break its Rc cycle.
+        let cb_holder = StoredValue::new_local(Option::<RafClosure>::None);
         let tick_in_flight: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
 
         let ctx_cell: Rc<RefCell<Option<web_sys::CanvasRenderingContext2d>>> =
@@ -388,6 +402,8 @@ pub fn SimulationCanvas(
 
             let cb: RafClosure = Rc::new(RefCell::new(None));
             let cb_clone = cb.clone();
+            // Share the closure with on_cleanup so it can break the cycle.
+            cb_holder.set_value(Some(cb.clone()));
 
             *cb.borrow_mut() = Some(Closure::new(move |timestamp: f64| {
                 if !playing.get_untracked() {
@@ -447,10 +463,17 @@ pub fn SimulationCanvas(
             };
         });
 
-        // Cancel rAF on cleanup (T-012).
+        // Cancel rAF and break the closure's Rc cycle on cleanup.
         on_cleanup(move || {
             cancel_raf(raf_id_signal.get_untracked());
             raf_id_signal.set(None);
+            // Drop the stored closure so the cb <-> Closure cycle is broken and
+            // the captured data is freed (cancelling the frame alone doesn't).
+            cb_holder.try_update_value(|slot| {
+                if let Some(rc) = slot.as_ref() {
+                    *rc.borrow_mut() = None;
+                }
+            });
         });
 
         let toggle_play = move |_| {
