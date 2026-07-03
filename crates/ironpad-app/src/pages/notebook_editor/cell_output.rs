@@ -188,7 +188,7 @@ pub(super) fn CellOutputPanel(
                         <span class="ironpad-output-toggle">{collapse_icon}</span>
                         <span class="ironpad-output-title">"Output"</span>
                         <span class="ironpad-output-meta">
-                            {format!("{byte_count} bytes · {time_ms:.1}ms")}
+                            {format!("{byte_count} byte{} · {time_ms:.1}ms", if byte_count == 1 { "" } else { "s" })}
                         </span>
                         {if ran_on_main_thread {
                             view! {

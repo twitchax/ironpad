@@ -554,6 +554,8 @@ fn NotebookContent() -> impl IntoView {
                 <div class="ironpad-toolbar-dropdown">
                     <button
                         class="ironpad-toolbar-dropdown-toggle"
+                        title="Notebook menu"
+                        aria-label="Notebook menu"
                         on:click=move |_| {
                             gear_open.set(false);
                             hamburger_open.update(|v| *v = !*v);
@@ -789,6 +791,8 @@ fn NotebookContent() -> impl IntoView {
                 <div class="ironpad-toolbar-dropdown">
                     <button
                         class="ironpad-toolbar-dropdown-toggle"
+                        title="Notebook settings"
+                        aria-label="Notebook settings"
                         on:click=move |_| {
                             hamburger_open.set(false);
                             gear_open.update(|v| *v = !*v);

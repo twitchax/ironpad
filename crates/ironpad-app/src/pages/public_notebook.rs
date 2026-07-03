@@ -14,10 +14,11 @@ pub fn PublicNotebookPage() -> impl IntoView {
     let params = use_params_map();
     let filename = params.read_untracked().get("filename").unwrap_or_default();
 
-    // Reset layout context for public notebook.
+    // Reset layout context for public notebook. The notebook's real title is
+    // shown once in the view-only toolbar (<h1>), so clear the header center to
+    // avoid a duplicate (and to avoid the header showing the raw filename).
     let ctx = expect_context::<LayoutContext>();
-    ctx.notebook_title
-        .set(Some(format!("◇ {}", filename.replace(".ironpad", ""))));
+    ctx.notebook_title.set(None);
     ctx.show_save_button.set(false);
 
     let notebook_resource = Resource::new(move || filename.clone(), get_public_notebook);

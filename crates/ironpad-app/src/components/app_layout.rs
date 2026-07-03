@@ -135,6 +135,7 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
 
     #[cfg(feature = "hydrate")]
     {
+        use wasm_bindgen::JsCast as _;
         if let Some(window) = web_sys::window() {
             let stored = window
                 .local_storage()
@@ -143,6 +144,23 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                 .and_then(|ls| ls.get_item("ironpad-theme").ok().flatten());
             if stored.as_deref() == Some("light") {
                 is_light_theme.set(true);
+                // Apply the stored theme on mount so a light-theme reload doesn't
+                // render the page — and Monaco — in the default dark theme until
+                // the user re-toggles.
+                if let Some(html) = window.document().and_then(|d| d.document_element()) {
+                    let _ = html.set_attribute("data-theme", "light");
+                }
+                if let Some(monaco) = js_sys::Reflect::get(&window, &"IronpadMonaco".into())
+                    .ok()
+                    .filter(|v| !v.is_undefined())
+                {
+                    if let Ok(set_theme) = js_sys::Reflect::get(&monaco, &"setTheme".into()) {
+                        if set_theme.is_function() {
+                            let f: js_sys::Function = set_theme.unchecked_into();
+                            let _ = f.call1(&wasm_bindgen::JsValue::NULL, &"ironpad-light".into());
+                        }
+                    }
+                }
             }
         }
     }

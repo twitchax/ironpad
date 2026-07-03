@@ -1349,10 +1349,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Success => {
                                             let compile = compile_time_ms.get();
                                             let runtime = execution_result.get().map(|r| r.execution_time_ms);
-                                            match (compile, runtime) {
-                                                (Some(c), Some(r)) => format!("✓ {c:.0}+{r:.0}ms"),
-                                                (Some(c), None) => format!("✓ {c:.0}ms"),
-                                                _ => "✓ done".to_string(),
+                                            // Show compile time only (the cryptic
+                                            // "c+r" form read as one number); runtime
+                                            // is shown in the Output panel meta.
+                                            let _ = runtime;
+                                            match compile {
+                                                Some(c) => format!("✓ {c:.0} ms"),
+                                                None => "✓ done".to_string(),
                                             }
                                         }
                                         CellStatus::Error => "✕ error".to_string(),

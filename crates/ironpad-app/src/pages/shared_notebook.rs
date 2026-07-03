@@ -16,7 +16,9 @@ pub fn SharedNotebookPage() -> impl IntoView {
 
     // Reset layout context for shared notebook.
     let ctx = expect_context::<LayoutContext>();
-    ctx.notebook_title.set(Some("Shared Notebook".to_string()));
+    // Real title is shown once in the view-only toolbar (<h1>); keep the header
+    // center clear to avoid a duplicate.
+    ctx.notebook_title.set(None);
     ctx.show_save_button.set(false);
 
     let notebook_resource = Resource::new(move || hash.clone(), get_shared_notebook);
@@ -39,9 +41,6 @@ pub fn SharedNotebookPage() -> impl IntoView {
             {move || Suspend::new(async move {
                 match notebook_resource.await {
                     Ok(notebook) => {
-                        // Update title with the actual notebook title.
-                        ctx.notebook_title.set(Some(format!("↗ {}", notebook.title)));
-
                         view! {
                             <ViewOnlyNotebook notebook fork_label="Fork to Private".to_string() />
                         }.into_any()
