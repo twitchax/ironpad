@@ -181,6 +181,16 @@ async fn main() {
             match tokio::fs::read_to_string(&pid_path).await {
                 Ok(pid_str) => {
                     if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                        // The OS may have recycled the pidfile's PID for an
+                        // unrelated process; verify it's actually our daemon
+                        // before signaling so we don't SIGTERM a stranger.
+                        if !is_ironpad_daemon(pid) {
+                            eprintln!(
+                                "pidfile PID {pid} is not the ironpad daemon (stale pidfile); not sending a signal"
+                            );
+                            let _ = tokio::fs::remove_file(&pid_path).await;
+                            std::process::exit(1);
+                        }
                         match libc_kill(pid) {
                             Ok(()) => println!("sent stop signal to daemon (pid {pid})"),
                             Err(e) => {
@@ -462,6 +472,19 @@ async fn send_ipc(command: &str, args: serde_json::Value) -> IpcResponse {
 }
 
 // ── Signal helper ───────────────────────────────────────────────────────────
+
+/// Whether `pid` looks like an ironpad daemon, checked via `/proc/<pid>/cmdline`
+/// so a recycled PID (some unrelated process) isn't signaled. On systems
+/// without `/proc` (non-Linux) we can't verify, so fall back to allowing the
+/// signal — matching the previous behavior there.
+fn is_ironpad_daemon(pid: u32) -> bool {
+    match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).contains("ironpad"),
+        // `/proc` absent → non-Linux, can't verify → allow (old behavior).
+        // `/proc` present but this PID gone → the process is dead anyway.
+        Err(_) => !std::path::Path::new("/proc").exists(),
+    }
+}
 
 #[allow(unsafe_code)]
 fn libc_kill(pid: u32) -> Result<(), String> {

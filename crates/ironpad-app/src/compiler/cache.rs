@@ -27,7 +27,11 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// Bumped 1 -> 2 for PRD-0031 T-003: folding the toolchain fingerprint into
 /// the key (see [`toolchain_fingerprint`]) should invalidate all pre-existing
 /// blobs once, since their toolchain provenance is unknown.
-const CACHE_EPOCH: u32 = 2;
+///
+/// Bumped 2 -> 3 for PRD-0036 T-008: `ironpad-cell`'s `CellInputs::from_raw`
+/// gained bounds checking, so cached cells should rebuild against the safer
+/// runtime.
+const CACHE_EPOCH: u32 = 3;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 

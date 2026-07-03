@@ -28,6 +28,11 @@ fn wire_msg(id: &str, kind: MessageKind) -> String {
     .expect("protocol message serialization should never fail")
 }
 
+/// Cap on a single WebSocket message so a malicious peer can't send a giant
+/// frame that balloons server memory. Generous for protocol messages (a single
+/// mutation/event carries at most one cell's source + metadata).
+const MAX_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+
 // ── Query parameters ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -49,7 +54,8 @@ pub async fn ws_host_handler(
     Query(params): Query<HostParams>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_host(socket, params.notebook_id, state))
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_host(socket, params.notebook_id, state))
 }
 
 async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
@@ -273,16 +279,18 @@ pub async fn ws_connect_handler(
         uuid::Uuid::new_v4()
     );
 
-    Ok(ws.on_upgrade(move |socket| {
-        handle_guest(
-            socket,
-            session_id,
-            notebook_id,
-            client_id,
-            permissions,
-            state,
-        )
-    }))
+    Ok(ws
+        .max_message_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| {
+            handle_guest(
+                socket,
+                session_id,
+                notebook_id,
+                client_id,
+                permissions,
+                state,
+            )
+        }))
 }
 
 async fn handle_guest(

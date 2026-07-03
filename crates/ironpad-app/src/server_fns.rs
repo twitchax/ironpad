@@ -281,6 +281,12 @@ pub(crate) async fn get_public_notebook_core(
     // Reject path traversal attempts.
     validate_safe_path_segment(filename)?;
 
+    // Only serve notebook files, not arbitrary files in the directory
+    // (e.g. index.json or anything else that lands under notebooks/).
+    if !filename.ends_with(".ironpad") {
+        anyhow::bail!("not a notebook file: {filename}");
+    }
+
     let path = site_root.join("notebooks").join(filename);
 
     let bytes = tokio::fs::read(&path)

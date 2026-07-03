@@ -155,29 +155,39 @@ impl CellInputs {
     /// Decode from the length-prefixed wire format.
     /// If `bytes` is empty, returns an empty `CellInputs`.
     pub fn from_raw(bytes: &[u8]) -> Self {
-        if bytes.is_empty() {
-            return Self { data: Vec::new() };
-        }
+        // Bounds-checked wire-format parse: `[count:u32]([len:u32][data:len])*`.
+        // Every read goes through `slice::get` and a checked add, so a
+        // truncated or malformed buffer (or an out-of-range count/len) yields
+        // whatever parsed cleanly instead of panicking on an out-of-bounds index
+        // or over-allocating from an attacker-controlled count.
+        let mut data = Vec::new();
 
-        let mut offset = 0;
+        let Some(count_bytes) = bytes.get(0..4) else {
+            return Self { data };
+        };
+        let count = u32::from_le_bytes(count_bytes.try_into().unwrap()) as usize;
+        let mut offset = 4usize;
 
-        let count = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("wire format header must contain a 4-byte count"),
-        ) as usize;
-        offset += 4;
-
-        let mut data = Vec::with_capacity(count);
         for _ in 0..count {
-            let len = u32::from_le_bytes(
-                bytes[offset..offset + 4]
-                    .try_into()
-                    .expect("wire format segment must contain a 4-byte length prefix"),
-            ) as usize;
-            offset += 4;
-            data.push(bytes[offset..offset + len].to_vec());
-            offset += len;
+            // Length prefix.
+            let Some(end) = offset.checked_add(4) else {
+                break;
+            };
+            let Some(len_bytes) = bytes.get(offset..end) else {
+                break;
+            };
+            let len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+            offset = end;
+
+            // Segment payload.
+            let Some(seg_end) = offset.checked_add(len) else {
+                break;
+            };
+            let Some(segment) = bytes.get(offset..seg_end) else {
+                break;
+            };
+            data.push(segment.to_vec());
+            offset = seg_end;
         }
 
         Self { data }
@@ -1296,6 +1306,45 @@ pub unsafe extern "C" fn ironpad_dealloc(ptr: *mut u8, len: usize) {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+
+    // ── CellInputs::from_raw bounds checking ─────────────────────────────
+
+    #[test]
+    fn cell_inputs_round_trip() {
+        let raw = CellInputs::serialize(&[b"first".as_slice(), b"second".as_slice()]);
+        let inputs = CellInputs::from_raw(&raw);
+        assert_eq!(inputs.data.len(), 2);
+        assert_eq!(inputs.data[0], b"first");
+        assert_eq!(inputs.data[1], b"second");
+    }
+
+    #[test]
+    fn cell_inputs_empty_is_empty() {
+        assert!(CellInputs::from_raw(&[]).data.is_empty());
+        // A count header with fewer than 4 bytes is ignored, not indexed.
+        assert!(CellInputs::from_raw(&[1, 2]).data.is_empty());
+    }
+
+    #[test]
+    fn cell_inputs_truncated_does_not_panic() {
+        let mut raw = CellInputs::serialize(&[b"hello".as_slice(), b"world".as_slice()]);
+        // Chop the buffer mid-second-segment: parsing must stop cleanly.
+        raw.truncate(raw.len() - 3);
+        let inputs = CellInputs::from_raw(&raw);
+        assert_eq!(
+            inputs.data.first().map(Vec::as_slice),
+            Some(b"hello".as_slice())
+        );
+    }
+
+    #[test]
+    fn cell_inputs_bogus_count_does_not_over_read() {
+        // Claim 1000 segments but provide none: must not panic or allocate wildly.
+        let mut raw = 1000u32.to_le_bytes().to_vec();
+        raw.extend_from_slice(&5u32.to_le_bytes()); // one length prefix, no payload
+        let inputs = CellInputs::from_raw(&raw);
+        assert!(inputs.data.is_empty(), "no complete segment should parse");
+    }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Point {
