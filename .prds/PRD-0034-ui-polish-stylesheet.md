@@ -1,7 +1,7 @@
 ---
 id: PRD-0034
 title: "UI polish & stylesheet fixes (prettying up)"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-02
 updated: 2026-07-02
@@ -57,7 +57,7 @@ tasks:
 - id: T-005
   title: "Empty-notebook state + always-visible-ish cell action rail"
   priority: 2
-  status: todo  # PARTIAL: cell-rail opacity 0.35 done (35cf54c); empty-notebook state (markup) pending
+  status: done
   notes: "Confirmed live: a new notebook is two faint '+ Code / + Markdown' text buttons floating in dark space -> add a real empty-state CTA card with keyboard hints. Cell action rail (.ironpad-cell-side-actions) is opacity 0 until hover -> undiscoverable and unusable on touch; make it always visible at reduced opacity, brightening on hover."
 - id: T-006
   title: "Disambiguate overloaded red: neutral focus border; consistent cross-theme accent"
@@ -67,17 +67,17 @@ tasks:
 - id: T-007
   title: "Compile badge + byte-count readability"
   priority: 3
-  status: todo
+  status: done
   notes: "Confirmed live: cryptic '✓ 468+7MS' badge and '1 bytes'. Spell out ('468 ms compile · 7 ms run') or add a tooltip; pluralize/format byte counts."
 - id: T-008
   title: "View-only page polish: duplicate title, filename-as-title, cached/fresh toggle look, nested scroll"
   priority: 3
-  status: todo
+  status: done
   notes: "public_notebook.rs:19-20 sets the header center title AND view_only_notebook.rs:183 renders an <h1> with the same name -> shown twice; header also shows the filename (lagrange-points) not the notebook title. 'Cached/Fresh' toggle (view_only_notebook.rs:184-197) reuses .ironpad-theme-toggle classes so it looks like the dark/light switch -> give it its own class. Nested scroll containers (main.scss:358 .ironpad-content vs :1951 .view-only-cells) risk a double scrollbar -> let .ironpad-content own scrolling."
 - id: T-009
   title: "Apply saved light-theme to Monaco on load; label icon-only toolbar buttons"
   priority: 3
-  status: todo
+  status: done
   notes: "app_layout.rs:135-149 reads the stored theme but setTheme(...) is only called in the toggle click handlers (:226-241,:268-283) -> on reload with theme=light the toggle shows light while Monaco renders dark until re-toggled; on mount, if light, apply data-theme + call IronpadMonaco.setTheme once. Also add title/aria-label to the icon-only ☰ (mod.rs:502-510) and ⚙ (mod.rs:707-716) toolbar buttons."
 - id: T-010
   title: "Home card hover lift; dead modifier classes; error-panel For key collision"
@@ -87,7 +87,7 @@ tasks:
 - id: T-011
   title: "Mobile: keep the notebook title in the header at narrow widths; fork double-click guard"
   priority: 3
-  status: todo
+  status: done
   notes: "Confirmed live: notebook title disappears from the header on mobile (no responsive slot). Give it a responsive slot or a truncated variant. Also (from components review) view_only_notebook.rs:158-178,205-207: Fork button not disabled during async fork -> double-click creates two notebooks and a save failure still navigates; gate on an in_flight signal and navigate only after a successful save."
 ---
 
@@ -135,3 +135,6 @@ Almost entirely `style/main.scss` token/selector work, with small markup touches
 # History
 
 (Entries appended during implementation go below this line.)
+
+## 2026-07-03 — Complete (11/11)
+All UI-polish tasks landed on branch `fix/prd-0034-ui-polish`, each gate-clean (cargo make clippy + 491 tests). Browser-verified: drag handle, light-theme hover token, output cap, empty-notebook state. Commits: 878f364 (T-001/002/003), 35cf54c (T-004/006/010 + rail), 15598ca (T-007/008/009), 3ddca98 (T-005/T-011).
