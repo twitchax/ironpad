@@ -800,7 +800,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 .as_ref()
                 .unchecked_ref::<js_sys::Function>()
                 .clone();
-            run_closure.forget();
+            StoredValue::new_local(run_closure);
             handle.add_action("ironpad.runCell", &[2051], &run_cb);
 
             // Shift+Enter → run cell and advance focus to next cell.
@@ -828,8 +828,17 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 .as_ref()
                 .unchecked_ref::<js_sys::Function>()
                 .clone();
-            advance_closure.forget();
+            StoredValue::new_local(advance_closure);
             handle.add_action("ironpad.runCellAndAdvance", &[1027], &advance_cb);
+        });
+
+        // Drop this cell's editor handle when the cell is disposed so handles
+        // for deleted cells don't accumulate in the shared map.
+        let cid_handle_cleanup = cell_id_for_keys.get_value();
+        on_cleanup(move || {
+            state.editor_handles.try_update(|m| {
+                m.remove(&cid_handle_cleanup);
+            });
         });
     }
 
@@ -1080,7 +1089,20 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         });
         let save_fn: js_sys::Function =
             closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
-        closure.forget();
+        // Hold the closure in the arena (dropped on cell disposal) rather than
+        // leaking it with forget().
+        StoredValue::new_local(closure);
+
+        // Cancel a pending debounced save when the cell is disposed (e.g.
+        // deleted) so it doesn't fire against disposed signals / a gone cell.
+        on_cleanup(move || {
+            let prev = debounce_handle.get_untracked();
+            if prev != 0 {
+                if let Some(win) = web_sys::window() {
+                    win.clear_timeout_with_handle(prev);
+                }
+            }
+        });
 
         Callback::new(move |val: String| {
             source.set(val);
@@ -1134,7 +1156,19 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         });
         let save_fn: js_sys::Function =
             closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
-        closure.forget();
+        // Hold the closure in the arena (dropped on cell disposal) rather than
+        // leaking it with forget().
+        StoredValue::new_local(closure);
+
+        // Cancel a pending debounced save on cell disposal.
+        on_cleanup(move || {
+            let prev = debounce_handle.get_untracked();
+            if prev != 0 {
+                if let Some(win) = web_sys::window() {
+                    win.clear_timeout_with_handle(prev);
+                }
+            }
+        });
 
         Callback::new(move |val: String| {
             cargo_toml.set(val);
