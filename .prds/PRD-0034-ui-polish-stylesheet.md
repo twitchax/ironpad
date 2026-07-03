@@ -1,7 +1,7 @@
 ---
 id: PRD-0034
 title: "UI polish & stylesheet fixes (prettying up)"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2026-07-02
 updated: 2026-07-02
@@ -37,17 +37,17 @@ tasks:
 - id: T-001
   title: "Fix the permanently invisible drag handle"
   priority: 1
-  status: todo
+  status: done
   notes: "main.scss:2526 sets .ironpad-drag-handle opacity:0; the only reveal rule (:2577) is a descendant selector that can't match because the handle is in .ironpad-cell-side-actions, a SIBLING of .ironpad-cell-card. Fix: remove the self opacity:0 (the parent .ironpad-cell-side-actions already fades in via .ironpad-cell-row:hover at :996), delete the dead :2577 rule, and merge the two conflicting .ironpad-drag-handle blocks (:1004 and :2526, which also fight over width/height/font-size). DOM: cell_item.rs:1211,1388,1391."
 - id: T-002
   title: "Theme-aware hover token — fix invisible light-theme hovers (systemic)"
   priority: 1
-  status: todo
+  status: done
   notes: "28 hardcoded rgba(255,255,255,0.06-0.12) hover backgrounds (e.g. :339,:790,:871,:1019,:1045,:2253,:2286,:2604) go invisible on light surfaces; three hovers set text to --ip-text-on-accent (#fff both themes) on transparent bgs (:2255 toolbar toggle, :2287 dropdown item, :2606 session button) -> white-on-white. Fix: add --ip-hover-overlay (rgba(255,255,255,0.08) in :root, rgba(0,0,0,0.06) in [data-theme=light]); replace the 28 overlays with the token; switch the 3 hover text colors to var(--ip-text-primary)."
 - id: T-003
   title: "Cap output height; constrain wide media"
   priority: 1
-  status: todo
+  status: done
   notes: ".ironpad-output-body:1401 has overflow-y:auto but no max-height (contrast compile-result:1131 caps 300px) -> huge stdout/table grows the card unboundedly. Fix: max-height:480px. Also add .ironpad-output-visual img { max-width:100%; height:auto; } — cell_output.rs:288 emits fixed pixel img sizes (SVG :1424 and canvas :2749 already cap at 100%, img does not)."
 - id: T-004
   title: "Style the three unstyled classes + fix progress bar tokens + focus glow"
