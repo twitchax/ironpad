@@ -60,7 +60,7 @@ tasks:
 - id: T-007
   title: "PRD-0037 Leak sweep"
   priority: 4
-  status: todo
+  status: done
   notes: "Mechanical, cross-cutting; land after 0032/0034 touch the same components. See PRD-0037."
 ---
 
