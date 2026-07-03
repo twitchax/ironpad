@@ -22,6 +22,16 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
     let config = expect_context::<AppConfig>();
     let session_id = "default";
 
+    // Validate the cell_id before it touches the filesystem or Cargo.toml: it is
+    // joined into cache paths and interpolated into `name = "cell-{id}"`, so an
+    // unvalidated id can traverse directories (`../`) or inject manifest keys.
+    if !crate::compiler::scaffold::is_valid_cell_id(&request.cell_id) {
+        return Err(ServerFnError::new(format!(
+            "invalid cell_id {:?}: expected 1-64 chars of [A-Za-z0-9_-]",
+            request.cell_id
+        )));
+    }
+
     // Scaffold first so we can detect rayon (needs_atomics) before hashing.
 
     let (crate_dir, preamble_lines, _is_async, _is_simulation, needs_atomics) =

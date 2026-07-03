@@ -8,6 +8,18 @@ use std::path::{Path, PathBuf};
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/// Whether a cell id is safe to use in filesystem paths and the generated
+/// `Cargo.toml`. Restricting to `[A-Za-z0-9_-]` (1–64 chars) prevents path
+/// traversal (`../` escaping the workspace) and manifest injection (a `"` or
+/// newline in `name = "cell-{id}"` would inject arbitrary `[package]` keys).
+/// Callers must validate before passing an id to [`scaffold_micro_crate`].
+pub fn is_valid_cell_id(cell_id: &str) -> bool {
+    (1..=64).contains(&cell_id.len())
+        && cell_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// Scaffold a micro-crate for a single cell compilation.
 ///
 /// Creates the directory structure:
@@ -646,6 +658,29 @@ Box::into_raw(Box::new(result)) as u32
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // ── is_valid_cell_id ─────────────────────────────────────────────────
+
+    #[test]
+    fn accepts_typical_cell_ids() {
+        assert!(is_valid_cell_id("c1"));
+        assert!(is_valid_cell_id(
+            "550e8400-e29b-41d4-a716-446655440000" // a UUID
+        ));
+        assert!(is_valid_cell_id("Cell_42-abc"));
+        assert!(is_valid_cell_id(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn rejects_path_traversal_and_injection() {
+        assert!(!is_valid_cell_id(""), "empty");
+        assert!(!is_valid_cell_id("../etc/passwd"), "path traversal");
+        assert!(!is_valid_cell_id("a/b"), "slash");
+        assert!(!is_valid_cell_id("a.b"), "dot");
+        assert!(!is_valid_cell_id("a\"\n[package]"), "manifest injection");
+        assert!(!is_valid_cell_id("has space"), "space");
+        assert!(!is_valid_cell_id(&"a".repeat(65)), "too long");
+    }
 
     // ── extract_user_dependencies ────────────────────────────────────────
 
