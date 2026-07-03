@@ -50,7 +50,7 @@ tasks:
 - id: T-005
   title: "PRD-0035 Collaboration / session layer"
   priority: 3
-  status: todo
+  status: in-progress
   notes: "Independent track; do when agent collaboration is the focus. See PRD-0035."
 - id: T-006
   title: "PRD-0036 Compiler/server correctness + pragmatic hardening"
