@@ -188,6 +188,26 @@ mod tests {
     }
 
     #[test]
+    fn preserves_math_span_classes_for_katex() {
+        // pulldown-cmark (ENABLE_MATH) emits `<span class="math math-inline">tex</span>`
+        // for `$...$` and `math-display` for `$$...$$`. The KaTeX bridge
+        // (public/katex/render-math.js) locates them via the `span.math`
+        // selector, so sanitization MUST keep those classes or math silently
+        // renders as raw LaTeX.
+        let inline = render_markdown(r"Euler: $e^{i\pi}+1=0$");
+        assert!(
+            inline.contains("math-inline"),
+            "kept inline math span class for KaTeX: {inline}"
+        );
+
+        let display = render_markdown(r"$$\int_0^1 x\,dx = \tfrac12$$");
+        assert!(
+            display.contains("math-display"),
+            "kept display math span class for KaTeX: {display}"
+        );
+    }
+
+    #[test]
     fn strips_raw_html_in_markdown_source() {
         // pulldown_cmark passes raw HTML through; sanitization must strip the
         // active parts so a shared/public markdown cell can't XSS a viewer.

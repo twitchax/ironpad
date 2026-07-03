@@ -11,10 +11,23 @@ use std::sync::LazyLock;
 
 use ammonia::Builder;
 
-/// Sanitizer for `Html` panels — ammonia's default HTML allowlist, which strips
-/// `<script>`, `on*` handlers, `javascript:` URLs, `<iframe>`/`<object>`, etc.
+/// Builder for `Html` panels and rendered markdown. Ammonia's default allowlist
+/// (strips `<script>`, `on*` handlers, `javascript:` URLs, `<iframe>`/`<object>`,
+/// etc.) plus the three `KaTeX` math classes on `<span>`. pulldown-cmark's
+/// `ENABLE_MATH` emits `<span class="math math-inline">tex</span>` (and
+/// `math-display`), and the client-side `KaTeX` bridge (`public/katex/render-math.js`)
+/// finds them via the `span.math` selector — so the classes must survive
+/// sanitization or math silently renders as raw LaTeX. Only these exact tokens
+/// are allowed (not a general `class` passthrough), so no script surface is added.
+static HTML_BUILDER: LazyLock<Builder<'static>> = LazyLock::new(|| {
+    let mut builder = Builder::default();
+    builder.add_allowed_classes("span", ["math", "math-inline", "math-display"]);
+    builder
+});
+
+/// Sanitizer for `Html` panels and rendered markdown. See [`HTML_BUILDER`].
 fn clean_html(html: &str) -> String {
-    ammonia::clean(html)
+    HTML_BUILDER.clean(html).to_string()
 }
 
 /// SVG element names allowed in sanitized SVG output. Deliberately excludes
