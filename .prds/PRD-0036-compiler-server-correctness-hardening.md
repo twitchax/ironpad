@@ -1,7 +1,7 @@
 ---
 id: PRD-0036
 title: "Compiler/server correctness + pragmatic hardening (B1-B6, S2-S5)"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2026-07-02
 updated: 2026-07-02
@@ -42,12 +42,12 @@ tasks:
 - id: T-001
   title: "B1: Kill the build process group on timeout"
   priority: 1
-  status: todo
+  status: done
   notes: "build.rs:109-142: timeout() drops the future but cargo + its rustc/build-script children keep running (no kill_on_drop, no process group) -> a compile-bomb cell burns CPU/RAM after 'timeout'. Fix: .kill_on_drop(true) + .process_group(0), and killpg the group on timeout (killing only cargo is insufficient — it spawns children)."
 - id: T-002
   title: "S2: Validate cell_id before any filesystem or Cargo.toml use"
   priority: 1
-  status: todo
+  status: done
   notes: "scaffold.rs:39,112: unvalidated cell_id (from request.cell_id, server_fns.rs:33) is joined into fs paths (../../.. escapes the workspace -> arbitrary file write within server perms) and interpolated unescaped into name = \"cell-{cell_id}\" (\" + newline injects [package] keys, e.g. build=). Fix: validate ^[A-Za-z0-9_-]{1,64}$ in compile_cell before use; reject otherwise."
 - id: T-003
   title: "B2: Isolate workspace + target dir per request (fix cache-poisoning race)"
@@ -62,17 +62,17 @@ tasks:
 - id: T-005
   title: "B4: Atomic cache blob writes"
   priority: 2
-  status: todo
+  status: done
   notes: "cache.rs:132: store_blob does std::fs::write (truncate+write); a concurrent try_cache_hit (cache.rs:88 std::fs::read) can read a partial file and return truncated WASM as a 'hit'. Fix: write to {path}.tmp.{uuid} then std::fs::rename (atomic same-fs); same for the .js glue."
 - id: T-006
   title: "S3: Sanitize cell HTML/SVG output (stored XSS in shared/public notebooks)"
   priority: 1
-  status: todo
+  status: done
   notes: "cell_output.rs:231 (<div inner_html=html>) and :241 (SVG) inject cell output raw; export.rs:191-194 inlines the same. View mode auto-runs all cells (mod.rs:447-460) and /shared/{hash} notebooks are viewed by OTHERS -> a cell emitting Html('<img src=x onerror=...>') runs script in the viewer's origin. Fix: sanitize HTML/SVG panels (allowlist) or render in a sandboxed iframe."
 - id: T-007
   title: "S4: Cap shared-notebook upload size"
   priority: 2
-  status: todo
+  status: done
   notes: "server_fns.rs:294-332: share_notebook_core accepts arbitrary-length notebook_json, serde_json::from_str over all of it, writes to disk — no size cap/rate limit -> distinct large uploads fill disk and the parse CPU-blocks the runtime. Fix: enforce a max body size (Axum DefaultBodyLimit / explicit length check) before parse."
 - id: T-008
   title: "S5 + B5/B6: server hardening, diagnostics cleanup, and misc correctness"
