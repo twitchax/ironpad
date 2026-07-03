@@ -154,6 +154,23 @@ pub fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
     })
 }
 
+/// Write `contents` to `path` atomically: write a uniquely-named temp sibling,
+/// then rename it into place. `rename` is atomic on the same filesystem, so a
+/// concurrent [`try_cache_hit`] reader sees either the old file or the fully
+/// written new one — never the truncated partial write `std::fs::write` exposes.
+fn atomic_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp.{}", uuid::Uuid::new_v4()));
+    let tmp = PathBuf::from(tmp);
+
+    std::fs::write(&tmp, contents)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp); // best-effort cleanup on failure
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 /// Store a compiled WASM blob (and optional JS glue) in the cache.
 ///
 /// Creates the `blobs/` directory if it doesn't already exist.
@@ -169,11 +186,11 @@ pub fn store_blob(
         std::fs::create_dir_all(parent)?;
     }
 
-    std::fs::write(&path, wasm_bytes)?;
+    atomic_write(&path, wasm_bytes)?;
 
     if let Some(glue) = js_glue {
         let js_path = cache_js_glue_path(cache_dir, hash);
-        std::fs::write(&js_path, glue)?;
+        atomic_write(&js_path, glue.as_bytes())?;
         tracing::info!(hash, js_bytes = glue.len(), "cached JS glue");
     }
 
@@ -405,6 +422,26 @@ mod tests {
         store_blob(dir.path(), hash, blob_v2, None).unwrap();
         let hit2 = try_cache_hit(dir.path(), hash).unwrap();
         assert_eq!(hit2.wasm_bytes, blob_v2);
+    }
+
+    #[test]
+    fn store_leaves_no_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        store_blob(dir.path(), "deadbeef", b"wasm", Some("glue()")).unwrap();
+
+        // The atomic write renames the temp into place — no `.tmp.*` sidecar
+        // should survive to be mistaken for (or read as) a cache entry.
+        let blobs = dir.path().join("blobs");
+        let leftovers: Vec<_> = std::fs::read_dir(&blobs)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 
     #[test]
