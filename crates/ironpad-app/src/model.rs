@@ -45,6 +45,9 @@ pub(crate) struct NotebookModel {
     pending_events: RwSignal<Vec<EventEnvelope>>,
     /// Bumped each time events are pushed. The WebSocket bridge watches this.
     event_generation: RwSignal<u64>,
+    /// Bumped when a remote (agent) edit changes a cell's content, so the host's
+    /// editors can pull the new source into Monaco. Shared with `NotebookState`.
+    external_content_generation: RwSignal<u64>,
 }
 
 impl NotebookModel {
@@ -53,6 +56,7 @@ impl NotebookModel {
         notebook: RwSignal<Option<IronpadNotebook>>,
         cells: RwSignal<Vec<CellManifest>>,
         cell_stale: RwSignal<HashMap<String, bool>>,
+        external_content_generation: RwSignal<u64>,
     ) -> Self {
         Self {
             notebook,
@@ -61,6 +65,7 @@ impl NotebookModel {
             cell_versions: RwSignal::new(HashMap::new()),
             pending_events: RwSignal::new(Vec::new()),
             event_generation: RwSignal::new(0),
+            external_content_generation,
         }
     }
 
@@ -75,6 +80,11 @@ impl NotebookModel {
         mutation: Mutation,
         by: ClientId,
     ) -> Result<(MutationResult, EventEnvelope), ModelError> {
+        // A remote (non-browser) edit that changes a cell's content must refresh
+        // the host's Monaco editor — the browser's own edits already live in
+        // Monaco, so they don't. Detect it before `mutation` is moved below.
+        let remote_content_edit = is_remote_content_edit(&by, &mutation);
+
         let (result, event) = match mutation {
             Mutation::CellAdd {
                 cell,
@@ -116,6 +126,11 @@ impl NotebookModel {
             }
         });
         self.event_generation.update(|g| *g += 1);
+
+        // Signal host editors to pull a remote content edit into Monaco.
+        if remote_content_edit {
+            self.external_content_generation.update(|g| *g += 1);
+        }
 
         Ok((result, envelope))
     }
@@ -509,4 +524,83 @@ fn default_cell_cargo_toml(cell_id: &str) -> String {
     format!(
         "[package]\nname = \"{cell_id}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n"
     )
+}
+
+/// Whether a mutation from `by` is a remote (non-browser) edit that changes a
+/// cell's content. This is the case that must push the new source into the
+/// host's imperative Monaco editor; browser-originated edits already live there,
+/// and non-content edits (reorder, label-only, delete) don't touch editor text.
+fn is_remote_content_edit(by: &ClientId, mutation: &Mutation) -> bool {
+    by != &ClientId::browser()
+        && matches!(
+            mutation,
+            Mutation::CellUpdate {
+                source: Some(_),
+                ..
+            } | Mutation::CellUpdate {
+                cargo_toml: Some(_),
+                ..
+            }
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_remote_content_edit;
+    use ironpad_common::protocol::{ClientId, Mutation};
+
+    fn source_update(source: Option<&str>, label: Option<&str>) -> Mutation {
+        Mutation::CellUpdate {
+            cell_id: "c1".into(),
+            source: source.map(Into::into),
+            cargo_toml: None,
+            label: label.map(Into::into),
+            version: 0,
+        }
+    }
+
+    #[test]
+    fn agent_source_edit_is_remote_content_edit() {
+        assert!(is_remote_content_edit(
+            &ClientId::agent("a"),
+            &source_update(Some("fn main() {}"), None)
+        ));
+    }
+
+    #[test]
+    fn agent_cargo_toml_edit_is_remote_content_edit() {
+        let m = Mutation::CellUpdate {
+            cell_id: "c1".into(),
+            source: None,
+            cargo_toml: Some(Some("[package]".into())),
+            label: None,
+            version: 0,
+        };
+        assert!(is_remote_content_edit(&ClientId::agent("a"), &m));
+    }
+
+    #[test]
+    fn browser_source_edit_is_not_remote() {
+        // The browser's own edits already live in Monaco — must NOT refresh.
+        assert!(!is_remote_content_edit(
+            &ClientId::browser(),
+            &source_update(Some("fn main() {}"), None)
+        ));
+    }
+
+    #[test]
+    fn agent_label_only_edit_is_not_content() {
+        assert!(!is_remote_content_edit(
+            &ClientId::agent("a"),
+            &source_update(None, Some("renamed"))
+        ));
+    }
+
+    #[test]
+    fn agent_reorder_is_not_content() {
+        assert!(!is_remote_content_edit(
+            &ClientId::agent("a"),
+            &Mutation::CellReorder { cell_ids: vec![] }
+        ));
+    }
 }

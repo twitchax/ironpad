@@ -833,6 +833,45 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         });
     }
 
+    // ── Pull remote (agent) source edits into Monaco ────────────────────
+    //
+    // When an agent edits this cell's content, the model bumps
+    // external_content_generation. Refresh Monaco from the model so the change
+    // is visible without a reload — but never overwrite the host's own unsaved
+    // edits (source_dirty), and skip if Monaco already matches.
+
+    #[cfg(feature = "hydrate")]
+    {
+        let cell_id_for_external = StoredValue::new(cell.id.clone());
+
+        Effect::new(move || {
+            // React to remote content edits.
+            state.external_content_generation.get();
+
+            let Some(handle) = source_handle.get_untracked() else {
+                return;
+            };
+            // Don't clobber the host's in-progress local edits.
+            if source_dirty.get_untracked() {
+                return;
+            }
+
+            let cid = cell_id_for_external.get_value();
+            let latest = state.notebook.with_untracked(|nb_opt| {
+                nb_opt
+                    .as_ref()
+                    .and_then(|nb| nb.cells.iter().find(|c| c.id == cid))
+                    .map(|c| c.source.clone())
+            });
+            if let Some(latest) = latest {
+                if handle.get_value() != latest {
+                    handle.set_value(&latest);
+                    source.set(latest);
+                }
+            }
+        });
+    }
+
     // ── Autocomplete context ────────────────────────────────────────────
     //
     // Push cell variable context to the Monaco completion provider whenever

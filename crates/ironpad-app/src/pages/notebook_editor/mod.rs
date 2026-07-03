@@ -105,8 +105,14 @@ pub fn NotebookEditorPage() -> impl IntoView {
         reactive_mode: RwSignal::new(false),
         reactive_timer: RwSignal::new(None),
         cell_blocked_by: RwSignal::new(HashMap::new()),
+        external_content_generation: RwSignal::new(0),
     };
-    let model = NotebookModel::new(state.notebook, state.cells, state.cell_stale);
+    let model = NotebookModel::new(
+        state.notebook,
+        state.cells,
+        state.cell_stale,
+        state.external_content_generation,
+    );
     let session_state = SessionState::new();
     provide_context(state);
     provide_context(model);

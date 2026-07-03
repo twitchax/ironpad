@@ -83,6 +83,12 @@ pub(crate) struct NotebookState {
     pub(super) reactive_timer: RwSignal<Option<i32>>,
     /// Maps cell ID → the ID of the upstream cell whose error blocked it (cascade halt).
     pub(super) cell_blocked_by: RwSignal<HashMap<String, String>>,
+    /// Bumped when a remote (agent) edit changes a cell's content, so each cell's
+    /// editor can pull the new source into Monaco. Browser-originated edits do
+    /// NOT bump this — Monaco already holds the host's own text.
+    // Used in cell_item.rs under #[cfg(feature = "hydrate")]; appears dead during SSR.
+    #[allow(dead_code)]
+    pub(super) external_content_generation: RwSignal<u64>,
 }
 
 // ── Reactive execution scheduling ───────────────────────────────────────────
