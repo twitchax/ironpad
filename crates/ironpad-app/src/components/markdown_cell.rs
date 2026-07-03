@@ -99,7 +99,10 @@ pub fn MarkdownCell(
                 use wasm_bindgen::JsCast;
                 cb.as_ref().unchecked_ref::<js_sys::Function>().clone()
             };
-            cb.forget();
+            // Store the closure in the reactive arena instead of forgetting it:
+            // the Effect's owner drops it on re-run (after the prior editor is
+            // disposed) and on unmount, rather than leaking one per edit-entry.
+            StoredValue::new_local(cb);
 
             // Monaco keybinding: Escape = 9 (KeyCode.Escape).
             handle.add_action("ironpad.markdown.escape", &[9], &f);
