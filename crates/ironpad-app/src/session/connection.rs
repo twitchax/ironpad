@@ -73,6 +73,22 @@ pub(crate) fn start_session(
                 }),
             },
         );
+
+        // Flush any browser events buffered before the socket opened. The event
+        // bridge Effect skips draining while the socket is still CONNECTING (a
+        // send on a non-OPEN socket throws InvalidStateError and the event would
+        // be lost), so those edits are still queued in the model — send them now.
+        for event in model.drain_events() {
+            if event.by == ClientId::browser() {
+                ws_send(
+                    &ws_clone,
+                    &protocol::Message {
+                        id: String::new(),
+                        kind: MessageKind::Event(event),
+                    },
+                );
+            }
+        }
     });
     ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
     on_open.forget();
@@ -119,6 +135,14 @@ pub(crate) fn start_session(
     Effect::new(move || {
         // Track the generation counter — this triggers the effect.
         let _gen = model.event_generation().get();
+
+        // Don't drain while the socket isn't OPEN — a send on a CONNECTING
+        // socket throws InvalidStateError and the drained event would be lost.
+        // Events stay buffered in the model; on_open flushes the pre-open
+        // backlog, and later generation bumps re-run this effect once OPEN.
+        if ws_for_events.ready_state() != web_sys::WebSocket::OPEN {
+            return;
+        }
 
         // Drain events (untracked — won't re-trigger).
         let events = model.drain_events();
