@@ -300,11 +300,25 @@ pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, Se
 
 // ── Shared notebooks ─────────────────────────────────────────────────────────
 
+/// Maximum accepted size of a shared-notebook upload (before parsing).
+#[cfg(feature = "ssr")]
+const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
+
 #[cfg(feature = "ssr")]
 pub(crate) async fn share_notebook_core(
     data_dir: &std::path::Path,
     notebook_json: &str,
 ) -> anyhow::Result<String> {
+    // Reject oversized uploads before parsing: an arbitrarily large body would
+    // CPU-block the runtime in serde and fill disk with distinct large writes.
+    // 4 MiB is generous for a notebook (many cells of source plus outputs).
+    if notebook_json.len() > MAX_SHARE_BYTES {
+        anyhow::bail!(
+            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
+            notebook_json.len()
+        );
+    }
+
     // Validate the JSON is a valid IronpadNotebook.
     let _: IronpadNotebook = serde_json::from_str(notebook_json)
         .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
@@ -416,6 +430,22 @@ mod tests {
         assert_eq!(hash.len(), 16, "hash should be 16 hex chars");
         let path = dir.path().join("shares").join(format!("{hash}.json"));
         assert!(path.exists(), "share file should exist on disk");
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_share_notebook_rejects_oversized() {
+        let dir = tempfile::tempdir().unwrap();
+        // Just over the cap — rejected before parsing, so it needn't be valid JSON.
+        let oversized = "x".repeat(MAX_SHARE_BYTES + 1);
+        let err = share_notebook_core(dir.path(), &oversized)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        assert!(
+            !dir.path().join("shares").exists(),
+            "nothing should be written for an oversized upload"
+        );
     }
 
     #[tokio::test]
