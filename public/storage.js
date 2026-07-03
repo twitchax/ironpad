@@ -30,6 +30,7 @@ window.IronpadStorage = (function () {
             };
             req.onsuccess = (e) => resolve(e.target.result);
             req.onerror = (e) => reject(e.target.error);
+            req.onblocked = () => reject(new Error('IndexedDB open blocked'));
         });
     }
 
@@ -51,16 +52,21 @@ window.IronpadStorage = (function () {
          */
         listNotebooks: async function () {
             const db = await openDb();
-            const store = tx(db, 'readonly');
-            const all = await reqToPromise(store.getAll());
-            db.close();
-            // Sort by updated_at descending (most recent first).
-            all.sort((a, b) => {
-                const ta = new Date(a.updated_at).getTime();
-                const tb = new Date(b.updated_at).getTime();
-                return tb - ta;
-            });
-            return all;
+            try {
+                const store = tx(db, 'readonly');
+                const all = await reqToPromise(store.getAll());
+                // Sort by updated_at descending (most recent first). Malformed
+                // updated_at values yield NaN from getTime(); coerce to 0 so
+                // they sort last instead of breaking comparator transitivity.
+                all.sort((a, b) => {
+                    const ta = new Date(a.updated_at).getTime() || 0;
+                    const tb = new Date(b.updated_at).getTime() || 0;
+                    return tb - ta;
+                });
+                return all;
+            } finally {
+                db.close();
+            }
         },
 
         /**
@@ -70,10 +76,13 @@ window.IronpadStorage = (function () {
          */
         getNotebook: async function (id) {
             const db = await openDb();
-            const store = tx(db, 'readonly');
-            const result = await reqToPromise(store.get(id));
-            db.close();
-            return result || null;
+            try {
+                const store = tx(db, 'readonly');
+                const result = await reqToPromise(store.get(id));
+                return result || null;
+            } finally {
+                db.close();
+            }
         },
 
         /**
@@ -82,11 +91,15 @@ window.IronpadStorage = (function () {
          * @returns {Promise<void>}
          */
         saveNotebook: async function (notebook) {
-            notebook.updated_at = new Date().toISOString();
+            // Clone rather than mutate the caller's object.
+            const nb = { ...notebook, updated_at: new Date().toISOString() };
             const db = await openDb();
-            const store = tx(db, 'readwrite');
-            await reqToPromise(store.put(notebook));
-            db.close();
+            try {
+                const store = tx(db, 'readwrite');
+                await reqToPromise(store.put(nb));
+            } finally {
+                db.close();
+            }
         },
 
         /**
@@ -96,9 +109,12 @@ window.IronpadStorage = (function () {
          */
         deleteNotebook: async function (id) {
             const db = await openDb();
-            const store = tx(db, 'readwrite');
-            await reqToPromise(store.delete(id));
-            db.close();
+            try {
+                const store = tx(db, 'readwrite');
+                await reqToPromise(store.delete(id));
+            } finally {
+                db.close();
+            }
         },
 
         /**
@@ -130,10 +146,13 @@ window.IronpadStorage = (function () {
          * @returns {Promise<Object>} The imported notebook (with new ID).
          */
         importNotebook: async function (jsonString) {
-            const nb = JSON.parse(jsonString);
-            nb.id = crypto.randomUUID();
-            nb.created_at = new Date().toISOString();
-            nb.updated_at = new Date().toISOString();
+            // Clone (via spread) rather than mutate the parsed object in place.
+            const nb = {
+                ...JSON.parse(jsonString),
+                id: crypto.randomUUID(),
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            };
             await this.saveNotebook(nb);
             return nb;
         },

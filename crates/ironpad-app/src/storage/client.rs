@@ -8,26 +8,26 @@ use ironpad_common::IronpadNotebook;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = ["window", "IronpadStorage"], js_name = "listNotebooks")]
-    async fn js_list_notebooks() -> JsValue;
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "listNotebooks")]
+    async fn js_list_notebooks() -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(js_namespace = ["window", "IronpadStorage"], js_name = "getNotebook")]
-    async fn js_get_notebook(id: &str) -> JsValue;
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "getNotebook")]
+    async fn js_get_notebook(id: &str) -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(js_namespace = ["window", "IronpadStorage"], js_name = "saveNotebook")]
-    async fn js_save_notebook(notebook: JsValue);
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "saveNotebook")]
+    async fn js_save_notebook(notebook: JsValue) -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(js_namespace = ["window", "IronpadStorage"], js_name = "deleteNotebook")]
-    async fn js_delete_notebook(id: &str);
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "deleteNotebook")]
+    async fn js_delete_notebook(id: &str) -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(js_namespace = ["window", "IronpadStorage"], js_name = "searchNotebooks")]
-    async fn js_search_notebooks(query: &str) -> JsValue;
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "searchNotebooks")]
+    async fn js_search_notebooks(query: &str) -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(js_namespace = ["window", "IronpadStorage"], js_name = "exportNotebook")]
-    async fn js_export_notebook(id: &str) -> JsValue;
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "exportNotebook")]
+    async fn js_export_notebook(id: &str) -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(js_namespace = ["window", "IronpadStorage"], js_name = "importNotebook")]
-    async fn js_import_notebook(json_string: &str) -> JsValue;
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "importNotebook")]
+    async fn js_import_notebook(json_string: &str) -> Result<JsValue, JsValue>;
 }
 
 // ── Typed Rust API ──────────────────────────────────────────────────────────
@@ -59,13 +59,27 @@ fn deserialize_notebook_array(val: &JsValue) -> Vec<IronpadNotebook> {
 }
 
 /// Lists all private notebooks from `IndexedDB`, sorted by `updated_at` descending.
+///
+/// Degrades to an empty list (logged) if the underlying `IndexedDB` read fails.
 pub async fn list_notebooks() -> Vec<IronpadNotebook> {
-    deserialize_notebook_array(&js_list_notebooks().await)
+    match js_list_notebooks().await {
+        Ok(val) => deserialize_notebook_array(&val),
+        Err(e) => {
+            leptos::logging::warn!("listNotebooks failed: {e:?}");
+            Vec::new()
+        }
+    }
 }
 
-/// Retrieves a single notebook by ID, or `None` if not found.
+/// Retrieves a single notebook by ID, or `None` if not found (or the read failed).
 pub async fn get_notebook(id: &str) -> Option<IronpadNotebook> {
-    let val = js_get_notebook(id).await;
+    let val = match js_get_notebook(id).await {
+        Ok(val) => val,
+        Err(e) => {
+            leptos::logging::warn!("getNotebook failed: {e:?}");
+            return None;
+        }
+    };
     if val.is_null() || val.is_undefined() {
         return None;
     }
@@ -73,29 +87,56 @@ pub async fn get_notebook(id: &str) -> Option<IronpadNotebook> {
 }
 
 /// Saves (upserts) a notebook to `IndexedDB`.
-pub async fn save_notebook(notebook: &IronpadNotebook) {
-    let val = serde_wasm_bindgen::to_value(notebook).expect("failed to serialize notebook");
-    js_save_notebook(val).await;
+///
+/// Returns `Err` if serialization fails or the underlying `IndexedDB` write is
+/// rejected (e.g. `QuotaExceededError`), so callers can surface the failure
+/// instead of the write silently vanishing.
+pub async fn save_notebook(notebook: &IronpadNotebook) -> Result<(), JsValue> {
+    let val = serde_wasm_bindgen::to_value(notebook)
+        .map_err(|e| JsValue::from_str(&format!("serialize notebook: {e}")))?;
+    js_save_notebook(val).await?;
+    Ok(())
 }
 
-/// Deletes a notebook from `IndexedDB` by ID.
+/// Deletes a notebook from `IndexedDB` by ID. Logs (and swallows) any failure.
 pub async fn delete_notebook(id: &str) {
-    js_delete_notebook(id).await;
+    if let Err(e) = js_delete_notebook(id).await {
+        leptos::logging::warn!("deleteNotebook failed: {e:?}");
+    }
 }
 
 /// Searches notebooks by title substring.
+///
+/// Degrades to an empty list (logged) if the underlying `IndexedDB` read fails.
 pub async fn search_notebooks(query: &str) -> Vec<IronpadNotebook> {
-    deserialize_notebook_array(&js_search_notebooks(query).await)
+    match js_search_notebooks(query).await {
+        Ok(val) => deserialize_notebook_array(&val),
+        Err(e) => {
+            leptos::logging::warn!("searchNotebooks failed: {e:?}");
+            Vec::new()
+        }
+    }
 }
 
-/// Exports a notebook as a JSON string, or `None` if not found.
+/// Exports a notebook as a JSON string, or `None` if not found (or the read failed).
 pub async fn export_notebook(id: &str) -> Option<String> {
-    let val = js_export_notebook(id).await;
-    val.as_string()
+    match js_export_notebook(id).await {
+        Ok(val) => val.as_string(),
+        Err(e) => {
+            leptos::logging::warn!("exportNotebook failed: {e:?}");
+            None
+        }
+    }
 }
 
-/// Imports a notebook from a JSON string. Returns the imported notebook with a new UUID.
+/// Imports a notebook from a JSON string. Returns the imported notebook with a new UUID,
+/// or `None` if the import failed.
 pub async fn import_notebook(json_string: &str) -> Option<IronpadNotebook> {
-    let val = js_import_notebook(json_string).await;
-    serde_wasm_bindgen::from_value(val).ok()
+    match js_import_notebook(json_string).await {
+        Ok(val) => serde_wasm_bindgen::from_value(val).ok(),
+        Err(e) => {
+            leptos::logging::warn!("importNotebook failed: {e:?}");
+            None
+        }
+    }
 }

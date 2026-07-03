@@ -163,7 +163,9 @@ pub(crate) fn persist_notebook(state: &NotebookState) {
                 .notebook
                 .update_untracked(|existing| *existing = Some(nb.clone()));
             leptos::task::spawn_local(async move {
-                crate::storage::client::save_notebook(&nb).await;
+                if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+                    leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
+                }
             });
         }
     }

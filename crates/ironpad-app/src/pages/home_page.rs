@@ -82,8 +82,14 @@ pub fn HomePage() -> impl IntoView {
             leptos::task::spawn_local(async move {
                 let nb = IronpadNotebook::new("Untitled Notebook");
                 let id = nb.id.to_string();
-                crate::storage::client::save_notebook(&nb).await;
-                navigate(&format!("/notebook/{id}"), NavigateOptions::default());
+                match crate::storage::client::save_notebook(&nb).await {
+                    Ok(()) => navigate(&format!("/notebook/{id}"), NavigateOptions::default()),
+                    Err(e) => {
+                        leptos::logging::error!(
+                            "failed to persist new notebook to IndexedDB: {e:?}"
+                        );
+                    }
+                }
             });
         }
     };

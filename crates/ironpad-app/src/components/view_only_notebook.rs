@@ -167,12 +167,17 @@ pub fn ViewOnlyNotebook(
                 nb.created_at = chrono::Utc::now();
                 nb.updated_at = chrono::Utc::now();
 
-                crate::storage::client::save_notebook(&nb).await;
-
-                navigate(
-                    &format!("/notebook/{}", nb.id),
-                    leptos_router::NavigateOptions::default(),
-                );
+                match crate::storage::client::save_notebook(&nb).await {
+                    Ok(()) => navigate(
+                        &format!("/notebook/{}", nb.id),
+                        leptos_router::NavigateOptions::default(),
+                    ),
+                    Err(e) => {
+                        leptos::logging::error!(
+                            "failed to persist forked notebook to IndexedDB: {e:?}"
+                        );
+                    }
+                }
             });
         }
     };
