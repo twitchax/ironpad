@@ -6,6 +6,7 @@ pub(crate) mod model;
 pub(crate) mod session;
 
 pub mod pages;
+pub(crate) mod sanitize;
 pub mod server_fns;
 pub mod storage;
 

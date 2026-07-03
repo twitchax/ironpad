@@ -188,10 +188,15 @@ pub(super) fn build_export_html(
                                     let _ = writeln!(html, "<pre>{}</pre>", html_escape(text));
                                 }
                                 DisplayPanel::Html(h) => {
-                                    let _ = writeln!(html, "<div class=\"output-html\">{h}</div>");
+                                    // Sanitize untrusted cell output in the exported file too.
+                                    let safe = crate::sanitize::sanitize_html(h);
+                                    let _ =
+                                        writeln!(html, "<div class=\"output-html\">{safe}</div>");
                                 }
                                 DisplayPanel::Svg(s) => {
-                                    let _ = writeln!(html, "<div class=\"output-svg\">{s}</div>");
+                                    let safe = crate::sanitize::sanitize_svg(s);
+                                    let _ =
+                                        writeln!(html, "<div class=\"output-svg\">{safe}</div>");
                                 }
                                 DisplayPanel::Markdown(md) => {
                                     let rendered = render_markdown(md);

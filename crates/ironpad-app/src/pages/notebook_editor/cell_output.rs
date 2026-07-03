@@ -225,19 +225,23 @@ pub(super) fn CellOutputPanel(
                                         },
                                         DisplayPanel::Html(html) => {
                                             let copy_text = html.clone();
+                                            // Sanitize before inner_html: cell output is untrusted
+                                            // and shared/public notebooks are viewed by others.
+                                            let safe = crate::sanitize::sanitize_html(&html);
                                             view! {
                                                 <div class="ironpad-output-display ironpad-output-html">
                                                     <CopyButton text=copy_text />
-                                                    <div inner_html=html></div>
+                                                    <div inner_html=safe></div>
                                                 </div>
                                             }.into_any()
                                         },
                                         DisplayPanel::Svg(svg) => {
                                             let copy_text = svg.clone();
+                                            let safe = crate::sanitize::sanitize_svg(&svg);
                                             view! {
                                                 <div class="ironpad-output-display ironpad-output-svg">
                                                     <CopyButton text=copy_text />
-                                                    <div inner_html=svg></div>
+                                                    <div inner_html=safe></div>
                                                 </div>
                                             }.into_any()
                                         },

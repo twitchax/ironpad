@@ -33,6 +33,7 @@ serde-wasm-bindgen = { version = "0.6", optional = true }
 bincode = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 libc = { version = "0.2", optional = true }
+ammonia = "4"
 
 [dev-dependencies]
 tempfile = "3"

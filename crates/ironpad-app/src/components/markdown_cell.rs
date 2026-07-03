@@ -18,7 +18,10 @@ pub fn render_markdown(source: &str) -> String {
     let parser = Parser::new_ext(source, opts);
     let mut html = String::new();
     push_html(&mut html, parser);
-    html
+    // pulldown_cmark passes raw HTML in the source straight through, so a
+    // markdown cell (or Markdown output panel) could smuggle <script>/onerror
+    // into a viewer's origin in a shared/public notebook. Sanitize the result.
+    crate::sanitize::sanitize_html(&html)
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -167,5 +170,29 @@ pub fn MarkdownCell(
                 }
             }}
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_markdown;
+
+    #[test]
+    fn renders_markdown_formatting() {
+        let html = render_markdown("# Title\n\nSome **bold** text.");
+        assert!(html.contains("<h1"), "kept heading: {html}");
+        assert!(html.contains("<strong>bold</strong>"), "kept bold: {html}");
+    }
+
+    #[test]
+    fn strips_raw_html_in_markdown_source() {
+        // pulldown_cmark passes raw HTML through; sanitization must strip the
+        // active parts so a shared/public markdown cell can't XSS a viewer.
+        let html =
+            render_markdown("hello <script>steal()</script> <img src=x onerror=\"steal()\">");
+        assert!(html.contains("hello"), "kept text: {html}");
+        assert!(!html.contains("<script"), "stripped script: {html}");
+        assert!(!html.contains("onerror"), "stripped onerror: {html}");
+        assert!(!html.contains("steal"), "stripped payload: {html}");
     }
 }
