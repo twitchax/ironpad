@@ -1,7 +1,7 @@
 ---
 id: PRD-0036
 title: "Compiler/server correctness + pragmatic hardening (B1-B6, S2-S5)"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-02
 updated: 2026-07-02
@@ -77,7 +77,7 @@ tasks:
 - id: T-008
   title: "S5 + B5/B6: server hardening, diagnostics cleanup, and misc correctness"
   priority: 2
-  status: in-progress
+  status: done
   notes: "Bundle the smaller items: (S5) bound the WS relay channels + cap frame size on upgrade (ws.rs:57,264, state.rs:38-42) and add a host credential to claim a notebook_id (ws.rs:47-53, currently last-writer-wins by UUID); add a USER (non-root) directive to docker/Dockerfile as defense-in-depth. (B5) parse rustc children for help/note text and accept src/shared.rs spans (diagnostics.rs:26-31,96); cache diagnostics alongside the blob so warnings survive a cache hit (server_fns.rs:56-62); trim raw anyhow backtraces + server fs paths out of user-facing panels (confirmed live). (B6) use tokio::fs/spawn_blocking for the sync std::fs on the compile hot path; enforce the .ironpad extension in get_public_notebook (server_fns.rs:251-277); bounds-check CellInputs::from_raw (ironpad-cell/src/lib.rs:161-177); verify /proc/<pid>/cmdline before the daemon SIGTERMs a pidfile PID (ironpad-cli/src/main.rs:180-205)."
 ---
 
@@ -129,5 +129,11 @@ Full build sandboxing (gVisor / rootless nested containers / seccomp profiles) i
 - Rate limiting / auth on the public endpoints beyond the specific caps in this epic.
 
 # History
+
+## 2026-07-03 — Complete (8/8)
+All P1/P2 correctness + security tasks landed on branch `fix/prd-0036-hardening`, each gate-verified (514 tests + real-compile e2e + browser-verified XSS):
+- T-001 kill build process-group on timeout; T-002 cell_id validation; T-003 per-cell compile mutex (cache-poisoning race); T-004 unique wasm-opt temps; T-005 atomic cache writes; T-006 HTML/SVG/markdown XSS sanitize (ammonia, inline UX preserved — verified a real plotters chart still renders); T-007 shared-upload size cap.
+- T-008 hardening bundle: CellInputs::from_raw bounds-check (+CACHE_EPOCH bump), daemon pidfile /proc cmdline guard, WS message-size cap, .ironpad extension check, bounded WS channels, tokio::fs on the build path, server-path redaction in compile diagnostics.
+- **Deferred as separate follow-ups** (out of scope for a safe blind change): non-root Dockerfile USER (needs a gosu privilege-drop entrypoint + real deploy to survive the Fly persistent-volume mount), a host credential to claim a notebook_id (new auth scheme), and richer rustc-child/shared.rs diagnostics + diagnostic caching.
 
 (Entries appended during implementation go below this line.)
