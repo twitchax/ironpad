@@ -117,9 +117,13 @@ impl NotebookModel {
         let envelope = EventEnvelope { by, event };
 
         // Push event for the WebSocket bridge to pick up.
-        // Cap the buffer to prevent unbounded growth when no session is
-        // active (nobody is draining). 64 events is plenty of headroom
-        // for the bridge Effect to keep up during an active session.
+        //
+        // Cap the buffer to prevent unbounded growth. Dropping past the cap is
+        // safe by design: it only happens when nothing is draining — either no
+        // session is active (a newly-connected guest fetches full state, so it
+        // can't miss a pre-connection event), or the bridge has stalled. During
+        // a healthy active session the bridge drains every generation, keeping
+        // the buffer far below 64, so a connected guest never loses an event.
         self.pending_events.update(|events| {
             if events.len() < MAX_EVENT_BUFFER {
                 events.push(envelope.clone());

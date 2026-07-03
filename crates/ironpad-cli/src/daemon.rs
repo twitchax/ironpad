@@ -196,6 +196,12 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
     };
 
     // ── Wait for shutdown ───────────────────────────────────────────────
+    //
+    // The daemon is intentionally session-scoped: it exits when the WebSocket
+    // closes (the recv task ends). A closed socket means the host browser is
+    // gone or the session ended, so there is nothing left to relay — exiting is
+    // correct, and a reconnect loop would only keep a zombie daemon alive past
+    // the session it belongs to. The CLI starts a fresh daemon per session.
 
     match ws_tasks {
         Some((ws_send_task, ws_recv_task)) => {

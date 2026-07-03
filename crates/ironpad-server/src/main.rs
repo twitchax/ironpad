@@ -43,6 +43,23 @@ async fn main() {
         ws: WsState::default(),
     };
 
+    // Periodically sweep expired sessions so the store doesn't grow unbounded
+    // when guests never explicitly end their sessions.
+    {
+        let ws = app_state.ws.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await; // consume the immediate first tick
+            loop {
+                interval.tick().await;
+                let removed = ws.sessions.sweep_expired().await;
+                if removed > 0 {
+                    tracing::debug!(removed, "swept expired sessions");
+                }
+            }
+        });
+    }
+
     // Pre-warm the toolchain fingerprint / wasm-bindgen CLI version caches on a
     // blocking thread so the first cell compile doesn't block a tokio worker
     // thread on `wasm-bindgen --version` / `rustc --version` shell-outs.
