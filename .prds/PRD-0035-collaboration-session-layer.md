@@ -38,7 +38,7 @@ tasks:
 - id: T-002
   title: "C2: Route mutation error responses so OCC conflicts don't hang the agent 10s"
   priority: 1
-  status: todo
+  status: done
   notes: "ws.rs:357-369 + :140-144: guest mutations aren't tracked (only queries, :373); success acks arrive via the broadcast Event (connection.rs:199-213 -> daemon.rs:247-255), but a Response::Error for a mutation id (connection.rs:214-226) routes only via resolve_query (ws.rs:141) -> None -> error discarded -> daemon oneshot never resolves -> forward_to_server times out (daemon.rs:531-543) instead of surfacing VersionConflict/CellNotFound. Fix: track mutations too (clear on the broadcast Event) or add a mutation-error route independent of the query map."
 - id: T-003
   title: "C3: Compare-and-remove on host unregister (fix reconnect/two-tab race)"
@@ -48,7 +48,7 @@ tasks:
 - id: T-004
   title: "C4: Notify host UI on agent-originated content edits"
   priority: 1
-  status: todo
+  status: done
   notes: "model.rs:336-364: content-only cell_update uses notebook.update_untracked and only sync_from_notebook when label.is_some(); fine for local Monaco edits, but agent mutations flow through the same model.apply (connection.rs:199), so an agent's source/cargo edit lands with NO reactive notification -> host editor doesn't refresh. Fix: for agent-originated content edits, call sync_from_notebook / a tracked bump so subscribers update."
 - id: T-005
   title: "C5: Make client_id unique per connection, not the token prefix"
