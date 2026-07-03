@@ -990,7 +990,7 @@
     try {
       resultPtr = await tickFn();
     } catch (e) {
-      throw new Error("WASM tick trapped: " + e.message);
+      throw new Error("WASM tick trapped: " + _describeWasmTrap(e, memory));
     }
 
     if (!resultPtr) {
@@ -1036,7 +1036,7 @@
       }
     } catch (e) {
       if (useSret && retptr) dealloc(retptr, TICK_RESULT_SIZE);
-      throw new Error("WASM tick trapped: " + e.message);
+      throw new Error("WASM tick trapped: " + _describeWasmTrap(e, memory));
     }
 
     return this._readTickResult(memory, dealloc, retptr, useSret);
@@ -1128,7 +1128,7 @@
     try {
       resultPtr = await tickFn();
     } catch (e) {
-      throw new Error("WASM tick trapped: " + e.message);
+      throw new Error("WASM tick trapped: " + _describeWasmTrap(e, memory));
     }
 
     if (!resultPtr) {
@@ -1173,7 +1173,7 @@
       }
     } catch (e) {
       if (useSret && retptr) dealloc(retptr, LIVE_TICK_RESULT_SIZE);
-      throw new Error("WASM tick trapped: " + e.message);
+      throw new Error("WASM tick trapped: " + _describeWasmTrap(e, memory));
     }
 
     return this._readLiveTickResult(memory, dealloc, retptr, useSret);

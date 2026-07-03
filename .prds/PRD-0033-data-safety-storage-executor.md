@@ -118,6 +118,9 @@ Storage fixes are in Rust (`storage/client.rs`) + JS (`public/storage.js`). Exec
 
 # History
 
+## 2026-07-03 — safe executor items (T-008 subset)
+Landed the two trivially-safe executor fixes: dead `_executeOnMainThread` was already removed (earlier data-safety work); the four `cell_tick` trap paths now use `_describeWasmTrap(e, memory)` for parity with the execute paths (a non-Error throw showed "undefined" before). Deferred (unverifiable without concurrent multi-cell/GPU execution in a browser): T-007 GPU handle/readback per-execution scoping, and the T-008 concurrency items (per-load rayon glue, per-request panic-message correlation, blob-URL revoke in the ready handshake).
+
 (Entries appended during implementation go below this line.)
 
 ## 2026-07-03 — Units 1-3 + dead-code done; deep executor-core concurrency deferred
