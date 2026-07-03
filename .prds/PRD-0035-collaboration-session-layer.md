@@ -1,7 +1,7 @@
 ---
 id: PRD-0035
 title: "Collaboration & session layer fixes (C1-C7)"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2026-07-02
 updated: 2026-07-02
@@ -33,7 +33,7 @@ tasks:
 - id: T-001
   title: "C1: Don't send (or drain) buffered events into a CONNECTING socket"
   priority: 1
-  status: todo
+  status: done
   notes: "session/connection.rs:119-137 + ws_send:21-32: Leptos Effect::new runs its body immediately on creation inside start_session, BEFORE on_open, so it drain_events() (model.rs:175-181 mem::take) and ws_send into a CONNECTING socket -> InvalidStateError (the 4 failed sends seen live), events permanently lost. Fix: only send when ws.ready_state()==OPEN; if not open, don't drain (leave buffered) — or construct the event-bridge Effect inside on_open."
 - id: T-002
   title: "C2: Route mutation error responses so OCC conflicts don't hang the agent 10s"
@@ -116,3 +116,7 @@ Client-side fixes in `session/connection.rs` and `model.rs`; server-side in `ws.
 # History
 
 (Entries appended during implementation go below this line.)
+
+## 2026-07-03 — C1 landed; C2-C8 are focused follow-up work
+- **T-001 (C1)** (7d757aa): the event-bridge Effect drained browser edits into a still-CONNECTING socket at session start (the InvalidStateError seen live), losing them. Guard the drain on `ws.ready_state()==OPEN`; flush the pre-open backlog in `on_open`. Wasm-target clippy clean.
+- **Remaining (deferred to a focused pass):** T-002 (C2, mutation-error routing) needs mutation tracking + pending-query expiry to avoid leaking on the success path (which acks via a broadcast Event, not a per-guest Response). T-004 (C4, agent edits refreshing the host editor) needs model→Monaco integration (the host editor is imperative; a reactive model notification alone won't refresh it), a deeper editor change. T-003/005/006/007/008 (host-reconnect compare-and-remove, per-connection client_id, heartbeat, housekeeping, dead-surface prune) are self-contained server-side relay work with existing test coverage — good next-session targets.
