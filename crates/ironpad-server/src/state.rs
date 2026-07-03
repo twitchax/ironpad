@@ -133,13 +133,22 @@ impl WsState {
 
     /// Remove a specific guest from a session.
     pub async fn unregister_guest(&self, session_id: &str, client_id: &str) {
-        let mut guests = self.guests.write().await;
-        if let Some(list) = guests.get_mut(session_id) {
-            list.retain(|g| g.client_id != client_id);
-            if list.is_empty() {
-                guests.remove(session_id);
+        {
+            let mut guests = self.guests.write().await;
+            if let Some(list) = guests.get_mut(session_id) {
+                list.retain(|g| g.client_id != client_id);
+                if list.is_empty() {
+                    guests.remove(session_id);
+                }
             }
         }
+        // Drop any queries/mutations this guest was still awaiting — with the
+        // guest gone, nobody will deliver those responses, so don't leak the
+        // pending_queries entries.
+        self.pending_queries
+            .write()
+            .await
+            .retain(|_, cid| cid != client_id);
     }
 
     /// Send a JSON message to all guests on a session.
@@ -298,6 +307,25 @@ mod tests {
         let list = guests.get("sess-1").expect("session still has a guest");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].client_id, "client-2");
+    }
+
+    #[tokio::test]
+    async fn unregister_guest_purges_pending_queries() {
+        let ws = WsState::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        ws.register_guest("sess-1", "client-1", tx).await;
+
+        // Two in-flight queries/mutations from this guest, one from another.
+        ws.track_query("m-1", "client-1").await;
+        ws.track_query("m-2", "client-1").await;
+        ws.track_query("q-9", "client-2").await;
+
+        ws.unregister_guest("sess-1", "client-1").await;
+
+        // The departing guest's pending entries are dropped; others survive.
+        assert_eq!(ws.resolve_query("m-1").await, None);
+        assert_eq!(ws.resolve_query("m-2").await, None);
+        assert_eq!(ws.resolve_query("q-9").await.as_deref(), Some("client-2"));
     }
 
     #[tokio::test]

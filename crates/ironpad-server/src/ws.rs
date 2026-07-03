@@ -145,8 +145,13 @@ async fn handle_host_message(text: &str, notebook_id: &str, connection_id: &str,
     };
 
     match &msg.kind {
-        // Host sends events → broadcast to all guests for this notebook.
+        // Host sends events → broadcast to all guests for this notebook. A
+        // guest-originated mutation acks via its Event (which carries the
+        // mutation id), so clear any tracked entry for that id here — the error
+        // Response counterpart won't fire. Browser-originated events carry an
+        // empty id, so this is a harmless no-op for them.
         MessageKind::Event(_) => {
+            state.ws.resolve_query(&msg.id).await;
             state
                 .ws
                 .broadcast_to_notebook_guests(notebook_id, text)
@@ -382,22 +387,12 @@ async fn handle_guest_message(
     }
 
     match &msg.kind {
-        // Guest sends mutations → forward to host.
-        MessageKind::Mutation(_) => {
-            if !state.ws.send_to_host(notebook_id, text).await {
-                let err = wire_msg(
-                    &msg.id,
-                    MessageKind::Response(Response::Error {
-                        code: ErrorCode::SessionNotFound,
-                        message: "host disconnected".into(),
-                    }),
-                );
-                state.ws.send_to_guest(client_id, &err).await;
-            }
-        }
-
-        // Guest sends queries → forward to host, track for response routing.
-        MessageKind::Query(_) => {
+        // Guest sends a mutation or query → forward to host and track the id so
+        // the host's response routes back to this guest. For a mutation the
+        // tracked entry routes a Response::Error (e.g. a version conflict) and is
+        // cleared when the success Event is broadcast (see handle_host_message);
+        // for a query it routes the Response. If the host is gone, fail fast.
+        MessageKind::Mutation(_) | MessageKind::Query(_) => {
             state.ws.track_query(&msg.id, client_id).await;
             if !state.ws.send_to_host(notebook_id, text).await {
                 state.ws.resolve_query(&msg.id).await;
@@ -426,8 +421,8 @@ mod tests {
     use std::path::PathBuf;
 
     use ironpad_common::protocol::{
-        self, ClientId, ControlMessage, Event, EventEnvelope, MessageKind, Mutation, NewCell,
-        Permissions, Query, Response,
+        self, ClientId, ControlMessage, ErrorCode, Event, EventEnvelope, MessageKind, Mutation,
+        NewCell, Permissions, Query, Response,
     };
     use ironpad_common::types::CellType;
     use ironpad_common::AppConfig;
@@ -608,6 +603,107 @@ mod tests {
             guest_rx.try_recv().is_err(),
             "unexpected mutation from host should not be forwarded"
         );
+    }
+
+    // ── Guest mutation routing (C2) ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn guest_mutation_error_routes_back_to_guest() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // Guest sends a mutation → forwarded to host and tracked for routing.
+        let mutation_json = wire_msg(
+            "m-1",
+            MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
+        );
+        handle_guest_message(
+            &mutation_json,
+            nb,
+            &session.session_id,
+            "guest-1",
+            &Permissions::default(),
+            &state,
+        )
+        .await;
+        assert!(
+            host_rx.try_recv().is_ok(),
+            "host should receive the mutation"
+        );
+
+        // Host replies with an error for that mutation id (e.g. a version conflict).
+        let error_json = wire_msg(
+            "m-1",
+            MessageKind::Response(Response::Error {
+                code: ErrorCode::VersionConflict,
+                message: "version conflict".into(),
+            }),
+        );
+        handle_host_message(&error_json, nb, conn, &state).await;
+
+        // The error must route back to the originating guest (dropped before C2).
+        let received = guest_rx.try_recv().expect("guest should receive the error");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert_eq!(msg.id, "m-1");
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Response(Response::Error { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn host_event_clears_tracked_mutation() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        let session = state
+            .ws
+            .sessions
+            .create_session(nb.into(), conn.into(), Permissions::default())
+            .await;
+        let (guest_tx, _guest_rx) = mpsc::unbounded_channel::<String>();
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // A mutation is in flight (tracked).
+        state.ws.track_query("m-1", "guest-1").await;
+
+        // The host broadcasts the mutation's success Event (carrying its id).
+        let event_json = wire_msg(
+            "m-1",
+            MessageKind::Event(EventEnvelope {
+                by: ClientId::agent("guest-1"),
+                event: Event::CellDeleted {
+                    cell_id: "c1".into(),
+                },
+            }),
+        );
+        handle_host_message(&event_json, nb, conn, &state).await;
+
+        // The tracked entry must have been cleared (no leak on the success path).
+        assert_eq!(state.ws.resolve_query("m-1").await, None);
     }
 
     // ── Control message tests ───────────────────────────────────────────
