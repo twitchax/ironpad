@@ -9,7 +9,12 @@
 
   var CellExecutor = self.__IronpadExecutorCore.CellExecutor;
 
-  var executor = new CellExecutor("window.IronpadExecutor");
+  // The injected WASM glue reaches the executor for FFI callbacks (sim_read,
+  // GPU, host messages) via this global-reference string. The bridge reclaims
+  // `window.IronpadExecutor` for itself after loading this fallback, so the
+  // fallback must own a DISTINCT global (`window.__IronpadFallback`) — otherwise
+  // fallback cells' FFI shims call the bridge, which has no _simRead/_gpu*.
+  var executor = new CellExecutor("window.__IronpadFallback");
 
   // ── Built-in host message handlers ──────────────────────────────────────
 
@@ -33,5 +38,9 @@
     CellExecutor.updateSimBus(executor._simBus, msg.key, JSON.stringify(msg.value));
   });
 
+  // Stable global for the FFI shims (matches the globalRef above). This one
+  // persists; the bridge only reclaims `window.IronpadExecutor`.
+  window.__IronpadFallback = executor;
+  // The bridge grabs this immediately after load, then restores itself.
   window.IronpadExecutor = executor;
 })();

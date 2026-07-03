@@ -38,6 +38,7 @@
     this._simBus = new Map();        // key -> { latest: string|null, ring: string[] }
     this._worker = null;
     this._mainExecutor = null;       // Lazy main-thread CellExecutor for fallback
+    this._mainExecutorPromise = null; // In-flight fallback load (memoized)
 
     this._spawnWorker();
   }
@@ -54,6 +55,18 @@
 
     this._worker.onerror = function (e) {
       console.error("ironpad: worker error:", e.message);
+      // A worker-level failure (script-load error, uncaught exception) leaves
+      // every in-flight request unsettled — reject them so cells don't hang on
+      // "Compiling/Running" forever, then respawn a fresh worker for later use.
+      var err = new Error(
+        "Worker crashed: " + (e.message || "unknown worker error")
+      );
+      self._pending.forEach(function (entry) {
+        entry.reject(err);
+      });
+      self._pending.clear();
+      self._loadedCache.clear();
+      self._spawnWorker();
     };
   };
 
@@ -86,9 +99,13 @@
 
   BridgeExecutor.prototype._ensureMainExecutor = function () {
     if (this._mainExecutor) return Promise.resolve(this._mainExecutor);
+    // Memoize the in-flight load so two concurrent fallbacks don't both inject
+    // the scripts and race the window.IronpadExecutor capture/restore dance
+    // (which could leave the global pointing at a fallback with no terminate()).
+    if (this._mainExecutorPromise) return this._mainExecutorPromise;
 
     var self = this;
-    return new Promise(function (resolve, reject) {
+    this._mainExecutorPromise = new Promise(function (resolve, reject) {
       // executor.js depends on executor-core.js (reads self.__IronpadExecutorCore),
       // so we must load core first.
       var coreScript = document.createElement("script");
@@ -111,15 +128,18 @@
           resolve(self._mainExecutor);
         };
         script.onerror = function () {
+          self._mainExecutorPromise = null; // allow a later retry
           reject(new Error("Failed to load fallback executor"));
         };
         document.head.appendChild(script);
       };
       coreScript.onerror = function () {
+        self._mainExecutorPromise = null; // allow a later retry
         reject(new Error("Failed to load executor-core.js"));
       };
       document.head.appendChild(coreScript);
     });
+    return this._mainExecutorPromise;
   };
 
   BridgeExecutor.prototype._executeOnMainThread = async function (cellId) {
