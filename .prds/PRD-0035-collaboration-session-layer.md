@@ -1,7 +1,7 @@
 ---
 id: PRD-0035
 title: "Collaboration & session layer fixes (C1-C7)"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-02
 updated: 2026-07-02
@@ -63,12 +63,12 @@ tasks:
 - id: T-007
   title: "C7: Session-store housekeeping and lifecycle cleanups"
   priority: 3
-  status: todo
+  status: done
   notes: "Bundle the minor lifecycle items: schedule sweep_expired at startup (sessions.rs:170 — never called); surface an overflow/resync signal instead of silently dropping events past MAX_EVENT_BUFFER=64 (model.rs:113-118); expire pending_queries on timeout and drop a disconnecting guest's pending queries (state.rs:181-191); add a daemon WS reconnect loop or document intentional death-on-disconnect (daemon.rs:158-214); redact the token in the daemon's logged ws_url (daemon.rs:115-116)."
 - id: T-008
   title: "Prune dead protocol surface and the non-functional execute permission"
   priority: 3
-  status: todo
+  status: done
   notes: "model.rs:100-105: CellCompile/CellExecute pass the permission check but model.apply rejects them with InvalidMessage — either wire compile/execute through or drop the permission/variants. model.rs:152-155: Query::SessionStatus always errors and nothing produces Response::SessionStatus, so daemon.rs:669-675 is unreachable — remove the dead surface."
 ---
 
