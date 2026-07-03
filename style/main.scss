@@ -38,6 +38,9 @@
     --ip-radius-lg: 8px;
     --ip-transition-fast: 0.15s ease;
     --ip-transition-normal: 0.2s ease;
+    // Neutral hover overlay — white-alpha on dark surfaces. Overridden to
+    // black-alpha in light theme so hover feedback stays visible in both.
+    --ip-hover-overlay: rgba(255, 255, 255, 0.08);
 }
 
 /* ── Light theme overrides ─────────────────────────────────────────────── */
@@ -71,6 +74,7 @@
     --ip-stale-indicator: #c09030;
     --ip-neutral-dim: #555566;
     --ip-neutral-dimmer: #888899;
+    --ip-hover-overlay: rgba(0, 0, 0, 0.06);
 
     .thaw-config-provider {
         --colorBrandBackground: #d63851;
@@ -336,7 +340,7 @@ a:focus-visible {
 }
 
 .ironpad-notebook-title--editable:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--ip-hover-overlay);
     border-bottom-color: var(--ip-border);
 }
 
@@ -344,7 +348,7 @@ a:focus-visible {
     font-size: 0.95rem;
     font-weight: 500;
     color: var(--ip-text-primary);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--ip-hover-overlay);
     border: 1px solid var(--ip-accent);
     border-radius: 3px;
     padding: 2px 6px;
@@ -787,7 +791,7 @@ a:focus-visible {
 
 .ironpad-cell-collapse-btn:hover {
     color: var(--ip-text-primary);
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--ip-hover-overlay);
 }
 
 .ironpad-cell-order {
@@ -868,7 +872,7 @@ a:focus-visible {
 }
 
 .ironpad-cell-menu-item:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--ip-hover-overlay);
 }
 
 .ironpad-cell-menu-item:disabled {
@@ -1016,7 +1020,7 @@ a:focus-visible {
 
     &:hover {
         color: var(--ip-text-primary);
-        background: rgba(255, 255, 255, 0.08);
+        background: var(--ip-hover-overlay);
     }
 
     &:active {
@@ -1042,7 +1046,7 @@ a:focus-visible {
 
 .ironpad-side-btn:hover {
     color: var(--ip-text-primary);
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--ip-hover-overlay);
     border-color: rgba(255, 255, 255, 0.12);
 }
 
@@ -1400,6 +1404,10 @@ a:focus-visible {
 
 .ironpad-output-body {
     padding: 4px 12px 8px;
+    // Cap tall output (thousands of stdout lines, big tables) so a single cell
+    // can't grow the card arbitrarily — scroll inside instead.
+    max-height: 480px;
+    overflow-y: auto;
 }
 
 .ironpad-output-display {
@@ -1457,6 +1465,13 @@ a:focus-visible {
 // height-constrained — they size themselves based on their content.
 .ironpad-output-visual {
     padding: 0.5rem;
+
+    // BlobImage output emits an <img> with explicit pixel dimensions; keep it
+    // inside the cell (SVG and canvas already cap at 100%).
+    img {
+        max-width: 100%;
+        height: auto;
+    }
 }
 
 .ironpad-output-table {
@@ -1483,7 +1498,7 @@ a:focus-visible {
     }
 
     tbody tr:hover {
-        background: rgba(255, 255, 255, 0.06);
+        background: var(--ip-hover-overlay);
     }
 }
 
@@ -2107,7 +2122,7 @@ samp,
     padding: 2px 6px;
     border: 1px solid transparent;
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--ip-hover-overlay);
     color: var(--ip-text-muted);
     cursor: pointer;
     font-size: 0.7rem;
@@ -2117,7 +2132,7 @@ samp,
 
     &:hover {
         opacity: 1;
-        background: rgba(255, 255, 255, 0.12);
+        background: var(--ip-hover-overlay);
         border-color: rgba(255, 255, 255, 0.15);
     }
 }
@@ -2250,9 +2265,9 @@ samp,
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 
     &:hover {
-        background: rgba(255, 255, 255, 0.08);
+        background: var(--ip-hover-overlay);
         border-color: var(--ip-border);
-        color: var(--ip-text-on-accent);
+        color: var(--ip-text-primary);
     }
 }
 
@@ -2283,8 +2298,8 @@ samp,
     transition: background 0.12s, color 0.12s;
 
     &:hover {
-        background: rgba(255, 255, 255, 0.08);
-        color: var(--ip-text-on-accent);
+        background: var(--ip-hover-overlay);
+        color: var(--ip-text-primary);
     }
 
     &--danger {
@@ -2532,8 +2547,12 @@ samp,
     cursor: grab;
     color: var(--ip-text-muted);
     font-size: 0.9rem;
-    opacity: 0;
-    transition: opacity var(--ip-transition-fast), color var(--ip-transition-fast);
+    // Visibility is owned by the parent .ironpad-cell-side-actions rail, which
+    // fades in on cell-row hover / active. The handle must NOT set its own
+    // opacity:0 (it lives in a *sibling* of .ironpad-cell-card, so the old
+    // `.ironpad-cell-card:hover .ironpad-drag-handle` reveal selector never
+    // matched and left the handle permanently invisible).
+    transition: color var(--ip-transition-fast);
 
     &:active {
         cursor: grabbing;
@@ -2574,10 +2593,6 @@ samp,
     font-variant-numeric: tabular-nums;
 }
 
-.ironpad-cell-card:hover .ironpad-drag-handle {
-    opacity: 1;
-}
-
 .ironpad-drag-handle:hover {
     color: var(--ip-text-secondary);
 }
@@ -2601,9 +2616,9 @@ samp,
     transition: background var(--ip-transition-fast), border-color var(--ip-transition-fast), color var(--ip-transition-fast);
 
     &:hover {
-        background: rgba(255, 255, 255, 0.08);
+        background: var(--ip-hover-overlay);
         border-color: var(--ip-border-hover);
-        color: var(--ip-text-on-accent);
+        color: var(--ip-text-primary);
     }
 
     &--active {
@@ -2702,7 +2717,7 @@ samp,
     transition: background var(--ip-transition-fast), border-color var(--ip-transition-fast), color var(--ip-transition-fast);
 
     &:hover {
-        background: rgba(255, 255, 255, 0.08);
+        background: var(--ip-hover-overlay);
         color: var(--ip-text-primary);
         border-color: var(--ip-border-hover);
     }
@@ -2784,7 +2799,7 @@ samp,
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 
     &:hover {
-        background: rgba(255, 255, 255, 0.08);
+        background: var(--ip-hover-overlay);
         color: var(--ip-text-primary, #e0e0e0);
         border-color: var(--ip-border-hover, rgba(255, 255, 255, 0.2));
     }
