@@ -72,9 +72,33 @@ pub fn LiveViewPanel(
         let playing = RwSignal::new(true);
         let frame_number = RwSignal::new(0u32);
         let raf_id_signal = RwSignal::new(Option::<i32>::None);
-        // Holds the rAF closure so on_cleanup can break its Rc cycle.
+        // Owns the rAF closure (strong ref) for the component's lifetime.  The
+        // callback reschedules through a *weak* handle, so dropping this on
+        // dispose frees it — no self-referential Rc cycle to leak.
         let cb_holder = StoredValue::new_local(Option::<RafClosure>::None);
         let tick_in_flight: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+
+        // Guarded (re)start of the loop, driven by the play button.  A paused
+        // loop stops rescheduling entirely (see the callback), so this brings
+        // it back.  No-op while a frame is already scheduled, so toggling
+        // faster than a frame fires can't start a second loop (2× ticks).
+        let start_loop: Rc<dyn Fn()> = Rc::new(move || {
+            if raf_id_signal.get_untracked().is_some() {
+                return;
+            }
+            cb_holder.try_with_value(|slot| {
+                if let Some(rc) = slot.as_ref() {
+                    if let Some(ref closure) = *rc.borrow() {
+                        if let Ok(id) = web_sys::window()
+                            .unwrap()
+                            .request_animation_frame(closure.as_ref().unchecked_ref())
+                        {
+                            raf_id_signal.set(Some(id));
+                        }
+                    }
+                }
+            });
+        });
 
         let kind_rc: Rc<str> = Rc::from(kind.as_str());
 
@@ -134,20 +158,17 @@ pub fn LiveViewPanel(
             let apply_loop = apply_content.clone();
 
             let cb: RafClosure = Rc::new(RefCell::new(None));
-            let cb_clone = cb.clone();
-            // Share the closure with on_cleanup so it can break the cycle.
+            // Reschedule through a *weak* handle: the strong owner is
+            // `cb_holder`, so no self-referential Rc cycle keeps the closure
+            // alive after dispose.
+            let cb_weak = Rc::downgrade(&cb);
             cb_holder.set_value(Some(cb.clone()));
 
             *cb.borrow_mut() = Some(Closure::new(move |timestamp: f64| {
                 if !playing.get_untracked() {
-                    *last_time.borrow_mut() = timestamp;
-                    if let Some(ref closure) = *cb_clone.borrow() {
-                        let id = web_sys::window()
-                            .unwrap()
-                            .request_animation_frame(closure.as_ref().unchecked_ref())
-                            .unwrap();
-                        raf_id_signal.set(Some(id));
-                    }
+                    // Paused: stop the loop instead of rescheduling ~60×/s.
+                    // The play button's `start_loop` brings it back.
+                    raf_id_signal.set(None);
                     return;
                 }
 
@@ -181,39 +202,44 @@ pub fn LiveViewPanel(
                     });
                 }
 
-                if let Some(ref closure) = *cb_clone.borrow() {
-                    let id = web_sys::window()
-                        .unwrap()
-                        .request_animation_frame(closure.as_ref().unchecked_ref())
-                        .unwrap();
-                    raf_id_signal.set(Some(id));
+                // Continue the loop through the weak handle.
+                if let Some(cb) = cb_weak.upgrade() {
+                    if let Some(ref closure) = *cb.borrow() {
+                        if let Ok(id) = web_sys::window()
+                            .unwrap()
+                            .request_animation_frame(closure.as_ref().unchecked_ref())
+                        {
+                            raf_id_signal.set(Some(id));
+                        }
+                    }
                 }
             }));
 
+            // Kick off the loop (playing starts true).
             if let Some(ref closure) = *cb.borrow() {
-                let id = web_sys::window()
+                if let Ok(id) = web_sys::window()
                     .unwrap()
                     .request_animation_frame(closure.as_ref().unchecked_ref())
-                    .unwrap();
-                raf_id_signal.set(Some(id));
+                {
+                    raf_id_signal.set(Some(id));
+                }
             };
         });
 
-        // Cancel rAF and break the closure's Rc cycle on cleanup.
+        // Cancel the pending frame on cleanup.  The arena drops `cb_holder`'s
+        // strong ref on dispose, which frees the closure (it holds only a weak
+        // self-ref), so there is no cycle to break here.
         on_cleanup(move || {
             cancel_raf(raf_id_signal.get_untracked());
             raf_id_signal.set(None);
-            // Drop the stored closure so the cb <-> Closure cycle is broken and
-            // the captured data is freed (cancelling the frame alone doesn't).
-            cb_holder.try_update_value(|slot| {
-                if let Some(rc) = slot.as_ref() {
-                    *rc.borrow_mut() = None;
-                }
-            });
         });
 
         let toggle_play = move |_| {
             playing.update(|p| *p = !*p);
+            if playing.get_untracked() {
+                // Resuming: restart the loop that paused itself.
+                start_loop();
+            }
         };
 
         let tick_in_flight_step = tick_in_flight;
