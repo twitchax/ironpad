@@ -142,22 +142,6 @@
     return this._mainExecutorPromise;
   };
 
-  BridgeExecutor.prototype._executeOnMainThread = async function (cellId) {
-    var exec = await this._ensureMainExecutor();
-    var blob = this._blobCache.get(cellId);
-
-    if (!blob) throw new Error("No cached blob for cell " + cellId + " — cannot fall back to main thread");
-
-    // Load the blob into the main-thread executor if not already loaded.
-    if (!exec.isLoaded(cellId, blob.hash)) {
-      await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
-    }
-
-    // Re-gather input bytes — execute with empty input since we don't cache
-    // input in the bridge.  The caller will pass inputBytes via the wrapper.
-    return exec;
-  };
-
   // ── Request/response helpers ──────────────────────────────────────────────
 
   BridgeExecutor.prototype._postRequest = function (message) {
