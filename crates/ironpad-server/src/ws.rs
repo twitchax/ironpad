@@ -33,6 +33,12 @@ fn wire_msg(id: &str, kind: MessageKind) -> String {
 /// mutation/event carries at most one cell's source + metadata).
 const MAX_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
+/// Per-connection outbound queue depth. Bounding it (vs. an unbounded channel)
+/// caps memory when a peer stops reading: once full, `try_send` drops the
+/// message rather than buffering without limit (the idle timeout eventually
+/// reaps a stuck connection).
+const WS_CHANNEL_BOUND: usize = 1024;
+
 // ── Query parameters ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -60,7 +66,7 @@ pub async fn ws_host_handler(
 
 async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
     let connection_id = uuid::Uuid::new_v4().to_string();
 
     tracing::info!(
@@ -302,7 +308,7 @@ async fn handle_guest(
     state: AppState,
 ) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
 
     tracing::info!(
         session_id = %session_id,
@@ -439,7 +445,7 @@ mod tests {
 
     use crate::state::{AppState, WsState};
 
-    use super::{handle_guest_message, handle_host_message, wire_msg};
+    use super::{handle_guest_message, handle_host_message, wire_msg, WS_CHANNEL_BOUND};
 
     /// Build a minimal `AppState` suitable for WS handler tests.
     fn test_state() -> AppState {
@@ -465,7 +471,7 @@ mod tests {
         let conn = "conn-1";
 
         // Register host.
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         // Create a session so `broadcast_to_notebook_guests` can find guests.
@@ -476,7 +482,7 @@ mod tests {
             .await;
 
         // Register a guest on that session.
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -507,7 +513,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -516,7 +522,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -549,7 +555,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -558,7 +564,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -584,7 +590,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -593,7 +599,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -621,7 +627,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -630,7 +636,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -681,7 +687,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -689,7 +695,7 @@ mod tests {
             .sessions
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
-        let (guest_tx, _guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, _guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -722,7 +728,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let create_msg = wire_msg(
@@ -757,7 +763,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -766,7 +772,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -809,7 +815,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -818,7 +824,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, _guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, _guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -868,7 +874,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -877,7 +883,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, _guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, _guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -917,7 +923,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -926,7 +932,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -979,7 +985,7 @@ mod tests {
         let state = test_state();
         let nb = "nb-1";
 
-        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, "conn-1", host_tx).await;
 
         let session = state
@@ -988,7 +994,7 @@ mod tests {
             .create_session(nb.into(), "conn-1".into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -1032,7 +1038,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         // Malformed JSON — should be silently ignored.
@@ -1055,7 +1061,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         // Valid JSON but missing required protocol fields.
@@ -1076,7 +1082,7 @@ mod tests {
             .create_session(nb.into(), "conn-1".into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -1127,7 +1133,7 @@ mod tests {
             .create_session(nb.into(), "conn-1".into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel::<String>();
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)

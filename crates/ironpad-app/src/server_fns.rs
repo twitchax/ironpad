@@ -3,6 +3,33 @@ use leptos::prelude::*;
 
 // ── Compilation ──────────────────────────────────────────────────────────────
 
+/// Replace known server filesystem paths in raw compiler output with
+/// placeholders so user-facing diagnostics don't leak the crate/cache
+/// directories or the server's home path (raw rustc/linker output embeds them).
+#[cfg(feature = "ssr")]
+fn redact_server_paths(
+    raw: &str,
+    crate_dir: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> String {
+    let mut out = raw.to_string();
+    // Most specific first: crate_dir lives under cache_dir.
+    let crate_s = crate_dir.to_string_lossy();
+    if !crate_s.is_empty() {
+        out = out.replace(crate_s.as_ref(), "<cell>");
+    }
+    let cache_s = cache_dir.to_string_lossy();
+    if !cache_s.is_empty() {
+        out = out.replace(cache_s.as_ref(), "<cache>");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            out = out.replace(&home, "~");
+        }
+    }
+    out
+}
+
 /// Compile a single cell's Rust source into a WASM blob.
 ///
 /// Ties together the full compilation pipeline: cache check → scaffold →
@@ -173,8 +200,10 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
                 let raw = if stderr.is_empty() { &stdout } else { &stderr };
 
                 // Include the full output so linker errors (undefined
-                // symbols, missing libraries, etc.) are visible to the user.
-                let message = format!("Compilation failed:\n{raw}");
+                // symbols, missing libraries, etc.) are visible to the user —
+                // but redact server filesystem paths first.
+                let redacted = redact_server_paths(raw, &crate_dir, &config.cache_dir);
+                let message = format!("Compilation failed:\n{redacted}");
 
                 vec![ironpad_common::Diagnostic {
                     message,
@@ -189,8 +218,9 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
                 let mut diagnostics = diagnostics;
 
                 if !stderr.is_empty() {
+                    let redacted = redact_server_paths(&stderr, &crate_dir, &config.cache_dir);
                     diagnostics.push(ironpad_common::Diagnostic {
-                        message: format!("Build stderr:\n{stderr}"),
+                        message: format!("Build stderr:\n{redacted}"),
                         severity: ironpad_common::Severity::Error,
                         spans: vec![],
                         code: None,
@@ -406,6 +436,25 @@ pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, Server
 #[cfg(all(test, feature = "ssr"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_server_paths_strips_crate_and_cache_dirs() {
+        let raw = "error in /cache/workspaces/default/cell-1/src/lib.rs; dep at /cache/registry/foo-1.0/lib.rs";
+        let out = redact_server_paths(
+            raw,
+            std::path::Path::new("/cache/workspaces/default/cell-1"),
+            std::path::Path::new("/cache"),
+        );
+        assert!(
+            !out.contains("/cache/workspaces/default/cell-1"),
+            "crate dir must be redacted: {out}"
+        );
+        assert!(out.contains("<cell>/src/lib.rs"), "crate replaced: {out}");
+        assert!(
+            out.contains("<cache>/registry/foo"),
+            "cache replaced: {out}"
+        );
+    }
 
     const VALID_NOTEBOOK_JSON: &str = r#"{
         "version": 1,

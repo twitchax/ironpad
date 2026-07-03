@@ -46,14 +46,14 @@ pub struct WsState {
 #[derive(Clone)]
 struct HostHandle {
     connection_id: String,
-    sender: mpsc::UnboundedSender<String>,
+    sender: mpsc::Sender<String>,
 }
 
 /// Channel handle for a connected CLI guest.
 #[derive(Clone)]
 struct GuestHandle {
     client_id: String,
-    sender: mpsc::UnboundedSender<String>,
+    sender: mpsc::Sender<String>,
 }
 
 impl WsState {
@@ -67,7 +67,7 @@ impl WsState {
         &self,
         notebook_id: &str,
         connection_id: &str,
-        sender: mpsc::UnboundedSender<String>,
+        sender: mpsc::Sender<String>,
     ) {
         let prev = self.hosts.write().await.insert(
             notebook_id.to_string(),
@@ -105,7 +105,7 @@ impl WsState {
     pub async fn send_to_host(&self, notebook_id: &str, message: &str) -> bool {
         let hosts = self.hosts.read().await;
         if let Some(host) = hosts.get(notebook_id) {
-            host.sender.send(message.to_string()).is_ok()
+            host.sender.try_send(message.to_string()).is_ok()
         } else {
             false
         }
@@ -118,7 +118,7 @@ impl WsState {
         &self,
         session_id: &str,
         client_id: &str,
-        sender: mpsc::UnboundedSender<String>,
+        sender: mpsc::Sender<String>,
     ) {
         self.guests
             .write()
@@ -156,7 +156,7 @@ impl WsState {
         let guests = self.guests.read().await;
         if let Some(list) = guests.get(session_id) {
             for guest in list {
-                let _ = guest.sender.send(message.to_string());
+                let _ = guest.sender.try_send(message.to_string());
             }
         }
     }
@@ -168,7 +168,7 @@ impl WsState {
         for session_id in &sessions {
             if let Some(list) = guests.get(session_id) {
                 for guest in list {
-                    let _ = guest.sender.send(message.to_string());
+                    let _ = guest.sender.try_send(message.to_string());
                 }
             }
         }
@@ -179,7 +179,7 @@ impl WsState {
         let guests = self.guests.read().await;
         for list in guests.values() {
             if let Some(guest) = list.iter().find(|g| g.client_id == client_id) {
-                return guest.sender.send(message.to_string()).is_ok();
+                return guest.sender.try_send(message.to_string()).is_ok();
             }
         }
         false
@@ -231,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn register_and_unregister_host() {
         let ws = WsState::default();
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(64);
 
         ws.register_host("nb-1", "conn-1", tx).await;
         assert!(ws.hosts.read().await.contains_key("nb-1"));
@@ -249,8 +249,8 @@ mod tests {
     #[tokio::test]
     async fn register_host_replaces_existing() {
         let ws = WsState::default();
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, _rx2) = mpsc::unbounded_channel();
+        let (tx1, _rx1) = mpsc::channel(64);
+        let (tx2, _rx2) = mpsc::channel(64);
 
         ws.register_host("nb-1", "conn-1", tx1).await;
         ws.register_host("nb-1", "conn-2", tx2).await;
@@ -266,7 +266,7 @@ mod tests {
     #[tokio::test]
     async fn send_to_host_delivers_message() {
         let ws = WsState::default();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(64);
 
         ws.register_host("nb-1", "conn-1", tx).await;
         assert!(ws.send_to_host("nb-1", "hello").await);
@@ -282,7 +282,7 @@ mod tests {
     #[tokio::test]
     async fn register_and_unregister_guest() {
         let ws = WsState::default();
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(64);
 
         ws.register_guest("sess-1", "client-1", tx).await;
         assert!(ws.guests.read().await.contains_key("sess-1"));
@@ -295,8 +295,8 @@ mod tests {
     #[tokio::test]
     async fn unregister_guest_leaves_others() {
         let ws = WsState::default();
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, _rx2) = mpsc::unbounded_channel();
+        let (tx1, _rx1) = mpsc::channel(64);
+        let (tx2, _rx2) = mpsc::channel(64);
 
         ws.register_guest("sess-1", "client-1", tx1).await;
         ws.register_guest("sess-1", "client-2", tx2).await;
@@ -312,7 +312,7 @@ mod tests {
     #[tokio::test]
     async fn unregister_guest_purges_pending_queries() {
         let ws = WsState::default();
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(64);
         ws.register_guest("sess-1", "client-1", tx).await;
 
         // Two in-flight queries/mutations from this guest, one from another.
@@ -331,8 +331,8 @@ mod tests {
     #[tokio::test]
     async fn broadcast_to_guests_delivers_to_all() {
         let ws = WsState::default();
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = mpsc::channel(64);
+        let (tx2, mut rx2) = mpsc::channel(64);
 
         ws.register_guest("sess-1", "client-1", tx1).await;
         ws.register_guest("sess-1", "client-2", tx2).await;
@@ -364,8 +364,8 @@ mod tests {
             .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
             .await;
 
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = mpsc::channel(64);
+        let (tx2, mut rx2) = mpsc::channel(64);
 
         ws.register_guest(&r1.session_id, "client-1", tx1).await;
         ws.register_guest(&r2.session_id, "client-2", tx2).await;
@@ -389,8 +389,8 @@ mod tests {
             .create_session("nb-2".into(), "conn-1".into(), Permissions::default())
             .await;
 
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = mpsc::channel(64);
+        let (tx2, mut rx2) = mpsc::channel(64);
 
         ws.register_guest(&r1.session_id, "client-1", tx1).await;
         ws.register_guest(&r2.session_id, "client-2", tx2).await;
@@ -405,8 +405,8 @@ mod tests {
     #[tokio::test]
     async fn send_to_guest_delivers_to_specific_client() {
         let ws = WsState::default();
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = mpsc::channel(64);
+        let (tx2, mut rx2) = mpsc::channel(64);
 
         ws.register_guest("sess-1", "client-1", tx1).await;
         ws.register_guest("sess-1", "client-2", tx2).await;
@@ -426,8 +426,8 @@ mod tests {
     #[tokio::test]
     async fn disconnect_guests_drops_all_channels() {
         let ws = WsState::default();
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = mpsc::channel(64);
+        let (tx2, mut rx2) = mpsc::channel(64);
 
         ws.register_guest("sess-1", "client-1", tx1).await;
         ws.register_guest("sess-1", "client-2", tx2).await;

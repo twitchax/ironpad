@@ -88,12 +88,12 @@ pub async fn build_micro_crate(
         target_dir(cache_dir, session_id)
     };
 
-    std::fs::create_dir_all(&cargo_home)?;
-    std::fs::create_dir_all(&target_dir)?;
+    tokio::fs::create_dir_all(&cargo_home).await?;
+    tokio::fs::create_dir_all(&target_dir).await?;
 
     // Canonicalize paths so they resolve correctly when cargo runs in crate_dir.
-    let cargo_home = std::fs::canonicalize(&cargo_home)?;
-    let target_dir = std::fs::canonicalize(&target_dir)?;
+    let cargo_home = tokio::fs::canonicalize(&cargo_home).await?;
+    let target_dir = tokio::fs::canonicalize(&target_dir).await?;
 
     tracing::info!(
         cell_id = %cell_id,
