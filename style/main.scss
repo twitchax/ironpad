@@ -529,6 +529,8 @@ a:focus-visible {
 
 .ironpad-notebook-card-link:hover .ironpad-notebook-card {
     border-color: var(--ip-accent);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
 }
 
 .ironpad-notebook-card {
@@ -536,7 +538,7 @@ a:focus-visible {
     background: var(--ip-bg-surface);
     border: 1px solid var(--ip-border);
     border-radius: var(--ip-radius-lg);
-    transition: border-color var(--ip-transition-normal);
+    transition: border-color var(--ip-transition-normal), transform var(--ip-transition-normal), box-shadow var(--ip-transition-normal);
     cursor: pointer;
 }
 
@@ -697,11 +699,37 @@ a:focus-visible {
 
 /* ── Shared dependencies panel ───────────────────────────────────────── */
 
-.ironpad-shared-deps {
+.ironpad-shared-deps,
+.ironpad-shared-source-panel {
     margin-bottom: 16px;
     background: var(--ip-bg-elevated);
     border: 1px solid var(--ip-border);
     border-radius: var(--ip-radius-md);
+}
+
+// Interactive "button" widget emitted by cells (was unstyled → raw native button).
+.ironpad-widget-button {
+    padding: 6px 14px;
+    background: var(--ip-bg-elevated);
+    color: var(--ip-text-primary);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: border-color var(--ip-transition-fast), background var(--ip-transition-fast);
+
+    &:hover {
+        border-color: var(--ip-accent);
+        background: var(--ip-hover-overlay);
+    }
+}
+
+// Loading state for the public/shared notebook pages (was unstyled top-left text).
+.ironpad-loading {
+    display: flex;
+    justify-content: center;
+    padding: 48px 0;
+    color: var(--ip-text-tertiary);
 }
 
 .ironpad-shared-deps-header {
@@ -752,7 +780,9 @@ a:focus-visible {
 }
 
 .ironpad-cell-card--active {
-    border-color: var(--ip-accent);
+    // Focus uses info-blue, NOT accent/error red — otherwise a focused cell is
+    // indistinguishable from an errored one (both were red).
+    border-color: var(--ip-info);
 }
 
 .ironpad-cell-card--markdown {
@@ -760,7 +790,7 @@ a:focus-visible {
 }
 
 .ironpad-cell-card--markdown.ironpad-cell-card--active {
-    border-color: var(--ip-accent);
+    border-color: var(--ip-info);
     border-left: 3px solid var(--ip-info);
 }
 
@@ -993,7 +1023,9 @@ a:focus-visible {
     padding-top: 8px;
     align-items: center;
     flex-shrink: 0;
-    opacity: 0;
+    // Dim-but-visible by default so the drag/run/menu actions are discoverable
+    // (and usable on touch); brighten on cell-row hover / active.
+    opacity: 0.35;
     transition: opacity 0.15s;
 }
 
@@ -1553,7 +1585,7 @@ select:focus-visible,
 textarea:focus-visible {
     outline: 2px solid var(--ip-accent);
     outline-offset: 2px;
-    box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.3);
+    box-shadow: 0 0 0 2px rgba(var(--ip-error-rgb), 0.3);
 }
 
 /* ── Monospace elements ──────────────────────────────────────────────────── */
@@ -2572,14 +2604,14 @@ samp,
 .ironpad-progress-bar {
     flex: 1;
     height: 8px;
-    background: var(--ip-bg-tertiary, #2a2a2e);
+    background: var(--ip-bg-elevated);
     border-radius: 4px;
     overflow: hidden;
 }
 
 .ironpad-progress-fill {
     height: 100%;
-    background: var(--ip-accent, #4fc3f7);
+    background: var(--ip-accent);
     border-radius: 4px;
     transition: width 0.3s ease;
     min-width: 0;
