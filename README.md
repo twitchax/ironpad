@@ -139,6 +139,7 @@ The browser is the authoritative model server.  The API server is a stateless re
 crates/
   ironpad-app/       # Core: compiler pipeline, UI components, storage, model
   ironpad-server/    # Axum HTTP server + WebSocket relay + session management
+  ironpad-proxy/     # Domain-filtering forward proxy (sandboxes cell-compile network access)
   ironpad-cli/       # CLI daemon + subcommands for agent collaboration
   ironpad-frontend/  # WASM hydration entry point (Leptos)
   ironpad-common/    # Shared types (IronpadNotebook, protocol messages)

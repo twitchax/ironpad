@@ -54,12 +54,13 @@ cargo make uat
 
 ## Architecture Overview
 
-ironpad is a Cargo workspace with 6 crates:
+ironpad is a Cargo workspace with 7 crates:
 
 | Crate                | Role                                                                                                                 |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | **ironpad-app**      | Core crate — compiler pipeline, Leptos UI components, notebook model, session management, client-side storage        |
 | **ironpad-server**   | Axum HTTP server — Leptos SSR, WebSocket relay for agent collaboration, session/token management                     |
+| **ironpad-proxy**    | Domain-filtering forward proxy that sandboxes network access during cell compilation (PRD-0023)                      |
 | **ironpad-frontend** | WASM hydration entry point (minimal — sets up client-side Leptos)                                                    |
 | **ironpad-common**   | Shared types: `CompileRequest`, `IronpadNotebook`, `Diagnostic`, `AppConfig`, collaboration protocol (`protocol.rs`) |
 | **ironpad-cell**     | Cell runtime injected into every compiled cell — `CellOutput`, `DisplayPanel`, `From` impls, FFI exports             |
@@ -70,6 +71,7 @@ crates/
   ironpad-app/          # Core: compiler, UI, storage, pages, model, session
   ironpad-cli/          # CLI daemon + agent commands
   ironpad-server/       # HTTP server + WebSocket relay
+  ironpad-proxy/        # Domain-filtering forward proxy (cell-compile network sandbox)
   ironpad-frontend/     # WASM hydration entry
   ironpad-common/       # Shared types + collaboration protocol
   ironpad-cell/         # Cell runtime (injected into every cell)

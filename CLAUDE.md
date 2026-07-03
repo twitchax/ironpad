@@ -4,10 +4,10 @@ This document provides guidance for AI coding agents working in the ironpad repo
 
 ## Quick Overview
 
-**ironpad** is an interactive Rust notebook environment that compiles cells to WebAssembly and executes them in the browser. It supports real-time collaboration between humans and AI agents via WebSocket. The codebase spans 6 Rust crates, with a full-stack Leptos (SSR/WASM) frontend, Axum server with WebSocket relay, and a CLI daemon for agent interaction.
+**ironpad** is an interactive Rust notebook environment that compiles cells to WebAssembly and executes them in the browser. It supports real-time collaboration between humans and AI agents via WebSocket. The codebase spans 7 Rust crates, with a full-stack Leptos (SSR/WASM) frontend, Axum server with WebSocket relay, and a CLI daemon for agent interaction.
 
 ### Key Statistics
-- **Crates**: 6 (app, cli, server, frontend, common, cell)
+- **Crates**: 7 (app, cli, server, frontend, common, cell, proxy)
 - **Compiler modules**: 6 (scaffold, cache, build, diagnostics, optimize, mod)
 - **Framework**: Leptos 0.8 + Axum + Monaco editor
 - **Build tool**: cargo-make (all dev commands)
@@ -22,6 +22,7 @@ crates/
   ironpad-app/          # Core: compiler, UI, storage, pages, model, session
   ironpad-cli/          # CLI daemon + agent commands
   ironpad-server/       # HTTP server + WebSocket relay + session management
+  ironpad-proxy/        # Domain-filtering forward proxy (cell-compile network sandbox)
   ironpad-frontend/     # WASM hydration (minimal)
   ironpad-common/       # Shared types + collaboration protocol
   ironpad-cell/         # Cell runtime (injected into every cell)
