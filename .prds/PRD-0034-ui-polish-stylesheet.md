@@ -52,17 +52,17 @@ tasks:
 - id: T-004
   title: "Style the three unstyled classes + fix progress bar tokens + focus glow"
   priority: 2
-  status: todo
+  status: done
   notes: ".ironpad-shared-source-panel (shared_editor_panel.rs:35) has no selector -> reuse .ironpad-shared-deps rules (:696). .ironpad-widget-button (cell_output.rs:937, view_only_notebook.rs:1129) unstyled -> add elevated-bg/border/radius/hover rule. .ironpad-loading (public_notebook.rs:36, shared_notebook.rs:35) unstyled -> center it (display:flex;justify-content:center;padding:48px 0;color:var(--ip-text-tertiary)). Progress bar uses undefined --ip-bg-tertiary + dead #4fc3f7 (:2556,:2563) -> var(--ip-bg-elevated) track, var(--ip-accent) fill. Focus glow :1541 hardcodes rgba(233,69,96,0.3) -> track the theme accent."
 - id: T-005
   title: "Empty-notebook state + always-visible-ish cell action rail"
   priority: 2
-  status: todo
+  status: todo  # PARTIAL: cell-rail opacity 0.35 done (35cf54c); empty-notebook state (markup) pending
   notes: "Confirmed live: a new notebook is two faint '+ Code / + Markdown' text buttons floating in dark space -> add a real empty-state CTA card with keyboard hints. Cell action rail (.ironpad-cell-side-actions) is opacity 0 until hover -> undiscoverable and unusable on touch; make it always visible at reduced opacity, brightening on hover."
 - id: T-006
   title: "Disambiguate overloaded red: neutral focus border; consistent cross-theme accent"
   priority: 2
-  status: todo
+  status: done
   notes: "Confirmed live: focused-cell border, error border, and brand accent are all the same red, so a focused cell looks broken. Give focus a neutral/accent-blue border distinct from error. Also 'New Notebook'/primary buttons are blue in dark theme but red in light theme — pick one accent per element across themes."
 - id: T-007
   title: "Compile badge + byte-count readability"
@@ -82,7 +82,7 @@ tasks:
 - id: T-010
   title: "Home card hover lift; dead modifier classes; error-panel For key collision"
   priority: 3
-  status: todo
+  status: done
   notes: "Home cards only change border-color on hover (:526) -> add transform:translateY(-2px)+box-shadow with a matching transition. Drop or style dead modifier classes (ironpad-notebook-badge private/public at home_page.rs:297,329; base ironpad-cell-type-badge at cell_item.rs:1266). error_panel.rs:64,156 <For> keys collide for duplicate diagnostics/spans -> include the item index in the key."
 - id: T-011
   title: "Mobile: keep the notebook title in the header at narrow widths; fork double-click guard"
