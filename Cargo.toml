@@ -51,16 +51,18 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# OpenTelemetry (opt-in OTLP trace export; rustls + bundled webpki roots so no
-# system OpenSSL / cert store is needed in the slim runtime container)
+# OpenTelemetry (opt-in OTLP trace + log export; rustls + bundled webpki roots so
+# no system OpenSSL / cert store is needed in the slim runtime container)
 opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["logs"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = [
     "trace",
+    "logs",
     "http-proto",
     "reqwest-blocking-client",
     "reqwest-rustls-webpki-roots",
 ] }
+opentelemetry-appender-tracing = "0.32"
 tracing-opentelemetry = "0.33"
 
 # Identifiers and time

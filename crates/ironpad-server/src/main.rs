@@ -12,6 +12,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::Layer as _;
 
 use ironpad_app::*;
 use ironpad_common::AppConfig;
@@ -27,24 +28,33 @@ async fn main() {
 
     // OpenTelemetry OTLP export is opt-in: enabled only when
     // `OTEL_EXPORTER_OTLP_ENDPOINT` is set (e.g. a Grafana Cloud OTLP gateway,
-    // supplied via `fly secrets set`). The exporter reads the endpoint and auth
+    // supplied via `fly secrets set`). The exporters read the endpoint and auth
     // headers from the standard `OTEL_EXPORTER_OTLP_*` env vars, so no
     // credentials ever live in code or config. When unset this is a no-op and
     // the server logs to stdout exactly as before.
-    let otel_provider = init_otel_provider();
-    let otel_layer = otel_provider.as_ref().map(|provider| {
+    let otel = init_otel();
+    let otel_trace_layer = otel.as_ref().map(|providers| {
         use opentelemetry::trace::TracerProvider as _;
-        tracing_opentelemetry::layer().with_tracer(provider.tracer("ironpad-server"))
+        tracing_opentelemetry::layer().with_tracer(providers.tracer.tracer("ironpad-server"))
+    });
+    // Bridge `tracing` events into OTLP log records. The bridge attaches the
+    // active span's `trace_id`/`span_id`, so logs emitted inside a request span
+    // correlate with its trace in Grafana. Its per-layer filter drops the
+    // telemetry stack's own events so exporting logs can't feed back on itself.
+    let otel_log_layer = otel.as_ref().map(|providers| {
+        opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&providers.logger)
+            .with_filter(otel_log_filter())
     });
 
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
-        .with(otel_layer)
+        .with(otel_trace_layer)
+        .with(otel_log_layer)
         .init();
 
-    if otel_provider.is_some() {
-        tracing::info!("OpenTelemetry OTLP trace export enabled");
+    if otel.is_some() {
+        tracing::info!("OpenTelemetry OTLP trace + log export enabled");
     }
 
     let args = CliArgs::parse();
@@ -147,39 +157,79 @@ async fn main() {
         .expect("server");
 }
 
-/// Build an OTLP tracer provider when OpenTelemetry export is configured.
+/// Tracer + logger providers for OTLP export, held for the process lifetime so
+/// their batch exporters keep flushing.
+struct OtelProviders {
+    tracer: opentelemetry_sdk::trace::SdkTracerProvider,
+    logger: opentelemetry_sdk::logs::SdkLoggerProvider,
+}
+
+/// Build the OTLP tracer + logger providers when OpenTelemetry export is
+/// configured.
 ///
 /// Opt-in: returns `None` unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so the
-/// server keeps its plain stdout logging until an endpoint is provided. The
-/// OTLP exporter reads the endpoint and auth headers from the standard
+/// server keeps its plain stdout logging until an endpoint is provided. Both
+/// exporters read the endpoint and auth headers from the standard
 /// `OTEL_EXPORTER_OTLP_*` env vars, so no credentials live in code or config.
-fn init_otel_provider() -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
+/// The shared `service.name` resource is what lets Grafana correlate the two
+/// signals.
+fn init_otel() -> Option<OtelProviders> {
     if !otel_export_enabled(std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").as_deref()) {
         return None;
     }
 
-    let exporter = match opentelemetry_otlp::SpanExporter::builder()
+    // The subscriber isn't initialized yet, so stderr is the only channel for
+    // exporter-build failures.
+    let span_exporter = match opentelemetry_otlp::SpanExporter::builder()
         .with_http()
         .build()
     {
         Ok(exporter) => exporter,
         Err(err) => {
-            // The subscriber isn't initialized yet, so stderr is the only channel.
-            eprintln!("OTLP exporter init failed; trace export disabled: {err}");
+            eprintln!("OTLP span exporter init failed; export disabled: {err}");
+            return None;
+        }
+    };
+    let log_exporter = match opentelemetry_otlp::LogExporter::builder()
+        .with_http()
+        .build()
+    {
+        Ok(exporter) => exporter,
+        Err(err) => {
+            eprintln!("OTLP log exporter init failed; export disabled: {err}");
             return None;
         }
     };
 
-    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
-        .with_resource(
-            opentelemetry_sdk::Resource::builder()
-                .with_service_name("ironpad-server")
-                .build(),
-        )
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name("ironpad-server")
         .build();
 
-    Some(provider)
+    let tracer = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(span_exporter)
+        .with_resource(resource.clone())
+        .build();
+    let logger = opentelemetry_sdk::logs::SdkLoggerProvider::builder()
+        .with_batch_exporter(log_exporter)
+        .with_resource(resource)
+        .build();
+
+    Some(OtelProviders { tracer, logger })
+}
+
+/// Per-layer filter for the OTLP log bridge: forward application logs but drop
+/// the telemetry stack's own events, so exporting a log can't emit a log that
+/// gets exported again (a feedback loop).
+fn otel_log_filter() -> tracing_subscriber::filter::Targets {
+    use tracing_subscriber::filter::LevelFilter;
+    tracing_subscriber::filter::Targets::new()
+        .with_default(LevelFilter::TRACE)
+        .with_target("opentelemetry", LevelFilter::OFF)
+        .with_target("hyper", LevelFilter::OFF)
+        .with_target("hyper_util", LevelFilter::OFF)
+        .with_target("reqwest", LevelFilter::OFF)
+        .with_target("h2", LevelFilter::OFF)
+        .with_target("rustls", LevelFilter::OFF)
 }
 
 /// OTLP export is opt-in on a configured endpoint. Pulled out as a pure helper
