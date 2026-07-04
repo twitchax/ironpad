@@ -11,21 +11,28 @@ use std::sync::LazyLock;
 
 use ammonia::Builder;
 
-/// Builder for `Html` panels and rendered markdown. Ammonia's default allowlist
-/// (strips `<script>`, `on*` handlers, `javascript:` URLs, `<iframe>`/`<object>`,
-/// etc.) plus the three `KaTeX` math classes on `<span>`. pulldown-cmark's
-/// `ENABLE_MATH` emits `<span class="math math-inline">tex</span>` (and
-/// `math-display`), and the client-side `KaTeX` bridge (`public/katex/render-math.js`)
-/// finds them via the `span.math` selector — so the classes must survive
-/// sanitization or math silently renders as raw LaTeX. Only these exact tokens
-/// are allowed (not a general `class` passthrough), so no script surface is added.
+/// Builder for all sanitized cell output — `Html` and `Svg` panels, rendered
+/// markdown, and `LiveView` output. Starts
+/// from ammonia's default HTML allowlist (which strips `<script>`, `on*`
+/// handlers, `javascript:` URLs, `<iframe>`/`<object>`) and adds the safe,
+/// script-free presentation that rich cell output relies on: inline SVG drawing
+/// (the same [`SVG_TAGS`]/[`SVG_ATTRS`] vetted for `Svg` panels — so no
+/// `script`/`foreignObject`/`a`/`use`/`image`) plus `style` and `class`, both
+/// carried by [`SVG_ATTRS`].
+///
+/// `class` also preserves pulldown-cmark's `<span class="math …">` markers so
+/// the client-side `KaTeX` bridge can find and render them. None of this adds a
+/// script vector; the worst `style` can do is reference an external URL — the
+/// same exposure as the already-allowed `<img src>`.
 static HTML_BUILDER: LazyLock<Builder<'static>> = LazyLock::new(|| {
     let mut builder = Builder::default();
-    builder.add_allowed_classes("span", ["math", "math-inline", "math-display"]);
+    builder
+        .add_tags(SVG_TAGS.iter().copied())
+        .add_generic_attributes(SVG_ATTRS.iter().copied());
     builder
 });
 
-/// Sanitizer for `Html` panels and rendered markdown. See [`HTML_BUILDER`].
+/// Sanitize markup with the shared cell-output allowlist. See [`HTML_BUILDER`].
 fn clean_html(html: &str) -> String {
     HTML_BUILDER.clean(html).to_string()
 }
@@ -125,24 +132,17 @@ const SVG_ATTRS: &[&str] = &[
     "xmlns",
 ];
 
-/// Builder configured to allow inline SVG drawing elements on top of the default
-/// HTML allowlist. Built once (allowlist construction is non-trivial).
-static SVG_BUILDER: LazyLock<Builder<'static>> = LazyLock::new(|| {
-    let mut builder = Builder::default();
-    builder
-        .add_tags(SVG_TAGS.iter().copied())
-        .add_generic_attributes(SVG_ATTRS.iter().copied());
-    builder
-});
-
 /// Sanitize a cell's `Html` output before it is injected via `inner_html`.
 pub fn sanitize_html(html: &str) -> String {
     clean_html(html)
 }
 
 /// Sanitize a cell's `Svg` output before it is injected via `inner_html`.
+///
+/// Uses the same allowlist as [`sanitize_html`] (which already permits inline
+/// SVG), so both entry points share one builder.
 pub fn sanitize_svg(svg: &str) -> String {
-    SVG_BUILDER.clean(svg).to_string()
+    clean_html(svg)
 }
 
 #[cfg(test)]
@@ -166,6 +166,34 @@ mod tests {
     fn html_strips_javascript_url() {
         let clean = sanitize_html(r#"<a href="javascript:steal()">x</a>"#);
         assert!(!clean.contains("javascript:"), "stripped js url: {clean}");
+    }
+
+    #[test]
+    fn html_keeps_inline_svg_and_styles() {
+        // Rich cell output — LiveView dashboards, inline-SVG plots — relies on
+        // `style=` and inline `<svg>`. Sanitization must keep that presentation
+        // while still stripping active content. (Regression: routing LiveView
+        // output through the HTML sanitizer stripped both.)
+        let dirty = concat!(
+            r#"<div style="background: linear-gradient(#000,#111);" class="dash">"#,
+            r#"<svg viewBox="0 0 10 10"><path d="M0 0 L10 10" stroke="red"/>"#,
+            r#"<circle cx="5" cy="5" r="2"/></svg>"#,
+            r#"<script>steal()</script><span onclick="steal()">x</span></div>"#,
+        );
+        let clean = sanitize_html(dirty);
+        // Presentation survives.
+        assert!(
+            clean.contains("linear-gradient"),
+            "kept inline style: {clean}"
+        );
+        assert!(clean.contains("<svg"), "kept svg: {clean}");
+        assert!(clean.contains("<path"), "kept svg path: {clean}");
+        assert!(clean.contains("<circle"), "kept svg circle: {clean}");
+        assert!(clean.contains("dash"), "kept class: {clean}");
+        // Active content is still stripped.
+        assert!(!clean.contains("<script"), "stripped script: {clean}");
+        assert!(!clean.contains("onclick"), "stripped handler: {clean}");
+        assert!(!clean.contains("steal"), "stripped payload: {clean}");
     }
 
     #[test]
