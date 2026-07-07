@@ -334,6 +334,9 @@ fn handle_incoming(
             | ControlMessage::Heartbeat => {
                 // Not sent by the server to the host (Heartbeat is host → server).
             }
+            ControlMessage::Unknown => {
+                web_sys::console::warn_1(&"ignoring unknown control message from server".into());
+            }
         },
 
         // Events and responses from server are not expected on the host path.

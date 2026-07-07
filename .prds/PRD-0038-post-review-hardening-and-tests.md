@@ -147,8 +147,8 @@ tasks:
 - id: T-016
   title: "Protocol runtime enforcement: version field + Unknown variants + call sites"
   priority: 2
-  status: todo
-  notes: "Split from T-012 (2026-07-07 fleet): the version FIELD on Message and #[serde(other)] Unknown arms on the payload enums cannot land inside a protocol.rs-only fence — a new struct field breaks ~15 `Message { id, kind }` construction sites (ws.rs:24, daemon.rs:{134,514,877}, session/connection.rs x7, tests/relay.rs:68) and Unknown variants break exhaustive matches (model.rs:{88,137}, daemon.rs:{280,666}, ws.rs:{159,200}, sessions.rs:183, connection.rs:315). T-012 landed the safe subset (PROTOCOL_VERSION const + forward-compat doc + 4 tests, incl. one that characterizes the gap). This task lands the coupled change single-threaded: add `version: u32` (#[serde(default)]) to Message + PROTOCOL_VERSION default at every construction site, add an Unknown #[serde(other)] arm to each payload enum + handle it at every match site (degrade gracefully, don't drop the whole Message), and flip the characterization test. Also apply the same to common/types.rs enums (flagged by the fleet)."
+  status: done
+  notes: "DONE 2026-07-07 (lead, single-threaded): added #[serde(other)] Unknown to the five INTERNALLY-tagged sub-enums (Mutation/Query/Event/Response/ControlMessage); a compiler-driven sweep added graceful Unknown arms at every consumer match (model.rs apply/query, cli/daemon.rs event+response, connection.rs + ws.rs control). A new action/event/query/response/control tag from a newer peer now decodes to that enum's Unknown and is dropped-with-a-warning instead of failing the whole Message — this is the case that grows the protocol and the one that could stall a correlated request. Test unknown_payload_variant_decodes_to_unknown. LIMITATION (documented, not a gap): the OUTER MessageKind is adjacently tagged (type/payload), where serde's #[serde(other)] can't consume the payload, so a wholly-unknown top-level `type` fails-to-parse and is dropped-with-warn at the decode site — safe because such a frame is never a correlated Response; the five categories are architecturally stable. DELIBERATELY DEFERRED: the `version` STRUCT field — advisory-only (no consumer; PROTOCOL_VERSION const + the deny_unknown_fields-free envelope already let it be added later without a flag day), and it churns ~40 construction sites for zero current behavior. #[non_exhaustive] intentionally NOT applied: every variant is in-repo, so exhaustive matches keep forcing consumers to handle new variants. Original: Split from T-012 (2026-07-07 fleet): the version FIELD on Message and #[serde(other)] Unknown arms on the payload enums cannot land inside a protocol.rs-only fence — a new struct field breaks ~15 `Message { id, kind }` construction sites (ws.rs:24, daemon.rs:{134,514,877}, session/connection.rs x7, tests/relay.rs:68) and Unknown variants break exhaustive matches (model.rs:{88,137}, daemon.rs:{280,666}, ws.rs:{159,200}, sessions.rs:183, connection.rs:315). T-012 landed the safe subset (PROTOCOL_VERSION const + forward-compat doc + 4 tests, incl. one that characterizes the gap). This task lands the coupled change single-threaded: add `version: u32` (#[serde(default)]) to Message + PROTOCOL_VERSION default at every construction site, add an Unknown #[serde(other)] arm to each payload enum + handle it at every match site (degrade gracefully, don't drop the whole Message), and flip the characterization test. Also apply the same to common/types.rs enums (flagged by the fleet)."
 ---
 
 # Summary
@@ -261,5 +261,20 @@ Dispatched 7 conflict-free fleet members (disjoint file ownership), lead consoli
 - **Test results**: `cargo make ci` (fmt-check + clippy -D warnings + nextest) **green — 574 passed, 7 skipped** (was 536). `cargo make test-integration`: 6/7; `all_public_notebook_cells_compile` flaked on 2 mandelbrot cells (cold-compile dependency-fetch after the CACHE_EPOCH bump — no rustc error, no public-API change; re-run to confirm).
 - **UATs verified**: uat-001, uat-002, uat-004, uat-005, uat-006, uat-007. **Unverified**: uat-003 (Playwright DOM overlay — deferred), uat-008 (full `uat` — Playwright not run this session).
 - **Constitution compliance**: no public-API breaks; every behavioral change shipped tests; sandbox decision (PRD-0030) respected. Deviation: T-012 could not be completed within its ownership fence (cross-crate coupling) — safe subset landed, remainder tracked as T-016.
+
+## 2026-07-07 — T-016 done (protocol forward-compat, single-threaded)
+- Added `#[serde(other)] Unknown` to the five internally-tagged sub-enums (Mutation/
+  Query/Event/Response/ControlMessage); compiler-driven sweep added graceful `Unknown`
+  arms at every consumer match (model.rs apply/query → InvalidMessage error; cli/daemon.rs
+  event+response; connection.rs + ws.rs control no-ops). A new variant from a newer peer
+  now decodes-and-drops-with-a-warning instead of failing the whole `Message` / stalling.
+- Discovered mid-implementation: `#[serde(other)]` on the OUTER adjacently-tagged
+  `MessageKind` fails when a `payload` is present (can't fill a unit variant). Dropped
+  `MessageKind::Unknown`; an unknown top-level `type` fails-to-parse and is dropped-with-warn
+  at the decode site — safe (never a correlated Response). Documented on `Message`.
+- Deferred: the advisory `version` STRUCT field (no consumer; ~40 construction-site churn;
+  addable later without a flag day per the existing envelope tolerance).
+- Test: `unknown_payload_variant_decodes_to_unknown` (replaces the characterization test).
+- `cargo make ci` green: 574 tests, clippy -D warnings clean.
 
 (Entries appended during implementation go below this line.)

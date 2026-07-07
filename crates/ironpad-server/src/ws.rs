@@ -246,7 +246,8 @@ async fn handle_host_control(
         | ControlMessage::SessionCreated { .. }
         | ControlMessage::SessionEnded { .. }
         | ControlMessage::GuestConnected { .. }
-        | ControlMessage::GuestDisconnected { .. } => {}
+        | ControlMessage::GuestDisconnected { .. }
+        | ControlMessage::Unknown => {}
     }
 }
 

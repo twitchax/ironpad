@@ -107,6 +107,14 @@ impl NotebookModel {
             } => {
                 self.notebook_update_meta(title, shared_cargo_toml, shared_source, reactive_mode)?
             }
+            // A mutation from a newer peer this build doesn't recognise. It
+            // can't be applied — surface an error rather than silently acting.
+            Mutation::Unknown => {
+                return Err(ModelError {
+                    code: ErrorCode::InvalidMessage,
+                    message: "unrecognized mutation from a newer peer".into(),
+                });
+            }
         };
         let envelope = EventEnvelope { by, event };
 
@@ -162,6 +170,10 @@ impl NotebookModel {
                 let cells = self.cells.get_untracked();
                 Ok(Response::CellsList { cells })
             }
+            Query::Unknown => Err(ModelError {
+                code: ErrorCode::InvalidMessage,
+                message: "unrecognized query from a newer peer".into(),
+            }),
         }
     }
 

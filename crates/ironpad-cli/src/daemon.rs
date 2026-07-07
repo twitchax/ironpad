@@ -347,11 +347,13 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             shared_source.as_ref(),
             *reactive_mode,
         ),
-        // Compilation/execution events don't affect the notebook structure.
+        // Compilation/execution events don't affect the notebook structure; an
+        // unknown event from a newer peer is likewise ignored here.
         protocol::Event::CellCompiling { .. }
         | protocol::Event::CellCompiled { .. }
         | protocol::Event::CellExecuted { .. }
-        | protocol::Event::Error { .. } => {}
+        | protocol::Event::Error { .. }
+        | protocol::Event::Unknown => {}
     }
 }
 
@@ -726,6 +728,9 @@ fn translate_response(msg: protocol::Message) -> IpcResponse {
             }
             protocol::Response::Error { code, message } => {
                 IpcResponse::error_with_code(message, format!("{code:?}"))
+            }
+            protocol::Response::Unknown => {
+                IpcResponse::error("unrecognized response from a newer server")
             }
         },
         MessageKind::Event(envelope) => {

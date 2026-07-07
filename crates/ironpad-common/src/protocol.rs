@@ -34,17 +34,28 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// `envelope_without_version_still_parses`, and is what lets [`PROTOCOL_VERSION`]
 /// be introduced on the wire later without a flag day.
 ///
-/// That tolerance covers added *fields* only. Added *enum variants* in the
-/// payload sub-enums ([`Mutation`], [`Event`], [`Response`], [`ControlMessage`],
-/// and [`MessageKind`] itself) are **not** yet tolerated: an unknown tag makes
-/// the whole `Message` fail to deserialize (see
-/// `unknown_payload_tag_currently_fails_whole_message`), which silently drops
-/// the frame and stalls any correlated request. Closing that gap needs a
-/// `#[serde(other)] Unknown` arm plus `#[non_exhaustive]` on each sub-enum,
-/// which forces the exhaustive `match`es that consume these enums (in
-/// `ironpad-server`, `ironpad-app`, `ironpad-cli`) to grow catch-all arms — a
-/// coordinated cross-crate change beyond this envelope. Tracked in PRD-0038
-/// T-012.
+/// Added *enum variants* in the payload sub-enums ([`Mutation`], [`Query`],
+/// [`Event`], [`Response`], [`ControlMessage`]) are tolerated too: each carries
+/// a `#[serde(other)] Unknown` arm, so a new `action`/`event`/`query`/`response`/
+/// `control` tag from a newer peer decodes to that enum's `Unknown` instead of
+/// failing the whole `Message` (regression-locked by
+/// `unknown_payload_variant_decodes_to_unknown`). Consumers handle `Unknown` by
+/// dropping the frame with a warning rather than acting on it. This is the case
+/// that matters: a new *variant within an existing category* is the normal way
+/// the protocol grows, and it is the one that could otherwise stall a correlated
+/// request (e.g. a `Response::Unknown` that never resolves its oneshot).
+///
+/// A wholly-unknown top-level `type` (a new message *category* beyond the five
+/// here) is **not** decoded to a variant — [`MessageKind`] is adjacently tagged
+/// (`type`/`payload`), where serde's `#[serde(other)]` can't consume the
+/// `payload`. Such a frame fails to parse and is dropped-with-a-warning at the
+/// decode site, which is safe: a new top-level category is never a correlated
+/// `Response`, so it can't stall anything. The five categories are
+/// architecturally stable, so this is a documented limitation, not a gap.
+///
+/// A deliberate `#[non_exhaustive]` is *not* applied to any of these — every
+/// variant is defined in-repo, so keeping the `match`es exhaustive means adding
+/// a real variant still forces every consumer to decide how to handle it (T-016).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     /// Correlation ID. Responses and events reference the mutation/query that
@@ -127,6 +138,9 @@ pub enum Mutation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reactive_mode: Option<bool>,
     },
+    /// An unrecognised mutation from a newer peer (see the [`Message`] forward-compat docs).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Data for creating a new cell. The model assigns `id`, `order`, and `version`.
@@ -152,8 +166,13 @@ fn default_cell_label() -> String {
 #[serde(tag = "query")]
 pub enum Query {
     NotebookGet,
-    CellGet { cell_id: String },
+    CellGet {
+        cell_id: String,
+    },
     CellsList,
+    /// An unrecognised query from a newer peer (see the [`Message`] forward-compat docs).
+    #[serde(other)]
+    Unknown,
 }
 
 // ── Events (model → all clients) ────────────────────────────────────────────
@@ -219,6 +238,9 @@ pub enum Event {
         code: ErrorCode,
         message: String,
     },
+    /// An unrecognised event from a newer peer (see the [`Message`] forward-compat docs).
+    #[serde(other)]
+    Unknown,
 }
 
 // ── Responses (model → requesting client) ───────────────────────────────────
@@ -244,6 +266,9 @@ pub enum Response {
         code: ErrorCode,
         message: String,
     },
+    /// An unrecognised response from a newer peer (see the [`Message`] forward-compat docs).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Specific result data for a successful mutation.
@@ -283,6 +308,10 @@ pub enum ControlMessage {
     /// (a network drop with no FIN) via a read-loop idle timeout and tear it
     /// down, instead of leaving a dead host registered indefinitely.
     Heartbeat,
+    /// An unrecognised control message from a newer peer (see
+    /// the [`Message`] forward-compat docs).
+    #[serde(other)]
+    Unknown,
 }
 
 // ── Permissions ─────────────────────────────────────────────────────────────
@@ -690,22 +719,50 @@ mod tests {
         assert!(matches!(msg.kind, MessageKind::Query(Query::CellsList)));
     }
 
-    /// Characterization of the *remaining* forward-compat gap (payload-variant
-    /// level): an unknown payload tag from a newer peer currently fails the
-    /// ENTIRE `Message` decode instead of degrading to an `Unknown` arm. Fully
-    /// closing this needs `#[serde(other)] Unknown` + `#[non_exhaustive]` on the
-    /// payload enums, which forces the exhaustive `match`es that consume them
-    /// (in `ironpad-server`, `ironpad-app`, `ironpad-cli`) to grow catch-all
-    /// arms — a coordinated cross-crate change outside this envelope-only edit.
-    /// When that lands, this assertion flips (unknown tag → `Unknown`), which is
-    /// the intended reminder to update it. See PRD-0038 T-012.
+    /// Forward-compat (new → old), payload-variant level: a new inner variant
+    /// (`action`/`event`/`control`/…) within a KNOWN top-level type now decodes
+    /// to that sub-enum's `Unknown` arm instead of failing the ENTIRE `Message`,
+    /// so consumers drop-and-warn rather than stalling a correlated request.
+    /// This is the case that grows the protocol across versions and the one that
+    /// could otherwise stall (e.g. an unresolved `Response`). Closes the gap the
+    /// old `unknown_payload_tag_currently_fails_whole_message` test documented.
+    /// See PRD-0038 T-016.
     #[test]
-    fn unknown_payload_tag_currently_fails_whole_message() {
+    fn unknown_payload_variant_decodes_to_unknown() {
+        // Unknown mutation action → Mutation::Unknown.
         let wire = r#"{"id":"req-1","type":"Mutation","payload":{"action":"CellTeleport","cell_id":"c1"}}"#;
-        assert!(
-            serde_json::from_str::<Message>(wire).is_err(),
-            "documents current limitation: an unknown payload variant fails the whole Message"
-        );
+        let msg: Message =
+            serde_json::from_str(wire).expect("unknown action must decode to Mutation::Unknown");
+        assert!(matches!(msg.kind, MessageKind::Mutation(Mutation::Unknown)));
+
+        // Unknown control message → ControlMessage::Unknown.
+        let wire = r#"{"id":"c","type":"Control","payload":{"control":"Reboot"}}"#;
+        let msg: Message = serde_json::from_str(wire)
+            .expect("unknown control must decode to ControlMessage::Unknown");
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Control(ControlMessage::Unknown)
+        ));
+
+        // Unknown event (inside the EventEnvelope) → Event::Unknown.
+        let wire = r#"{"id":"e","type":"Event","payload":{"by":"browser","event":{"event":"NewFangled"}}}"#;
+        let msg: Message =
+            serde_json::from_str(wire).expect("unknown event must decode to Event::Unknown");
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Event(EventEnvelope {
+                event: Event::Unknown,
+                ..
+            })
+        ));
+
+        // A wholly-unknown top-level `type` (a new message CATEGORY) is not
+        // decoded to a variant — the adjacently-tagged envelope can't route it.
+        // It fails to parse and is dropped-with-a-warning at the decode site,
+        // which is safe: such a frame is never a correlated Response, so it
+        // can't stall a pending request. (See the `Message` docs.)
+        let wire = r#"{"id":"m","type":"Telemetry","payload":{"whatever":1}}"#;
+        assert!(serde_json::from_str::<Message>(wire).is_err());
     }
 
     #[test]
