@@ -149,6 +149,12 @@ tasks:
   priority: 2
   status: done
   notes: "DONE 2026-07-07 (lead, single-threaded): added #[serde(other)] Unknown to the five INTERNALLY-tagged sub-enums (Mutation/Query/Event/Response/ControlMessage); a compiler-driven sweep added graceful Unknown arms at every consumer match (model.rs apply/query, cli/daemon.rs event+response, connection.rs + ws.rs control). A new action/event/query/response/control tag from a newer peer now decodes to that enum's Unknown and is dropped-with-a-warning instead of failing the whole Message — this is the case that grows the protocol and the one that could stall a correlated request. Test unknown_payload_variant_decodes_to_unknown. LIMITATION (documented, not a gap): the OUTER MessageKind is adjacently tagged (type/payload), where serde's #[serde(other)] can't consume the payload, so a wholly-unknown top-level `type` fails-to-parse and is dropped-with-warn at the decode site — safe because such a frame is never a correlated Response; the five categories are architecturally stable. DELIBERATELY DEFERRED: the `version` STRUCT field — advisory-only (no consumer; PROTOCOL_VERSION const + the deny_unknown_fields-free envelope already let it be added later without a flag day), and it churns ~40 construction sites for zero current behavior. #[non_exhaustive] intentionally NOT applied: every variant is in-repo, so exhaustive matches keep forcing consumers to handle new variants. Original: Split from T-012 (2026-07-07 fleet): the version FIELD on Message and #[serde(other)] Unknown arms on the payload enums cannot land inside a protocol.rs-only fence — a new struct field breaks ~15 `Message { id, kind }` construction sites (ws.rs:24, daemon.rs:{134,514,877}, session/connection.rs x7, tests/relay.rs:68) and Unknown variants break exhaustive matches (model.rs:{88,137}, daemon.rs:{280,666}, ws.rs:{159,200}, sessions.rs:183, connection.rs:315). T-012 landed the safe subset (PROTOCOL_VERSION const + forward-compat doc + 4 tests, incl. one that characterizes the gap). This task lands the coupled change single-threaded: add `version: u32` (#[serde(default)]) to Message + PROTOCOL_VERSION default at every construction site, add an Unknown #[serde(other)] arm to each payload enum + handle it at every match site (degrade gracefully, don't drop the whole Message), and flip the characterization test. Also apply the same to common/types.rs enums (flagged by the fleet)."
+# ── Discovered during the post-review-failure investigation ──────────────────
+- id: T-017
+  title: "Fix all_public_notebook_cells_compile (rayon/atomics) — test bug + floating atomics toolchain"
+  priority: 1
+  status: done
+  notes: "DONE 2026-07-07: the review flagged this e2e as a pre-existing red (blocking `cargo make uat`). Root-caused via evidence (raised the test's stderr truncation → showed wasm-bindgen-rayon's `compile_error!(\"forget to enable atomics/bulk-memory\")`). TWO bugs: (1) TEST BUG — compiler/mod.rs:997 hard-coded needs_atomics=false for every cell, so rayon cells (which the scaffold correctly detects via merged_deps_contain_rayon and injects wasm-bindgen-rayon for) were checked WITHOUT the atomics RUSTFLAGS/-Zbuild-std → the guard fired. Fixed: compute needs_atomics per cell and pass it. (2) FLOATING ATOMICS TOOLCHAIN — build.rs used `cargo +nightly` (rolling; was 1.98.0-nightly 2026-06-01) for atomics builds, but docker/Dockerfile provisions `rustup component add rust-src` for the PINNED nightly-2025-12-22 (rust-toolchain.toml), NOT for rolling nightly — so the atomics build referenced a toolchain Docker doesn't provision rust-src for (latent-broken in prod, non-reproducible). Fixed: new ATOMICS_TOOLCHAIN const pins both build+check atomics paths to nightly-2025-12-22 (matches Docker). Also added `rustup component add rust-src` to cargo-make install-tools (was missing → local atomics builds would fail). VERIFIED: all_public_notebook_cells_compile now PASSES (7/7 integration, the atomics cell builds). Kept the test's tail-of-stderr diagnostic improvement (head showed only dependency-locking noise)."
 ---
 
 # Summary
@@ -276,5 +282,17 @@ Dispatched 7 conflict-free fleet members (disjoint file ownership), lead consoli
   addable later without a flag day per the existing envelope tolerance).
 - Test: `unknown_payload_variant_decodes_to_unknown` (replaces the characterization test).
 - `cargo make ci` green: 574 tests, clippy -D warnings clean.
+
+## 2026-07-07 — T-017 done (mandelbrot/uat green; supersedes the "pre-existing flake" note)
+The `all_public_notebook_cells_compile` failure recorded as a "pre-existing flake" in the
+T-002…T-013 batch entry was NOT a flake — it was a real two-part bug, now fixed:
+- Test bug: `check_micro_crate(..., false)` hard-coded `needs_atomics=false`, so rayon cells
+  were checked without atomics flags and wasm-bindgen-rayon's guard fired. Now computed per cell.
+- Floating atomics toolchain: `+nightly` (rolling) vs Docker's `rust-src` on pinned
+  nightly-2025-12-22. Pinned both atomics paths to `ATOMICS_TOOLCHAIN` = nightly-2025-12-22;
+  added `rust-src` to `install-tools`.
+- Diagnosed by evidence (tail-of-stderr fix surfaced the real `compile_error!`).
+- Result: `cargo make test-integration` **7/7 green** (the atomics cell compiles); `cargo make ci`
+  574 tests green. uat's integration tier is now green (Playwright tier still unrun this session).
 
 (Entries appended during implementation go below this line.)

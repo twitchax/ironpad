@@ -441,7 +441,7 @@ mod e2e_tests {
     use super::build::{build_micro_crate, check_micro_crate, BuildResult, CheckResult};
     use super::cache::{content_hash, store_blob, try_cache_hit};
     use super::diagnostics::parse_diagnostics;
-    use super::scaffold::scaffold_micro_crate;
+    use super::scaffold::{merged_deps_contain_rayon, scaffold_micro_crate};
 
     /// Resolve the path to the `ironpad-cell` crate relative to this crate's manifest.
     fn ironpad_cell_path() -> PathBuf {
@@ -993,21 +993,40 @@ impl LiveView for Counter {
                     }
                 };
 
-                let result =
-                    check_micro_crate(&crate_dir, &cache_dir, session_id, &unique_id, None, false)
-                        .await;
+                // Match production: rayon cells need the atomics/shared-memory
+                // build (the scaffold injects wasm-bindgen-rayon, whose
+                // `atomics` target-feature guard fails otherwise). The scaffold
+                // detects this the same way via `merged_deps_contain_rayon`.
+                let needs_atomics = merged_deps_contain_rayon(shared_cargo_toml, cell_cargo);
+                let result = check_micro_crate(
+                    &crate_dir,
+                    &cache_dir,
+                    session_id,
+                    &unique_id,
+                    None,
+                    needs_atomics,
+                )
+                .await;
 
                 match result {
                     Ok(CheckResult::Ok) => {
                         previous_cell_types.push(String::new());
                     }
                     Ok(CheckResult::Failure { stdout, stderr }) => {
+                        // Show the TAIL of each stream: with --message-format=json
+                        // the error `compiler-message` and the final
+                        // `build-finished` record are at the end, while the head is
+                        // just dependency-locking + successful-artifact noise.
+                        let tail = |s: &str, n: usize| -> String {
+                            let chars: Vec<char> = s.chars().collect();
+                            chars[chars.len().saturating_sub(n)..].iter().collect()
+                        };
                         failures.push(format!(
-                            "{filename} / {} ({}):\n  stdout: {}\n  stderr: {}",
+                            "{filename} / {} ({}):\n  stdout(tail): {}\n  stderr(tail): {}",
                             cell.id,
                             cell.label,
-                            stdout.chars().take(500).collect::<String>(),
-                            stderr.chars().take(500).collect::<String>(),
+                            tail(&stdout, 2000),
+                            tail(&stderr, 1500),
                         ));
                         previous_cell_types.push(String::new());
                     }

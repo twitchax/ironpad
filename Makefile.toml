@@ -46,6 +46,9 @@ rustup target add wasm32-unknown-unknown 2>/dev/null || true
 echo "==> Adding llvm-tools-preview component..."
 rustup component add llvm-tools-preview 2>/dev/null || true
 
+echo "==> Adding rust-src component (needed for -Zbuild-std on atomics/rayon cells)..."
+rustup component add rust-src 2>/dev/null || true
+
 echo "==> Installing Playwright browsers..."
 if command -v npx >/dev/null 2>&1 && [ -f package.json ]; then
     npx playwright install --with-deps chromium

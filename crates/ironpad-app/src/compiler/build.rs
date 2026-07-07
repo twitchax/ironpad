@@ -26,6 +26,17 @@ const ATOMICS_RUSTFLAGS: &str = "\
     -C link-arg=--export=__tls_align \
     -C link-arg=--export=__tls_base";
 
+/// Toolchain used for atomics/shared-memory (rayon) cell builds.
+///
+/// `-Zbuild-std` requires a nightly with the `rust-src` component. This is
+/// **pinned** rather than a floating `+nightly` so the atomics build is
+/// reproducible and cannot drift into breakage as the rolling nightly advances
+/// — wasm-bindgen-rayon's `atomics` target-feature guard (`compile_error!`)
+/// began failing on nightlies newer than this one. Keep in sync with
+/// `rust-toolchain.toml`; the deploy image must install this toolchain with
+/// `rust-src` and the `wasm32-unknown-unknown` target.
+const ATOMICS_TOOLCHAIN: &str = "nightly-2025-12-22";
+
 /// Hard timeout for a single `cargo build` invocation.
 /// Override with `IRONPAD_BUILD_TIMEOUT_SECS` env var (default: 300s).
 fn build_timeout() -> Duration {
@@ -110,8 +121,9 @@ pub async fn build_micro_crate(
     let mut cmd = Command::new("cargo");
 
     if needs_atomics {
-        cmd.arg("+nightly");
-        // Ensure the rustup shim respects +nightly over any inherited override.
+        cmd.arg(format!("+{ATOMICS_TOOLCHAIN}"));
+        // Ensure the rustup shim respects our +toolchain over any inherited
+        // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
         cmd.env_remove("RUSTUP_TOOLCHAIN");
     }
 
@@ -283,7 +295,8 @@ pub async fn check_micro_crate(
         let mut cmd = Command::new("cargo");
 
         if needs_atomics {
-            cmd.arg("+nightly");
+            cmd.arg(format!("+{ATOMICS_TOOLCHAIN}"));
+            cmd.env_remove("RUSTUP_TOOLCHAIN");
         }
 
         cmd.arg("check")
