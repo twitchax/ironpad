@@ -34,13 +34,33 @@ pub struct Canvas {
     pixels: Vec<u8>,
 }
 
+/// Number of pixels in a `width × height` canvas.
+///
+/// Uses a `u64` intermediate with checked arithmetic so the product cannot wrap
+/// `usize` on wasm32 (where `usize` is 32-bit); an overflowing product saturates
+/// to `usize::MAX`, forcing an allocation failure rather than a silent
+/// under-allocation that would corrupt later pixel indexing.
+fn pixel_count(width: u32, height: u32) -> usize {
+    u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(usize::MAX)
+}
+
+/// Number of RGB bytes (`pixels × 3`) backing a `width × height` canvas.
+///
+/// Saturates to `usize::MAX` on overflow, matching [`pixel_count`].
+fn rgb_byte_count(width: u32, height: u32) -> usize {
+    pixel_count(width, height).saturating_mul(3)
+}
+
 impl Canvas {
     /// Create a new canvas filled with black.
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
             height,
-            pixels: vec![0u8; (width as usize) * (height as usize) * 3],
+            pixels: vec![0u8; rgb_byte_count(width, height)],
         }
     }
 
@@ -50,7 +70,7 @@ impl Canvas {
     ///
     /// Panics if `pixels.len() != width * height`.
     pub fn from_pixels(width: u32, height: u32, pixels: Vec<(u8, u8, u8)>) -> Self {
-        let expected = (width as usize) * (height as usize);
+        let expected = pixel_count(width, height);
         assert_eq!(
             pixels.len(),
             expected,
@@ -58,7 +78,7 @@ impl Canvas {
             pixels.len()
         );
 
-        let mut flat = Vec::with_capacity(expected * 3);
+        let mut flat = Vec::with_capacity(rgb_byte_count(width, height));
         for (r, g, b) in pixels {
             flat.push(r);
             flat.push(g);
@@ -77,8 +97,7 @@ impl Canvas {
     /// The closure receives `(x, y)` coordinates (column, row) and returns
     /// an `(r, g, b)` color tuple.
     pub fn from_fn(width: u32, height: u32, mut f: impl FnMut(u32, u32) -> (u8, u8, u8)) -> Self {
-        let count = (width as usize) * (height as usize);
-        let mut flat = Vec::with_capacity(count * 3);
+        let mut flat = Vec::with_capacity(rgb_byte_count(width, height));
 
         for y in 0..height {
             for x in 0..width {
@@ -410,5 +429,20 @@ mod tests {
         let anim = Animation::new(vec![f.clone(), f], 12);
         assert_eq!(anim.fps(), 12);
         assert_eq!(anim.frames().len(), 2);
+    }
+
+    #[test]
+    fn size_helpers_do_not_wrap_on_extreme_dimensions() {
+        // Normal cases.
+        assert_eq!(pixel_count(4, 5), 20);
+        assert_eq!(rgb_byte_count(4, 5), 60);
+        assert_eq!(pixel_count(0, 12345), 0);
+        assert_eq!(rgb_byte_count(7, 0), 0);
+
+        // Extreme dimensions: the byte count saturates to usize::MAX rather than
+        // wrapping to a small (dangerously under-sized) value on wasm32.
+        assert_eq!(rgb_byte_count(u32::MAX, u32::MAX), usize::MAX);
+        // The pixel-count product must not panic on the maximum inputs.
+        let _ = pixel_count(u32::MAX, u32::MAX);
     }
 }

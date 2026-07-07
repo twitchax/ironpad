@@ -13,7 +13,9 @@
 
 FROM rust:1.93.0 AS planner
 
-RUN cargo install cargo-chef
+# Install cargo-binstall, then fetch the prebuilt cargo-chef binary (no from-source build).
+RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+RUN cargo binstall -y cargo-chef
 
 WORKDIR /build
 COPY . .
@@ -29,12 +31,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     binaryen \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-chef cargo-leptos wasm-bindgen-cli
+# Install cargo-binstall, then fetch prebuilt tool binaries (avoids slow from-source builds).
+# wasm-bindgen-cli is pinned to the workspace's locked wasm-bindgen crate version
+# (kept in sync with Makefile.toml); a mismatch fails the frontend WASM post-processing.
+RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+RUN cargo binstall -y cargo-chef cargo-leptos wasm-bindgen-cli@0.2.114
 
 WORKDIR /build
 
 # Cook dependencies first (cached until Cargo.toml/Cargo.lock change).
 COPY --from=planner /build/recipe.json recipe.json
+# Bring in the toolchain pin BEFORE cooking so deps are compiled with the same
+# toolchain (nightly, per rust-toolchain.toml) the app is built with below. Without
+# this, cargo-chef cooks on the base-image stable toolchain, then the nightly build
+# rebuilds everything from scratch and the dependency-cache layer is wasted.
+COPY rust-toolchain.toml rust-toolchain.toml
 RUN cargo chef cook --release --recipe-path recipe.json
 
 # Now copy source and build (only recompiles our code).

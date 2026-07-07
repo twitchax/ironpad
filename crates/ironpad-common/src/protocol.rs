@@ -11,7 +11,40 @@ use crate::types::{CellManifest, CellType, Diagnostic, IronpadCell, IronpadNoteb
 
 // ── Envelope ────────────────────────────────────────────────────────────────
 
+/// Current wire protocol version.
+///
+/// Advisory only. It exists for observability and future capability
+/// negotiation — peers do **not** hard-reject on mismatch, since that would
+/// break interop between adjacent versions. Bump it whenever the message
+/// schema changes in a way a peer should be able to notice (a new payload
+/// variant, an added field, …). Decode sites (in the server/CLI crates) may
+/// log a warning when a received version differs from this constant.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// Top-level message envelope. Every frame on the wire is one of these.
+///
+/// # Forward / backward compatibility
+///
+/// The envelope carries no `#[serde(deny_unknown_fields)]`, so a frame minted
+/// by a newer peer that carries envelope keys an older peer doesn't know — a
+/// future top-level `version`, or any other added field — still deserializes
+/// (unknown keys are ignored, not rejected). Symmetrically, a frame from a peer
+/// that predates a field simply omits it. This tolerance is regression-locked
+/// by `envelope_tolerates_unknown_future_fields` and
+/// `envelope_without_version_still_parses`, and is what lets [`PROTOCOL_VERSION`]
+/// be introduced on the wire later without a flag day.
+///
+/// That tolerance covers added *fields* only. Added *enum variants* in the
+/// payload sub-enums ([`Mutation`], [`Event`], [`Response`], [`ControlMessage`],
+/// and [`MessageKind`] itself) are **not** yet tolerated: an unknown tag makes
+/// the whole `Message` fail to deserialize (see
+/// `unknown_payload_tag_currently_fails_whole_message`), which silently drops
+/// the frame and stalls any correlated request. Closing that gap needs a
+/// `#[serde(other)] Unknown` arm plus `#[non_exhaustive]` on each sub-enum,
+/// which forces the exhaustive `match`es that consume these enums (in
+/// `ironpad-server`, `ironpad-app`, `ironpad-cli`) to grow catch-all arms — a
+/// coordinated cross-crate change beyond this envelope. Tracked in PRD-0038
+/// T-012.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     /// Correlation ID. Responses and events reference the mutation/query that
@@ -618,6 +651,61 @@ mod tests {
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"reactive_mode\":false"));
+    }
+
+    // ── Protocol versioning + forward compatibility ────────────────────
+
+    #[test]
+    fn protocol_version_is_advisory_constant() {
+        // The version travels for observability / negotiation, not rejection.
+        // Bumping it is a deliberate, reviewed act — lock the current value so
+        // an accidental change is caught.
+        assert_eq!(PROTOCOL_VERSION, 1);
+    }
+
+    /// Forward-compat (new → old), envelope level: a frame minted by a newer
+    /// peer may carry envelope keys an older peer doesn't know — a future
+    /// top-level `version`, or any other added field. Because [`Message`] does
+    /// not `deny_unknown_fields`, such a frame must still deserialize (unknown
+    /// keys are ignored, not rejected) rather than stalling the correlated
+    /// oneshot. This is the safe half of T-012 that lands without touching the
+    /// downstream `match`es.
+    #[test]
+    fn envelope_tolerates_unknown_future_fields() {
+        let wire = r#"{"id":"req-1","version":99,"unknown_future":true,"type":"Query","payload":{"query":"CellsList"}}"#;
+        let msg: Message =
+            serde_json::from_str(wire).expect("unknown envelope fields must be ignored");
+        assert_eq!(msg.id, "req-1");
+        assert!(matches!(msg.kind, MessageKind::Query(Query::CellsList)));
+    }
+
+    /// Backward-compat (old → new), envelope level: a frame from a peer that
+    /// predates versioning carries no `version` key at all. It must still parse
+    /// (every existing round-trip test already exercises this shape, since no
+    /// version field exists yet).
+    #[test]
+    fn envelope_without_version_still_parses() {
+        let wire = r#"{"id":"req-1","type":"Query","payload":{"query":"CellsList"}}"#;
+        let msg: Message = serde_json::from_str(wire).expect("versionless frame must parse");
+        assert!(matches!(msg.kind, MessageKind::Query(Query::CellsList)));
+    }
+
+    /// Characterization of the *remaining* forward-compat gap (payload-variant
+    /// level): an unknown payload tag from a newer peer currently fails the
+    /// ENTIRE `Message` decode instead of degrading to an `Unknown` arm. Fully
+    /// closing this needs `#[serde(other)] Unknown` + `#[non_exhaustive]` on the
+    /// payload enums, which forces the exhaustive `match`es that consume them
+    /// (in `ironpad-server`, `ironpad-app`, `ironpad-cli`) to grow catch-all
+    /// arms — a coordinated cross-crate change outside this envelope-only edit.
+    /// When that lands, this assertion flips (unknown tag → `Unknown`), which is
+    /// the intended reminder to update it. See PRD-0038 T-012.
+    #[test]
+    fn unknown_payload_tag_currently_fails_whole_message() {
+        let wire = r#"{"id":"req-1","type":"Mutation","payload":{"action":"CellTeleport","cell_id":"c1"}}"#;
+        assert!(
+            serde_json::from_str::<Message>(wire).is_err(),
+            "documents current limitation: an unknown payload variant fails the whole Message"
+        );
     }
 
     #[test]

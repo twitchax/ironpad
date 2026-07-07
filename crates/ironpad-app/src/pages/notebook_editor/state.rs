@@ -89,23 +89,29 @@ pub(crate) struct NotebookState {
     // Used in cell_item.rs under #[cfg(feature = "hydrate")]; appears dead during SSR.
     #[allow(dead_code)]
     pub(super) external_content_generation: RwSignal<u64>,
+    /// Reusable JS callback backing the reactive debounce timer. Built once by
+    /// [`NotebookState::init_reactive_timer`] at editor setup and held in the
+    /// reactive arena so it drops on unmount — instead of leaking a fresh
+    /// `Closure::once` on every edit (the previous `forget()` behaviour).
+    #[cfg(feature = "hydrate")]
+    pub(super) reactive_timer_fn: StoredValue<Option<js_sys::Function>, LocalStorage>,
 }
 
 // ── Reactive execution scheduling ───────────────────────────────────────────
 
 impl NotebookState {
-    /// Schedule reactive re-execution of stale downstream cells after a 500 ms
-    /// debounce window.  Cancels any pending timer before starting a new one.
+    /// Build the reusable reactive-debounce callback once and cache it in
+    /// [`Self::reactive_timer_fn`]. Call at editor setup so the closure is
+    /// created under the component's owner and dropped on unmount; it reads the
+    /// *current* notebook state via `get_untracked()` at fire time, so a single
+    /// closure serves every debounce and nothing is leaked per edit.
     #[cfg(feature = "hydrate")]
-    pub(super) fn schedule_reactive_execution(&self) {
+    pub(super) fn init_reactive_timer(&self) {
         use ironpad_common::types::CellType;
         use wasm_bindgen::JsCast;
 
-        // Cancel existing timer if any.
-        if let Some(handle) = self.reactive_timer.get_untracked() {
-            if let Some(window) = web_sys::window() {
-                window.clear_timeout_with_handle(handle);
-            }
+        if self.reactive_timer_fn.get_value().is_some() {
+            return;
         }
 
         let cells = self.cells;
@@ -113,11 +119,7 @@ impl NotebookState {
         let run_all_queue = self.run_all_queue;
         let reactive_timer = self.reactive_timer;
 
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-
-        let cb = wasm_bindgen::closure::Closure::once(move || {
+        let closure = wasm_bindgen::closure::Closure::<dyn Fn()>::new(move || {
             reactive_timer.set(None);
 
             // Don't enqueue if there's already a run in progress.
@@ -140,15 +142,38 @@ impl NotebookState {
                 run_all_queue.set(stale_ids);
             }
         });
+        let func: js_sys::Function = closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        // Hold the closure in the reactive arena (dropped on disposal) instead
+        // of leaking it with forget().
+        StoredValue::new_local(closure);
+        self.reactive_timer_fn.set_value(Some(func));
+    }
 
-        if let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            cb.as_ref().unchecked_ref(),
-            REACTIVE_DEBOUNCE_MS,
-        ) {
-            reactive_timer.set(Some(handle));
+    /// No-op on the server side.
+    #[cfg(not(feature = "hydrate"))]
+    pub(super) fn init_reactive_timer(&self) {}
+
+    /// Schedule reactive re-execution of stale downstream cells after a 500 ms
+    /// debounce window. Cancels any pending timer before starting a new one, and
+    /// reuses the cached callback built by [`Self::init_reactive_timer`].
+    #[cfg(feature = "hydrate")]
+    pub(super) fn schedule_reactive_execution(&self) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+
+        // Cancel existing timer if any.
+        if let Some(handle) = self.reactive_timer.get_untracked() {
+            window.clear_timeout_with_handle(handle);
         }
 
-        cb.forget(); // Leak the one-shot closure.
+        if let Some(func) = self.reactive_timer_fn.get_value() {
+            if let Ok(handle) = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&func, REACTIVE_DEBOUNCE_MS)
+            {
+                self.reactive_timer.set(Some(handle));
+            }
+        }
     }
 
     /// No-op on the server side.

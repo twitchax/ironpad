@@ -1,5 +1,5 @@
 [![Build and Test](https://github.com/twitchax/ironpad/actions/workflows/build.yml/badge.svg)](https://github.com/twitchax/ironpad/actions/workflows/build.yml)
-[![codecov](https://codecov.io/gh/twitchax/ironpad/graph/badge.svg?token=PLACEHOLDER)](https://codecov.io/gh/twitchax/ironpad)
+[![codecov](https://codecov.io/gh/twitchax/ironpad/graph/badge.svg)](https://codecov.io/gh/twitchax/ironpad)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 # ironpad
@@ -31,10 +31,11 @@ For persistent data (notebooks and compiled cell cache):
 
 ```bash
 docker run -p 3111:3111 \
-  -v ironpad-data:/data \
-  -v ironpad-cache:/cache \
+  -v ironpad:/ironpad \
   ghcr.io/twitchax/ironpad:latest
 ```
+
+The image exposes a single `/ironpad` volume (notebooks live in `/ironpad/data`, the compiled cell cache in `/ironpad/cache`), so one named volume persists both.
 
 ### From Source
 

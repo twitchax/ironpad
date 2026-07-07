@@ -77,6 +77,28 @@ pub fn read_all<T: serde::de::DeserializeOwned>(key: &str) -> Vec<T> {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Decode a length-prefixed JSON buffer into `T`.
+///
+/// Wire format: `[4 bytes u32-LE length][length bytes UTF-8 JSON]`.  This is
+/// the pure, host-testable core of [`read_from_ffi`]: given the raw buffer it
+/// parses the length prefix, bounds-checks the payload, and deserialises —
+/// with no raw-pointer or allocation concerns, so the same bounds discipline
+/// as [`crate::CellInputs::from_raw`] can be exercised on native targets.
+///
+/// Returns `None` if the buffer is shorter than the 4-byte header, if the
+/// declared length runs past the buffer (or `4 + length` would overflow a
+/// `usize`, which can happen on wasm32 where `usize` is 32-bit), or if the
+/// JSON fails to deserialise.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn decode_length_prefixed<T: serde::de::DeserializeOwned>(buf: &[u8]) -> Option<T> {
+    let len_bytes: [u8; 4] = buf.get(0..4)?.try_into().ok()?;
+    let json_len = u32::from_le_bytes(len_bytes) as usize;
+    // `4 + json_len` can wrap on wasm32 (usize == u32); reject rather than wrap.
+    let end = 4usize.checked_add(json_len)?;
+    let json = buf.get(4..end)?;
+    serde_json::from_slice(json).ok()
+}
+
 /// Call an FFI read function, parse the returned length-prefixed JSON buffer,
 /// deserialise into `T`, and free the buffer.
 ///
@@ -98,18 +120,22 @@ where
     }
 
     // SAFETY: `ptr` is a valid WASM linear-memory address written by the JS
-    // executor via `ironpad_alloc`.  We read the 4-byte length prefix first,
-    // then the JSON payload, then immediately free the buffer.
+    // executor via `ironpad_alloc`, holding a `[u32-LE length][N bytes JSON]`
+    // buffer.  We read the 4-byte length prefix to size the full allocation,
+    // run the pure decode over it, then free the exact allocation.  If
+    // `4 + length` would wrap `u32` we bail before any wide read or free
+    // (leaking the buffer is preferable to unsound pointer arithmetic).
     unsafe {
         let len_bytes: [u8; 4] = std::slice::from_raw_parts(ptr as *const u8, 4)
             .try_into()
             .ok()?;
         let json_len = u32::from_le_bytes(len_bytes) as usize;
+        let total_len = 4usize.checked_add(json_len)?;
 
-        let json_slice = std::slice::from_raw_parts((ptr + 4) as *const u8, json_len);
-        let result = serde_json::from_slice(json_slice).ok();
+        let buffer = std::slice::from_raw_parts(ptr as *const u8, total_len);
+        let result = decode_length_prefixed(buffer);
 
-        crate::ironpad_dealloc(ptr as *mut u8, 4 + json_len);
+        crate::ironpad_dealloc(ptr as *mut u8, total_len);
 
         result
     }
@@ -155,5 +181,51 @@ mod tests {
         emit("bool", &true);
         emit("string", &"value");
         emit("vec", &vec![1_i32, 2, 3]);
+    }
+
+    // ── decode_length_prefixed (pure FFI decode core) ────────────────────────
+
+    /// Frame `json` the way the JS executor does: `[u32-LE len][json bytes]`.
+    fn framed(json: &[u8]) -> Vec<u8> {
+        let mut buf = u32::try_from(json.len()).unwrap().to_le_bytes().to_vec();
+        buf.extend_from_slice(json);
+        buf
+    }
+
+    #[test]
+    fn decode_round_trips_a_valid_buffer() {
+        let decoded: Option<serde_json::Value> =
+            decode_length_prefixed(&framed(br#"{"a":1,"b":[2,3]}"#));
+        assert_eq!(decoded, Some(serde_json::json!({"a": 1, "b": [2, 3]})));
+
+        // A scalar payload round-trips too.
+        let decoded: Option<i32> = decode_length_prefixed(&framed(b"42"));
+        assert_eq!(decoded, Some(42));
+    }
+
+    #[test]
+    fn decode_rejects_truncated_header() {
+        // Fewer than the 4 header bytes → None, never a panic or OOB read.
+        assert!(decode_length_prefixed::<i32>(&[]).is_none());
+        assert!(decode_length_prefixed::<i32>(&[1, 2, 3]).is_none());
+    }
+
+    #[test]
+    fn decode_rejects_length_past_buffer() {
+        // Header claims 100 payload bytes but only 3 follow.
+        let mut buf = 100u32.to_le_bytes().to_vec();
+        buf.extend_from_slice(b"abc");
+        let decoded: Option<serde_json::Value> = decode_length_prefixed(&buf);
+        assert!(decoded.is_none());
+    }
+
+    #[test]
+    fn decode_rejects_near_u32_max_length_without_wrapping() {
+        // A length prefix at u32::MAX: `4 + len` would wrap on wasm32
+        // (usize == u32).  Must return None, never panic or read OOB.
+        let mut buf = u32::MAX.to_le_bytes().to_vec();
+        buf.extend_from_slice(b"whatever");
+        let decoded: Option<serde_json::Value> = decode_length_prefixed(&buf);
+        assert!(decoded.is_none());
     }
 }

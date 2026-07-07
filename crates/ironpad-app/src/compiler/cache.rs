@@ -31,7 +31,12 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// Bumped 2 -> 3 for PRD-0036 T-008: `ironpad-cell`'s `CellInputs::from_raw`
 /// gained bounds checking, so cached cells should rebuild against the safer
 /// runtime.
-const CACHE_EPOCH: u32 = 3;
+///
+/// Bumped 3 -> 4 for PRD-0038 T-001: variable-length fields are now
+/// length-prefixed (framed) in the hash input, which changes every key, so
+/// pre-existing blobs (hashed with the old bare-concatenation scheme) must be
+/// invalidated once.
+const CACHE_EPOCH: u32 = 4;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -39,11 +44,13 @@ const CACHE_EPOCH: u32 = 3;
 /// and predecessor cell type tags.
 ///
 /// The hash includes the fixed target triple so any future target change
-/// naturally invalidates the cache.  Each previous type tag is followed by a
-/// NUL separator so that `["u32", ""]` and `["", "u32"]` produce distinct
-/// hashes. Also folds in the process-cached toolchain fingerprint (rustc
-/// version + host wasm-bindgen CLI version, see [`toolchain_fingerprint`]) so
-/// a toolchain upgrade invalidates stale cached blobs.
+/// naturally invalidates the cache. Every variable-length field is
+/// length-prefixed (framed) so field boundaries are unambiguous — otherwise
+/// distinct inputs whose bytes concatenate identically would collide (e.g.
+/// `("ab", "c")` and `("a", "bc")`) and serve each other's compiled WASM.
+/// Also folds in the process-cached toolchain fingerprint (rustc version +
+/// host wasm-bindgen CLI version, see [`toolchain_fingerprint`]) so a toolchain
+/// upgrade invalidates stale cached blobs.
 pub fn content_hash(
     source: &str,
     cargo_toml: &str,
@@ -76,33 +83,47 @@ fn content_hash_inner(
     needs_atomics: bool,
     toolchain: &str,
 ) -> String {
+    // Every variable-length field is length-prefixed so its boundary with the
+    // next field is unambiguous. A bare concatenation (`source || cargo_toml ||
+    // …`) lets distinct inputs whose bytes line up collide and serve each
+    // other's cached WASM — e.g. `("ab", "c")` vs `("a", "bc")`, or a
+    // `cargo_toml` ending in the target triple bytes vs a shorter one.
     let mut hasher = blake3::Hasher::new();
-    hasher.update(source.as_bytes());
-    hasher.update(cargo_toml.as_bytes());
-    hasher.update(TARGET_TRIPLE.as_bytes());
+    update_framed(&mut hasher, source.as_bytes());
+    update_framed(&mut hasher, cargo_toml.as_bytes());
+    update_framed(&mut hasher, TARGET_TRIPLE.as_bytes());
+    update_framed(&mut hasher, &(previous_types.len() as u64).to_le_bytes());
     for t in previous_types {
-        hasher.update(t.as_bytes());
-        hasher.update(b"\x00");
+        update_framed(&mut hasher, t.as_bytes());
     }
-    if let Some(shared) = shared_cargo_toml {
-        hasher.update(b"\x01");
-        hasher.update(shared.as_bytes());
-    }
-    if let Some(shared) = shared_source {
-        hasher.update(b"\x02");
-        hasher.update(shared.as_bytes());
-    }
-    hasher.update(b"\x03");
-    hasher.update(if needs_atomics {
-        b"atomics=1"
-    } else {
-        b"atomics=0"
-    });
-    hasher.update(b"\x04");
+    update_framed_opt(&mut hasher, shared_cargo_toml.map(str::as_bytes));
+    update_framed_opt(&mut hasher, shared_source.map(str::as_bytes));
+    hasher.update(&[u8::from(needs_atomics)]);
     hasher.update(&CACHE_EPOCH.to_le_bytes());
-    hasher.update(b"\x05");
-    hasher.update(toolchain.as_bytes());
+    update_framed(&mut hasher, toolchain.as_bytes());
     hasher.finalize().to_hex().to_string()
+}
+
+/// Feed `bytes` into the hasher framed by an 8-byte little-endian length
+/// prefix, so the boundary between this field and the next is unambiguous and
+/// no two distinct field splits can produce the same byte stream.
+fn update_framed(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+/// Frame an optional field: a presence byte (`1`/`0`) followed by the framed
+/// content when present. Keeps `None` distinct from `Some("")`.
+fn update_framed_opt(hasher: &mut blake3::Hasher, bytes: Option<&[u8]>) {
+    match bytes {
+        Some(b) => {
+            hasher.update(&[1]);
+            update_framed(hasher, b);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
 }
 
 /// Path where a cached WASM blob lives (or would live) for the given hash.
@@ -279,6 +300,29 @@ mod tests {
             false,
         );
         assert_ne!(a, b);
+    }
+
+    #[test]
+    // Single-char names are idiomatic for hash-comparison test fixtures.
+    #[allow(clippy::many_single_char_names)]
+    fn hash_disambiguates_field_boundaries() {
+        // Regression (PRD-0038 T-001): variable-length fields must be framed, or
+        // two distinct inputs whose bytes concatenate identically collide and
+        // serve each other's compiled WASM from cache.
+
+        // source/cargo_toml boundary: "ab"+"c" and "a"+"bc" both concatenate to
+        // "abc" under the old bare-concatenation scheme.
+        let a = content_hash("ab", "c", &[], None, None, false);
+        let b = content_hash("a", "bc", &[], None, None, false);
+        assert_ne!(a, b, "source/cargo_toml boundary must be unambiguous");
+
+        // cargo_toml/target boundary: the fixed target triple is appended right
+        // after cargo_toml, so a cargo_toml ending in those bytes could shift
+        // the split. ("", "x" + TARGET) vs ("x", TARGET) collided before framing.
+        let target = "wasm32-unknown-unknown";
+        let c = content_hash("", &format!("x{target}"), &[], None, None, false);
+        let d = content_hash("x", target, &[], None, None, false);
+        assert_ne!(c, d, "cargo_toml/target boundary must be unambiguous");
     }
 
     #[test]

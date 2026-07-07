@@ -349,14 +349,57 @@ pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, Se
 
 // ── Shared notebooks ─────────────────────────────────────────────────────────
 
-/// Maximum accepted size of a shared-notebook upload (before parsing).
+/// Maximum accepted size of a single shared-notebook upload (before parsing).
 #[cfg(feature = "ssr")]
 const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Aggregate cap on the whole shares directory. Even with the per-upload cap, an
+/// attacker could otherwise post many *distinct* notebooks to fill the disk;
+/// beyond this total the endpoint refuses new distinct shares. Idempotent
+/// re-shares of an already-stored hash overwrite in place and are always
+/// allowed (they add no bytes). 512 MiB is generous for a single-author deploy.
+#[cfg(feature = "ssr")]
+const MAX_TOTAL_SHARE_BYTES: u64 = 512 * 1024 * 1024;
 
 #[cfg(feature = "ssr")]
 pub(crate) async fn share_notebook_core(
     data_dir: &std::path::Path,
     notebook_json: &str,
+) -> anyhow::Result<String> {
+    share_notebook_core_capped(data_dir, notebook_json, MAX_TOTAL_SHARE_BYTES).await
+}
+
+/// Sum of the sizes of all regular files directly under `dir`. Returns `Ok(0)`
+/// if the directory doesn't exist yet.
+#[cfg(feature = "ssr")]
+async fn dir_total_bytes(dir: &std::path::Path) -> anyhow::Result<u64> {
+    let mut total: u64 = 0;
+    let mut read_dir = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(anyhow::anyhow!("failed to read shares dir: {e}")),
+    };
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to enumerate shares dir: {e}"))?
+    {
+        if let Ok(meta) = entry.metadata().await {
+            if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Core share logic with an explicit aggregate cap (so tests can exercise the
+/// cap without writing hundreds of MiB).
+#[cfg(feature = "ssr")]
+async fn share_notebook_core_capped(
+    data_dir: &std::path::Path,
+    notebook_json: &str,
+    max_total_bytes: u64,
 ) -> anyhow::Result<String> {
     // Reject oversized uploads before parsing: an arbitrarily large body would
     // CPU-block the runtime in serde and fill disk with distinct large writes.
@@ -382,6 +425,20 @@ pub(crate) async fn share_notebook_core(
         .map_err(|e| anyhow::anyhow!("failed to create shares dir: {e}"))?;
 
     let path = shares_dir.join(format!("{hash_hex}.json"));
+
+    // Enforce the aggregate cap only for a *new* distinct share — re-sharing an
+    // existing hash overwrites in place and adds no bytes. (Minor TOCTOU under
+    // concurrent shares is acceptable: the cap bounds steady-state disk use.)
+    if !path.exists() {
+        let existing_total = dir_total_bytes(&shares_dir).await?;
+        let projected = existing_total.saturating_add(notebook_json.len() as u64);
+        if projected > max_total_bytes {
+            anyhow::bail!(
+                "share store full: {existing_total} bytes stored, aggregate cap is {max_total_bytes}"
+            );
+        }
+    }
+
     tokio::fs::write(&path, notebook_json.as_bytes())
         .await
         .map_err(|e| anyhow::anyhow!("failed to write shared notebook: {e}"))?;
@@ -514,6 +571,37 @@ mod tests {
             !dir.path().join("shares").exists(),
             "nothing should be written for an oversized upload"
         );
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_share_notebook_rejects_over_aggregate_cap() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Cap chosen so the first notebook exactly fills the store; a second
+        // *distinct* notebook then pushes the total over the cap.
+        let cap = VALID_NOTEBOOK_JSON.len() as u64;
+        let h1 = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap)
+            .await
+            .expect("first share fits within the cap");
+
+        let err = share_notebook_core_capped(dir.path(), &second_notebook_json(), cap)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("share store full"), "unexpected error: {err}");
+
+        // The rejected distinct notebook must not have been written.
+        let count = std::fs::read_dir(dir.path().join("shares"))
+            .unwrap()
+            .count();
+        assert_eq!(count, 1, "only the first share should be on disk");
+
+        // Re-sharing an already-stored notebook overwrites in place and is still
+        // allowed even at/over the cap (it adds no bytes).
+        let h1_again = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap)
+            .await
+            .expect("idempotent re-share is allowed at the cap");
+        assert_eq!(h1, h1_again);
     }
 
     #[tokio::test]

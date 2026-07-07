@@ -106,7 +106,13 @@ pub fn NotebookEditorPage() -> impl IntoView {
         reactive_timer: RwSignal::new(None),
         cell_blocked_by: RwSignal::new(HashMap::new()),
         external_content_generation: RwSignal::new(0),
+        #[cfg(feature = "hydrate")]
+        reactive_timer_fn: StoredValue::new_local(None),
     };
+    // Build the reactive-debounce callback once, under this component's owner,
+    // so it's dropped on unmount instead of leaked per edit.
+    #[cfg(feature = "hydrate")]
+    state.init_reactive_timer();
     let model = NotebookModel::new(
         state.notebook,
         state.cells,

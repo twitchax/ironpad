@@ -136,6 +136,24 @@ impl SessionStore {
         self.sessions.write().await.remove(session_id).is_some()
     }
 
+    /// Force a session to be expired *without* removing it, so a subsequent
+    /// [`validate_token`](Self::validate_token) returns
+    /// [`ValidateError::SessionExpired`] (HTTP 410) rather than
+    /// [`ValidateError::InvalidToken`] (HTTP 401). Unlike
+    /// [`invalidate_session`](Self::invalidate_session), the record is retained
+    /// (the token still matches a session), which is what distinguishes "this
+    /// session ended" from "no such token". Returns `true` if the session
+    /// existed.
+    pub async fn expire_session(&self, session_id: &str) -> bool {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.expires_at = Utc::now() - Duration::seconds(1);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Remove all sessions owned by a specific browser connection.
     ///
     /// Called when the browser's WebSocket disconnects — all sessions for
@@ -323,6 +341,26 @@ mod tests {
             store.validate_token(&result.token).await.unwrap_err(),
             ValidateError::SessionExpired
         );
+    }
+
+    #[tokio::test]
+    async fn expire_session_forces_expired_validation() {
+        let store = SessionStore::new();
+        let result = store
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+
+        assert!(store.expire_session(&result.session_id).await);
+
+        // The token still matches a session, but it now reports as expired
+        // (→ HTTP 410) rather than invalid (→ HTTP 401).
+        assert_eq!(
+            store.validate_token(&result.token).await.unwrap_err(),
+            ValidateError::SessionExpired
+        );
+
+        // An unknown session id is a no-op.
+        assert!(!store.expire_session("no-such-session").await);
     }
 
     #[tokio::test]

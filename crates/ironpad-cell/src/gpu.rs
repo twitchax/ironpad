@@ -58,6 +58,16 @@ pub fn gpu_available() -> bool {
     }
 }
 
+/// Byte size of the GPU output buffer: 16 bytes (one `vec4<f32>`) per pixel.
+///
+/// Returns `None` if `width * height * 16` would overflow `u32` — only reachable
+/// on wasm32 (`usize == u32`), where the caller falls back to CPU rendering
+/// rather than sizing a buffer from a wrapped product.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn gpu_output_size(width: u32, height: u32) -> Option<u32> {
+    width.checked_mul(height)?.checked_mul(16)
+}
+
 // ── GpuCanvas ───────────────────────────────────────────────────────────────
 
 /// A compute-shader-driven canvas that executes on the GPU via WebGPU.
@@ -156,7 +166,10 @@ impl GpuCanvas {
             let uniform_size = uniform_bytes.len() as u32;
 
             // Output buffer: vec4<f32> per pixel = 16 bytes per pixel.
-            let output_size = self.width * self.height * 16;
+            // A wrapping product would size the buffer wrong — fall back to CPU.
+            let Some(output_size) = gpu_output_size(self.width, self.height) else {
+                return self.render_cpu_inner();
+            };
 
             // Create GPU buffers.
             // Usage 3 = STORAGE|COPY_DST (for uniforms — written from CPU).
@@ -347,6 +360,17 @@ mod tests {
     #[test]
     fn gpu_available_returns_false_on_non_wasm() {
         assert!(!gpu_available());
+    }
+
+    #[test]
+    fn gpu_output_size_is_checked() {
+        assert_eq!(gpu_output_size(2, 3), Some(96)); // 2 * 3 * 16
+        assert_eq!(gpu_output_size(0, 100), Some(0));
+
+        // Products that overflow u32 return None (caller falls back to CPU),
+        // never a wrapped, dangerously-small buffer size.
+        assert_eq!(gpu_output_size(100_000, 100_000), None); // 1e10 > u32::MAX
+        assert_eq!(gpu_output_size(u32::MAX, u32::MAX), None);
     }
 
     #[test]

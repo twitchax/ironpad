@@ -380,11 +380,16 @@ fn NotebookCardSkeleton() -> impl IntoView {
 /// it, imports it via `storage.js`, and refreshes the notebook list.
 #[cfg(feature = "hydrate")]
 fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>) {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
     use std::time::Duration;
 
     use thaw::{ToastIntent, ToastOptions};
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
+
+    // Closures kept alive across the async file-picker flow (see below).
+    type KeepAlive = Rc<RefCell<Vec<Closure<dyn Fn()>>>>;
 
     let Some(window) = web_sys::window() else {
         return;
@@ -409,107 +414,145 @@ fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>) 
         let _ = body.append_child(&input);
     }
 
-    // Listen for file selection.
-    let input_clone = input.clone();
-    let on_change = Closure::<dyn Fn()>::new(move || {
-        let Some(files) = input_clone.files() else {
-            return;
-        };
-        let Some(file) = files.get(0) else {
-            return;
-        };
+    // Keep every JS closure alive here — nothing else owns them once this fn
+    // returns, so `input`'s onchange/cancel callbacks would otherwise dangle.
+    // This is a deliberate Rc cycle (closures ↔ keepalive) that `cleanup` breaks
+    // — on file selection OR dialog dismissal (`cancel`) — so the hidden <input>
+    // and every closure are freed instead of leaked. (Previously each import
+    // `forget()`-leaked its closures and orphaned the <input> on a cancel.)
+    let keepalive: KeepAlive = Rc::new(RefCell::new(Vec::new()));
+    let cleaned = Rc::new(Cell::new(false));
 
-        let Ok(reader) = web_sys::FileReader::new() else {
-            return;
-        };
-
-        let reader_clone = reader.clone();
-        let input_ref = input_clone.clone();
-        let on_load = Closure::<dyn Fn()>::new(move || {
-            let Some(result) = reader_clone.result().ok() else {
-                return;
-            };
-            let Some(text) = result.as_string() else {
-                return;
-            };
-
-            // Remove the hidden input from the DOM.
-            if let Some(parent) = input_ref.parent_node() {
-                let _ = parent.remove_child(&input_ref);
-            }
-
-            // Validate the JSON before importing.
-            if let Err(msg) = crate::storage::validate::validate_notebook_json(&text) {
-                let toaster = ToasterInjection::expect_context();
-                toaster.dispatch_toast(
-                    move || {
-                        view! {
-                            <Toast>
-                                <ToastTitle>"Import Failed"</ToastTitle>
-                                <ToastBody>{msg.clone()}</ToastBody>
-                            </Toast>
-                        }
-                    },
-                    ToastOptions::default()
-                        .with_intent(ToastIntent::Error)
-                        .with_timeout(Duration::from_secs(5)),
-                );
+    let cleanup = {
+        let keepalive = keepalive.clone();
+        let cleaned = cleaned.clone();
+        let input = input.clone();
+        move || {
+            if cleaned.replace(true) {
                 return;
             }
-
-            // Import and refresh the notebook list.
-            leptos::task::spawn_local(async move {
-                let toaster = ToasterInjection::expect_context();
-                match crate::storage::client::import_notebook(&text).await {
-                    Some(nb) => {
-                        let title = nb.title.clone();
-                        let nbs = crate::storage::client::list_notebooks().await;
-                        private_notebooks.set(nbs);
-                        toaster.dispatch_toast(
-                            move || {
-                                view! {
-                                    <Toast>
-                                        <ToastTitle>"Notebook Imported"</ToastTitle>
-                                        <ToastBody>
-                                            {format!("\"{title}\" has been added to your notebooks.")}
-                                        </ToastBody>
-                                    </Toast>
-                                }
-                            },
-                            ToastOptions::default()
-                                .with_intent(ToastIntent::Success)
-                                .with_timeout(Duration::from_secs(3)),
-                        );
-                    }
-                    None => {
-                        toaster.dispatch_toast(
-                            move || {
-                                view! {
-                                    <Toast>
-                                        <ToastTitle>"Import Failed"</ToastTitle>
-                                        <ToastBody>
-                                            "Failed to import the notebook. The file may be corrupted."
-                                        </ToastBody>
-                                    </Toast>
-                                }
-                            },
-                            ToastOptions::default()
-                                .with_intent(ToastIntent::Error)
-                                .with_timeout(Duration::from_secs(5)),
-                        );
-                    }
-                }
+            if let Some(parent) = input.parent_node() {
+                let _ = parent.remove_child(&input);
+            }
+            // A closure can't drop itself while running, so defer clearing the
+            // keepalive to a 0 ms timer; `once_into_js` frees that callback when
+            // it fires.
+            let keepalive = keepalive.clone();
+            let drop_cb = Closure::once_into_js(move || {
+                keepalive.borrow_mut().clear();
             });
-        });
+            if let Some(win) = web_sys::window() {
+                let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    drop_cb.unchecked_ref(),
+                    0,
+                );
+            }
+        }
+    };
 
-        reader.set_onload(Some(on_load.as_ref().unchecked_ref()));
-        on_load.forget();
+    // File selected: read, validate, and import it.
+    let on_change = {
+        let input = input.clone();
+        let cleanup = cleanup.clone();
+        let keepalive = keepalive.clone();
+        Closure::<dyn Fn()>::new(move || {
+            let Some(file) = input.files().and_then(|files| files.get(0)) else {
+                cleanup();
+                return;
+            };
+            let Ok(reader) = web_sys::FileReader::new() else {
+                cleanup();
+                return;
+            };
 
-        let _ = reader.read_as_text(&file);
-    });
+            let reader_clone = reader.clone();
+            let cleanup = cleanup.clone();
+            let on_load = Closure::<dyn Fn()>::new(move || {
+                let text = reader_clone.result().ok().and_then(|r| r.as_string());
+                // Done with the <input> and closures once we hold the bytes.
+                cleanup();
+                let Some(text) = text else {
+                    return;
+                };
+
+                // Validate the JSON before importing.
+                if let Err(msg) = crate::storage::validate::validate_notebook_json(&text) {
+                    let toaster = ToasterInjection::expect_context();
+                    toaster.dispatch_toast(
+                        move || {
+                            view! {
+                                <Toast>
+                                    <ToastTitle>"Import Failed"</ToastTitle>
+                                    <ToastBody>{msg.clone()}</ToastBody>
+                                </Toast>
+                            }
+                        },
+                        ToastOptions::default()
+                            .with_intent(ToastIntent::Error)
+                            .with_timeout(Duration::from_secs(5)),
+                    );
+                    return;
+                }
+
+                // Import and refresh the notebook list.
+                leptos::task::spawn_local(async move {
+                    let toaster = ToasterInjection::expect_context();
+                    match crate::storage::client::import_notebook(&text).await {
+                        Some(nb) => {
+                            let title = nb.title.clone();
+                            let nbs = crate::storage::client::list_notebooks().await;
+                            private_notebooks.set(nbs);
+                            toaster.dispatch_toast(
+                                move || {
+                                    view! {
+                                        <Toast>
+                                            <ToastTitle>"Notebook Imported"</ToastTitle>
+                                            <ToastBody>
+                                                {format!("\"{title}\" has been added to your notebooks.")}
+                                            </ToastBody>
+                                        </Toast>
+                                    }
+                                },
+                                ToastOptions::default()
+                                    .with_intent(ToastIntent::Success)
+                                    .with_timeout(Duration::from_secs(3)),
+                            );
+                        }
+                        None => {
+                            toaster.dispatch_toast(
+                                move || {
+                                    view! {
+                                        <Toast>
+                                            <ToastTitle>"Import Failed"</ToastTitle>
+                                            <ToastBody>
+                                                "Failed to import the notebook. The file may be corrupted."
+                                            </ToastBody>
+                                        </Toast>
+                                    }
+                                },
+                                ToastOptions::default()
+                                    .with_intent(ToastIntent::Error)
+                                    .with_timeout(Duration::from_secs(5)),
+                            );
+                        }
+                    }
+                });
+            });
+
+            reader.set_onload(Some(on_load.as_ref().unchecked_ref()));
+            keepalive.borrow_mut().push(on_load);
+            let _ = reader.read_as_text(&file);
+        })
+    };
+
+    // Dialog dismissed without a selection: no `change` fires, so release the
+    // input and closures here instead of orphaning them.
+    let on_cancel = Closure::<dyn Fn()>::new(cleanup);
 
     input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
-    on_change.forget();
+    let _ = input.add_event_listener_with_callback("cancel", on_cancel.as_ref().unchecked_ref());
+    keepalive.borrow_mut().push(on_change);
+    keepalive.borrow_mut().push(on_cancel);
 
     // Trigger the file picker.
     input.click();

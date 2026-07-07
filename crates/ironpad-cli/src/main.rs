@@ -4,7 +4,7 @@ mod ipc;
 use std::io::Read;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use crate::ipc::{IpcRequest, IpcResponse};
@@ -463,8 +463,8 @@ async fn send_ipc(command: &str, args: serde_json::Value) -> IpcResponse {
         return IpcResponse::error("failed to send request to daemon");
     }
 
-    let mut lines = BufReader::new(reader).lines();
-    match lines.next_line().await {
+    let mut reader = BufReader::new(reader);
+    match crate::ipc::read_frame(&mut reader).await {
         Ok(Some(line)) => serde_json::from_str(&line)
             .unwrap_or_else(|_| IpcResponse::error("invalid response from daemon")),
         _ => IpcResponse::error("no response from daemon"),

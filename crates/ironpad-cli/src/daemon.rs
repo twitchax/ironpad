@@ -5,11 +5,13 @@
 //! read queries don't require a WebSocket round-trip.
 
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context;
 use futures::{SinkExt, StreamExt};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_tungstenite::tungstenite;
@@ -66,9 +68,14 @@ struct DaemonState {
 /// in progress. Commands that require a live WS return an error until the
 /// connection is established.
 pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
-    // Ensure daemon directory exists.
+    // Ensure daemon directory exists, restricted to the owner. The socket and
+    // pidfile inside carry live session authority, so a co-tenant user must not
+    // be able to traverse in — don't rely on the ambient umask.
     let dir = daemon_dir();
     tokio::fs::create_dir_all(&dir).await?;
+    tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .await
+        .with_context(|| format!("restricting permissions on {}", dir.display()))?;
 
     // Clean up stale socket.
     let sock = socket_path();
@@ -83,6 +90,11 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
     // ── Bind Unix socket FIRST ──────────────────────────────────────────
 
     let listener = UnixListener::bind(&sock)?;
+    // Restrict the socket to the owner so a co-tenant user can't drive the
+    // daemon (issue mutations) or read cached notebook state through it.
+    tokio::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))
+        .await
+        .with_context(|| format!("restricting permissions on {}", sock.display()))?;
     tracing::info!(path = %sock.display(), "listening on Unix socket");
 
     let state = Arc::new(DaemonState {
@@ -209,13 +221,13 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
                 _ = ws_send_task => tracing::info!("WS send task ended"),
                 _ = ws_recv_task => tracing::info!("WS recv task ended"),
                 _ = ipc_task => tracing::info!("IPC task ended"),
-                _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT"),
+                sig = shutdown_signal() => tracing::info!("received {sig}, shutting down"),
             }
         }
         None => {
             tokio::select! {
                 _ = ipc_task => tracing::info!("IPC task ended"),
-                _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT"),
+                sig = shutdown_signal() => tracing::info!("received {sig}, shutting down"),
             }
         }
     }
@@ -223,6 +235,32 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
     // Cleanup.
     cleanup(&sock, &pid).await;
     Ok(())
+}
+
+/// Await a shutdown signal, returning its name for logging.
+///
+/// The daemon must run [`cleanup`] (remove socket + pidfile) on **both** an
+/// interactive Ctrl-C (SIGINT) and the documented `daemon-stop` path, which
+/// sends SIGTERM (`main.rs` → `libc::kill(pid, SIGTERM)`). Without a SIGTERM
+/// handler the default disposition terminates the process immediately, so
+/// `cleanup()` never runs and a stale socket + pidfile are left behind.
+async fn shutdown_signal() -> &'static str {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            // Degrade to SIGINT-only; SIGTERM keeps its default disposition.
+            tracing::warn!(error = %e, "failed to install SIGTERM handler; stop-path cleanup disabled");
+            let _ = tokio::signal::ctrl_c().await;
+            return "SIGINT";
+        }
+    };
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => "SIGINT",
+        _ = sigterm.recv() => "SIGTERM",
+    }
 }
 
 async fn cleanup(sock: &Path, pid: &Path) {
@@ -408,9 +446,19 @@ fn renumber(cells: &mut [ironpad_common::IronpadCell]) {
 
 async fn handle_ipc_connection(stream: tokio::net::UnixStream, state: Arc<DaemonState>) {
     let (reader, mut writer) = stream.into_split();
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
 
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        let line = match crate::ipc::read_frame(&mut reader).await {
+            Ok(Some(line)) => line,
+            Ok(None) => break, // clean EOF
+            Err(e) => {
+                // Oversized/unreadable frame — drop the connection rather than
+                // buffer without bound.
+                tracing::warn!(error = %e, "rejecting IPC frame");
+                break;
+            }
+        };
         let response = handle_ipc_request(&line, &state).await;
         let mut json = serde_json::to_string(&response)
             .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization error"}"#.to_string());
@@ -996,5 +1044,68 @@ mod tests {
         assert_eq!(cells[0].order, 0);
         assert_eq!(cells[1].order, 1);
         assert_eq!(cells[2].order, 2);
+    }
+
+    // ── shutdown cleanup (SIGTERM/SIGINT stop path) ──────────────────────
+
+    #[tokio::test]
+    async fn cleanup_removes_socket_and_pidfile() {
+        // Exercises the exact routine the SIGTERM/SIGINT arms now invoke:
+        // both the socket and the pidfile must be gone afterward.
+        let base = std::env::temp_dir().join(format!("ironpad-cli-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&base).await.unwrap();
+        let sock = base.join("daemon.sock");
+        let pid = base.join("daemon.pid");
+        tokio::fs::write(&sock, b"x").await.unwrap();
+        tokio::fs::write(&pid, b"123").await.unwrap();
+        assert!(sock.exists() && pid.exists());
+
+        cleanup(&sock, &pid).await;
+
+        assert!(!sock.exists(), "socket should be removed on cleanup");
+        assert!(!pid.exists(), "pidfile should be removed on cleanup");
+        let _ = tokio::fs::remove_dir_all(&base).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_resolves_on_sigterm() {
+        use std::time::Duration;
+        use tokio::signal::unix::{signal, SignalKind};
+
+        // Delivering a real SIGTERM is only safe under nextest's
+        // process-per-test isolation; under single-process `cargo test` it
+        // would disturb sibling tests, so skip there. nextest sets `NEXTEST`.
+        if std::env::var_os("NEXTEST").is_none() {
+            return;
+        }
+
+        // Pre-install a SIGTERM handler so raising the signal never triggers the
+        // default (process-terminating) disposition — it's merely delivered to
+        // the installed handlers. Drain it in the background.
+        let mut guard = signal(SignalKind::terminate()).expect("install guard handler");
+        tokio::spawn(async move { while guard.recv().await.is_some() {} });
+
+        let shutdown = tokio::spawn(shutdown_signal());
+
+        let sig = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                // Safe: a SIGTERM handler is installed (guard above), so this is
+                // a delivered signal, not a terminate. Repeat until the shutdown
+                // future's own handler is installed and observes one.
+                #[allow(unsafe_code)]
+                unsafe {
+                    libc::raise(libc::SIGTERM);
+                }
+                if shutdown.is_finished() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            shutdown.await.expect("shutdown task panicked")
+        })
+        .await
+        .expect("shutdown_signal did not resolve after SIGTERM");
+
+        assert_eq!(sig, "SIGTERM");
     }
 }

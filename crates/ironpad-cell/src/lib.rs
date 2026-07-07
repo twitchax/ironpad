@@ -1225,15 +1225,19 @@ pub struct CellResult {
 /// Leak a `Vec<u8>` and return its (pointer, length).
 ///
 /// Returns `(null, 0)` for an empty vector.
-fn vec_into_raw(mut v: Vec<u8>) -> (*mut u8, usize) {
+fn vec_into_raw(v: Vec<u8>) -> (*mut u8, usize) {
     if v.is_empty() {
         return (std::ptr::null_mut(), 0);
     }
 
-    v.shrink_to_fit();
-    let ptr = v.as_mut_ptr();
-    let len = v.len();
-    std::mem::forget(v);
+    // `into_boxed_slice` *guarantees* capacity == length, which the reclaim path
+    // (`Vec::from_raw_parts(ptr, len, len)` in `ironpad_dealloc`) relies on for
+    // a sound deallocation.  `shrink_to_fit` is only *allowed* to reach that, so
+    // this matches the sibling `TickResult`/`LiveTickResult` FFI conversions.
+    let mut boxed = v.into_boxed_slice();
+    let ptr = boxed.as_mut_ptr();
+    let len = boxed.len();
+    std::mem::forget(boxed);
     (ptr, len)
 }
 
@@ -1344,6 +1348,32 @@ mod tests {
         raw.extend_from_slice(&5u32.to_le_bytes()); // one length prefix, no payload
         let inputs = CellInputs::from_raw(&raw);
         assert!(inputs.data.is_empty(), "no complete segment should parse");
+    }
+
+    // ── vec_into_raw ↔ ironpad_dealloc round-trip ────────────────────────────
+
+    #[test]
+    fn vec_into_raw_empty_returns_null() {
+        let (ptr, len) = vec_into_raw(Vec::new());
+        assert!(ptr.is_null());
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn vec_into_raw_round_trips_with_len_equal_capacity() {
+        // Excess capacity: `into_boxed_slice` must reach capacity == len so the
+        // `from_raw_parts(ptr, len, len)` reclaim in `ironpad_dealloc` is sound.
+        let mut v = Vec::with_capacity(64);
+        v.extend_from_slice(b"payload");
+        let (ptr, len) = vec_into_raw(v);
+        assert_eq!(len, 7);
+        assert!(!ptr.is_null());
+
+        // SAFETY: `ptr`/`len` came from `vec_into_raw`, which guarantees
+        // capacity == len, so reclaiming with cap == len (as `ironpad_dealloc`
+        // does) is sound.
+        let reclaimed = unsafe { Vec::from_raw_parts(ptr, len, len) };
+        assert_eq!(reclaimed, b"payload");
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

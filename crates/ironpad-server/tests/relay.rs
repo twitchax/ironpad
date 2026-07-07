@@ -10,14 +10,15 @@ use axum::routing::get;
 use axum::Router;
 use futures::{SinkExt, StreamExt};
 use ironpad_common::protocol::{
-    self, ClientId, ControlMessage, Event, EventEnvelope, MessageKind, Mutation, NewCell,
-    Permissions,
+    self, ClientId, ControlMessage, ErrorCode, Event, EventEnvelope, MessageKind, Mutation,
+    NewCell, Permissions, Response,
 };
 use ironpad_common::types::CellType;
 use ironpad_common::AppConfig;
 use ironpad_server::state::{AppState, WsState};
 use ironpad_server::ws;
 use leptos::config::LeptosOptions;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite;
 
@@ -25,8 +26,9 @@ use tokio_tungstenite::tungstenite;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Build a minimal `AppState` (no Leptos SSR routes needed).
-fn test_state() -> AppState {
+/// Build a minimal `AppState` (no Leptos SSR routes needed) around a given
+/// `WsState`, so individual tests can tune caps/timeouts.
+fn state_with_ws(ws: WsState) -> AppState {
     AppState {
         leptos_options: LeptosOptions::builder().output_name("ironpad-test").build(),
         config: AppConfig {
@@ -36,8 +38,13 @@ fn test_state() -> AppState {
             ironpad_cell_path: PathBuf::from("/tmp"),
             compilation_proxy: None,
         },
-        ws: WsState::default(),
+        ws,
     }
+}
+
+/// Build a minimal `AppState` with a default `WsState`.
+fn test_state() -> AppState {
+    state_with_ws(WsState::default())
 }
 
 /// Build an Axum router with only the WS routes (no Leptos/SSR).
@@ -252,14 +259,308 @@ async fn relay_integration_round_trip() {
     }
 }
 
-/// Invalid token returns HTTP 401 (connection refused).
+/// Invalid token is refused with HTTP 401.
 #[tokio::test]
 async fn guest_connect_invalid_token_rejected() {
     let state = test_state();
     let base = start_server(state).await;
 
     let url = format!("{base}/ws/connect?token=bogus-token");
-    let result = tokio_tungstenite::connect_async(&url).await;
+    let err = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect_err("expected connection to be rejected");
 
-    assert!(result.is_err(), "expected connection to be rejected");
+    assert_eq!(
+        http_status(&err),
+        Some(401),
+        "invalid token should be HTTP 401, got {err:?}"
+    );
+}
+
+/// Expired token is refused with HTTP 410 (the `SessionExpired` → GONE branch).
+#[tokio::test]
+async fn guest_connect_expired_token_returns_410() {
+    let state = test_state();
+    // Share the session store with the running server before moving state in.
+    let store = state.ws.sessions.clone();
+    let base = start_server(state).await;
+
+    let result = store
+        .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+        .await;
+    assert!(store.expire_session(&result.session_id).await);
+
+    let url = format!("{base}/ws/connect?token={}", result.token);
+    let err = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect_err("expected expired token to be rejected");
+
+    assert_eq!(
+        http_status(&err),
+        Some(410),
+        "expired token should be HTTP 410, got {err:?}"
+    );
+}
+
+/// A permission-denied mutation is answered over the wire with a
+/// `PermissionDenied` error and never reaches the host.
+#[tokio::test]
+async fn permission_denied_mutation_replies_with_error() {
+    let state = test_state();
+    let base = start_server(state).await;
+
+    // Host connects and creates a READ-ONLY session (write denied).
+    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
+    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
+        .await
+        .expect("host ws connect");
+    let (mut host_sink, mut host_stream) = host_ws.split();
+
+    let create_session = to_json(
+        "ctrl-1",
+        MessageKind::Control(ControlMessage::CreateSession {
+            permissions: Permissions {
+                read: true,
+                write: false,
+            },
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(create_session.into()))
+        .await
+        .unwrap();
+
+    let token = match parse_msg(&recv_text(&mut host_stream).await).kind {
+        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
+        other => panic!("expected SessionCreated, got {other:?}"),
+    };
+
+    // Guest connects and attempts a mutation it isn't allowed to make.
+    let guest_url = format!("{base}/ws/connect?token={token}");
+    let (guest_ws, _) = tokio_tungstenite::connect_async(&guest_url)
+        .await
+        .expect("guest ws connect");
+    let (mut guest_sink, mut guest_stream) = guest_ws.split();
+
+    // Host observes GuestConnected first.
+    let _ = recv_text(&mut host_stream).await;
+
+    let mutation = to_json(
+        "m-1",
+        MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
+    );
+    guest_sink
+        .send(tungstenite::Message::Text(mutation.into()))
+        .await
+        .unwrap();
+
+    // Guest receives a PermissionDenied error for that mutation id.
+    let err = parse_msg(&recv_text(&mut guest_stream).await);
+    assert_eq!(err.id, "m-1");
+    match err.kind {
+        MessageKind::Response(Response::Error { code, .. }) => {
+            assert_eq!(code, ErrorCode::PermissionDenied);
+        }
+        other => panic!("expected PermissionDenied error, got {other:?}"),
+    }
+
+    // Host must not have received the denied mutation.
+    let leaked = timeout(Duration::from_millis(300), host_stream.next()).await;
+    assert!(
+        leaked.is_err(),
+        "host must not receive a permission-denied mutation, got {leaked:?}"
+    );
+}
+
+/// When the host disconnects, its sessions are invalidated and connected guests
+/// receive `SessionEnded` and are then disconnected.
+#[tokio::test]
+async fn host_disconnect_ends_guest_session() {
+    let state = test_state();
+    let base = start_server(state).await;
+
+    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
+    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
+        .await
+        .expect("host ws connect");
+    let (mut host_sink, mut host_stream) = host_ws.split();
+
+    let create_session = to_json(
+        "ctrl-1",
+        MessageKind::Control(ControlMessage::CreateSession {
+            permissions: Permissions::default(),
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(create_session.into()))
+        .await
+        .unwrap();
+
+    let (session_id, token) = match parse_msg(&recv_text(&mut host_stream).await).kind {
+        MessageKind::Control(ControlMessage::SessionCreated { session_id, token }) => {
+            (session_id, token)
+        }
+        other => panic!("expected SessionCreated, got {other:?}"),
+    };
+
+    let guest_url = format!("{base}/ws/connect?token={token}");
+    let (guest_ws, _) = tokio_tungstenite::connect_async(&guest_url)
+        .await
+        .expect("guest ws connect");
+    let (_guest_sink, mut guest_stream) = guest_ws.split();
+
+    // Host observes GuestConnected.
+    let _ = recv_text(&mut host_stream).await;
+
+    // Host disconnects abruptly (drop both halves of its socket) → the server
+    // invalidates the session and notifies the guest.
+    drop(host_sink);
+    drop(host_stream);
+
+    // Guest receives SessionEnded for its session.
+    let ended = parse_msg(&recv_text(&mut guest_stream).await);
+    match ended.kind {
+        MessageKind::Control(ControlMessage::SessionEnded {
+            session_id: ended_sid,
+        }) => assert_eq!(ended_sid, session_id),
+        other => panic!("expected SessionEnded, got {other:?}"),
+    }
+
+    // ...and is then disconnected.
+    let disconnect = timeout(TIMEOUT, guest_stream.next()).await;
+    match disconnect {
+        Ok(Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None) => {}
+        other => panic!("expected guest disconnect, got {other:?}"),
+    }
+}
+
+/// A `read: false` (write-only) guest must not receive content-bearing broadcast
+/// events — the `read` permission is a confidentiality boundary end-to-end.
+#[tokio::test]
+async fn read_denied_guest_does_not_receive_content_events() {
+    let state = test_state();
+    let base = start_server(state).await;
+
+    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
+    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
+        .await
+        .expect("host ws connect");
+    let (mut host_sink, mut host_stream) = host_ws.split();
+
+    // Write-only session: read denied.
+    let create_session = to_json(
+        "ctrl-1",
+        MessageKind::Control(ControlMessage::CreateSession {
+            permissions: Permissions {
+                read: false,
+                write: true,
+            },
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(create_session.into()))
+        .await
+        .unwrap();
+
+    let token = match parse_msg(&recv_text(&mut host_stream).await).kind {
+        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
+        other => panic!("expected SessionCreated, got {other:?}"),
+    };
+
+    let guest_url = format!("{base}/ws/connect?token={token}");
+    let (guest_ws, _) = tokio_tungstenite::connect_async(&guest_url)
+        .await
+        .expect("guest ws connect");
+    let (_guest_sink, mut guest_stream) = guest_ws.split();
+    let _ = recv_text(&mut host_stream).await; // GuestConnected
+
+    // Host broadcasts a content-bearing event.
+    let event = to_json(
+        "evt-1",
+        MessageKind::Event(EventEnvelope {
+            by: ClientId::browser(),
+            event: Event::CellDeleted {
+                cell_id: "c-1".to_string(),
+            },
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(event.into()))
+        .await
+        .unwrap();
+
+    // The read:false guest must receive nothing.
+    let got = timeout(Duration::from_millis(300), guest_stream.next()).await;
+    assert!(
+        got.is_err(),
+        "a read:false guest must not receive content events, got {got:?}"
+    );
+}
+
+/// A guest that sends nothing is reaped by the idle timeout.
+#[tokio::test]
+async fn guest_idle_timeout_closes_stale_connection() {
+    // A tiny idle timeout so we don't wait out the production value.
+    let ws = WsState::default().with_guest_idle_timeout(Duration::from_millis(200));
+    let store = ws.sessions.clone();
+    let base = start_server(state_with_ws(ws)).await;
+
+    let result = store
+        .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+        .await;
+
+    let url = format!("{base}/ws/connect?token={}", result.token);
+    let (guest_ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("guest ws connect");
+    let (_sink, mut guest_stream) = guest_ws.split();
+
+    // Send nothing: the idle timeout should reap the connection.
+    let closed = timeout(TIMEOUT, guest_stream.next())
+        .await
+        .expect("idle timeout should close the connection well within TIMEOUT");
+    match closed {
+        Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => {}
+        other => panic!("expected idle disconnect, got {other:?}"),
+    }
+}
+
+/// A guest connection over the global cap is refused with HTTP 503.
+#[tokio::test]
+async fn guest_connection_cap_rejects_over_limit() {
+    let ws = WsState::default().with_max_guests(2);
+    let store = ws.sessions.clone();
+
+    // Pre-fill the cap with two directly-registered guests (deterministic — no
+    // over-the-wire registration race to observe).
+    let (tx1, _r1) = mpsc::channel::<String>(8);
+    let (tx2, _r2) = mpsc::channel::<String>(8);
+    ws.register_guest("sess", "c1", tx1).await;
+    ws.register_guest("sess", "c2", tx2).await;
+
+    let base = start_server(state_with_ws(ws)).await;
+
+    let result = store
+        .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+        .await;
+
+    // The third connection must be rejected with HTTP 503 (cap reached).
+    let url = format!("{base}/ws/connect?token={}", result.token);
+    let err = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect_err("expected the over-cap connection to be rejected");
+
+    assert_eq!(
+        http_status(&err),
+        Some(503),
+        "over-cap connection should be HTTP 503, got {err:?}"
+    );
+}
+
+/// Extract the HTTP status code from a tungstenite handshake error, if any.
+fn http_status(err: &tungstenite::Error) -> Option<u16> {
+    match err {
+        tungstenite::Error::Http(resp) => Some(resp.status().as_u16()),
+        _ => None,
+    }
 }

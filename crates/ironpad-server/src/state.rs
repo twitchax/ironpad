@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::FromRef;
 use leptos::config::LeptosOptions;
@@ -30,8 +31,19 @@ impl FromRef<AppState> for LeptosOptions {
 
 // ── WebSocket relay state ───────────────────────────────────────────────────
 
+/// Default global cap on concurrent guest connections across all sessions.
+/// Bounds the memory/task cost of a connection flood; generous for legitimate
+/// multi-agent use on a single-author deployment.
+const DEFAULT_MAX_GUESTS: usize = 512;
+
+/// Default idle timeout for a guest connection. Guests (CLI daemons) don't send
+/// heartbeats and don't auto-reconnect, so this is deliberately generous: it
+/// exists to reap a half-open connection (a network drop with no FIN), not to
+/// police an agent's normal think-time. Any inbound frame resets the window.
+const DEFAULT_GUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
 /// Manages WebSocket connections between browser hosts and CLI guests.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct WsState {
     pub sessions: SessionStore,
     /// `notebook_id` → host channel sender.
@@ -40,6 +52,23 @@ pub struct WsState {
     guests: Arc<RwLock<HashMap<String, Vec<GuestHandle>>>>,
     /// Pending query `message_id` → guest `client_id` (for routing responses).
     pending_queries: Arc<RwLock<HashMap<String, String>>>,
+    /// Idle timeout applied to guest read loops (see [`DEFAULT_GUEST_IDLE_TIMEOUT`]).
+    guest_idle_timeout: Duration,
+    /// Global cap on concurrent guest connections (see [`DEFAULT_MAX_GUESTS`]).
+    max_guests: usize,
+}
+
+impl Default for WsState {
+    fn default() -> Self {
+        Self {
+            sessions: SessionStore::default(),
+            hosts: Arc::default(),
+            guests: Arc::default(),
+            pending_queries: Arc::default(),
+            guest_idle_timeout: DEFAULT_GUEST_IDLE_TIMEOUT,
+            max_guests: DEFAULT_MAX_GUESTS,
+        }
+    }
 }
 
 /// Channel handle for a connected browser host.
@@ -57,6 +86,39 @@ struct GuestHandle {
 }
 
 impl WsState {
+    // ── Configuration (builders + accessors) ────────────────────────────
+
+    /// Override the guest idle timeout. A legitimate tuning knob, and also lets
+    /// tests exercise the reaper without waiting out the production timeout.
+    #[must_use]
+    pub fn with_guest_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.guest_idle_timeout = timeout;
+        self
+    }
+
+    /// Override the global cap on concurrent guest connections.
+    #[must_use]
+    pub fn with_max_guests(mut self, max: usize) -> Self {
+        self.max_guests = max;
+        self
+    }
+
+    /// Idle timeout applied to guest read loops.
+    #[must_use]
+    pub fn guest_idle_timeout(&self) -> Duration {
+        self.guest_idle_timeout
+    }
+
+    /// Total number of registered guest connections across all sessions.
+    pub async fn guest_count(&self) -> usize {
+        self.guests.read().await.values().map(Vec::len).sum()
+    }
+
+    /// Whether another guest connection may be admitted under the global cap.
+    pub async fn guest_slot_available(&self) -> bool {
+        self.guest_count().await < self.max_guests
+    }
+
     // ── Host management ─────────────────────────────────────────────────
 
     /// Register a browser as the host for a notebook.
@@ -161,9 +223,16 @@ impl WsState {
         }
     }
 
-    /// Send a JSON message to all guests on all sessions for a notebook.
+    /// Send a JSON message to all guests on all *readable* sessions for a
+    /// notebook.
+    ///
+    /// Events carry full cell content, so a session created with `read: false`
+    /// (a write-only / "blind" agent) is intentionally skipped — this is the
+    /// confidentiality boundary for the `read` permission. Session lifecycle
+    /// control messages (`SessionEnded`) use [`broadcast_to_guests`], which is
+    /// *not* gated so a revoked guest still learns its session ended.
     pub async fn broadcast_to_notebook_guests(&self, notebook_id: &str, message: &str) {
-        let sessions = self.sessions_for_notebook(notebook_id).await;
+        let sessions = self.readable_sessions_for_notebook(notebook_id).await;
         let guests = self.guests.read().await;
         for session_id in &sessions {
             if let Some(list) = guests.get(session_id) {
@@ -209,14 +278,16 @@ impl WsState {
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
-    /// Get all session IDs for a notebook.
-    async fn sessions_for_notebook(&self, notebook_id: &str) -> Vec<String> {
-        // Read all sessions and filter by notebook_id.
-        // This is O(n) over sessions — fine for the expected scale.
+    /// Session IDs for a notebook whose permissions grant `read`. Used to gate
+    /// content-bearing event broadcasts (see [`broadcast_to_notebook_guests`]),
+    /// which is why sessions with `read: false` are filtered out here.
+    ///
+    /// O(n) over sessions — fine for the expected scale.
+    async fn readable_sessions_for_notebook(&self, notebook_id: &str) -> Vec<String> {
         let sessions = self.sessions.all_sessions().await;
         sessions
             .into_iter()
-            .filter(|s| s.notebook_id == notebook_id)
+            .filter(|s| s.notebook_id == notebook_id && s.permissions.read)
             .map(|s| s.id)
             .collect()
     }
@@ -374,6 +445,69 @@ mod tests {
 
         assert_eq!(rx1.recv().await.unwrap(), "nb-update");
         assert_eq!(rx2.recv().await.unwrap(), "nb-update");
+    }
+
+    #[tokio::test]
+    async fn broadcast_to_notebook_guests_skips_read_denied_sessions() {
+        let ws = WsState::default();
+
+        // Two sessions on the same notebook: one readable, one write-only.
+        let reader = ws
+            .sessions
+            .create_session(
+                "nb-1".into(),
+                "conn-1".into(),
+                Permissions {
+                    read: true,
+                    write: true,
+                },
+            )
+            .await;
+        let blind = ws
+            .sessions
+            .create_session(
+                "nb-1".into(),
+                "conn-1".into(),
+                Permissions {
+                    read: false,
+                    write: true,
+                },
+            )
+            .await;
+
+        let (tx_r, mut rx_r) = mpsc::channel(64);
+        let (tx_b, mut rx_b) = mpsc::channel(64);
+        ws.register_guest(&reader.session_id, "reader", tx_r).await;
+        ws.register_guest(&blind.session_id, "writer", tx_b).await;
+
+        ws.broadcast_to_notebook_guests("nb-1", "cell-source").await;
+
+        // The readable session's guest receives the content event...
+        assert_eq!(rx_r.recv().await.unwrap(), "cell-source");
+        // ...but the read:false (write-only) guest must not — the read
+        // permission is a confidentiality boundary for content-bearing events.
+        assert!(
+            rx_b.try_recv().is_err(),
+            "a read:false guest must not receive content-bearing events"
+        );
+    }
+
+    #[tokio::test]
+    async fn guest_count_and_cap() {
+        let ws = WsState::default().with_max_guests(2);
+        assert_eq!(ws.guest_count().await, 0);
+        assert!(ws.guest_slot_available().await);
+
+        let (tx1, _r1) = mpsc::channel(8);
+        let (tx2, _r2) = mpsc::channel(8);
+        ws.register_guest("sess-1", "c1", tx1).await;
+        ws.register_guest("sess-1", "c2", tx2).await;
+
+        assert_eq!(ws.guest_count().await, 2);
+        assert!(
+            !ws.guest_slot_available().await,
+            "no slot should be available once the cap of 2 is reached"
+        );
     }
 
     #[tokio::test]

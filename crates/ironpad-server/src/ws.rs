@@ -254,8 +254,8 @@ async fn handle_host_control(
 
 /// WebSocket upgrade for CLI guests: `GET /ws/connect?token=<token>`.
 ///
-/// Validates the token before upgrading. Returns HTTP 401 if invalid,
-/// HTTP 410 if expired.
+/// Validates the token before upgrading. Returns HTTP 401 if invalid, HTTP 410
+/// if expired, and HTTP 503 if the global guest connection cap is reached.
 pub async fn ws_connect_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<GuestParams>,
@@ -270,6 +270,15 @@ pub async fn ws_connect_handler(
             ValidateError::InvalidToken => StatusCode::UNAUTHORIZED,
             ValidateError::SessionExpired => StatusCode::GONE,
         })?;
+
+    // Enforce the global guest connection cap before upgrading, so a connection
+    // flood can't exhaust server memory/tasks. A small TOCTOU overshoot under
+    // concurrent connects is acceptable — the cap bounds steady-state, not a
+    // single simultaneous burst.
+    if !state.ws.guest_slot_available().await {
+        tracing::warn!(session_id = %session.id, "guest connection cap reached — rejecting");
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
 
     let session_id = session.id.clone();
     let notebook_id = session.notebook_id.clone();
@@ -342,8 +351,24 @@ async fn handle_guest(
     let nid = notebook_id.clone();
     let perms = permissions;
     let st = state.clone();
+    let idle_timeout = state.ws.guest_idle_timeout();
     let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ws_receiver.next().await {
+        // Idle timeout: reap a half-open guest (a network drop with no FIN).
+        // Guests don't heartbeat, so this window is generous (see `WsState`);
+        // any inbound frame resets it.
+        loop {
+            let next = tokio::time::timeout(idle_timeout, ws_receiver.next()).await;
+            // Stream end (`Ok(None)`), a WS error (`Ok(Some(Err))`), or the idle
+            // timeout (`Err`) all mean we're done reading this connection.
+            let Ok(Some(Ok(msg))) = next else {
+                if next.is_err() {
+                    tracing::warn!(
+                        client_id = %cid,
+                        "guest idle timeout — closing half-open connection"
+                    );
+                }
+                break;
+            };
             match msg {
                 Message::Text(text) => {
                     handle_guest_message(&text, &nid, &sid, &cid, &perms, &st).await;

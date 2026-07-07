@@ -309,6 +309,19 @@ a:focus-visible {
     color: var(--ip-text-on-accent);
 }
 
+.ironpad-github-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ip-neutral-dimmer);
+    text-decoration: none;
+    transition: color 0.2s;
+
+    &:hover {
+        color: var(--ip-neutral-dim);
+    }
+}
+
 .ironpad-brand {
     font-size: 1.25rem;
     font-weight: 700;

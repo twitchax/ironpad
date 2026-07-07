@@ -1,4 +1,6 @@
-on: [push]
+on:
+  push:
+  pull_request:
 
 name: Build and Test
 
@@ -8,19 +10,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.93.0
+      # Install the nightly pinned by rust-toolchain.toml so the toolchain CI sets up
+      # matches the one cargo actually uses in the repo (the toolchain file otherwise
+      # silently overrides a stable pin here, wasting the setup and its cached components).
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2025-12-22
           targets: wasm32-unknown-unknown
-          components: rustfmt, clippy
+          components: rustfmt, clippy, rust-src
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
       - uses: cargo-bins/cargo-binstall@main
       - run: cargo binstall -y cargo-make cargo-nextest
       - run: cargo make ci
+      # Run the real gate: the #[ignore]'d compiler-pipeline integration tests and a
+      # wasm/hydrate compile check, so green CI means the WASM frontend actually builds.
+      - run: cargo make test-integration
+      - name: Wasm frontend compile check (hydrate)
+        run: cargo build -p ironpad-app --no-default-features --features hydrate --target wasm32-unknown-unknown
 
       - name: Notify channel
-        if: always()
+        if: always() && github.event_name == 'push'
         env:
           CHANNEL_PRIVATE_KEY: ${{ secrets.CHANNEL_PRIVATE_KEY }}
         run: |
@@ -44,6 +55,19 @@ jobs:
             -H "X-Channel-Timestamp: ${TIMESTAMP}" \
             -H "X-Channel-Signature: ${SIGNATURE}" \
             -d "${BODY}" || echo "Channel notification failed (non-fatal)"
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: cargo-bins/cargo-binstall@main
+      # Audit the locked dependency tree against the RUSTSEC advisory database.
+      # cargo-audit reads Cargo.lock directly and needs no config, so it can't fail
+      # on license/bans policy that can't be validated offline.
+      - run: cargo binstall -y cargo-audit
+      - run: cargo audit
 
   codecov:
     needs: test

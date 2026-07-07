@@ -2,6 +2,7 @@ mod config;
 
 use std::net::SocketAddr;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue};
 use axum::routing::get;
 use axum::Router;
@@ -20,6 +21,11 @@ use ironpad_server::state::{AppState, WsState};
 use ironpad_server::ws;
 
 use crate::config::CliArgs;
+
+/// Framework-level cap on any request body. Comfortably above the 4 MiB
+/// per-share cap enforced in `share_notebook` so legitimate max-size uploads
+/// pass, while bounding truly oversized bodies at the router layer.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() {
@@ -132,6 +138,11 @@ async fn main() {
         )
         .fallback(leptos_axum::file_and_error_handler::<AppState, _>(shell))
         .with_state(app_state)
+        // Framework-level request-body cap so the per-endpoint
+        // `MAX_SHARE_BYTES` (4 MiB) check isn't the only guard. Sized above the
+        // largest legitimate body (a max-size shared notebook) so real uploads
+        // pass while a truly huge body is rejected before it reaches a handler.
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("cross-origin-opener-policy"),
             HeaderValue::from_static("same-origin"),

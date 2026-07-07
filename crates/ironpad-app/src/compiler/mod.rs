@@ -31,9 +31,27 @@ impl CompileLocks {
     pub async fn acquire(&self, cell_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
         let cell_lock = {
             let mut table = self.locks.lock().expect("compile-lock table poisoned");
+            // Prune entries no longer in use so the table can't grow without
+            // bound across many distinct cell ids. An entry with
+            // `strong_count == 1` is held only by the table (no in-flight
+            // compile holds a guard clone), so it's safe to drop; keep the id
+            // we're about to (re)acquire regardless. This runs under the table
+            // lock, so a concurrent acquirer for a pruned id simply recreates a
+            // fresh lock — mutual exclusion is preserved because a count of 1
+            // means no compile is currently inside the critical section.
+            table.retain(|id, lock| id == cell_id || Arc::strong_count(lock) > 1);
             table.entry(cell_id.to_string()).or_default().clone()
         };
         cell_lock.lock_owned().await
+    }
+
+    /// Number of entries currently in the lock table (test-only introspection).
+    #[cfg(test)]
+    fn table_len(&self) -> usize {
+        self.locks
+            .lock()
+            .expect("compile-lock table poisoned")
+            .len()
     }
 }
 
@@ -65,6 +83,39 @@ mod compile_locks_tests {
         // A different cell must not contend on the first cell's lock.
         let other = tokio::time::timeout(Duration::from_millis(500), locks.acquire("cell-2")).await;
         assert!(other.is_ok(), "distinct cells should not block each other");
+    }
+
+    #[tokio::test]
+    async fn idle_locks_are_pruned() {
+        let locks = CompileLocks::default();
+
+        // A completed compile leaves its entry idle (guard dropped).
+        drop(locks.acquire("cell-1").await);
+        assert_eq!(locks.table_len(), 1, "cell-1 entry present after use");
+
+        // Acquiring a different cell prunes the now-idle cell-1 entry; only the
+        // in-use cell-2 entry remains.
+        let _guard = locks.acquire("cell-2").await;
+        assert_eq!(
+            locks.table_len(),
+            1,
+            "idle cell-1 should be pruned, leaving only in-use cell-2"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_use_locks_are_not_pruned() {
+        let locks = CompileLocks::default();
+
+        // Hold cell-1's guard while acquiring cell-2 — cell-1 is in use and must
+        // survive the prune.
+        let _held = locks.acquire("cell-1").await;
+        let _other = locks.acquire("cell-2").await;
+        assert_eq!(
+            locks.table_len(),
+            2,
+            "an in-flight compile's lock must not be pruned"
+        );
     }
 }
 
