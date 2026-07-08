@@ -39,7 +39,7 @@ acceptance_tests:
 - id: uat-003
   name: "A shared notebook emitting a position:fixed overlay <a> cannot capture a click in the viewer (DOM-level)"
   command: cargo make playwright
-  uat_status: unverified
+  uat_status: verified
 - id: uat-004
   name: "sim::read_from_ffi round-trips a valid host buffer and rejects a truncated/oversized length prefix without UB"
   command: cargo make test
@@ -308,5 +308,18 @@ the host; a mismatch is closed 4403 without evicting the incumbent, a bad first 
   updated to send ClaimHost. cargo make ci green: 581 tests.
 - Browser runtime path is covered by tests/e2e/session.spec.ts (not unit-testable in wasm).
 - Follow-up noted: a user-visible 'rejected' UI state (currently console-only).
+
+## 2026-07-08 — E2E verification (T-014 browser handshake + uat-003)
+Ran Playwright (session + new sanitizer-xss specs) against `cargo leptos serve --release`.
+6/6 passed.
+- **uat-003 verified**: tests/e2e/sanitizer-xss.spec.ts imports a notebook whose markdown cell
+  smuggles a full-viewport `position:fixed` overlay `<a>` (same `sanitize_html` path as
+  shared/public viewers). Asserts the rendered anchor is `position:static` + `z-index:auto`
+  (clickjacking CSS stripped) while `background:rgb(255,0,0)` survives (filter, not blanket drop).
+- **T-014 verified end-to-end**: all 5 session.spec.ts agent flows (lifecycle, read cells, add/
+  delete, update source, session-ends-on-tab-close) pass — the browser's `ClaimHost` first frame
+  doesn't break the live collaboration path.
+- Note: Playwright's 300s webServer timeout is too short for a cold `--release` build; run by
+  starting the server first, then `npx playwright test` (reuseExistingServer).
 
 (Entries appended during implementation go below this line.)
