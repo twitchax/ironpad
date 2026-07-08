@@ -48,6 +48,12 @@ pub struct WsState {
     pub sessions: SessionStore,
     /// `notebook_id` → host channel sender.
     hosts: Arc<RwLock<HashMap<String, HostHandle>>>,
+    /// `notebook_id` → blake3(host secret). Bound on first claim (TOFU),
+    /// required to match on later claims, and forgotten when the notebook goes
+    /// idle (see [`WsState::claim_host`] / [`WsState::forget_secret_if_idle`]).
+    /// In-memory only — after a restart there is no active host/session to
+    /// hijack, and TOFU re-establishes on the next claim (PRD-0038 T-014).
+    notebook_secrets: Arc<RwLock<HashMap<String, blake3::Hash>>>,
     /// `session_id` → guest channel senders.
     guests: Arc<RwLock<HashMap<String, Vec<GuestHandle>>>>,
     /// Pending query `message_id` → guest `client_id` (for routing responses).
@@ -63,6 +69,7 @@ impl Default for WsState {
         Self {
             sessions: SessionStore::default(),
             hosts: Arc::default(),
+            notebook_secrets: Arc::default(),
             guests: Arc::default(),
             pending_queries: Arc::default(),
             guest_idle_timeout: DEFAULT_GUEST_IDLE_TIMEOUT,
@@ -83,6 +90,16 @@ struct HostHandle {
 struct GuestHandle {
     client_id: String,
     sender: mpsc::Sender<String>,
+}
+
+/// Outcome of a host claim against a notebook's bound secret (PRD-0038 T-014).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// The claim is authorized. `tofu` is true when this claim *established* the
+    /// binding (trust-on-first-use), false when it matched an existing binding.
+    Accepted { tofu: bool },
+    /// The presented secret does not match the notebook's bound secret — reject.
+    Rejected,
 }
 
 impl WsState {
@@ -160,6 +177,44 @@ impl WsState {
             true
         } else {
             false
+        }
+    }
+
+    /// Authorize a host claim for `notebook_id` against its bound secret.
+    ///
+    /// Trust-on-first-use: the first claim for a notebook binds the secret and
+    /// is accepted; later claims must present the same secret. A mismatch is
+    /// rejected — this is what stops anyone who merely knows a `notebook_id`
+    /// from evicting the real host and receiving its guest traffic.
+    pub async fn claim_host(&self, notebook_id: &str, secret: &str) -> ClaimOutcome {
+        let presented = blake3::hash(secret.as_bytes());
+        let mut secrets = self.notebook_secrets.write().await;
+        match secrets.get(notebook_id) {
+            None => {
+                secrets.insert(notebook_id.to_string(), presented);
+                ClaimOutcome::Accepted { tofu: true }
+            }
+            // `blake3::Hash` equality is constant-time.
+            Some(bound) if *bound == presented => ClaimOutcome::Accepted { tofu: false },
+            Some(_) => ClaimOutcome::Rejected,
+        }
+    }
+
+    /// Forget a notebook's host-secret binding once it is idle — no host
+    /// connection AND no sessions. This bounds the map and lets a fresh TOFU
+    /// claim take over an abandoned notebook, where there is nothing to hijack.
+    pub async fn forget_secret_if_idle(&self, notebook_id: &str) {
+        if self.hosts.read().await.contains_key(notebook_id) {
+            return;
+        }
+        let has_session = self
+            .sessions
+            .all_sessions()
+            .await
+            .iter()
+            .any(|s| s.notebook_id == notebook_id);
+        if !has_session {
+            self.notebook_secrets.write().await.remove(notebook_id);
         }
     }
 
@@ -315,6 +370,88 @@ mod tests {
     async fn unregister_host_returns_false_for_unknown() {
         let ws = WsState::default();
         assert!(!ws.unregister_host("no-such-nb", "conn-x").await);
+    }
+
+    // ── Host-secret claim (PRD-0038 T-014) ──────────────────────────────
+
+    #[tokio::test]
+    async fn claim_host_tofu_then_match_then_reject() {
+        let ws = WsState::default();
+        // First claim of a fresh notebook binds the secret (trust-on-first-use).
+        assert!(matches!(
+            ws.claim_host("nb-1", "s3cr3t").await,
+            ClaimOutcome::Accepted { tofu: true }
+        ));
+        // The same secret is accepted again (reconnect / take-over), not TOFU.
+        assert!(matches!(
+            ws.claim_host("nb-1", "s3cr3t").await,
+            ClaimOutcome::Accepted { tofu: false }
+        ));
+        // A different secret is rejected — the hole this closes.
+        assert!(matches!(
+            ws.claim_host("nb-1", "wrong").await,
+            ClaimOutcome::Rejected
+        ));
+        // A different notebook binds independently.
+        assert!(matches!(
+            ws.claim_host("nb-2", "other").await,
+            ClaimOutcome::Accepted { tofu: true }
+        ));
+    }
+
+    #[tokio::test]
+    async fn forget_secret_if_idle_drops_binding_when_no_host_no_sessions() {
+        let ws = WsState::default();
+        assert!(matches!(
+            ws.claim_host("nb-1", "a").await,
+            ClaimOutcome::Accepted { tofu: true }
+        ));
+        // No host connection, no sessions → forget the binding.
+        ws.forget_secret_if_idle("nb-1").await;
+        // A brand-new secret is now TOFU-accepted (the binding was dropped).
+        assert!(matches!(
+            ws.claim_host("nb-1", "b").await,
+            ClaimOutcome::Accepted { tofu: true }
+        ));
+    }
+
+    #[tokio::test]
+    async fn forget_secret_if_idle_keeps_binding_while_host_registered() {
+        let ws = WsState::default();
+        assert!(matches!(
+            ws.claim_host("nb-1", "a").await,
+            ClaimOutcome::Accepted { tofu: true }
+        ));
+        let (tx, _rx) = mpsc::channel(4);
+        ws.register_host("nb-1", "conn-1", tx).await;
+        // Host still connected → the binding must survive.
+        ws.forget_secret_if_idle("nb-1").await;
+        assert!(matches!(
+            ws.claim_host("nb-1", "b").await,
+            ClaimOutcome::Rejected
+        ));
+    }
+
+    #[tokio::test]
+    async fn forget_secret_if_idle_keeps_binding_while_session_active() {
+        let ws = WsState::default();
+        assert!(matches!(
+            ws.claim_host("nb-1", "a").await,
+            ClaimOutcome::Accepted { tofu: true }
+        ));
+        // An active session for the notebook keeps the binding even with no host.
+        ws.sessions
+            .create_session(
+                "nb-1".to_string(),
+                "conn-1".to_string(),
+                Permissions::default(),
+            )
+            .await;
+        ws.forget_secret_if_idle("nb-1").await;
+        assert!(matches!(
+            ws.claim_host("nb-1", "b").await,
+            ClaimOutcome::Rejected
+        ));
     }
 
     #[tokio::test]

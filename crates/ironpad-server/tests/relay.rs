@@ -103,6 +103,45 @@ fn parse_msg(json: &str) -> protocol::Message {
     serde_json::from_str(json).unwrap_or_else(|e| panic!("bad JSON: {e}\n{json}"))
 }
 
+/// Send the mandatory `ClaimHost` first frame on a freshly-connected host socket
+/// (PRD-0038 T-014).
+async fn send_claim<S>(sink: &mut S, secret: &str)
+where
+    S: SinkExt<tungstenite::Message> + Unpin,
+    <S as futures::Sink<tungstenite::Message>>::Error: std::fmt::Debug,
+{
+    let claim = to_json(
+        "claim",
+        MessageKind::Control(ControlMessage::ClaimHost {
+            secret: secret.to_string(),
+        }),
+    );
+    sink.send(tungstenite::Message::Text(claim.into()))
+        .await
+        .expect("send ClaimHost");
+}
+
+/// Read frames until a Close, returning its code as a `u16` (0 if the peer
+/// dropped without a close frame).
+async fn recv_close_code<S>(stream: &mut S) -> u16
+where
+    S: StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin,
+{
+    timeout(TIMEOUT, async {
+        loop {
+            match stream.next().await {
+                Some(Ok(tungstenite::Message::Close(frame))) => {
+                    return frame.map_or(0, |f| u16::from(f.code));
+                }
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => return 0,
+            }
+        }
+    })
+    .await
+    .expect("recv close timed out")
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 /// Full relay round-trip: host creates session → guest connects → guest
@@ -119,6 +158,7 @@ async fn relay_integration_round_trip() {
         .await
         .expect("host ws connect");
     let (mut host_sink, mut host_stream) = host_ws.split();
+    send_claim(&mut host_sink, "host-secret").await;
 
     // 2. Host sends CreateSession with read+write permissions.
     let create_session = to_json(
@@ -315,6 +355,7 @@ async fn permission_denied_mutation_replies_with_error() {
         .await
         .expect("host ws connect");
     let (mut host_sink, mut host_stream) = host_ws.split();
+    send_claim(&mut host_sink, "host-secret").await;
 
     let create_session = to_json(
         "ctrl-1",
@@ -384,6 +425,7 @@ async fn host_disconnect_ends_guest_session() {
         .await
         .expect("host ws connect");
     let (mut host_sink, mut host_stream) = host_ws.split();
+    send_claim(&mut host_sink, "host-secret").await;
 
     let create_session = to_json(
         "ctrl-1",
@@ -446,6 +488,7 @@ async fn read_denied_guest_does_not_receive_content_events() {
         .await
         .expect("host ws connect");
     let (mut host_sink, mut host_stream) = host_ws.split();
+    send_claim(&mut host_sink, "host-secret").await;
 
     // Write-only session: read denied.
     let create_session = to_json(
@@ -554,6 +597,98 @@ async fn guest_connection_cap_rejects_over_limit() {
         http_status(&err),
         Some(503),
         "over-cap connection should be HTTP 503, got {err:?}"
+    );
+}
+
+/// The host's first frame must be a `ClaimHost`; anything else is closed 4400
+/// and never registered (PRD-0038 T-014).
+#[tokio::test]
+async fn host_first_frame_must_be_claim() {
+    let state = test_state();
+    let base = start_server(state).await;
+
+    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
+    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
+        .await
+        .expect("host ws connect");
+    let (mut host_sink, mut host_stream) = host_ws.split();
+
+    // Skip the handshake — send CreateSession as the first frame.
+    let create_session = to_json(
+        "ctrl-1",
+        MessageKind::Control(ControlMessage::CreateSession {
+            permissions: Permissions::default(),
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(create_session.into()))
+        .await
+        .unwrap();
+
+    // The socket is closed with 4400; no SessionCreated is ever delivered.
+    assert_eq!(recv_close_code(&mut host_stream).await, 4400);
+}
+
+/// A second host claiming with the wrong secret is rejected (close 4403) and
+/// does NOT evict the incumbent host (PRD-0038 T-014).
+#[tokio::test]
+async fn host_claim_mismatch_rejected_without_evicting_incumbent() {
+    let state = test_state();
+    let base = start_server(state).await;
+
+    // Host 1 claims the notebook (TOFU) and creates a session so a guest can join.
+    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
+    let (host1_ws, _) = tokio_tungstenite::connect_async(&host_url)
+        .await
+        .expect("host1 ws connect");
+    let (mut host1_sink, mut host1_stream) = host1_ws.split();
+    send_claim(&mut host1_sink, "secret-A").await;
+
+    let create_session = to_json(
+        "ctrl-1",
+        MessageKind::Control(ControlMessage::CreateSession {
+            permissions: Permissions::default(),
+        }),
+    );
+    host1_sink
+        .send(tungstenite::Message::Text(create_session.into()))
+        .await
+        .unwrap();
+    let token = match parse_msg(&recv_text(&mut host1_stream).await).kind {
+        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
+        other => panic!("expected SessionCreated, got {other:?}"),
+    };
+
+    // Host 2 connects and claims with the WRONG secret → rejected 4403.
+    let (host2_ws, _) = tokio_tungstenite::connect_async(&host_url)
+        .await
+        .expect("host2 ws connect");
+    let (mut host2_sink, mut host2_stream) = host2_ws.split();
+    send_claim(&mut host2_sink, "secret-B").await;
+    assert_eq!(recv_close_code(&mut host2_stream).await, 4403);
+
+    // Host 1 was NOT evicted: a guest mutation still routes to it.
+    let (guest_ws, _) =
+        tokio_tungstenite::connect_async(&format!("{base}/ws/connect?token={token}"))
+            .await
+            .expect("guest ws connect");
+    let (mut guest_sink, _guest_stream) = guest_ws.split();
+    let _ = recv_text(&mut host1_stream).await; // GuestConnected
+
+    let mutation = to_json(
+        "m-1",
+        MessageKind::Mutation(Mutation::CellReorder {
+            cell_ids: vec!["a".into()],
+        }),
+    );
+    guest_sink
+        .send(tungstenite::Message::Text(mutation.into()))
+        .await
+        .unwrap();
+    let host_recv = parse_msg(&recv_text(&mut host1_stream).await);
+    assert_eq!(
+        host_recv.id, "m-1",
+        "incumbent host must still receive guest traffic"
     );
 }
 

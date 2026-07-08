@@ -308,6 +308,11 @@ pub enum ControlMessage {
     /// (a network drop with no FIN) via a read-loop idle timeout and tear it
     /// down, instead of leaving a dead host registered indefinitely.
     Heartbeat,
+    /// Browser → Server: the first frame on the host socket. Proves the claimant
+    /// holds the per-notebook host secret before the relay registers it as host
+    /// (PRD-0038 T-014). A mismatched/missing claim is rejected with a WS close
+    /// (4403/4400); it is never broadcast.
+    ClaimHost { secret: String },
     /// An unrecognised control message from a newer peer (see
     /// the [`Message`] forward-compat docs).
     #[serde(other)]
@@ -598,6 +603,22 @@ mod tests {
             }),
         };
         round_trip(&msg);
+    }
+
+    #[test]
+    fn control_claim_host_round_trips() {
+        // The browser's first frame on the host socket (PRD-0038 T-014).
+        let msg = Message {
+            id: "host-1".into(),
+            kind: MessageKind::Control(ControlMessage::ClaimHost {
+                secret: "deadbeefcafef00d".into(),
+            }),
+        };
+        round_trip(&msg);
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""control":"ClaimHost""#), "{json}");
+        assert!(json.contains(r#""secret":"deadbeefcafef00d""#), "{json}");
     }
 
     #[test]

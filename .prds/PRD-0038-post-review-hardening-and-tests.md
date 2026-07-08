@@ -136,8 +136,8 @@ tasks:
 - id: T-014
   title: "Host credential to claim a notebook_id (close the unauthenticated host role)"
   priority: 3
-  status: todo
-  notes: "Deferred from PRD-0036 T-008. ws.rs:58-81 ws_host_handler upgrades and register_host (state.rs:66-85) using only the client-supplied notebook_id — no auth, no owner binding, and a new host EVICTS the incumbent (hosts.insert). Anyone who learns a notebook_id (URL/referrer/logs) can claim the authoritative model, receive all guest mutations/queries, and mint sessions. Today only UUID secrecy protects it. Fix (new auth scheme — hence P3): issue a per-notebook host secret on first claim (stored client-side in IndexedDB) and require it to re-claim / evict; reject a mismatched claim. Design first, then implement + test."
+  status: done
+  notes: "DONE 2026-07-08 (TDD, design spec: docs/superpowers/specs/2026-07-08-host-credential-design.md). Trust-on-first-use (TOFU), in-memory, forget-when-idle + a first-message handshake. Protocol: new ControlMessage::ClaimHost { secret } (browser's first frame). Server: WsState.notebook_secrets (notebook_id → blake3(secret)); claim_host() binds on first claim, constant-time-matches on later ones, else Rejected; forget_secret_if_idle() drops the binding when no host + no sessions; handle_host validates the first frame BEFORE register_host — mismatch closes WS 4403 (incumbent untouched), bad/missing first frame closes 4400. Browser (connection.rs): per-notebook secret in localStorage['ironpad:host-secret:{id}'] (two v4 UUIDs, CSPRNG via getrandom; kept OUT of the notebook record so export/share never leaks it), sent as the first frame; on-close 4403 → clear console error, no reconnect loop. Rollout: ClaimHost required (no legacy fallback) — a pre-update tab reloads into new WASM. Tests: protocol round-trip; 4 state unit tests (TOFU/match/reject + forget-when-idle keeps/drops with host/session); 2 relay integration tests (first-frame-must-be-claim → 4400; mismatch → 4403 without evicting incumbent); all 8 existing relay tests updated to send ClaimHost. FOLLOW-UP (noted, out of scope): a user-visible 'rejected' UI state (currently console-only). Original: Deferred from PRD-0036 T-008. ws.rs:58-81 ws_host_handler upgrades and register_host (state.rs:66-85) using only the client-supplied notebook_id — no auth, no owner binding, and a new host EVICTS the incumbent (hosts.insert). Anyone who learns a notebook_id (URL/referrer/logs) can claim the authoritative model, receive all guest mutations/queries, and mint sessions. Today only UUID secrecy protects it. Fix (new auth scheme — hence P3): issue a per-notebook host secret on first claim (stored client-side in IndexedDB) and require it to re-claim / evict; reject a mismatched claim. Design first, then implement + test."
 - id: T-015
   title: "Non-root Docker runtime (defense-in-depth)"
   priority: 3
@@ -294,5 +294,19 @@ T-002…T-013 batch entry was NOT a flake — it was a real two-part bug, now fi
 - Diagnosed by evidence (tail-of-stderr fix surfaced the real `compile_error!`).
 - Result: `cargo make test-integration` **7/7 green** (the atomics cell compiles); `cargo make ci`
   574 tests green. uat's integration tier is now green (Playwright tier still unrun this session).
+
+## 2026-07-08 — T-014 done (host credential, TDD)
+Design → spec (docs/superpowers/specs/2026-07-08-host-credential-design.md, approved) →
+TDD implementation. TOFU in-memory secret + first-message ClaimHost handshake closes the
+unauthenticated host role: only a browser holding the per-notebook secret can host or replace
+the host; a mismatch is closed 4403 without evicting the incumbent, a bad first frame 4400.
+- Protocol: ControlMessage::ClaimHost { secret }. Server: WsState.notebook_secrets +
+  claim_host()/forget_secret_if_idle(); handle_host validates before register_host.
+- Browser: localStorage-held per-notebook secret (kept out of the notebook record), sent as
+  the first frame; 4403 → clear error, no reconnect loop.
+- +7 tests (protocol round-trip, 4 state units, 2 relay integration); 8 existing relay tests
+  updated to send ClaimHost. cargo make ci green: 581 tests.
+- Browser runtime path is covered by tests/e2e/session.spec.ts (not unit-testable in wasm).
+- Follow-up noted: a user-visible 'rejected' UI state (currently console-only).
 
 (Entries appended during implementation go below this line.)

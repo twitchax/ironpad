@@ -1,7 +1,7 @@
 # Design — Per-notebook host credential (PRD-0038 T-014)
 
 **Date:** 2026-07-08
-**Status:** approved (design)
+**Status:** implemented (2026-07-08) — see PRD-0038 T-014
 **Task:** PRD-0038 T-014 — "Host credential to claim a notebook_id (close the unauthenticated host role)"
 
 ## Context

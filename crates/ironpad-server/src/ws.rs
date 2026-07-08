@@ -17,7 +17,7 @@ use ironpad_common::protocol::{
 };
 
 use crate::sessions::{check_permission, ValidateError};
-use crate::state::AppState;
+use crate::state::{AppState, ClaimOutcome};
 
 /// Serialize a protocol message to JSON for the wire.
 fn wire_msg(id: &str, kind: MessageKind) -> String {
@@ -38,6 +38,11 @@ const MAX_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// message rather than buffering without limit (the idle timeout eventually
 /// reaps a stuck connection).
 const WS_CHANNEL_BOUND: usize = 1024;
+
+/// How long to wait for a host's first frame (its `ClaimHost`). A client that
+/// connects and never speaks is reaped so it can't hold the socket open
+/// (PRD-0038 T-014).
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 // ── Query parameters ────────────────────────────────────────────────────────
 
@@ -66,9 +71,39 @@ pub async fn ws_host_handler(
 
 async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (tx, mut rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
     let connection_id = uuid::Uuid::new_v4().to_string();
 
+    // ── Handshake (PRD-0038 T-014) ──────────────────────────────────────────
+    // The first frame MUST be a `ClaimHost` proving the browser holds this
+    // notebook's host secret — validated BEFORE we register as host. A missing
+    // or malformed first frame closes 4400; a secret mismatch closes 4403 and
+    // leaves the incumbent host (and its sessions) untouched. A client that
+    // connects and never speaks is reaped by the handshake timeout.
+    let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, ws_receiver.next()).await;
+    let claim = first
+        .ok()
+        .flatten()
+        .and_then(Result::ok)
+        .and_then(|m| match m {
+            Message::Text(t) => parse_claim_secret(&t),
+            _ => None,
+        });
+    let Some(secret) = claim else {
+        close_host(&mut ws_sender, 4400, "expected ClaimHost first frame").await;
+        return;
+    };
+    match state.ws.claim_host(&notebook_id, &secret).await {
+        ClaimOutcome::Accepted { tofu } => {
+            tracing::info!(notebook_id = %notebook_id, connection_id = %connection_id, tofu, "host claim accepted");
+        }
+        ClaimOutcome::Rejected => {
+            tracing::warn!(notebook_id = %notebook_id, "host claim rejected — secret mismatch");
+            close_host(&mut ws_sender, 4403, "host claim rejected").await;
+            return;
+        }
+    }
+
+    let (tx, mut rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
     tracing::info!(
         notebook_id = %notebook_id,
         connection_id = %connection_id,
@@ -147,6 +182,33 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
         state.ws.broadcast_to_guests(session_id, &close_msg).await;
         state.ws.disconnect_guests(session_id).await;
     }
+
+    // Forget the host secret if the notebook is now idle (no host, no sessions),
+    // bounding the map and letting a fresh TOFU claim take over later.
+    state.ws.forget_secret_if_idle(&notebook_id).await;
+}
+
+/// Parse a first-frame `ClaimHost`, returning its secret if that's what it is.
+fn parse_claim_secret(text: &str) -> Option<String> {
+    match serde_json::from_str::<protocol::Message>(text).ok()?.kind {
+        MessageKind::Control(ControlMessage::ClaimHost { secret }) => Some(secret),
+        _ => None,
+    }
+}
+
+/// Close a host socket with an application close code + reason before dropping it.
+async fn close_host(
+    ws_sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    code: u16,
+    reason: &str,
+) {
+    use axum::extract::ws::CloseFrame;
+    let _ = ws_sender
+        .send(Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.to_string().into(),
+        })))
+        .await;
 }
 
 /// Process a message from the host browser.
@@ -242,11 +304,14 @@ async fn handle_host_control(
         // Host keep-alive (Heartbeat) is a no-op here — simply receiving it
         // resets the read-loop idle timer that reaps half-open connections. The
         // remaining variants are server-originated and never host-sent.
+        // ClaimHost is only meaningful as the first frame (consumed by the
+        // handshake in handle_host); a later one is ignored.
         ControlMessage::Heartbeat
         | ControlMessage::SessionCreated { .. }
         | ControlMessage::SessionEnded { .. }
         | ControlMessage::GuestConnected { .. }
         | ControlMessage::GuestDisconnected { .. }
+        | ControlMessage::ClaimHost { .. }
         | ControlMessage::Unknown => {}
     }
 }

@@ -31,6 +31,33 @@ fn ws_send(ws: &web_sys::WebSocket, msg: &protocol::Message) {
     }
 }
 
+/// Load this notebook's host secret from `localStorage`, generating and storing a
+/// fresh one on first use (PRD-0038 T-014). Kept in `localStorage` — separate
+/// from the `IndexedDB` notebook record — so export/share of the notebook never
+/// carries the secret. Entropy comes from two v4 UUIDs (getrandom → the
+/// browser's CSPRNG on wasm), which is unguessable and avoids a web-sys Crypto
+/// feature dependency.
+fn host_secret(notebook_id: &str) -> String {
+    let key = format!("ironpad:host-secret:{notebook_id}");
+    let storage = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
+    if let Some(existing) = storage
+        .as_ref()
+        .and_then(|s| s.get_item(&key).ok().flatten())
+        .filter(|v| !v.is_empty())
+    {
+        return existing;
+    }
+    let secret = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    if let Some(s) = storage.as_ref() {
+        let _ = s.set_item(&key, &secret);
+    }
+    secret
+}
+
 // ── Start session ───────────────────────────────────────────────────────────
 
 /// Open a WebSocket to the server and start an agent session.
@@ -57,12 +84,26 @@ pub(crate) fn start_session(
     state.connection_status.set(ConnectionStatus::Connecting);
     state.active.set(true);
 
-    // ── On open: send CreateSession ─────────────────────────────────────
+    // ── On open: claim the host role, then create the session ───────────
 
     let ws_clone = ws.clone();
     let perms = permissions;
+    let secret = host_secret(notebook_id);
     let on_open = Closure::<dyn FnMut()>::new(move || {
         state.connection_status.set(ConnectionStatus::Connected);
+
+        // First frame: prove we hold this notebook's host secret (PRD-0038
+        // T-014). The relay validates this before registering us as host and
+        // closes 4403 on a mismatch (handled in on_close below).
+        ws_send(
+            &ws_clone,
+            &protocol::Message {
+                id: "claim-host".to_string(),
+                kind: MessageKind::Control(ControlMessage::ClaimHost {
+                    secret: secret.clone(),
+                }),
+            },
+        );
 
         ws_send(
             &ws_clone,
@@ -109,8 +150,19 @@ pub(crate) fn start_session(
     // ── On close ────────────────────────────────────────────────────────
 
     let on_close =
-        Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_event: web_sys::CloseEvent| {
+        Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |event: web_sys::CloseEvent| {
             state.connection_status.set(ConnectionStatus::Disconnected);
+            // 4403 = the relay rejected our host claim (PRD-0038 T-014): the
+            // notebook's stored host secret doesn't match the server's binding
+            // (e.g. it's already hosted in another session). Surface it clearly
+            // rather than silently retrying into a rejection loop.
+            if event.code() == 4403 {
+                web_sys::console::error_1(
+                    &"host claim rejected: this notebook's host credential doesn't match — \
+                      it may already be open in another session"
+                        .into(),
+                );
+            }
             // Don't reset session state here — end_session handles that explicitly.
             // An unexpected close (network drop) leaves state.active == true so the
             // UI can show "disconnected" rather than silently reverting.
@@ -331,8 +383,10 @@ fn handle_incoming(
             }
             ControlMessage::CreateSession { .. }
             | ControlMessage::EndSession { .. }
-            | ControlMessage::Heartbeat => {
-                // Not sent by the server to the host (Heartbeat is host → server).
+            | ControlMessage::Heartbeat
+            | ControlMessage::ClaimHost { .. } => {
+                // Not sent by the server to the host (Heartbeat and ClaimHost are
+                // host → server).
             }
             ControlMessage::Unknown => {
                 web_sys::console::warn_1(&"ignoring unknown control message from server".into());
