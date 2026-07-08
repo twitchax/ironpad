@@ -98,7 +98,7 @@ jobs:
       # cargo-llvm-cov and cargo then reports "no such command: llvm-cov".
       - run: cargo binstall -y --force cargo-llvm-cov cargo-nextest
       - run: cargo llvm-cov nextest --workspace --lcov --output-path coverage.lcov
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: twitchax/ironpad
