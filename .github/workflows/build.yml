@@ -22,7 +22,10 @@ jobs:
         with:
           cache-all-crates: "true"
       - uses: cargo-bins/cargo-binstall@main
-      - run: cargo binstall -y cargo-make cargo-nextest
+      # wasm-bindgen-cli is pinned to the workspace's locked wasm-bindgen crate version
+      # (0.2.114) — the compiler pipeline shells out to `wasm-bindgen` (build.rs) during
+      # the integration tests, so it must be on PATH and version-matched to the lockfile.
+      - run: cargo binstall -y cargo-make cargo-nextest wasm-bindgen-cli@0.2.114
       - run: cargo make ci
       # Run the real gate: the #[ignore]'d compiler-pipeline integration tests and a
       # wasm/hydrate compile check, so green CI means the WASM frontend actually builds.
