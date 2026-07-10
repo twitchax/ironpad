@@ -67,9 +67,12 @@ RUN rustup component add rust-src
 
 # Nightly toolchain + rust-src for pre-building the atomics sysroot at image build time.
 # Cell compilation at runtime uses stable; it reuses the pre-built artifacts.
+# The `enzyme` component supplies libEnzyme for std::autodiff cells (PRD-0041):
+# installing it alongside the nightly pins a matching LLVM pair per-image.
 RUN rustup toolchain install nightly \
     && rustup target add wasm32-unknown-unknown --toolchain nightly \
-    && rustup component add rust-src --toolchain nightly
+    && rustup component add rust-src --toolchain nightly \
+    && rustup component add enzyme --toolchain nightly
 
 # Copy tool binaries from builder (avoids recompiling / reinstalling in runtime).
 COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-bindgen

@@ -192,8 +192,8 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]\nrand = \"0.8\"";
 
         // Hashes must match.
-        let hash_a = content_hash(source, cargo_toml, &[], None, None, false);
-        let hash_b = content_hash(source, cargo_toml, &[], None, None, false);
+        let hash_a = content_hash(source, cargo_toml, &[], None, None, false, false);
+        let hash_b = content_hash(source, cargo_toml, &[], None, None, false, false);
         assert_eq!(hash_a, hash_b, "same inputs must produce identical hashes");
 
         // Scaffolded content must be identical for the same inputs.
@@ -238,8 +238,8 @@ mod pipeline_tests {
     #[test]
     fn changed_source_invalidates_hash() {
         let cargo = "[dependencies]";
-        let hash_v1 = content_hash("    let x = 1;", cargo, &[], None, None, false);
-        let hash_v2 = content_hash("    let x = 2;", cargo, &[], None, None, false);
+        let hash_v1 = content_hash("    let x = 1;", cargo, &[], None, None, false, false);
+        let hash_v2 = content_hash("    let x = 2;", cargo, &[], None, None, false, false);
         assert_ne!(
             hash_v1, hash_v2,
             "different source must produce different hashes"
@@ -256,6 +256,7 @@ mod pipeline_tests {
             None,
             None,
             false,
+            false,
         );
         let hash_b = content_hash(
             source,
@@ -263,6 +264,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            false,
             false,
         );
         assert_ne!(
@@ -319,7 +321,7 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input.
-        let hash = content_hash(source, cargo_toml, &[], None, None, false);
+        let hash = content_hash(source, cargo_toml, &[], None, None, false, false);
         assert_eq!(hash.len(), 64, "blake3 hash should be 64 hex chars");
         assert!(
             hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -395,7 +397,7 @@ mod pipeline_tests {
 
         let source = "    CellOutput::text(\"cached\")";
         let cargo = "[dependencies]";
-        let hash = content_hash(source, cargo, &[], None, None, false);
+        let hash = content_hash(source, cargo, &[], None, None, false, false);
 
         let cache_dir = tempdir();
         let fake_wasm = b"\x00asm\x01\x00\x00\x00fake-wasm-bytes";
@@ -417,6 +419,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            false,
             false,
         );
         assert!(try_cache_hit(&cache_dir, &different_hash).is_none());
@@ -441,7 +444,7 @@ mod e2e_tests {
     use super::build::{build_micro_crate, check_micro_crate, BuildResult, CheckResult};
     use super::cache::{content_hash, store_blob, try_cache_hit};
     use super::diagnostics::parse_diagnostics;
-    use super::scaffold::{merged_deps_contain_rayon, scaffold_micro_crate};
+    use super::scaffold::{merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff};
 
     /// Resolve the path to the `ironpad-cell` crate relative to this crate's manifest.
     fn ironpad_cell_path() -> PathBuf {
@@ -484,9 +487,11 @@ mod e2e_tests {
         assert!(crate_dir.join("src/lib.rs").is_file());
 
         // Build to WASM.
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
-            .await
-            .expect("build_micro_crate should not return an infra error");
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
 
         match result {
             BuildResult::Success {
@@ -542,6 +547,83 @@ mod e2e_tests {
     /// bumped forward to a strict nightly (e.g. 2026-06-01+). Browser-level
     /// module-name correctness is independently covered by the Playwright
     /// uat-003 acceptance test in PRD-0031.
+    /// PRD-0041 regression: a cell using the real `std::autodiff` compiles
+    /// through the actual pipeline — nightly toolchain, `-Zautodiff=Enable`,
+    /// the scaffold's crate-root feature gate + fat-LTO profile, and Enzyme's
+    /// tape allocations resolving against ironpad-cell's wasm allocator shims
+    /// (which live in a DEPENDENCY crate here, unlike the feasibility probe).
+    /// The differentiated function loops with a data-dependent trip count, so
+    /// Enzyme must exercise its tape (malloc/free/realloc).
+    #[tokio::test]
+    #[ignore = "slow: full cargo build of a micro-crate (nightly + Enzyme)"]
+    async fn compile_cell_with_std_autodiff_builds_successfully() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "std-autodiff";
+
+        let shared_source = r"use std::autodiff::autodiff_reverse;
+
+/// Projectile range under quadratic drag: a timestepped simulation with a
+/// data-dependent loop, so the reverse-mode gradient needs Enzyme's tape.
+#[autodiff_reverse(d_range, Active, Active)]
+pub fn range(angle: f64) -> f64 {
+    let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    let v = 50.0_f64;
+    let (mut vx, mut vy) = (v * angle.cos(), v * angle.sin());
+    let (dt, drag, g) = (0.01_f64, 0.002_f64, 9.81_f64);
+    while y >= 0.0 {
+        let speed = (vx * vx + vy * vy).sqrt();
+        vx -= drag * speed * vx * dt;
+        vy -= (g + drag * speed * vy) * dt;
+        x += vx * dt;
+        y += vy * dt;
+    }
+    x
+}
+";
+        let source = "    let (_r, grad) = shared::d_range(0.6, 1.0);\n    CellOutput::from(grad)";
+        let cargo_toml = "[dependencies]";
+
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            Some(shared_source),
+        )
+        .expect("scaffold should succeed");
+
+        // The scaffold must have opted in: feature gate on line 1.
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(lib_rs.starts_with("#![feature(autodiff)]\n"));
+        assert!(preamble >= 1);
+
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, true,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                let wasm_bytes = std::fs::read(&wasm_path).unwrap();
+                assert_eq!(&wasm_bytes[..4], b"\x00asm");
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "std::autodiff cell should build.\nstdout(tail): {}\nstderr(tail): {}",
+                    &stdout[stdout.len().saturating_sub(2000)..],
+                    &stderr[stderr.len().saturating_sub(1500)..],
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_cell_with_host_imports_links_successfully() {
@@ -568,9 +650,11 @@ mod e2e_tests {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
-            .await
-            .expect("build_micro_crate should not return an infra error");
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
 
         match result {
             BuildResult::Success { wasm_path, .. } => {
@@ -616,9 +700,11 @@ mod e2e_tests {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
-            .await
-            .expect("build_micro_crate should not return an infra error");
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
 
         match result {
             BuildResult::Failure { stdout, .. } => {
@@ -655,7 +741,7 @@ mod e2e_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input (should be a cache miss).
-        let hash = content_hash(source, cargo_toml, &[], None, None, false);
+        let hash = content_hash(source, cargo_toml, &[], None, None, false, false);
         assert!(
             try_cache_hit(&cache_dir, &hash).is_none(),
             "should be a cache miss before compilation",
@@ -675,9 +761,11 @@ mod e2e_tests {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
-            .await
-            .expect("build should not return an infra error");
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+        )
+        .await
+        .expect("build should not return an infra error");
 
         let (wasm_bytes, js_glue) = match result {
             BuildResult::Success {
@@ -714,6 +802,7 @@ mod e2e_tests {
             &[],
             None,
             None,
+            false,
             false,
         );
         assert!(
@@ -774,9 +863,11 @@ impl Simulation for BusSim {
         )
         .expect("scaffold should succeed");
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
-            .await
-            .expect("build_micro_crate should not return an infra error");
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
 
         match result {
             BuildResult::Success { wasm_path, .. } => {
@@ -861,9 +952,11 @@ impl LiveView for Counter {
             "generated lib.rs should use __IRONPAD_LIVE_VIEW__ static"
         );
 
-        let result = build_micro_crate(&crate_dir, &cache_dir, session_id, cell_id, None, false)
-            .await
-            .expect("build_micro_crate should not return an infra error");
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
 
         match result {
             BuildResult::Success { wasm_path, .. } => {
@@ -1008,6 +1101,9 @@ impl LiveView for Counter {
                 // `atomics` target-feature guard fails otherwise). The scaffold
                 // detects this the same way via `merged_deps_contain_rayon`.
                 let needs_atomics = merged_deps_contain_rayon(shared_cargo_toml, cell_cargo);
+                // Match production for autodiff cells too: nightly toolchain,
+                // -Zautodiff, and the fat-LTO profile the scaffold enforces.
+                let needs_autodiff = uses_std_autodiff(&cell.source, shared_source);
                 let result = check_micro_crate(
                     &crate_dir,
                     &cache_dir,
@@ -1015,6 +1111,7 @@ impl LiveView for Counter {
                     &unique_id,
                     None,
                     needs_atomics,
+                    needs_autodiff,
                 )
                 .await;
 

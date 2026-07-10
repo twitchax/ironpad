@@ -70,7 +70,7 @@ async fn compile_cell_core(
         cache::{content_hash, store_blob, try_cache_hit},
         diagnostics::parse_diagnostics,
         optimize::optimize_wasm,
-        scaffold::{merged_deps_contain_rayon, scaffold_micro_crate},
+        scaffold::{merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff},
     };
 
     let session_id = "default";
@@ -98,6 +98,7 @@ async fn compile_cell_core(
     // and must not pay those filesystem writes.
     let needs_atomics =
         merged_deps_contain_rayon(request.shared_cargo_toml.as_deref(), &request.cargo_toml);
+    let needs_autodiff = uses_std_autodiff(&request.source, request.shared_source.as_deref());
 
     let hash = content_hash(
         &request.source,
@@ -106,8 +107,9 @@ async fn compile_cell_core(
         request.shared_cargo_toml.as_deref(),
         request.shared_source.as_deref(),
         needs_atomics,
+        needs_autodiff,
     );
-    tracing::info!(cell_id = %request.cell_id, hash = %hash, needs_atomics, "compile_cell started");
+    tracing::info!(cell_id = %request.cell_id, hash = %hash, needs_atomics, needs_autodiff, "compile_cell started");
 
     // Cache check (skipped when force-recompile is requested).
 
@@ -160,6 +162,7 @@ async fn compile_cell_core(
         &request.cell_id,
         config.compilation_proxy.as_deref(),
         needs_atomics,
+        needs_autodiff,
     )
     .await
     .map_err(|e| ServerFnError::new(format!("build invocation failed: {e}")))?;
@@ -574,7 +577,7 @@ mod tests {
         // Pre-seed the cache with a blob under the exact hash compile_cell_core
         // derives for these inputs, so the request resolves as a cache hit.
         let needs_atomics = merged_deps_contain_rayon(None, cargo_toml);
-        let hash = content_hash(source, cargo_toml, &[], None, None, needs_atomics);
+        let hash = content_hash(source, cargo_toml, &[], None, None, needs_atomics, false);
         let fake_wasm = b"\x00asm\x01\x00\x00\x00cache-hit";
         store_blob(
             cache.path(),

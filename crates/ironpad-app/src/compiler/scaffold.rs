@@ -64,6 +64,7 @@ pub fn scaffold_micro_crate(
     });
 
     let needs_atomics = merged_deps_contain_rayon(shared_cargo_toml, cargo_toml);
+    let needs_autodiff = uses_std_autodiff(source, shared_source);
 
     let generated_cargo_toml = generate_cargo_toml(
         cell_id,
@@ -71,11 +72,19 @@ pub fn scaffold_micro_crate(
         &absolute_cell_path,
         shared_cargo_toml,
         needs_atomics,
+        needs_autodiff,
     );
     std::fs::write(crate_dir.join("Cargo.toml"), generated_cargo_toml)?;
 
-    let (lib_rs, preamble_lines, is_async, is_simulation) =
+    let (mut lib_rs, mut preamble_lines, is_async, is_simulation) =
         generate_lib_rs(source, previous_cell_types, shared_source.is_some());
+    if needs_autodiff {
+        // `#![feature(autodiff)]` must sit at the crate root — the one place a
+        // cell author can't reach and the scaffold owns. Adding a line above
+        // the wrapper shifts every diagnostic, hence the preamble bump.
+        lib_rs.insert_str(0, "#![feature(autodiff)]\n");
+        preamble_lines += 1;
+    }
     std::fs::write(src_dir.join("lib.rs"), lib_rs)?;
 
     if let Some(shared) = shared_source {
@@ -109,9 +118,16 @@ fn generate_cargo_toml(
     ironpad_cell_path: &Path,
     shared_cargo_toml: Option<&str>,
     needs_atomics: bool,
+    needs_autodiff: bool,
 ) -> String {
     let merged_deps = merge_dependencies(shared_cargo_toml, user_cargo_toml);
-    let extra_sections = extract_extra_sections(shared_cargo_toml, user_cargo_toml);
+    let mut extra_sections = extract_extra_sections(shared_cargo_toml, user_cargo_toml);
+    if needs_autodiff {
+        // Enzyme runs during (fat) LTO and rustc enforces the profile per
+        // crate, so the notebook's usual fast-compile profile must be
+        // overridden — not appended, which would be a TOML duplicate-key error.
+        extra_sections = enforce_autodiff_profile(&extra_sections);
+    }
 
     // Escape backslashes for Windows path compatibility in TOML strings.
     let cell_path_str = ironpad_cell_path.display().to_string().replace('\\', "/");
@@ -240,6 +256,67 @@ pub fn merged_deps_contain_rayon(shared_cargo_toml: Option<&str>, cell_cargo_tom
         .lines()
         .filter_map(crate_name_from_dep_line)
         .any(|name| name == "rayon")
+}
+
+/// Returns `true` if the cell (or the notebook's shared source) uses
+/// `std::autodiff`, opting the build into the Enzyme pipeline: crate-root
+/// feature gate, fat-LTO profile, nightly toolchain, and
+/// `-Zautodiff=Enable` (PRD-0041).
+///
+/// Substring detection mirrors the rayon opt-in's spirit: using the feature
+/// IS the opt-in. False positives (e.g. the strings in a comment) cost only a
+/// slower compile profile, never a wrong result.
+pub fn uses_std_autodiff(source: &str, shared_source: Option<&str>) -> bool {
+    let hit = |s: &str| {
+        s.contains("autodiff_forward")
+            || s.contains("autodiff_reverse")
+            || s.contains("std::autodiff")
+    };
+    hit(source) || shared_source.is_some_and(hit)
+}
+
+/// Rewrite `[profile.release]` in the forwarded extra sections so the Enzyme
+/// requirements hold: `lto = "fat"` and `codegen-units = 1` (rustc refuses
+/// `#[autodiff_*]` without fat LTO). The user's other profile keys (e.g.
+/// `opt-level`) are preserved; if no release profile exists, one is appended.
+fn enforce_autodiff_profile(extra_sections: &str) -> String {
+    const FORCED: &str = "lto = \"fat\"\ncodegen-units = 1\n";
+
+    let mut out = String::new();
+    let mut in_release = false;
+    let mut had_release = false;
+
+    for line in extra_sections.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_release = trimmed == "[profile.release]";
+            if in_release {
+                had_release = true;
+                out.push_str(line);
+                out.push('\n');
+                out.push_str(FORCED);
+                continue;
+            }
+        }
+        if in_release {
+            let key = trimmed.split('=').next().map_or("", str::trim);
+            if key == "lto" || key == "codegen-units" {
+                continue; // replaced by the forced values above
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    if !had_release {
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str("[profile.release]\n");
+        out.push_str(FORCED);
+    }
+
+    out
 }
 
 /// Extract non-`[dependencies]` sections from the shared and cell Cargo.toml
@@ -758,7 +835,7 @@ serde = "1"
 serde = { version = "1", features = ["derive"] }
 "#;
 
-        let result = generate_cargo_toml("abc123", user_toml, &cell_path, None, false);
+        let result = generate_cargo_toml("abc123", user_toml, &cell_path, None, false, false);
 
         assert!(result.contains(r#"name = "cell-abc123""#));
         assert!(result.contains(r#"crate-type = ["cdylib"]"#));
@@ -769,7 +846,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn cargo_toml_with_no_user_deps() {
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let result = generate_cargo_toml("cell0", "", &cell_path, None, false);
+        let result = generate_cargo_toml("cell0", "", &cell_path, None, false, false);
 
         assert!(result.contains(r#"name = "cell-cell0""#));
         assert!(result.contains(r#"crate-type = ["cdylib"]"#));
@@ -780,7 +857,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn cargo_toml_with_rayon_enables_feature() {
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let result = generate_cargo_toml("cell0", "rayon = \"1\"", &cell_path, None, true);
+        let result = generate_cargo_toml("cell0", "rayon = \"1\"", &cell_path, None, true, false);
 
         assert!(result.contains(r#"features = ["rayon"]"#));
     }
@@ -788,7 +865,7 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn cargo_toml_without_rayon_omits_feature() {
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let result = generate_cargo_toml("cell0", "serde = \"1\"", &cell_path, None, false);
+        let result = generate_cargo_toml("cell0", "serde = \"1\"", &cell_path, None, false, false);
 
         assert!(!result.contains(r#"features = ["rayon"]"#));
     }
@@ -801,7 +878,7 @@ serde = { version = "1", features = ["derive"] }
         // than hardcoding a version, so this doesn't break on a wasm-bindgen
         // CLI upgrade or a differently-pinned CI image.
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let result = generate_cargo_toml("cell0", "", &cell_path, None, false);
+        let result = generate_cargo_toml("cell0", "", &cell_path, None, false, false);
 
         match super::super::toolchain::wasm_bindgen_cli_version() {
             Some(v) => assert!(
@@ -1276,7 +1353,7 @@ opt-level = 1
 lto = false
 codegen-units = 16
 ";
-        let result = generate_cargo_toml("abc", "", &cell_path, Some(shared), false);
+        let result = generate_cargo_toml("abc", "", &cell_path, Some(shared), false, false);
         assert!(result.contains("[profile.release]"));
         assert!(result.contains("opt-level = 1"));
         assert!(result.contains("serde"));
@@ -1700,6 +1777,122 @@ impl LiveView for Dashboard {
             None,
             "[dependencies]\nserde = \"1\""
         ));
+    }
+
+    // ── std::autodiff opt-in (PRD-0041) ─────────────────────────────────
+
+    #[test]
+    fn uses_std_autodiff_detects_in_cell_source() {
+        assert!(uses_std_autodiff(
+            "let g = d_f(1.0, 1.0); // autodiff_reverse",
+            None
+        ));
+        assert!(uses_std_autodiff(
+            "use std::autodiff::autodiff_forward;",
+            None
+        ));
+        assert!(!uses_std_autodiff("let x = 42;", None));
+    }
+
+    #[test]
+    fn uses_std_autodiff_detects_in_shared_source() {
+        let shared = "#[autodiff_reverse(d_f, Active, Active)]\npub fn f(x: f64) -> f64 { x * x }";
+        assert!(uses_std_autodiff("d_f(2.0, 1.0)", Some(shared)));
+        assert!(!uses_std_autodiff("let x = 1;", Some("pub fn f() {}")));
+    }
+
+    #[test]
+    fn autodiff_scaffold_adds_feature_gate_and_bumps_preamble() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell_src = "    let (_v, g) = shared::d_f(2.0, 1.0);\n    g";
+        let shared = "#[autodiff_reverse(d_f, Active, Active)]\npub fn f(x: f64) -> f64 { x * x }";
+
+        // Baseline without autodiff for the preamble delta.
+        let (_, base_preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "no-ad",
+            "    1",
+            "[dependencies]",
+            &[],
+            None,
+            Some("pub fn f() {}"),
+        )
+        .unwrap();
+
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "with-ad",
+            cell_src,
+            "[dependencies]",
+            &[],
+            None,
+            Some(shared),
+        )
+        .unwrap();
+
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(
+            lib_rs.starts_with("#![feature(autodiff)]\n"),
+            "feature gate must be the first crate-root line"
+        );
+        assert_eq!(
+            preamble,
+            base_preamble + 1,
+            "the injected feature line shifts diagnostics by exactly one"
+        );
+    }
+
+    #[test]
+    fn autodiff_cargo_toml_enforces_fat_lto_over_user_profile() {
+        let shared =
+            "[dependencies]\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16";
+        let toml = generate_cargo_toml(
+            "c1",
+            "[dependencies]",
+            Path::new("/cell"),
+            Some(shared),
+            false,
+            true,
+        );
+        assert!(
+            toml.contains("lto = \"fat\""),
+            "lto must be forced to fat: {toml}"
+        );
+        assert!(
+            toml.contains("codegen-units = 1"),
+            "cgu must be forced to 1: {toml}"
+        );
+        assert!(
+            !toml.contains("lto = false"),
+            "user lto must be replaced: {toml}"
+        );
+        assert!(
+            !toml.contains("codegen-units = 16"),
+            "user cgu must be replaced: {toml}"
+        );
+        assert!(
+            toml.contains("opt-level = 1"),
+            "other user keys survive: {toml}"
+        );
+    }
+
+    #[test]
+    fn autodiff_cargo_toml_appends_profile_when_absent() {
+        let toml = generate_cargo_toml(
+            "c2",
+            "[dependencies]",
+            Path::new("/cell"),
+            None,
+            false,
+            true,
+        );
+        assert!(toml.contains("[profile.release]"));
+        assert!(toml.contains("lto = \"fat\""));
+        assert!(toml.contains("codegen-units = 1"));
     }
 
     #[test]

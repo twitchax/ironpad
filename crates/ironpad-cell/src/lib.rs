@@ -104,6 +104,8 @@ pub mod timing;
 pub mod ui;
 
 #[cfg(target_arch = "wasm32")]
+pub mod enzyme_shims;
+#[cfg(target_arch = "wasm32")]
 pub mod http;
 
 // ── CellInput ────────────────────────────────────────────────────────────────

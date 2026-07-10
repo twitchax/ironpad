@@ -37,6 +37,20 @@ const ATOMICS_RUSTFLAGS: &str = "\
 /// `rust-src` and the `wasm32-unknown-unknown` target.
 const ATOMICS_TOOLCHAIN: &str = "nightly-2025-12-22";
 
+/// RUSTFLAGS enabling Enzyme autodiff (`std::autodiff`) for a cell build.
+const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
+
+/// Toolchain used for `std::autodiff` (Enzyme) cell builds.
+///
+/// Deliberately the *rolling* `nightly` (not the atomics pin): the `enzyme`
+/// rustup component only exists on recent nightlies (absent for
+/// 2025-12-22), and each libEnzyme is built against its own nightly's LLVM.
+/// The deploy image installs `nightly` + `enzyme` together at image build
+/// time, which pins the pair per-image. If both rayon and autodiff are
+/// requested, this toolchain wins (it has rust-src for `-Zbuild-std`; the
+/// atomics pin has no Enzyme).
+const AUTODIFF_TOOLCHAIN: &str = "nightly";
+
 /// Hard timeout for a single `cargo build` invocation.
 /// Override with `IRONPAD_BUILD_TIMEOUT_SECS` env var (default: 300s).
 fn build_timeout() -> Duration {
@@ -84,6 +98,7 @@ pub enum BuildResult {
 ///
 /// Returns `Err` for infrastructure problems: failed to spawn cargo, build
 /// timeout exceeded, or missing `.wasm` artifact after a successful exit code.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_micro_crate(
     crate_dir: &Path,
     cache_dir: &Path,
@@ -91,6 +106,7 @@ pub async fn build_micro_crate(
     cell_id: &str,
     compilation_proxy: Option<&str>,
     needs_atomics: bool,
+    needs_autodiff: bool,
 ) -> anyhow::Result<BuildResult> {
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = if needs_atomics {
@@ -127,6 +143,7 @@ pub async fn build_micro_crate(
         &target_dir,
         compilation_proxy,
         needs_atomics,
+        needs_autodiff,
     );
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -250,6 +267,7 @@ pub async fn build_micro_crate(
 /// production build and the `cargo check` guard behind
 /// `all_public_notebook_cells_compile`. Stdio/process-group setup stays with the
 /// caller since only the real build needs it.
+#[allow(clippy::too_many_arguments)]
 fn configure_cargo_cmd(
     cmd: &mut Command,
     subcommand: &str,
@@ -258,8 +276,12 @@ fn configure_cargo_cmd(
     target_dir: &Path,
     compilation_proxy: Option<&str>,
     needs_atomics: bool,
+    needs_autodiff: bool,
 ) {
-    if needs_atomics {
+    if needs_autodiff {
+        cmd.arg(format!("+{AUTODIFF_TOOLCHAIN}"));
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
+    } else if needs_atomics {
         cmd.arg(format!("+{ATOMICS_TOOLCHAIN}"));
         // Ensure the rustup shim respects our +toolchain over any inherited
         // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
@@ -285,9 +307,18 @@ fn configure_cargo_cmd(
         cmd.env("HTTP_PROXY", proxy);
     }
 
+    // Compose RUSTFLAGS: atomics and autodiff can coexist (both are plain
+    // flag sets; the autodiff toolchain carries rust-src for -Zbuild-std).
+    let mut rustflags = Vec::new();
     if needs_atomics {
         cmd.arg("-Zbuild-std=std,panic_abort");
-        cmd.env("RUSTFLAGS", ATOMICS_RUSTFLAGS);
+        rustflags.push(ATOMICS_RUSTFLAGS);
+    }
+    if needs_autodiff {
+        rustflags.push(AUTODIFF_RUSTFLAGS);
+    }
+    if !rustflags.is_empty() {
+        cmd.env("RUSTFLAGS", rustflags.join(" "));
     }
 }
 
@@ -306,6 +337,7 @@ pub async fn check_micro_crate(
     _cell_id: &str,
     compilation_proxy: Option<&str>,
     needs_atomics: bool,
+    needs_autodiff: bool,
 ) -> anyhow::Result<CheckResult> {
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = if needs_atomics {
@@ -331,6 +363,7 @@ pub async fn check_micro_crate(
             &target_dir,
             compilation_proxy,
             needs_atomics,
+            needs_autodiff,
         );
         cmd.output()
     })
