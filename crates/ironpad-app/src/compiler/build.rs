@@ -50,8 +50,9 @@ const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 /// end to end on. The `enzyme` rustup component exists for it (absent for the
 /// atomics pin, 2025-12-22) and ships a matching libEnzyme/LLVM pair. The
 /// deploy image and dev hosts must install this toolchain with the `enzyme`
-/// + `rust-src` components and the wasm32 target. If both rayon and autodiff
-/// are requested, this toolchain wins (it has rust-src for `-Zbuild-std`).
+/// and `rust-src` components and the wasm32 target. If both rayon and
+/// autodiff are requested, this toolchain wins (it has rust-src for
+/// `-Zbuild-std`).
 const AUTODIFF_TOOLCHAIN: &str = "nightly-2026-06-01";
 
 /// Hard timeout for a single `cargo build` invocation.
