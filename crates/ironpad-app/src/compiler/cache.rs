@@ -36,7 +36,12 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// length-prefixed (framed) in the hash input, which changes every key, so
 /// pre-existing blobs (hashed with the old bare-concatenation scheme) must be
 /// invalidated once.
-const CACHE_EPOCH: u32 = 4;
+///
+/// Bumped 4 -> 5 for PRD-0043 T-001: `ironpad-cell` gained the `blocking`
+/// module (JSPI host imports), so cached cells must rebuild against the new
+/// runtime. (The `needs_simd` hash byte added in the same release also
+/// changes every key; the bump keeps the documented ironpad-cell discipline.)
+const CACHE_EPOCH: u32 = 5;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 

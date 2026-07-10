@@ -78,6 +78,7 @@ pub mod prelude {
 
     pub use console_error_panic_hook;
 
+    pub use crate::blocking;
     pub use crate::canvas::{Animation, Canvas};
     pub use crate::gpu::{gpu_available, GpuCanvas, GpuSimulation};
     pub use crate::plot::Plot;
@@ -96,6 +97,7 @@ pub mod prelude {
     pub use super::http;
 }
 
+pub mod blocking;
 pub mod canvas;
 pub mod gpu;
 pub mod plot;

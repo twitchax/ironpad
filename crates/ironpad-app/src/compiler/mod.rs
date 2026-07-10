@@ -649,6 +649,54 @@ pub fn range(angle: f64) -> f64 {
 
     #[tokio::test]
     #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn compile_cell_with_blocking_imports_links_successfully() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "jspi-blocking";
+        // References all four `ironpad_blocking_*` host imports through the
+        // public API (sleep + fetch), so the build must resolve them at link
+        // time under `wasm_import_module = "env"` (the PRD-0031 lesson,
+        // extended to PRD-0043).
+        let source = "    blocking::sleep_ms(1.0);\n    let body = blocking::fetch_text(\"/notebooks/welcome.ironpad\");\n    CellOutput::from(body.map_or_else(|e| e, |b| b))";
+        let cargo_toml = "[dependencies]";
+
+        let (crate_dir, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                let wasm_bytes = std::fs::read(&wasm_path).unwrap();
+                assert_eq!(&wasm_bytes[..4], b"\x00asm");
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "blocking (JSPI) cell should build and link.\nstdout(tail): {}\nstderr(tail): {}",
+                    &stdout[stdout.len().saturating_sub(2000)..],
+                    &stderr[stderr.len().saturating_sub(1500)..],
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_cell_with_portable_simd_builds_successfully() {
         let cache_dir = tempdir();
         let cell_path = ironpad_cell_path();

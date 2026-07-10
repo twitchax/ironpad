@@ -56,6 +56,35 @@
 
   var SIM_BUS_RING_CAP = 1000;
 
+  // ── JSPI (blocking host calls, PRD-0043) ──────────────────────────────────
+  //
+  // Cells that import `ironpad_blocking_*` (ironpad_cell::blocking) need the
+  // WebAssembly JS Promise Integration API: their imports are wrapped in
+  // WebAssembly.Suspending and cell_main is entered via WebAssembly.promising,
+  // so a synchronous Rust call can suspend the whole WASM stack while a JS
+  // promise settles. Shipped by default in Chrome/Edge 137+.
+
+  var JSPI_IMPORT_PREFIX = "ironpad_blocking_";
+  var JSPI_UNSUPPORTED_MSG =
+    "This cell uses blocking host calls (ironpad_cell::blocking), which need " +
+    "WebAssembly JSPI: available in Chrome and Edge 137+, not yet in Firefox " +
+    "or Safari.";
+
+  function _jspiAvailable() {
+    return (
+      typeof WebAssembly.Suspending === "function" &&
+      typeof WebAssembly.promising === "function"
+    );
+  }
+
+  /// True when the compiled module imports any `ironpad_blocking_*` function,
+  /// i.e. it must be entered via WebAssembly.promising in execute().
+  function _moduleNeedsJspi(module) {
+    return WebAssembly.Module.imports(module).some(function (imp) {
+      return imp.module === "env" && imp.name.indexOf(JSPI_IMPORT_PREFIX) === 0;
+    });
+  }
+
   // ── WASM trap diagnostics ─────────────────────────────────────────────────
   //
   // When a WASM module traps, the JS engine throws a WebAssembly.RuntimeError
@@ -310,6 +339,7 @@
     this.modules = new Map(); // cell_id -> { hash, type, ... }
     this._messageHandlers = {}; // type -> handler(msg, cellId)
     this._simBus = new Map(); // key -> { latest: string|null, ring: string[] }
+    this._blockingPayloads = new Map(); // cell_id -> { ok: bool, bytes: Uint8Array }
   }
 
   // ── Host message infrastructure ─────────────────────────────────────────
@@ -539,6 +569,84 @@
   ///
   /// If the cell already has a module loaded with the same hash, this is a
   /// no-op (cache hit).  Otherwise the previous module is replaced.
+  // ── JSPI blocking-call host side (PRD-0043) ──────────────────────────────
+  //
+  // Two-phase fetch protocol, mirroring `_simRead`'s host->cell copy shape:
+  // the suspending `ironpad_blocking_fetch` performs the request while the
+  // instance is parked and stashes the payload per-cell, returning only its
+  // length; after the cell resumes, the synchronous `ironpad_blocking_read`
+  // copies the payload into a buffer the cell allocated itself. The host never
+  // calls back into a suspended instance.
+
+  /// Wrap `fn` as a suspending import when JSPI is available; otherwise a stub
+  /// that traps with a clear browser-support message. Instantiation succeeds
+  /// either way — execute() gates earlier with the same message, so the stub
+  /// is a belt-and-suspenders backstop.
+  CellExecutor.prototype._jspiImport = function (fn) {
+    if (_jspiAvailable()) return new WebAssembly.Suspending(fn);
+    return function () {
+      throw new Error(JSPI_UNSUPPORTED_MSG);
+    };
+  };
+
+  /// Linear memory of a loaded cell (either loading path), or null.
+  CellExecutor.prototype._cellMemory = function (cellId) {
+    var entry = this.modules.get(cellId);
+    if (!entry) return null;
+    return entry.type === "bindgen"
+      ? entry.wasm.memory
+      : entry.instance.exports.memory;
+  };
+
+  /// Suspending import: fetch the URL (read from WASM memory), stash the
+  /// payload (body on success, error text otherwise), return its byte length.
+  CellExecutor.prototype._blockingFetch = async function (cellId, urlPtr, urlLen) {
+    var memory = this._cellMemory(cellId);
+    // Copy the URL out before the first await: the view must not be held
+    // across a suspension (a memory.grow on resume would detach it).
+    var url = "";
+    if (memory) {
+      var urlBytes = new Uint8Array(urlLen);
+      urlBytes.set(new Uint8Array(memory.buffer, urlPtr, urlLen));
+      url = new TextDecoder().decode(urlBytes);
+    }
+    var ok = false;
+    var bytes;
+    try {
+      var resp = await fetch(url);
+      var body = new Uint8Array(await resp.arrayBuffer());
+      if (resp.ok) {
+        ok = true;
+        bytes = body;
+      } else {
+        bytes = new TextEncoder().encode(
+          "HTTP " + resp.status + (resp.statusText ? " " + resp.statusText : "")
+        );
+      }
+    } catch (e) {
+      bytes = new TextEncoder().encode(String((e && e.message) || e));
+    }
+    this._blockingPayloads.set(cellId, { ok: ok, bytes: bytes });
+    return bytes.length;
+  };
+
+  /// Synchronous import: 1 if the last fetch for this cell succeeded.
+  CellExecutor.prototype._blockingFetchOk = function (cellId) {
+    var p = this._blockingPayloads.get(cellId);
+    return p && p.ok ? 1 : 0;
+  };
+
+  /// Synchronous import: copy the stashed payload into a cell-allocated
+  /// buffer, returning the byte count copied.
+  CellExecutor.prototype._blockingRead = function (cellId, bufPtr, bufLen) {
+    var memory = this._cellMemory(cellId);
+    var p = this._blockingPayloads.get(cellId);
+    if (!memory || !p) return 0;
+    var n = Math.min(bufLen, p.bytes.length);
+    new Uint8Array(memory.buffer, bufPtr, n).set(p.bytes.subarray(0, n));
+    return n;
+  };
+
   CellExecutor.prototype.loadBlob = async function (cellId, hash, wasmBytes, jsGlue) {
     var existing = this.modules.get(cellId);
     if (existing && existing.hash === hash) {
@@ -584,7 +692,15 @@
         escapedCellId + ", h, p, l); }, " +
         "ironpad_gpu_dispatch_compute: function(sp, sl, uh, oh, w, h) { " +
         "return " + globalRef + " ? " + globalRef + "._gpuDispatchComputeForCell(" +
-        escapedCellId + ", sp, sl, uh, oh, w, h) : 1; }";
+        escapedCellId + ", sp, sl, uh, oh, w, h) : 1; }, " +
+        "ironpad_blocking_sleep_ms: " + globalRef + "._jspiImport(function(ms) { " +
+        "return new Promise(function(res) { setTimeout(res, ms); }); }), " +
+        "ironpad_blocking_fetch: " + globalRef + "._jspiImport(function(p, l) { " +
+        "return " + globalRef + "._blockingFetch(" + escapedCellId + ", p, l); }), " +
+        "ironpad_blocking_fetch_ok: function() { " +
+        "return " + globalRef + " ? " + globalRef + "._blockingFetchOk(" + escapedCellId + ") : 0; }, " +
+        "ironpad_blocking_read: function(p, l) { " +
+        "return " + globalRef + " ? " + globalRef + "._blockingRead(" + escapedCellId + ", p, l) : 0; }";
       jsGlue = jsGlue.replace(
         /import\s*\*\s*as\s+(\w+)\s+from\s+['"]env['"]\s*;?/g,
         function (_match, starName) {
@@ -718,6 +834,18 @@
         "    imports.env.ironpad_gpu_dispatch_compute = function(sp, sl, uh, oh, w, h) {\n" +
         "      return " + globalRef + " ? " + globalRef + "._gpuDispatchComputeForCell(__ironpad_cell_id, sp, sl, uh, oh, w, h) : 1;\n" +
         "    };\n" +
+        "    imports.env.ironpad_blocking_sleep_ms = " + globalRef + "._jspiImport(function(ms) {\n" +
+        "      return new Promise(function(res) { setTimeout(res, ms); });\n" +
+        "    });\n" +
+        "    imports.env.ironpad_blocking_fetch = " + globalRef + "._jspiImport(function(p, l) {\n" +
+        "      return " + globalRef + "._blockingFetch(__ironpad_cell_id, p, l);\n" +
+        "    });\n" +
+        "    imports.env.ironpad_blocking_fetch_ok = function() {\n" +
+        "      return " + globalRef + " ? " + globalRef + "._blockingFetchOk(__ironpad_cell_id) : 0;\n" +
+        "    };\n" +
+        "    imports.env.ironpad_blocking_read = function(p, l) {\n" +
+        "      return " + globalRef + " ? " + globalRef + "._blockingRead(__ironpad_cell_id, p, l) : 0;\n" +
+        "    };\n" +
         "    return imports;\n" +
         "  };\n" +
         "}\n";
@@ -736,9 +864,16 @@
       try {
         var mod = await import(/* webpackIgnore: true */ jsUrl);
 
+        // Compile ahead of init so the import section can be inspected: cells
+        // importing `ironpad_blocking_*` must be entered via the JSPI path in
+        // execute(). wasm-bindgen's init accepts a precompiled
+        // WebAssembly.Module, so compilation still happens exactly once.
+        var wasmModule = await WebAssembly.compile(wasmBytes);
+        var needsJspi = _moduleNeedsJspi(wasmModule);
+
         // wasm-bindgen's default export is the init function.
         // It returns the raw WASM exports object.
-        var wasm = await mod.default({ module_or_path: wasmBytes });
+        var wasm = await mod.default({ module_or_path: wasmModule });
 
         // If the cell exports initThreadPool (wasm-bindgen-rayon), initialize
         // the rayon thread pool with the available hardware concurrency.
@@ -750,6 +885,7 @@
         this.modules.set(cellId, {
           hash: hash,
           type: "bindgen",
+          needsJspi: needsJspi, // enter via WebAssembly.promising in execute()
           module: mod, // JS glue (wrapped cell_main, handles async)
           wasm: wasm, // Raw WASM exports (memory, ironpad_alloc, ironpad_dealloc)
         });
@@ -783,12 +919,27 @@
           ironpad_gpu_dispatch_compute: function (sp, sl, uh, oh, w, h) {
             return rawSelf._gpuDispatchComputeForCell(rawCellId, sp, sl, uh, oh, w, h);
           },
+          ironpad_blocking_sleep_ms: rawSelf._jspiImport(function (ms) {
+            return new Promise(function (res) {
+              setTimeout(res, ms);
+            });
+          }),
+          ironpad_blocking_fetch: rawSelf._jspiImport(function (ptr, len) {
+            return rawSelf._blockingFetch(rawCellId, ptr, len);
+          }),
+          ironpad_blocking_fetch_ok: function () {
+            return rawSelf._blockingFetchOk(rawCellId);
+          },
+          ironpad_blocking_read: function (ptr, len) {
+            return rawSelf._blockingRead(rawCellId, ptr, len);
+          },
         },
       };
       var result = await WebAssembly.instantiate(wasmBytes, imports);
       this.modules.set(cellId, {
         hash: hash,
         type: "raw",
+        needsJspi: _moduleNeedsJspi(result.module),
         instance: result.instance,
       });
     }
@@ -832,6 +983,12 @@
     if (!alloc) throw new Error("wasm-bindgen module: missing 'ironpad_alloc' export");
     if (!dealloc) throw new Error("wasm-bindgen module: missing 'ironpad_dealloc' export");
 
+    // Gate blocking cells on browser support up front — a friendly error here
+    // beats a Suspending-less trap from inside the instance.
+    if (entry.needsJspi && !_jspiAvailable()) {
+      throw new Error(JSPI_UNSUPPORTED_MSG);
+    }
+
     // ── Write input bytes into WASM linear memory ────────────────────────
 
     var inputPtr = 0;
@@ -859,7 +1016,19 @@
     var resultPtr;
     try {
       try {
-        resultPtr = await mod.cell_main(inputPtr, inputLen);
+        if (entry.needsJspi) {
+          // Blocking cells enter through WebAssembly.promising on the RAW
+          // export so the `ironpad_blocking_*` Suspending imports can park
+          // the stack. The bindgen wrapper is bypassed — for sync cells it is
+          // a trivial `>>> 0` shim, and blocking cells are sync by contract
+          // (see ironpad_cell::blocking's module docs).
+          if (typeof wasm.cell_main !== "function") {
+            throw new Error("JSPI cell: missing raw 'cell_main' export");
+          }
+          resultPtr = await WebAssembly.promising(wasm.cell_main)(inputPtr, inputLen);
+        } else {
+          resultPtr = await mod.cell_main(inputPtr, inputLen);
+        }
       } catch (e) {
         throw new Error(_describeWasmTrap(e, memory));
       }
@@ -900,6 +1069,16 @@
     if (!alloc) throw new Error("raw module: missing 'ironpad_alloc' export");
     if (!dealloc) throw new Error("raw module: missing 'ironpad_dealloc' export");
     if (!cellMain) throw new Error("raw module: missing 'cell_main' export");
+
+    // Blocking cells always come from the wasm-bindgen build path; a raw
+    // (legacy) blob importing them predates the feature and can't be entered
+    // via promising here.
+    if (entry.needsJspi) {
+      if (!_jspiAvailable()) throw new Error(JSPI_UNSUPPORTED_MSG);
+      throw new Error(
+        "blocking host calls (ironpad_cell::blocking) require the wasm-bindgen cell build — recompile the cell"
+      );
+    }
 
     // ── Write input bytes into WASM linear memory ────────────────────────
 
@@ -1253,6 +1432,7 @@
   /// Remove a loaded cell module, freeing browser-side resources.
   CellExecutor.prototype.unload = function (cellId) {
     this.modules.delete(cellId);
+    this._blockingPayloads.delete(cellId);
     // Release this cell's stashed rayon glue (set in loadBlob) so it isn't
     // retained for the life of the worker. No-op for non-rayon cells.
     if (self.__ironpadRayonGlue) delete self.__ironpadRayonGlue[cellId];
