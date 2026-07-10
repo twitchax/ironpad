@@ -132,7 +132,7 @@ $ ironpad cells reorder <cell-id-1> <cell-id-2> <cell-id-3>
 Browser (model) ←→ WS ←→ API Server (relay) ←→ WS ←→ CLI Daemon ←→ Agent
 ```
 
-The browser is the authoritative model server.  The API server is a stateless relay.  The CLI daemon caches notebook state locally so read queries resolve instantly without a network round-trip.
+The browser is the authoritative model server.  The API server is a **stateless message relay**: it holds only ephemeral session and token state, never notebook content.  The CLI daemon caches notebook state locally so read queries resolve instantly without a network round-trip.
 
 ## Architecture
 

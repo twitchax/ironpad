@@ -8,7 +8,7 @@ This document provides guidance for AI coding agents working in the ironpad repo
 
 ### Key Statistics
 - **Crates**: 7 (app, cli, server, frontend, common, cell, proxy)
-- **Compiler modules**: 6 (scaffold, cache, build, diagnostics, optimize, mod)
+- **Compiler modules**: 7 (scaffold, cache, build, diagnostics, optimize, toolchain, mod)
 - **Framework**: Leptos 0.8 + Axum + Monaco editor
 - **Build tool**: cargo-make (all dev commands)
 - **Collaboration**: WebSocket relay + CLI daemon + session/token management
@@ -29,9 +29,9 @@ crates/
 
 docker/                 # Multi-stage build + docker-compose
 tests/e2e/              # Playwright e2e tests (including agent session tests)
-public/                 # executor.js, storage.js, Monaco editor, public notebooks
+public/                 # executor-bridge.js (+ worker/core), storage.js, Monaco editor, public notebooks
 style/                  # SCSS styles
-data/                   # Server-side shares + public notebook index
+data/                   # Server-side shares + private notebook storage
 ```
 
 ---
@@ -65,23 +65,28 @@ cargo make uat
 
 ### All cargo-make Tasks
 
-| Task               | Purpose                                            |
-| ------------------ | -------------------------------------------------- |
-| `install-tools`    | Install all dev tools + wasm target                |
-| `dev`              | Start cargo-leptos watch (dev server, live reload) |
-| `build`            | Release build via cargo-leptos                     |
-| `build-cli`        | Build ironpad-cli binary (release)                 |
-| `fmt`              | Auto-format all Rust code                          |
-| `fmt-check`        | Check formatting (no changes)                      |
-| `clippy`           | Run clippy lints                                   |
-| `test`             | Unit/integration tests via cargo-nextest           |
-| `test-integration` | Slow tests (requires wasm32 target)                |
-| `ci`               | fmt-check + clippy + test                          |
-| `playwright`       | Build CLI + run Playwright e2e tests               |
-| `uat`              | ci + test-integration + playwright                 |
-| `docker-build`     | Build Docker image                                 |
-| `docker-up`        | Start container via docker-compose                 |
-| `docker-down`      | Stop container                                     |
+| Task                 | Purpose                                            |
+| -------------------- | -------------------------------------------------- |
+| `install-tools`      | Install all dev tools + wasm target                |
+| `setup-monaco`       | Install monaco-editor from npm, copy dist to public/monaco/ |
+| `dev`                | Start cargo-leptos watch (dev server, live reload) |
+| `build`              | Release build via cargo-leptos                     |
+| `build-cli`          | Build ironpad-cli binary (release)                 |
+| `fmt`                | Auto-format all Rust code                          |
+| `fmt-check`          | Check formatting (no changes)                      |
+| `clippy`             | Run clippy lints                                   |
+| `test`               | Unit/integration tests via cargo-nextest           |
+| `test-integration`   | Slow tests (requires wasm32 target)                |
+| `ci`                 | fmt-check + clippy + test                          |
+| `warmup-atomics`     | Pre-build std with atomics for rayon cells (one-time) |
+| `playwright-install` | Install Playwright browsers                        |
+| `playwright`         | Build CLI + run Playwright e2e tests               |
+| `uat`                | ci + test-integration + playwright                 |
+| `coverage`           | Coverage report via cargo-llvm-cov                 |
+| `docker-build`       | Build Docker image                                 |
+| `docker-up`          | Start container via docker-compose                 |
+| `docker-down`        | Stop container                                     |
+| `docker-uat`         | Build image, start container, run playwright, tear down |
 
 ---
 
@@ -132,12 +137,12 @@ The core of ironpad is a 5-stage WASM compiler:
    - Injects ironpad-cell dependency
 
 2. **Cache Check** (`compiler/cache.rs`):
-   - blake3 hash of (source || cargo_toml || "wasm32-unknown-unknown")
+   - blake3 hash of (source, cargo_toml, previous cell types, shared cargo_toml/source, atomics flag) plus a toolchain fingerprint, so toolchain upgrades invalidate stale blobs
    - Lookup at `{cache_dir}/blobs/{hash}.wasm`
 
 3. **Build** (`compiler/build.rs`):
    - `cargo build --target wasm32-unknown-unknown --release --message-format=json`
-   - 30-second timeout
+   - 300-second timeout (override with `IRONPAD_BUILD_TIMEOUT_SECS`)
    - Returns WASM blob path or stdout with diagnostics
 
 4. **Diagnostics** (`compiler/diagnostics.rs`):
@@ -158,8 +163,8 @@ The core of ironpad is a 5-stage WASM compiler:
 - No server-side notebook CRUD — the server is stateless for private notebooks
 - Canonical format: `IronpadNotebook` (defined in `ironpad-common/src/types.rs`)
 
-**Public notebooks** are static `.ironpad` JSON files served from `public/notebooks/`:
-- Index at `{data_dir}/public_notebooks/index.json`
+**Public notebooks** are static `.ironpad` JSON files served from `public/notebooks/` (bundled into `{site_root}/notebooks/` at build time):
+- **No index file**: `list_public_notebooks()` enumerates `{site_root}/notebooks/*.ironpad` at runtime and reads each notebook's own `title`/`description`
 - Server functions: `list_public_notebooks()`, `get_public_notebook(filename)`
 
 **Shared notebooks** use content-addressed storage:
@@ -292,7 +297,7 @@ RUST_LOG=ironpad=debug cargo make dev
 
 Check browser console (F12) for JS errors, especially:
 - `IronpadMonaco` not found → Monaco setup failed
-- `IronpadExecutor` not found → executor.js not loaded
+- `IronpadExecutor` not found → executor-bridge.js not loaded
 - WASM trap errors → Cell runtime panic
 
 ---
@@ -430,7 +435,7 @@ git push origin feature/my-feature
 **"WASM module instantiation failed"**
 - Executor.js couldn't load Monaco or cell WASM
 - Check browser console (F12) for 404s
-- Verify `public/executor.js` and `public/monaco/` exist
+- Verify `public/executor-bridge.js` (plus its worker/core siblings) and `public/monaco/` exist
 
 ### Runtime Issues
 
@@ -475,7 +480,8 @@ git push origin feature/my-feature
 
 ## Further Reading
 
-- **Full PRD**: `MegaPrd.md` (comprehensive product requirements)
+- **Dev guide**: `DEVELOPMENT.md` (setup, architecture deep-dive, contribution workflow)
+- **Full PRD**: `MegaPrd.md` (historical product vision; current behavior is tracked in `.prds/`)
 - **Per-module docs**: Each compiler module has inline `//!` documentation
 - **Test examples**: Look at test cases for API usage patterns
 - **Leptos docs**: https://leptos.dev
@@ -516,13 +522,13 @@ Cell compilation targets `wasm32-unknown-unknown`, which uses `rust-lld` as the 
 
 **Fix**: annotate each host-import `extern "C"` block with `#[link(wasm_import_module = "env")]` (PRD-0031 T-001). This is a compile-time hint, not a linker flag — no `.cargo/config.toml` or `RUSTFLAGS` changes are needed. Regression coverage lives in `crates/ironpad-app/src/compiler/mod.rs::e2e_tests::compile_cell_with_host_imports_links_successfully`.
 
-### PRD / microralph
+### PRDs
 
-- PRD files live in `.mr/prds/` with YAML frontmatter
-- `MegaPrd.md` contains the comprehensive product requirements
-- `.mr/PRDS.md` is an auto-generated index
+- **PRD files live in `.prds/`** with YAML frontmatter (currently `PRD-0001` through `PRD-0038`)
+- **`MegaPrd.md` (repo root)** holds the original product vision; treat it as historical
+- **Review notes live in `.prds/reviews/`**; agentic-collaboration specs live in `.prds/agentic-collaboration/`
 
 ---
 
-**Last Updated**: 2026-03-07 — enriched with system/toolchain details and known issues
+**Last Updated**: 2026-07-10 — docs accuracy pass (PRD paths, task table, executor loading, public-notebook serving)
 **Target Audience**: AI agents, developers contributing to ironpad
