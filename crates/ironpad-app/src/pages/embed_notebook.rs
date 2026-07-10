@@ -30,7 +30,13 @@ pub fn EmbedSharedPage() -> impl IntoView {
             {move || {
                 let spec = spec.clone();
                 Suspend::new(async move {
-                    embed_body(notebook_resource.await, spec, "Shared notebook not found or expired")
+                    // Shared content is arbitrary user code: never auto-run.
+                    embed_body(
+                        notebook_resource.await,
+                        spec,
+                        false,
+                        "Shared notebook not found or expired",
+                    )
                 })
             }}
         </Suspense>
@@ -39,11 +45,23 @@ pub fn EmbedSharedPage() -> impl IntoView {
 
 /// Route component for `/embed/public/{filename}` — the iframe-embeddable
 /// variant of [`PublicNotebookPage`](super::PublicNotebookPage).
+///
+/// Unlike the full public page (which always auto-runs), an embed auto-runs
+/// only when the EMBEDDER opts in via `?autorun=1` (forwarded by embed.js from
+/// `data-autorun`): readers of a third-party page didn't choose ironpad, so
+/// surprise CPU is the embedder's call. Shared embeds never auto-run at all —
+/// [`EmbedSharedPage`] doesn't read the param (PRD-0040).
 #[component]
 pub fn EmbedPublicPage() -> impl IntoView {
     let params = use_params_map();
     let filename = params.read_untracked().get("filename").unwrap_or_default();
     let spec = format!("public/{filename}");
+
+    let query = leptos_router::hooks::use_query_map();
+    let autorun = matches!(
+        query.read_untracked().get("autorun").as_deref(),
+        Some("1" | "true")
+    );
 
     let notebook_resource = Resource::new(move || filename.clone(), get_public_notebook);
 
@@ -52,7 +70,12 @@ pub fn EmbedPublicPage() -> impl IntoView {
             {move || {
                 let spec = spec.clone();
                 Suspend::new(async move {
-                    embed_body(notebook_resource.await, spec, "Public notebook not found")
+                    embed_body(
+                        notebook_resource.await,
+                        spec,
+                        autorun,
+                        "Public notebook not found",
+                    )
                 })
             }}
         </Suspense>
@@ -74,11 +97,12 @@ fn embed_loading() -> impl IntoView {
 fn embed_body(
     result: Result<IronpadNotebook, ServerFnError>,
     spec: String,
+    autorun: bool,
     not_found: &'static str,
 ) -> AnyView {
     match result {
         Ok(notebook) => view! {
-            <ViewOnlyNotebook notebook embed=true embed_spec=spec />
+            <ViewOnlyNotebook notebook embed=true embed_spec=spec autorun=autorun />
         }
         .into_any(),
 

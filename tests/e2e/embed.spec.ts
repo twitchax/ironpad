@@ -38,6 +38,26 @@ test.describe("Notebook embedding", () => {
     expect(jsErrors).toEqual([]);
   });
 
+  test("embed autorun is opt-in: default idle, ?autorun=1 runs cells", async ({
+    page,
+  }) => {
+    // Default: an embed does NOT auto-run (readers of a third-party page
+    // didn't choose ironpad). No timing badge appears without a click.
+    await page.goto("/embed/public/welcome.ironpad");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+    await page.waitForTimeout(3_000);
+    await expect(page.locator(".view-only-timing-badge")).toHaveCount(0);
+
+    // With the embedder's opt-in (?autorun=1, forwarded by embed.js from
+    // data-autorun), cells run on load.
+    await page.goto("/embed/public/welcome.ironpad?autorun=1");
+    await expect(page.locator(".view-only-timing-badge").first()).toBeVisible({
+      timeout: 480_000,
+    });
+  });
+
   test("embed.js script snippet mounts an auto-resizing iframe", async ({
     page,
   }) => {

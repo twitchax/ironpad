@@ -51,6 +51,12 @@ pub fn ViewOnlyNotebook(
     /// Empty means "unknown source": no Embed button, badge links to `/`.
     #[prop(optional)]
     embed_spec: Option<String>,
+    /// Run all code cells on load. Set only for TRUSTED first-party sources
+    /// (public showcase notebooks, and embeds of them when the embedder opts
+    /// in): shared notebooks are arbitrary user content and must never
+    /// auto-execute (PRD-0040 scopes auto-run to the trust boundary).
+    #[prop(optional)]
+    autorun: bool,
 ) -> impl IntoView {
     // Leptos's optional-prop setter takes the bare String, so callers with no
     // spec pass ""; normalize that back to None here.
@@ -99,12 +105,13 @@ pub fn ViewOnlyNotebook(
         running_all.set(!empty);
     });
 
-    // Auto-execute all code cells on page load when reactive mode is enabled
-    // (hydrate-only, fires once).
+    // Auto-execute all code cells on page load (hydrate-only, fires once) when
+    // the route says the content is trusted first-party (`autorun`, PRD-0040)
+    // or the notebook itself opted into reactive mode (PRD-0025).
     #[cfg(feature = "hydrate")]
     {
         let is_reactive = notebook.with_value(|nb| nb.reactive_mode.unwrap_or(false));
-        if is_reactive {
+        if autorun || is_reactive {
             let auto_run_done = RwSignal::new(false);
             Effect::new(move || {
                 if auto_run_done.get_untracked() {

@@ -45,13 +45,20 @@
   }
 
   /** Replace (or fill) a target element with the notebook iframe. */
-  function mount(target, spec) {
+  function mount(target, spec, autorun) {
     var path = embedPath(spec);
     if (!path) return;
 
     var id = "ironpad-embed-" + Date.now().toString(36) + "-" + seq++;
     var frame = document.createElement("iframe");
-    frame.src = origin + path + "?embed_id=" + encodeURIComponent(id);
+    frame.src =
+      origin +
+      path +
+      "?embed_id=" +
+      encodeURIComponent(id) +
+      // Embedder opt-in (data-autorun): honored only for public/first-party
+      // notebooks — the shared embed route ignores it (PRD-0040).
+      (autorun ? "&autorun=1" : "");
     frame.id = id;
     frame.loading = "lazy";
     frame.style.width = "100%";
@@ -79,7 +86,11 @@
   );
   for (var i = 0; i < placeholders.length; i++) {
     placeholders[i].setAttribute("data-ironpad-mounted", "");
-    mount(placeholders[i], placeholders[i].getAttribute("data-notebook"));
+    mount(
+      placeholders[i],
+      placeholders[i].getAttribute("data-notebook"),
+      placeholders[i].hasAttribute("data-autorun")
+    );
   }
 
   // Style 1: the script tag itself names a notebook — mount in its place.
@@ -89,6 +100,6 @@
     holder.className = "ironpad-embed";
     holder.setAttribute("data-ironpad-mounted", "");
     script.parentNode.insertBefore(holder, script);
-    mount(holder, own);
+    mount(holder, own, script.hasAttribute("data-autorun"));
   }
 })();

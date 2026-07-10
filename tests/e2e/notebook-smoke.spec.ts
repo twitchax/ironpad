@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 import { trackJsErrors } from "./helpers/errors";
 
 /**
- * Smoke tests that open complex public notebooks, trigger Run All (execution
- * is opt-in per PRD-0025), and verify that output actually renders. These exercise the full pipeline:
+ * Smoke tests that open complex public notebooks, wait for the PRD-0040
+ * first-party auto-run, and verify that output actually renders. These exercise the full pipeline:
  * SSR → hydration → server-side WASM compilation → client-side execution → output display.
  *
  * Each notebook chosen exercises a different output path:
@@ -31,9 +31,8 @@ test.describe("Notebook smoke tests", () => {
       timeout: 30_000,
     });
 
-    // Execution is opt-in (PRD-0025: "never auto-execute unless the user
-    // explicitly enables it"); non-reactive notebooks run via Run All.
-    await page.locator("button", { hasText: "Run All" }).click();
+    // Public showcase notebooks auto-run on load (PRD-0040): first-party
+    // trusted content, so no Run All click is needed.
 
     // The notebook has 2 code cells (cell_1, cell_2) that each produce a
     // BlobImage canvas output rendered as an <img> inside .view-only-output-display.
@@ -85,9 +84,8 @@ test.describe("Notebook smoke tests", () => {
       timeout: 30_000,
     });
 
-    // Execution is opt-in (PRD-0025: "never auto-execute unless the user
-    // explicitly enables it"); non-reactive notebooks run via Run All.
-    await page.locator("button", { hasText: "Run All" }).click();
+    // Public showcase notebooks auto-run on load (PRD-0040): first-party
+    // trusted content, so no Run All click is needed.
 
     // The notebook has 2 code cells that each produce BlobImage output:
     //   cell_1: "Simulation & Final State" — computes grid + renders final state image
@@ -131,9 +129,8 @@ test.describe("Notebook smoke tests", () => {
       timeout: 30_000,
     });
 
-    // Execution is opt-in (PRD-0025: "never auto-execute unless the user
-    // explicitly enables it"); non-reactive notebooks run via Run All.
-    await page.locator("button", { hasText: "Run All" }).click();
+    // Public showcase notebooks auto-run on load (PRD-0040): first-party
+    // trusted content, so no Run All click is needed.
 
     // The notebook has 2 code cells:
     //   cell_controls: interactive widget (slider/dropdown controls)
