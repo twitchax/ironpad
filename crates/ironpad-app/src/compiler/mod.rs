@@ -885,10 +885,20 @@ impl LiveView for Counter {
 
     // ── Public notebook compilation ──────────────────────────────────────
 
+    /// Comment marker a public-notebook cell can carry in its source to declare
+    /// itself a *deliberate* compile failure (a teaching cell, e.g. "this is the
+    /// dyn-async-trait wall"). The gate below then asserts the cell FAILS to
+    /// type-check — regression-locking the pedagogy: if a toolchain or library
+    /// change ever makes the cell compile, the gate flags the notebook as stale.
+    ///
+    /// Usage inside a cell: `// ironpad-test: compile-fail`
+    const EXPECTED_COMPILE_FAIL_MARKER: &str = "ironpad-test: compile-fail";
+
     /// Compiles every Code cell in every public notebook to verify they all
-    /// type-check against wasm32-unknown-unknown.  Uses `cargo check` (not
-    /// `cargo build`) with a shared `CARGO_HOME` and target dir so dependencies
-    /// are downloaded/compiled only once.
+    /// type-check against wasm32-unknown-unknown — except cells carrying
+    /// [`EXPECTED_COMPILE_FAIL_MARKER`], which must FAIL to type-check. Uses
+    /// `cargo check` (not `cargo build`) with a shared `CARGO_HOME` and target
+    /// dir so dependencies are downloaded/compiled only once.
     #[tokio::test]
     #[ignore = "slow: type-checks every public notebook cell for wasm32-unknown-unknown"]
     async fn all_public_notebook_cells_compile() {
@@ -1008,11 +1018,25 @@ impl LiveView for Counter {
                 )
                 .await;
 
+                // Cells carrying the compile-fail marker are deliberate teaching
+                // failures (e.g. the dyn-async-trait wall): the gate asserts they
+                // FAIL, so a toolchain or library change that makes one start
+                // compiling flags the notebook as stale instead of slipping by.
+                let expects_failure = cell.source.contains(EXPECTED_COMPILE_FAIL_MARKER);
+
                 match result {
                     Ok(CheckResult::Ok) => {
+                        if expects_failure {
+                            failures.push(format!(
+                                "{filename} / {} ({}): marked `{EXPECTED_COMPILE_FAIL_MARKER}` \
+                                 but now COMPILES — the teaching error it demonstrates may have \
+                                 been fixed by a toolchain/library change; update the notebook",
+                                cell.id, cell.label
+                            ));
+                        }
                         previous_cell_types.push(String::new());
                     }
-                    Ok(CheckResult::Failure { stdout, stderr }) => {
+                    Ok(CheckResult::Failure { stdout, stderr }) if !expects_failure => {
                         // Show the TAIL of each stream: with --message-format=json
                         // the error `compiler-message` and the final
                         // `build-finished` record are at the end, while the head is
@@ -1028,6 +1052,10 @@ impl LiveView for Counter {
                             tail(&stdout, 2000),
                             tail(&stderr, 1500),
                         ));
+                        previous_cell_types.push(String::new());
+                    }
+                    // Marked cell failed to compile: exactly what it promises.
+                    Ok(CheckResult::Failure { .. }) => {
                         previous_cell_types.push(String::new());
                     }
                     Err(e) => {

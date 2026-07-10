@@ -73,6 +73,102 @@ async fn yield_for_cell_flush(ms: i32) {
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
+/// Call `.destroy()` on a stored `SortableJS` instance (if present) and clear the
+/// slot, so re-initialisation and unmount don't leave a second drag handler
+/// bound to the cell list.
+#[cfg(feature = "hydrate")]
+fn destroy_sortable(instance: StoredValue<Option<wasm_bindgen::JsValue>, LocalStorage>) {
+    use wasm_bindgen::JsCast;
+
+    let existing = instance.try_update_value(Option::take).flatten();
+    if let Some(existing) = existing {
+        if let Some(destroy) = js_sys::Reflect::get(&existing, &"destroy".into())
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        {
+            let _ = destroy.call0(&existing);
+        }
+    }
+}
+
+/// Serialize the current notebook, upload it via `share_notebook`, copy the
+/// resulting `/shared/{hash}` URL to the clipboard, and surface the outcome as a
+/// toast. The caller must bump `save_generation` first to flush in-progress cell
+/// edits into the model; this yields once so those flush effects run before the
+/// notebook is re-read.
+fn share_current_notebook(state: &NotebookState, toaster: ToasterInjection) {
+    let state = *state;
+    leptos::task::spawn_local(async move {
+        #[cfg(feature = "hydrate")]
+        yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
+
+        let Some(nb) = state.notebook.get_untracked() else {
+            return;
+        };
+        let json = match serde_json::to_string(&nb) {
+            Ok(j) => j,
+            Err(e) => {
+                toaster.dispatch_toast(
+                    move || {
+                        view! {
+                            <Toast>
+                                <ToastTitle>"Share Failed"</ToastTitle>
+                                <ToastBody>{format!("Failed to serialize: {e}")}</ToastBody>
+                            </Toast>
+                        }
+                    },
+                    thaw::ToastOptions::default(),
+                );
+                return;
+            }
+        };
+
+        match share_notebook(json).await {
+            Ok(hash) => {
+                #[cfg(target_arch = "wasm32")]
+                let origin = web_sys::window()
+                    .and_then(|w| w.location().origin().ok())
+                    .unwrap_or_default();
+                #[cfg(not(target_arch = "wasm32"))]
+                let origin = String::new();
+                let url = format!("{origin}/shared/{hash}");
+                #[cfg(target_arch = "wasm32")]
+                if let Some(window) = web_sys::window() {
+                    let clipboard = window.navigator().clipboard();
+                    let _ = wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&url)).await;
+                }
+                let url_clone = url.clone();
+                toaster.dispatch_toast(
+                    move || {
+                        view! {
+                            <Toast>
+                                <ToastTitle>"Link Copied!"</ToastTitle>
+                                <ToastBody>{url_clone.clone()}</ToastBody>
+                            </Toast>
+                        }
+                    },
+                    thaw::ToastOptions::default()
+                        .with_intent(thaw::ToastIntent::Success)
+                        .with_timeout(std::time::Duration::from_secs(5)),
+                );
+            }
+            Err(e) => {
+                toaster.dispatch_toast(
+                    move || {
+                        view! {
+                            <Toast>
+                                <ToastTitle>"Share Failed"</ToastTitle>
+                                <ToastBody>{format!("{e}")}</ToastBody>
+                            </Toast>
+                        }
+                    },
+                    thaw::ToastOptions::default(),
+                );
+            }
+        }
+    });
+}
+
 // ── Notebook editor page ────────────────────────────────────────────────────
 
 /// Route component for `/notebook/{id}`.
@@ -308,17 +404,20 @@ pub fn NotebookEditorPage() -> impl IntoView {
                     .with_timeout(Duration::from_secs(3)),
             );
 
-            // Reset to Idle after 2 seconds.
-            let reset_closure = Closure::<dyn Fn()>::new(move || {
+            // Reset to Idle after 2 seconds. One-shot: `once_into_js` frees the
+            // Rust closure when the timer fires. It must NOT live in this
+            // effect's scope (a second save within the window would re-run the
+            // effect, dispose this run's scope, and drop a still-pending
+            // closure — "closure invoked after being dropped").
+            let reset_cb = Closure::once_into_js(move || {
                 layout.save_status.set(SaveStatus::Idle);
             });
             let _ = web_sys::window()
                 .unwrap()
                 .set_timeout_with_callback_and_timeout_and_arguments_0(
-                    reset_closure.as_ref().unchecked_ref(),
+                    reset_cb.unchecked_ref(),
                     SAVE_STATUS_RESET_MS,
                 );
-            reset_closure.forget();
         });
     }
 
@@ -453,8 +552,28 @@ fn NotebookContent() -> impl IntoView {
     {
         use wasm_bindgen::prelude::*;
 
+        /// `SortableJS` `onEnd` callback type, held at component scope.
+        type SortableOnEnd = Closure<dyn Fn(JsValue)>;
+
+        // Holds the live SortableJS instance so it can be destroyed on unmount.
+        // Without destroy(), a client-side nav away-and-back would leave the old
+        // instance bound to the (recycled) list and stack a second drag handler.
+        let sortable_instance: StoredValue<Option<JsValue>, LocalStorage> =
+            StoredValue::new_local(None);
+        // Holds the live onEnd closure at COMPONENT scope. It must not live in
+        // the effect's per-run scope: a re-run disposes that scope, and if any
+        // early-return path left the old Sortable instance alive it would call
+        // a dropped closure on the next drag.
+        let sortable_on_end: StoredValue<Option<SortableOnEnd>, LocalStorage> =
+            StoredValue::new_local(None);
+
         let cells_ref = cells_container_ref;
         Effect::new(move || {
+            // Tear down any instance from a previous run FIRST — before every
+            // early return — so no path can leave an old instance alive while
+            // its closure is replaced below.
+            destroy_sortable(sortable_instance);
+
             let Some(el) = cells_ref.get() else { return };
             let el: JsValue = JsValue::from(el);
 
@@ -520,16 +639,24 @@ fn NotebookContent() -> impl IntoView {
             });
             let _ =
                 js_sys::Reflect::set(&options, &"onEnd".into(), on_end.as_ref().unchecked_ref());
-            on_end.forget();
+            // Store at component scope (replacing any previous closure — its
+            // instance was already destroyed above) instead of leaking with
+            // forget() or dying with this effect run's scope.
+            sortable_on_end.set_value(Some(on_end));
 
             let create_fn = js_sys::Reflect::get(&sortable_class, &"create".into())
                 .ok()
                 .filter(JsValue::is_function);
             if let Some(create_fn) = create_fn {
                 let create_fn: js_sys::Function = create_fn.unchecked_into();
-                let _ = create_fn.call2(&sortable_class, &el, &options);
+                if let Ok(instance) = create_fn.call2(&sortable_class, &el, &options) {
+                    sortable_instance.set_value(Some(instance));
+                }
             }
         });
+
+        // Destroy the SortableJS instance when this notebook view unmounts.
+        on_cleanup(move || destroy_sortable(sortable_instance));
     }
 
     // ── Auto-run all Code cells when entering view mode ────────────────
@@ -614,104 +741,14 @@ fn NotebookContent() -> impl IntoView {
                                             // Flush cells' in-progress editor content into the
                                             // model before serializing, so "type then
                                             // immediately Share" doesn't produce a stale
-                                            // artifact (PRD-0032 T-007). The notebook is
-                                            // re-read below, AFTER the yield, not captured here.
+                                            // artifact (PRD-0032 T-007). share_current_notebook
+                                            // yields once so those flush effects run before it
+                                            // re-reads the notebook.
                                             state.save_generation.update(|g| *g += 1);
-                                            let toaster = expect_context::<ToasterInjection>();
-                                            leptos::task::spawn_local(async move {
-                                                #[cfg(feature = "hydrate")]
-                                                yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
-                                                let notebook = state.notebook.get_untracked();
-                                                let Some(nb) = notebook else {
-                                                    return;
-                                                };
-                                                let json =
-                                                    match serde_json::to_string(&nb) {
-                                                        Ok(j) => j,
-                                                        Err(e) => {
-                                                            toaster.dispatch_toast(
-                                                                move || {
-                                                                    view! {
-                                                                        <Toast>
-                                                                            <ToastTitle>"Share Failed"</ToastTitle>
-                                                                            <ToastBody>
-                                                                                {format!(
-                                                                                    "Failed to serialize: {e}"
-                                                                                )}
-                                                                            </ToastBody>
-                                                                        </Toast>
-                                                                    }
-                                                                },
-                                                                thaw::ToastOptions::default(),
-                                                            );
-                                                            return;
-                                                        }
-                                                    };
-                                                match share_notebook(json).await {
-                                                        Ok(hash) => {
-                                                            #[cfg(target_arch = "wasm32")]
-                                                            let origin = web_sys::window()
-                                                                .and_then(|w| {
-                                                                    w.location().origin().ok()
-                                                                })
-                                                                .unwrap_or_default();
-                                                            #[cfg(not(target_arch = "wasm32"))]
-                                                            let origin = String::new();
-                                                            let url = format!(
-                                                                "{origin}/shared/{hash}"
-                                                            );
-                                                            #[cfg(target_arch = "wasm32")]
-                                                            if let Some(window) =
-                                                                web_sys::window()
-                                                            {
-                                                                let clipboard = window
-                                                                    .navigator()
-                                                                    .clipboard();
-                                                                let _ = wasm_bindgen_futures::JsFuture::from(
-                                                                    clipboard.write_text(&url),
-                                                                )
-                                                                .await;
-                                                            }
-                                                            let url_clone = url.clone();
-                                                            toaster.dispatch_toast(
-                                                                move || {
-                                                                    view! {
-                                                                        <Toast>
-                                                                            <ToastTitle>"Link Copied!"</ToastTitle>
-                                                                            <ToastBody>
-                                                                                {url_clone.clone()}
-                                                                            </ToastBody>
-                                                                        </Toast>
-                                                                    }
-                                                                },
-                                                                thaw::ToastOptions::default()
-                                                                    .with_intent(
-                                                                        thaw::ToastIntent::Success,
-                                                                    )
-                                                                    .with_timeout(
-                                                                        std::time::Duration::from_secs(
-                                                                            5,
-                                                                        ),
-                                                                    ),
-                                                            );
-                                                        }
-                                                        Err(e) => {
-                                                            toaster.dispatch_toast(
-                                                                move || {
-                                                                    view! {
-                                                                        <Toast>
-                                                                            <ToastTitle>"Share Failed"</ToastTitle>
-                                                                            <ToastBody>
-                                                                                {format!("{e}")}
-                                                                            </ToastBody>
-                                                                        </Toast>
-                                                                    }
-                                                                },
-                                                                thaw::ToastOptions::default(),
-                                                            );
-                                                        }
-                                                    }
-                                                });
+                                            share_current_notebook(
+                                                &state,
+                                                expect_context::<ToasterInjection>(),
+                                            );
                                         }
                                     >
                                         "↗ Share"

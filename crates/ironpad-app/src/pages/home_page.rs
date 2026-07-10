@@ -94,13 +94,18 @@ pub fn HomePage() -> impl IntoView {
         }
     };
 
-    // Import notebook from file (IndexedDB, client-only).
+    // Import notebook from file (IndexedDB, client-only). The toaster must be
+    // resolved here, inside the component's reactive owner: the import flow's
+    // FileReader callbacks run outside any owner, where `expect_context` panics
+    // (which used to swallow both the success and the rejection toast).
+    #[cfg(feature = "hydrate")]
+    let toaster = ToasterInjection::expect_context();
 
     let on_import = move |_| {
         let _ = &private_notebooks;
         #[cfg(feature = "hydrate")]
         {
-            import_notebook_from_file(private_notebooks);
+            import_notebook_from_file(private_notebooks, toaster);
         }
     };
 
@@ -378,8 +383,15 @@ fn NotebookCardSkeleton() -> impl IntoView {
 
 /// Opens a file picker, reads the selected `.ironpad`/`.json` file, validates
 /// it, imports it via `storage.js`, and refreshes the notebook list.
+///
+/// Takes the toaster by value: the `FileReader` callbacks below run outside any
+/// reactive owner, where `ToasterInjection::expect_context()` panics, so the
+/// caller resolves it inside the component and moves it in.
 #[cfg(feature = "hydrate")]
-fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>) {
+fn import_notebook_from_file(
+    private_notebooks: RwSignal<Vec<IronpadNotebook>>,
+    toaster: ToasterInjection,
+) {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Duration;
@@ -477,7 +489,6 @@ fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>) 
 
                 // Validate the JSON before importing.
                 if let Err(msg) = crate::storage::validate::validate_notebook_json(&text) {
-                    let toaster = ToasterInjection::expect_context();
                     toaster.dispatch_toast(
                         move || {
                             view! {
@@ -496,7 +507,6 @@ fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>) 
 
                 // Import and refresh the notebook list.
                 leptos::task::spawn_local(async move {
-                    let toaster = ToasterInjection::expect_context();
                     match crate::storage::client::import_notebook(&text).await {
                         Some(nb) => {
                             let title = nb.title.clone();

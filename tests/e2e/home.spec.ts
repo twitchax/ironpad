@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
+import { trackJsErrors } from "./helpers/errors";
 
 test.describe("Home page", () => {
   test("loads and displays ironpad branding", async ({ page }) => {
-    // Collect JS errors during navigation.
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => jsErrors.push(error.message));
+    // Collect JS errors during navigation (shared filter for known noise).
+    const jsErrors = trackJsErrors(page);
 
     // Navigate to home page.
     const response = await page.goto("/");

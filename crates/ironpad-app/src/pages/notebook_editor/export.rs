@@ -1,64 +1,15 @@
-use std::fmt::Write;
-
 #[cfg(feature = "hydrate")]
 use std::collections::HashMap;
+#[cfg(feature = "hydrate")]
+use std::fmt::Write;
 
 #[cfg(feature = "hydrate")]
 use ironpad_common::{CellType, IronpadNotebook};
 
 #[cfg(feature = "hydrate")]
 use crate::components::markdown_cell::render_markdown;
-
-use crate::components::animation_canvas::SimSliderMeta;
-
-// ── Display panels ──────────────────────────────────────────────────────────
-
-/// Display panel types matching `ironpad-cell`'s `DisplayPanel` enum.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub(super) enum DisplayPanel {
-    Text(String),
-    Html(String),
-    Svg(String),
-    Markdown(String),
-    Table {
-        headers: Vec<String>,
-        rows: Vec<Vec<String>>,
-    },
-    /// Interactive UI widget (slider, dropdown, checkbox, etc.).
-    Interactive {
-        kind: String,
-        config: String,
-    },
-    /// Binary image data (base64-encoded BMP/PNG), rendered via a Blob URL.
-    BlobImage {
-        mime_type: String,
-        base64_data: String,
-        width: u32,
-        height: u32,
-    },
-    /// Multi-frame animation (base64-encoded concatenated RGB bytes).
-    Animation {
-        width: u32,
-        height: u32,
-        fps: u32,
-        frame_count: u32,
-        data: String,
-    },
-    /// Live simulation placeholder (base64-encoded first-frame RGB bytes).
-    Simulation {
-        width: u32,
-        height: u32,
-        fps: u32,
-        first_frame_data: String,
-        sliders: Vec<SimSliderMeta>,
-    },
-    /// Live view placeholder (initial content + fps + content kind).
-    LiveView {
-        fps: u32,
-        kind: String,
-        content: String,
-    },
-}
+#[cfg(feature = "hydrate")]
+use crate::components::output_render::{html_escape, DisplayPanel};
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
 
@@ -362,42 +313,6 @@ fn render_interactive_static(html: &mut String, kind: &str, config: &str) {
             );
         }
     }
-}
-
-/// Minimal HTML entity escaping for text content.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-/// Render a table as an HTML `<table>` string with the `ironpad-output-table` class.
-pub(super) fn render_table_html(headers: &[String], rows: &[Vec<String>]) -> String {
-    let mut html = String::from("<table class=\"ironpad-output-table\"><thead><tr>");
-    for h in headers {
-        let _ = write!(html, "<th>{}</th>", html_escape(h));
-    }
-    html.push_str("</tr></thead><tbody>");
-    for row in rows {
-        html.push_str("<tr>");
-        for cell in row {
-            let _ = write!(html, "<td>{}</td>", html_escape(cell));
-        }
-        html.push_str("</tr>");
-    }
-    html.push_str("</tbody></table>");
-    html
-}
-
-/// Render a table as tab-separated values for clipboard copy.
-pub(super) fn render_table_tsv(headers: &[String], rows: &[Vec<String>]) -> String {
-    let mut tsv = headers.join("\t");
-    for row in rows {
-        tsv.push('\n');
-        tsv.push_str(&row.join("\t"));
-    }
-    tsv
 }
 
 /// Trigger a browser file download with the given content, MIME type, and filename.

@@ -1,9 +1,16 @@
+//! Domain-filtering forward proxy for the cell-compile network sandbox.
+//!
+//! Speaks the HTTP `CONNECT` method only: a client asks to tunnel to
+//! `host:port`, the proxy checks the hostname against a fail-closed allowlist
+//! (`IRONPAD_PROXY_ALLOWLIST`), and either opens a bidirectional TCP tunnel or
+//! rejects it. Binds `127.0.0.1` — its sole client is the trusted cargo build
+//! sandbox — so the request parsing is deliberately minimal but bounded.
 #![deny(clippy::all, clippy::pedantic)]
 
 use std::env;
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
@@ -53,6 +60,17 @@ impl DomainAllowlist {
 const RESPONSE_200: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
 const RESPONSE_403: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\r\n";
 const RESPONSE_405: &[u8] = b"HTTP/1.1 405 Method Not Allowed\r\n\r\n";
+const RESPONSE_413: &[u8] = b"HTTP/1.1 413 Payload Too Large\r\n\r\n";
+
+/// Cap on the `CONNECT` request line. The only valid line is
+/// `CONNECT host:port HTTP/1.x`, so this is generous; it exists to stop a client
+/// that streams bytes without a newline from growing the read buffer without
+/// bound (the failure the IPC/WS frame caps also guard against).
+const MAX_REQUEST_LINE_BYTES: u64 = 8 * 1024;
+
+/// Cap on the total header block after the request line. Bounds a client that
+/// streams headers (or one giant header) without the terminating blank line.
+const MAX_HEADER_BYTES: u64 = 64 * 1024;
 
 async fn handle_connection(client: TcpStream, allowlist: &DomainAllowlist) {
     let peer = client
@@ -62,11 +80,25 @@ async fn handle_connection(client: TcpStream, allowlist: &DomainAllowlist) {
     let (reader, mut writer) = client.into_split();
     let mut buf_reader = BufReader::new(reader);
 
-    // Read request line.
+    // Read the request line, bounded so a client can't stream an unbounded line.
     let mut request_line = String::new();
-    if let Err(e) = buf_reader.read_line(&mut request_line).await {
-        warn!(peer = %peer, error = %e, "failed to read request line");
-        return;
+    {
+        let mut limited = (&mut buf_reader).take(MAX_REQUEST_LINE_BYTES);
+        match limited.read_line(&mut request_line).await {
+            Ok(0) => return, // clean EOF before any request
+            Ok(_) => {}
+            Err(e) => {
+                warn!(peer = %peer, error = %e, "failed to read request line");
+                return;
+            }
+        }
+        // A line that fills the cap without a terminating newline was truncated —
+        // reject rather than parse a partial request.
+        if !request_line.ends_with('\n') {
+            debug!(peer = %peer, "request line exceeds cap");
+            let _ = writer.write_all(RESPONSE_413).await;
+            return;
+        }
     }
 
     // Parse: CONNECT host:port HTTP/1.x
@@ -79,16 +111,26 @@ async fn handle_connection(client: TcpStream, allowlist: &DomainAllowlist) {
 
     let target = parts[1];
 
-    // Consume remaining headers until blank line.
-    let mut header_line = String::new();
-    loop {
-        header_line.clear();
-        match buf_reader.read_line(&mut header_line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                if header_line.trim().is_empty() {
-                    break;
+    // Consume remaining headers until the blank line, bounding the total so a
+    // client can't stream headers (or one giant header) without the terminator.
+    {
+        let mut limited = (&mut buf_reader).take(MAX_HEADER_BYTES);
+        let mut header_line = String::new();
+        loop {
+            header_line.clear();
+            match limited.read_line(&mut header_line).await {
+                Ok(0) | Err(_) => break, // EOF / error → stop draining
+                Ok(_) => {
+                    if header_line.trim().is_empty() {
+                        break; // end of headers
+                    }
                 }
+            }
+            // The cap was reached before the terminating blank line.
+            if limited.limit() == 0 {
+                debug!(peer = %peer, "header block exceeds cap");
+                let _ = writer.write_all(RESPONSE_413).await;
+                return;
             }
         }
     }
@@ -351,6 +393,27 @@ mod tests {
         assert!(
             response.contains("405 Method Not Allowed"),
             "expected 405, got: {response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_rejects_oversized_request_line() {
+        let addr = spawn_proxy("crates.io").await;
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+
+        // A request line far larger than MAX_REQUEST_LINE_BYTES, with the newline
+        // pushed past the cap — the proxy must reject it rather than buffer the
+        // line without bound.
+        let big = "a".repeat(16 * 1024);
+        let req = format!("CONNECT {big}:443 HTTP/1.1\r\n\r\n");
+        stream.write_all(req.as_bytes()).await.unwrap();
+
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            response.contains("413"),
+            "expected 413 for oversized request line, got: {response}"
         );
     }
 

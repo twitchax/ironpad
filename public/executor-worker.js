@@ -72,6 +72,23 @@ executor._dispatchHostMessage = function (cellId, ptr, len) {
 //   Outgoing:  { type: "result"|"error", id, value?|error? }
 //              { type: "hostMessage", cellId, messageJson }
 
+// Run an awaited executor op, correlating any WASM panic captured by the patched
+// console.error to THIS op. console.error is global, so a captured panic can't
+// carry a request id; resetting `_lastPanicMessage` immediately before the call
+// and consuming it in the catch keeps a panic from a *prior* op from bleeding
+// into an unrelated error message. (Two genuinely-interleaved async cells still
+// share this single global — a fully race-free fix would serialize onmessage.)
+async function runWithPanicCapture(op) {
+  _lastPanicMessage = null;
+  try {
+    return await op();
+  } catch (err) {
+    throw new Error(_lastPanicMessage || err.message || String(err));
+  } finally {
+    _lastPanicMessage = null;
+  }
+}
+
 self.onmessage = async function (e) {
   var msg = e.data;
 
@@ -84,59 +101,47 @@ self.onmessage = async function (e) {
 
   if (msg.type === "loadBlob") {
     try {
-      await executor.loadBlob(msg.cellId, msg.hash, msg.wasmBytes, msg.jsGlue || null);
+      await runWithPanicCapture(function () {
+        return executor.loadBlob(msg.cellId, msg.hash, msg.wasmBytes, msg.jsGlue || null);
+      });
       self.postMessage({ type: "result", id: msg.id, value: null });
     } catch (err) {
-      var errorMsg = err.message || String(err);
-      if (_lastPanicMessage) {
-        errorMsg = _lastPanicMessage;
-        _lastPanicMessage = null;
-      }
-      self.postMessage({ type: "error", id: msg.id, error: errorMsg });
+      self.postMessage({ type: "error", id: msg.id, error: err.message });
     }
   } else if (msg.type === "execute") {
     try {
-      var result = await executor.execute(msg.cellId, msg.inputBytes);
+      var result = await runWithPanicCapture(function () {
+        return executor.execute(msg.cellId, msg.inputBytes);
+      });
       // Transfer outputBytes buffer for zero-copy when possible.
       var transfer = result.outputBytes && result.outputBytes.buffer.byteLength > 0
         ? [result.outputBytes.buffer]
         : [];
       self.postMessage({ type: "result", id: msg.id, value: result }, transfer);
     } catch (err) {
-      var errorMsg = err.message || String(err);
-      if (_lastPanicMessage) {
-        errorMsg = _lastPanicMessage;
-        _lastPanicMessage = null;
-      }
-      self.postMessage({ type: "error", id: msg.id, error: errorMsg });
+      self.postMessage({ type: "error", id: msg.id, error: err.message });
     }
   } else if (msg.type === "tick") {
     try {
-      var result = await executor.tick(msg.cellId);
+      var result = await runWithPanicCapture(function () {
+        return executor.tick(msg.cellId);
+      });
       // Transfer rgbBytes buffer for zero-copy when possible.
       var transfer = result.rgbBytes && result.rgbBytes.buffer.byteLength > 0
         ? [result.rgbBytes.buffer]
         : [];
       self.postMessage({ type: "result", id: msg.id, value: result }, transfer);
     } catch (err) {
-      var errorMsg = err.message || String(err);
-      if (_lastPanicMessage) {
-        errorMsg = _lastPanicMessage;
-        _lastPanicMessage = null;
-      }
-      self.postMessage({ type: "error", id: msg.id, error: errorMsg });
+      self.postMessage({ type: "error", id: msg.id, error: err.message });
     }
   } else if (msg.type === "tick_live") {
     try {
-      var result = await executor.tickLive(msg.cellId);
+      var result = await runWithPanicCapture(function () {
+        return executor.tickLive(msg.cellId);
+      });
       self.postMessage({ type: "result", id: msg.id, value: result });
     } catch (err) {
-      var errorMsg = err.message || String(err);
-      if (_lastPanicMessage) {
-        errorMsg = _lastPanicMessage;
-        _lastPanicMessage = null;
-      }
-      self.postMessage({ type: "error", id: msg.id, error: errorMsg });
+      self.postMessage({ type: "error", id: msg.id, error: err.message });
     }
   } else if (msg.type === "unload") {
     executor.unload(msg.cellId);

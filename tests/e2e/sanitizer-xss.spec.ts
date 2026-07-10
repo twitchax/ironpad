@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { trackJsErrors } from "./helpers/errors";
 
 // Extend Window to include IronpadStorage (defined in public/storage.js).
 declare global {
@@ -25,12 +26,7 @@ test("sanitizer strips a position:fixed overlay from cell output (clickjacking)"
 }) => {
   test.setTimeout(60_000);
 
-  const jsErrors: string[] = [];
-  page.on("pageerror", (error) => {
-    if (!error.message.includes("unreachable")) {
-      jsErrors.push(error.message);
-    }
-  });
+  const jsErrors = trackJsErrors(page);
 
   await page.goto("/");
   await expect(page.locator(".ironpad-home")).toBeVisible();

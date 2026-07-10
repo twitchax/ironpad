@@ -17,7 +17,7 @@ use ironpad_common::protocol::{
 };
 
 use crate::sessions::{check_permission, ValidateError};
-use crate::state::{AppState, ClaimOutcome};
+use crate::state::{AppState, ClaimOutcome, HostDelivery};
 
 /// Serialize a protocol message to JSON for the wire.
 fn wire_msg(id: &str, kind: MessageKind) -> String {
@@ -219,17 +219,36 @@ async fn handle_host_message(text: &str, notebook_id: &str, connection_id: &str,
     };
 
     match &msg.kind {
-        // Host sends events → broadcast to all guests for this notebook. A
-        // guest-originated mutation acks via its Event (which carries the
-        // mutation id), so clear any tracked entry for that id here — the error
-        // Response counterpart won't fire. Browser-originated events carry an
-        // empty id, so this is a harmless no-op for them.
+        // Host sends events → broadcast to all *readable* guests for this
+        // notebook. A guest-originated mutation acks via its Event (which carries
+        // the mutation id), so resolving that id here clears the tracked entry
+        // (the error Response counterpart won't fire) AND names the originating
+        // guest. Browser-originated events carry an empty id and are never
+        // tracked, so skip the write-lock acquisition for them (review L4).
         MessageKind::Event(_) => {
-            state.ws.resolve_query(&msg.id).await;
+            let origin = if msg.id.is_empty() {
+                None
+            } else {
+                state.ws.resolve_query(&msg.id).await
+            };
+
             state
                 .ws
                 .broadcast_to_notebook_guests(notebook_id, text)
                 .await;
+
+            // The read gate above skips a write-only (read: false) originator, so
+            // its mutation's only ack would be swallowed and its client would
+            // strand on the 10s request timeout despite the mutation succeeding.
+            // Deliver the ack to such an originator directly (review M2). This is
+            // not a content leak: the event reflects only the mutation this guest
+            // itself just sent — plus the model-assigned id/version it needs for
+            // follow-ups — never another client's edits, which stay gated.
+            if let Some(origin_client) = origin {
+                if !state.ws.guest_can_read(&origin_client).await {
+                    state.ws.send_to_guest(&origin_client, text).await;
+                }
+            }
         }
 
         // Host sends a response → route to the guest that sent the query.
@@ -496,19 +515,35 @@ async fn handle_guest_message(
         // the host's response routes back to this guest. For a mutation the
         // tracked entry routes a Response::Error (e.g. a version conflict) and is
         // cleared when the success Event is broadcast (see handle_host_message);
-        // for a query it routes the Response. If the host is gone, fail fast.
+        // for a query it routes the Response.
         MessageKind::Mutation(_) | MessageKind::Query(_) => {
             state.ws.track_query(&msg.id, client_id).await;
-            if !state.ws.send_to_host(notebook_id, text).await {
-                state.ws.resolve_query(&msg.id).await;
-                let err = wire_msg(
-                    &msg.id,
-                    MessageKind::Response(Response::Error {
-                        code: ErrorCode::SessionNotFound,
-                        message: "host disconnected".into(),
-                    }),
-                );
-                state.ws.send_to_guest(client_id, &err).await;
+            match state.ws.send_to_host(notebook_id, text).await {
+                HostDelivery::Delivered => {}
+                // Host alive but its outbound queue is saturated; the frame was
+                // dropped. Don't misreport this live host as gone (review L2):
+                // untrack and let the guest's own request timeout surface it
+                // honestly as a timeout rather than a fabricated disconnect.
+                HostDelivery::Full => {
+                    tracing::warn!(
+                        client_id = %client_id,
+                        "host channel full — dropping guest frame under backpressure"
+                    );
+                    state.ws.resolve_query(&msg.id).await;
+                }
+                // No host is connected — fail fast so the guest isn't left
+                // waiting on the request timeout.
+                HostDelivery::Disconnected => {
+                    state.ws.resolve_query(&msg.id).await;
+                    let err = wire_msg(
+                        &msg.id,
+                        MessageKind::Response(Response::Error {
+                            code: ErrorCode::SessionNotFound,
+                            message: "host disconnected".into(),
+                        }),
+                    );
+                    state.ws.send_to_guest(client_id, &err).await;
+                }
             }
         }
 
@@ -809,6 +844,78 @@ mod tests {
 
         // The tracked entry must have been cleared (no leak on the success path).
         assert_eq!(state.ws.resolve_query("m-1").await, None);
+    }
+
+    #[tokio::test]
+    async fn write_only_originator_receives_mutation_ack_but_not_foreign_events() {
+        let state = test_state();
+        let nb = "nb-1";
+        let conn = "conn-1";
+
+        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        state.ws.register_host(nb, conn, host_tx).await;
+
+        // A write-only (read: false) "blind" agent session.
+        let session = state
+            .ws
+            .sessions
+            .create_session(
+                nb.into(),
+                conn.into(),
+                Permissions {
+                    read: false,
+                    write: true,
+                },
+            )
+            .await;
+        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+
+        // The guest's mutation "m-1" is in flight (tracked for routing).
+        state.ws.track_query("m-1", "guest-1").await;
+
+        // The host echoes the mutation's success Event, carrying its id.
+        let ack = wire_msg(
+            "m-1",
+            MessageKind::Event(EventEnvelope {
+                by: ClientId::agent("guest-1"),
+                event: Event::CellDeleted {
+                    cell_id: "c1".into(),
+                },
+            }),
+        );
+        handle_host_message(&ack, nb, conn, &state).await;
+
+        // The write-only originator receives its ack despite the read gate —
+        // otherwise its client would strand on the 10s request timeout. (The
+        // read-gated broadcast alone would have skipped this session.)
+        let received = guest_rx
+            .try_recv()
+            .expect("write-only originator should receive its own mutation ack");
+        let msg: protocol::Message = serde_json::from_str(&received).unwrap();
+        assert_eq!(msg.id, "m-1");
+        assert!(matches!(msg.kind, MessageKind::Event(_)));
+
+        // A foreign, browser-originated content event (empty id, untracked) must
+        // NOT reach the write-only guest — the confidentiality boundary holds for
+        // everything it did not itself originate.
+        let foreign = wire_msg(
+            "",
+            MessageKind::Event(EventEnvelope {
+                by: ClientId::browser(),
+                event: Event::CellDeleted {
+                    cell_id: "c2".into(),
+                },
+            }),
+        );
+        handle_host_message(&foreign, nb, conn, &state).await;
+        assert!(
+            guest_rx.try_recv().is_err(),
+            "write-only guest must not receive events it did not originate"
+        );
     }
 
     // ── Control message tests ───────────────────────────────────────────

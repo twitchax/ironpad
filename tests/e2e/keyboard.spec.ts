@@ -1,17 +1,12 @@
 import { test, expect } from "@playwright/test";
+import { trackJsErrors } from "./helpers/errors";
 
 test.describe("Keyboard shortcuts", () => {
   test("Ctrl+Enter in cell editor starts compilation", async ({ page }) => {
     // Compilation can take a while (cold cargo build to WASM).
     test.setTimeout(180_000);
 
-    // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");
@@ -60,13 +55,7 @@ test.describe("Keyboard shortcuts", () => {
     // Compilation can take a while.
     test.setTimeout(180_000);
 
-    // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // ── Create a new notebook with two cells ────────────────────────────
     await page.goto("/");

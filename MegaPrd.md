@@ -4,7 +4,7 @@
 **Repo:** `github.com/twitchax/ironpad`
 **Author:** Aaron Roney
 **Date:** 2026-03-06
-**Status:** Draft
+**Status:** Historical vision doc; current behavior is tracked in `.prds/` and `DEVELOPMENT.md`
 
 ---
 

@@ -1,3 +1,10 @@
+//! ironpad CLI: agent-facing commands and the session daemon.
+//!
+//! Subcommands translate to notebook mutations/queries routed over a Unix
+//! socket to a long-lived [`daemon`] that holds the warm WebSocket to the
+//! server. See [`daemon`] for the connection/IPC loop and [`ipc`] for the wire
+//! framing.
+
 mod daemon;
 mod ipc;
 

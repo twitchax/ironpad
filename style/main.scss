@@ -508,12 +508,6 @@ a:focus-visible {
     color: white;
 }
 
-.ironpad-home-loading {
-    display: flex;
-    justify-content: center;
-    padding: 48px 0;
-}
-
 .ironpad-home-empty {
     text-align: center;
     padding: 48px 0;
@@ -657,12 +651,6 @@ a:focus-visible {
 .ironpad-editor {
     max-width: 960px;
     margin: 0 auto;
-}
-
-.ironpad-editor-loading {
-    display: flex;
-    justify-content: center;
-    padding: 48px 0;
 }
 
 /* ── Notebook toolbar ────────────────────────────────────────────────── */
@@ -887,12 +875,6 @@ a:focus-visible {
 
 .ironpad-cell-label-input:hover {
     border-bottom-color: var(--ip-border);
-}
-
-.ironpad-cell-actions {
-    flex-shrink: 0;
-    display: flex;
-    gap: 4px;
 }
 
 /* ── Cell menu dropdown ────────────────────────────────────────────── */
@@ -1145,14 +1127,6 @@ a:focus-visible {
     min-height: 0;
 }
 
-.ironpad-cell-loading {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100px;
-    padding: 24px;
-}
-
 /* ── Monaco editor container ──────────────────────────────────────── */
 
 .ironpad-monaco-container {
@@ -1211,63 +1185,6 @@ a:focus-visible {
 
 .ironpad-compile-result--success .ironpad-compile-result-summary {
     color: var(--ip-success);
-}
-
-.ironpad-compile-result--error {
-    color: var(--ip-code-string);
-}
-
-.ironpad-compile-warnings {
-    margin-top: 4px;
-}
-
-/* ── Diagnostic items ────────────────────────────────────────────────── */
-
-.ironpad-diag {
-    padding: 4px 0;
-    line-height: 1.4;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.ironpad-diag:last-child {
-    border-bottom: none;
-}
-
-.ironpad-diag-severity {
-    font-weight: 600;
-    text-transform: uppercase;
-    font-size: 0.7rem;
-    margin-right: 6px;
-    letter-spacing: 0.5px;
-}
-
-.ironpad-diag--error .ironpad-diag-severity {
-    color: var(--ip-error);
-}
-
-.ironpad-diag--warning .ironpad-diag-severity {
-    color: var(--ip-warning);
-}
-
-.ironpad-diag--note .ironpad-diag-severity {
-    color: var(--ip-info);
-}
-
-.ironpad-diag-message {
-    color: var(--ip-code-string);
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-.ironpad-diag-spans {
-    margin-top: 2px;
-    padding-left: 12px;
-}
-
-.ironpad-diag-span {
-    display: block;
-    color: var(--ip-text-tertiary);
-    font-size: 0.75rem;
 }
 
 /* ── Error panel (T-031) ────────────────────────────────────────────── */
@@ -2277,10 +2194,6 @@ samp,
 /* View-only cells keep the collapse toggle visible for code expand/collapse. */
 .view-only-cell.ironpad-cell--view-mode .ironpad-cell-collapse-btn {
     display: inline-block;
-}
-
-.ironpad-cell--view-mode .ironpad-cell-actions {
-    display: none;
 }
 
 .ironpad-cell--view-mode .ironpad-cell-label-input {

@@ -540,6 +540,117 @@ async fn read_denied_guest_does_not_receive_content_events() {
     );
 }
 
+/// A write-only (`read: false`) guest must still receive the ack for a mutation
+/// it originated — otherwise its client strands on the request timeout despite
+/// the mutation succeeding — while never receiving content events it did not
+/// originate. Confirms the confidentiality boundary and the ack path coexist.
+#[tokio::test]
+async fn write_only_guest_receives_ack_but_no_foreign_content() {
+    let state = test_state();
+    let base = start_server(state).await;
+
+    // Host connects and creates a WRITE-ONLY session (read denied).
+    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
+    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
+        .await
+        .expect("host ws connect");
+    let (mut host_sink, mut host_stream) = host_ws.split();
+    send_claim(&mut host_sink, "host-secret").await;
+
+    let create_session = to_json(
+        "ctrl-1",
+        MessageKind::Control(ControlMessage::CreateSession {
+            permissions: Permissions {
+                read: false,
+                write: true,
+            },
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(create_session.into()))
+        .await
+        .unwrap();
+
+    let token = match parse_msg(&recv_text(&mut host_stream).await).kind {
+        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
+        other => panic!("expected SessionCreated, got {other:?}"),
+    };
+
+    // Guest connects with the write-only token.
+    let guest_url = format!("{base}/ws/connect?token={token}");
+    let (guest_ws, _) = tokio_tungstenite::connect_async(&guest_url)
+        .await
+        .expect("guest ws connect");
+    let (mut guest_sink, mut guest_stream) = guest_ws.split();
+    let _ = recv_text(&mut host_stream).await; // GuestConnected
+
+    // Guest sends a mutation it is allowed to make.
+    let mutation = to_json(
+        "m-1",
+        MessageKind::Mutation(Mutation::CellReorder {
+            cell_ids: vec!["a".into()],
+        }),
+    );
+    guest_sink
+        .send(tungstenite::Message::Text(mutation.into()))
+        .await
+        .unwrap();
+
+    // Host receives it, then emits (a) an unrelated browser-originated content
+    // event the write-only guest must never see, and (b) the confirming Event
+    // for the guest's own mutation, carrying its id.
+    let relayed = parse_msg(&recv_text(&mut host_stream).await);
+    assert_eq!(relayed.id, "m-1", "host must receive the guest mutation");
+
+    let foreign = to_json(
+        "",
+        MessageKind::Event(EventEnvelope {
+            by: ClientId::browser(),
+            event: Event::CellDeleted {
+                cell_id: "foreign".into(),
+            },
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(foreign.into()))
+        .await
+        .unwrap();
+
+    let ack = to_json(
+        "m-1",
+        MessageKind::Event(EventEnvelope {
+            by: ClientId::agent("agent"),
+            event: Event::CellReordered {
+                cell_ids: vec!["a".into()],
+            },
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(ack.into()))
+        .await
+        .unwrap();
+
+    // The write-only guest's first (and only) frame is its own ack: the foreign
+    // content event was gated out, yet the ack still arrived despite read:false.
+    let got = parse_msg(&recv_text(&mut guest_stream).await);
+    assert_eq!(got.id, "m-1", "originator must receive its mutation ack");
+    match got.kind {
+        MessageKind::Event(env) => assert!(
+            matches!(env.event, Event::CellReordered { .. }),
+            "expected the mutation's confirming event, got {:?}",
+            env.event
+        ),
+        other => panic!("expected an Event ack, got {other:?}"),
+    }
+
+    // No further frames — the foreign content event never reached the guest.
+    let leaked = timeout(Duration::from_millis(300), guest_stream.next()).await;
+    assert!(
+        leaked.is_err(),
+        "write-only guest must not receive foreign content events, got {leaked:?}"
+    );
+}
+
 /// A guest that sends nothing is reaped by the idle timeout.
 #[tokio::test]
 async fn guest_idle_timeout_closes_stale_connection() {

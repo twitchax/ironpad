@@ -1,35 +1,11 @@
-import { test, expect, Page, Locator } from "@playwright/test";
-
-/** Set a cell's Monaco editor content via the Monaco API. */
-async function setCellSource(page: Page, cell: Locator, source: string) {
-  const cellHandle = await cell.elementHandle();
-  await page.evaluate(
-    ([el, src]) => {
-      const editors = (window as any).monaco.editor.getEditors();
-      for (const editor of editors) {
-        if ((el as Element).contains(editor.getDomNode())) {
-          editor.getModel()?.setValue(src as string);
-          return;
-        }
-      }
-      throw new Error("No Monaco editor found in cell");
-    },
-    [cellHandle, source] as const
-  );
-}
+import { test, expect } from "@playwright/test";
+import { setCellSource } from "./helpers/monaco";
+import { trackJsErrors } from "./helpers/errors";
 
 test.describe("Notebook", () => {
   test("create notebook and add cell", async ({ page }) => {
     // Collect JS errors during the test (filter known noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (
-        !error.message.includes("unreachable") &&
-        !error.message.includes("Canceled")
-      ) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // Navigate to home page.
     await page.goto("/");
@@ -75,12 +51,7 @@ test.describe("Notebook", () => {
     test.setTimeout(180_000);
 
     // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // Create a new notebook.
     await page.goto("/");
@@ -128,15 +99,7 @@ test.describe("Notebook", () => {
     // Two compilations back-to-back — generous timeout.
     test.setTimeout(300_000);
 
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (
-        !error.message.includes("unreachable") &&
-        !error.message.includes("Canceled")
-      ) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");
@@ -232,12 +195,7 @@ test.describe("Notebook", () => {
     test.setTimeout(60_000);
 
     // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");
@@ -309,12 +267,7 @@ test.describe("Notebook", () => {
   }) => {
     test.setTimeout(180_000);
 
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");

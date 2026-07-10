@@ -94,8 +94,8 @@ fn parse_single_line(line: &str, preamble_lines: u32) -> Option<Diagnostic> {
         _ => return None,
     };
 
-    // Extract the error code if present.
-    let code = rustc_msg.code.as_ref().map(|c| c.code.clone());
+    // Extract the error code if present (moved out; `code` is unused afterward).
+    let code = rustc_msg.code.map(|c| c.code);
 
     // Collect primary spans, mapping user-code (src/lib.rs) spans to cell
     // coordinates. Track whether the error's primary span lives in the

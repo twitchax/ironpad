@@ -1,3 +1,9 @@
+//! ironpad server binary: Axum HTTP + Leptos SSR + WebSocket relay.
+//!
+//! Wires the Leptos routes, static file serving, and the collaboration
+//! WebSocket handlers ([`ironpad_server::ws`]) into a single Axum app, then
+//! serves it. Configuration is parsed from CLI/env (see [`config`]).
+
 mod config;
 
 use std::net::SocketAddr;

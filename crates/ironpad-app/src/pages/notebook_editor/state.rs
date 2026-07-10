@@ -4,6 +4,9 @@ use ironpad_common::{CellManifest, IronpadNotebook};
 use leptos::prelude::*;
 
 use crate::components::monaco_editor::MonacoEditorHandle;
+// Re-exported so the rest of `notebook_editor` keeps importing it as
+// `super::state::CellOutputData`; the single definition lives in `output_render`.
+pub(super) use crate::components::output_render::CellOutputData;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -23,15 +26,6 @@ pub(super) enum CellStatus {
     Error,
     /// Downstream cell blocked by an upstream error during reactive/run-all execution.
     Blocked,
-}
-
-// ── Per-cell output data ────────────────────────────────────────────────────
-
-/// Stores the output bytes and optional type tag from a cell execution.
-#[derive(Clone, Default, Debug)]
-pub(super) struct CellOutputData {
-    pub(super) bytes: Vec<u8>,
-    pub(super) type_tag: Option<String>,
 }
 
 // ── Notebook-level reactive state ───────────────────────────────────────────

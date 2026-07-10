@@ -1,3 +1,8 @@
+//! Shared application configuration.
+//!
+//! [`AppConfig`] is derived from the server's CLI/env and provided via Leptos
+//! context so `#[server]` functions can read it with `expect_context`.
+
 use std::path::PathBuf;
 
 /// Application configuration, derived from CLI arguments and environment variables.

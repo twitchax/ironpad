@@ -83,7 +83,15 @@ pub async fn get_notebook(id: &str) -> Option<IronpadNotebook> {
     if val.is_null() || val.is_undefined() {
         return None;
     }
-    serde_wasm_bindgen::from_value(val).ok()
+    match serde_wasm_bindgen::from_value(val) {
+        Ok(nb) => Some(nb),
+        Err(e) => {
+            leptos::logging::warn!(
+                "skipping malformed notebook record from getNotebook({id}): {e}"
+            );
+            None
+        }
+    }
 }
 
 /// Saves (upserts) a notebook to `IndexedDB`.

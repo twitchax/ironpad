@@ -1,3 +1,9 @@
+//! Cross-platform timing utilities for notebook cells.
+//!
+//! Provides [`Stopwatch`], which measures elapsed wall-clock time using
+//! `js_sys::Date::now()` on `wasm32` (where `std::time::Instant` panics) and
+//! `std::time::Instant` on native targets.
+
 /// Cross-platform stopwatch that works on both native and `wasm32` targets.
 ///
 /// On WASM, `std::time::Instant` panics ("time not implemented on this

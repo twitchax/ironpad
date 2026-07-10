@@ -16,8 +16,12 @@
 
   // ── BridgeExecutor ────────────────────────────────────────────────────────
 
-  // Local sim bus update helper — mirrors CellExecutor.updateSimBus from
-  // executor-core.js (which is not loaded when the bridge initializes).
+  // Standalone copy of CellExecutor.updateSimBus (executor-core.js). The bridge
+  // runs on the main thread, where executor-core.js is NOT loaded at init time
+  // (it's only injected lazily for the fallback path), so the static helper
+  // isn't reachable here — keep this copy in sync with the core one, including
+  // the ring cap.
+  var SIM_BUS_RING_CAP = 1000; // mirrors SIM_BUS_RING_CAP in executor-core.js
   function _updateSimBus(bus, key, json) {
     var entry = bus.get(key);
     if (!entry) {
@@ -26,7 +30,7 @@
     }
     entry.latest = json;
     entry.ring.push(json);
-    if (entry.ring.length > 1000) entry.ring.shift();
+    if (entry.ring.length > SIM_BUS_RING_CAP) entry.ring.shift();
   }
 
   function BridgeExecutor() {
@@ -407,20 +411,29 @@
   var executor = new BridgeExecutor();
 
   // ── Built-in host message handlers ────────────────────────────────────────
+  //
+  // NOTE: These built-in handlers are intentionally duplicated in executor.js
+  // (the main-thread fallback executor). The bridge can't load executor-core.js
+  // on the main thread at init time, so there is no shared home for them — keep
+  // the two copies in sync.
 
   executor.onHostMessage("progress_update", function (msg, _cellId) {
     var el = document.querySelector('[data-progress-id="' + msg.id + '"]');
     if (!el) return;
 
+    // Harden the host-message boundary: a non-numeric value would render
+    // "NaN%" and `width: NaN%`. Fall back to 0 when it isn't a finite number.
+    var value = Number.isFinite(msg.value) ? msg.value : 0;
+
     var fill = el.querySelector(".ironpad-progress-fill");
     if (fill) {
-      var pct = Math.min(100, Math.max(0, msg.value));
+      var pct = Math.min(100, Math.max(0, value));
       fill.style.width = pct + "%";
     }
 
     var label = el.querySelector(".ironpad-progress-value");
     if (label) {
-      label.textContent = Math.round(msg.value) + "%";
+      label.textContent = Math.round(value) + "%";
     }
   });
 

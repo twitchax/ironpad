@@ -21,6 +21,10 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, St
 }
 
 /// Perform a POST request with a JSON body.
+///
+/// Builds a fresh [`reqwest::Client`] per call — fine for a one-shot cell
+/// output. If you issue many POSTs in a loop, construct one `reqwest::Client`
+/// and reuse it to share the connection pool and TLS config.
 pub async fn post_json<B: serde::Serialize, R: serde::de::DeserializeOwned>(
     url: &str,
     body: &B,

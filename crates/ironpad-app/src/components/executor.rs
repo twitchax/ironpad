@@ -31,14 +31,6 @@ mod js {
             input_bytes: &js_sys::Uint8Array,
         ) -> Result<js_sys::Promise, JsValue>;
 
-        /// Remove a loaded cell module, freeing browser-side resources.
-        #[wasm_bindgen(js_namespace = IronpadExecutor)]
-        pub fn unload(cell_id: &str);
-
-        /// Check whether a cell has a module loaded with the given hash.
-        #[wasm_bindgen(js_namespace = IronpadExecutor, js_name = "isLoaded")]
-        pub fn is_loaded(cell_id: &str, hash: &str) -> bool;
-
         /// Tick a simulation cell.  Returns a
         /// `Promise<{ width, height, rgbBytes, fallback? }>`.
         #[wasm_bindgen(js_namespace = IronpadExecutor, catch)]
@@ -70,23 +62,6 @@ pub fn hash_wasm_blob(bytes: &[u8]) -> String {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     format!("{hash:016x}")
-}
-
-/// Verify that the executor JS module is available on `window`.
-///
-/// The executor auto-initialises when `executor-bridge.js` loads, so this is
-/// primarily a diagnostic check.  Returns `Err` if the global is missing.
-#[cfg(feature = "hydrate")]
-pub fn init_executor() -> Result<(), String> {
-    let window = web_sys::window().ok_or("no window object")?;
-    let val =
-        js_sys::Reflect::get(&window, &"IronpadExecutor".into()).map_err(|e| format!("{e:?}"))?;
-
-    if val.is_undefined() || val.is_null() {
-        return Err("IronpadExecutor not found on window".into());
-    }
-
-    Ok(())
 }
 
 /// Terminate the executor's Web Worker, cancelling any running cell.
@@ -181,21 +156,17 @@ pub async fn execute_cell(cell_id: &str, input_bytes: &[u8]) -> Result<CellExecR
 
 // ── Tick (simulation cells) ─────────────────────────────────────────────────
 
-/// Result of ticking a `LiveView` cell: content kind, string content, and
-/// whether the tick fell back to the main thread.
+/// Result of ticking a `LiveView` cell: content kind and string content.
 pub struct LiveTickResult {
     pub kind: u32,
     pub content: String,
-    pub fallback: bool,
 }
 
-/// Result of ticking a simulation cell: frame dimensions, RGB pixel data, and
-/// whether the tick fell back to the main thread.
+/// Result of ticking a simulation cell: frame dimensions and RGB pixel data.
 pub struct TickResult {
     pub width: u32,
     pub height: u32,
     pub rgb_bytes: Vec<u8>,
-    pub fallback: bool,
 }
 
 /// Tick a simulation cell, returning one frame of pixel data.
@@ -231,16 +202,10 @@ pub async fn tick_cell(cell_id: &str) -> Result<TickResult, String> {
         js_sys::Reflect::get(&result, &"rgbBytes".into()).map_err(|e| format!("{e:?}"))?;
     let rgb_bytes = js_sys::Uint8Array::new(&rgb_val).to_vec();
 
-    // Extract `fallback` (bool, default false).
-    let fallback_val =
-        js_sys::Reflect::get(&result, &"fallback".into()).map_err(|e| format!("{e:?}"))?;
-    let fallback = fallback_val.as_bool().unwrap_or(false);
-
     Ok(TickResult {
         width,
         height,
         rgb_bytes,
-        fallback,
     })
 }
 
@@ -272,15 +237,7 @@ pub async fn tick_live_cell(cell_id: &str) -> Result<LiveTickResult, String> {
         js_sys::Reflect::get(&result, &"content".into()).map_err(|e| format!("{e:?}"))?;
     let content = content_val.as_string().unwrap_or_default();
 
-    let fallback_val =
-        js_sys::Reflect::get(&result, &"fallback".into()).map_err(|e| format!("{e:?}"))?;
-    let fallback = fallback_val.as_bool().unwrap_or(false);
-
-    Ok(LiveTickResult {
-        kind,
-        content,
-        fallback,
-    })
+    Ok(LiveTickResult { kind, content })
 }
 
 #[cfg(not(feature = "hydrate"))]

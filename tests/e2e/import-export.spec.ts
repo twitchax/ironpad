@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
+import { trackJsErrors } from "./helpers/errors";
 
 // Extend Window to include IronpadStorage (defined in public/storage.js).
 declare global {
@@ -43,13 +44,7 @@ test.describe("Notebook import/export", () => {
     // Allow time for notebook creation and download.
     test.setTimeout(60_000);
 
-    // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // ── Create a new notebook with a cell ────────────────────────────────
     await page.goto("/");
@@ -126,13 +121,7 @@ test.describe("Notebook import/export", () => {
     // Verify the import button triggers a file picker dialog.
     test.setTimeout(60_000);
 
-    // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // ── Navigate and wait for hydration ──────────────────────────────────
     await page.goto("/");
@@ -159,45 +148,51 @@ test.describe("Notebook import/export", () => {
   });
 
   test("import valid .ironpad adds notebook to list", async ({ page }) => {
-    // Tests that a valid notebook imported into IndexedDB appears in the
-    // home page list. Uses the JS storage API directly because the WASM
-    // import button's FileReader callback panics on ToasterInjection context
-    // (the UI flow is tested separately in "import button opens file chooser").
+    // Drives the real Import Notebook UI end to end: file chooser → FileReader
+    // → validation → IndexedDB import. Asserts the success toast (regression
+    // coverage for the ToasterInjection owner fix — the toast used to be
+    // swallowed by a panic outside the reactive owner) and the in-place list
+    // refresh (no reload: the import updates the signal directly).
     test.setTimeout(60_000);
 
-    // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // ── Navigate to home page ────────────────────────────────────────────
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000);
 
-    // ── Import a notebook via the JS storage API ─────────────────────────
+    // ── Import a notebook via the UI file chooser ────────────────────────
     const fixture = makeFixture("E2E Import Test Notebook");
-    const importedId = await page.evaluate(async (json: string) => {
-      const nb = await window.IronpadStorage.importNotebook(json);
-      return nb.id;
-    }, JSON.stringify(fixture));
+    const fixturePath = path.join("/tmp", "e2e-import-valid.ironpad");
+    fs.writeFileSync(fixturePath, JSON.stringify(fixture));
 
-    expect(typeof importedId).toBe("string");
-    expect(importedId).not.toBe(fixture.id); // Should get a new UUID.
-
-    // ── Reload and verify the notebook appears ───────────────────────────
-    await page.reload();
-    await expect(page.locator(".ironpad-home")).toBeVisible();
-
-    await expect(page.getByText("E2E Import Test Notebook")).toBeVisible({
+    const fileChooserPromise = page.waitForEvent("filechooser", {
       timeout: 10_000,
     });
+    await page.locator("button", { hasText: "Import Notebook" }).click();
+    const fileChooser = await fileChooserPromise;
+    await fileChooser.setFiles(fixturePath);
+
+    // The success toast is the completion signal.
+    await expect(page.getByText("Notebook Imported").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    // Scope to the card title: the toast body also contains the title, so a
+    // bare getByText is a strict-mode violation.
+    await expect(
+      page.locator(".ironpad-notebook-card-title", {
+        hasText: "E2E Import Test Notebook",
+      })
+    ).toBeVisible({ timeout: 10_000 });
+    fs.unlinkSync(fixturePath);
 
     // ── Click the imported notebook and verify it opens ──────────────────
-    await page.getByText("E2E Import Test Notebook").click();
+    await page
+      .locator(".ironpad-notebook-card-title", {
+        hasText: "E2E Import Test Notebook",
+      })
+      .click();
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible({
       timeout: 10_000,
@@ -212,29 +207,19 @@ test.describe("Notebook import/export", () => {
     expect(jsErrors).toEqual([]);
   });
 
-  test("import invalid JSON is rejected by validation", async ({ page }) => {
-    // Verifies that invalid JSON is detected during the import flow.
-    // The WASM FileReader callback panics on ToasterInjection context before
-    // it can display the toast, but we can verify the validation ran by
-    // checking that no notebook was added and the WASM error was logged.
+  test("import invalid JSON does not add a notebook", async ({ page }) => {
+    // Malformed JSON must be rejected with a visible "Import Failed" toast
+    // (regression coverage for the ToasterInjection owner fix — the toast used
+    // to be swallowed by a panic outside the reactive owner) and must NOT add
+    // a notebook.
     test.setTimeout(60_000);
-
-    const wasmErrors: string[] = [];
-    page.on("console", (msg) => {
-      if (
-        msg.type() === "error" &&
-        msg.text().includes("ToasterInjection")
-      ) {
-        wasmErrors.push(msg.text());
-      }
-    });
 
     // ── Navigate and wait for hydration ──────────────────────────────────
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000);
 
-    // Count existing notebooks before import attempt.
+    // Count existing notebooks before the import attempt.
     const beforeCount = await page.evaluate(async () => {
       const nbs = await window.IronpadStorage.listNotebooks();
       return nbs.length;
@@ -251,45 +236,36 @@ test.describe("Notebook import/export", () => {
     const fileChooser = await fileChooserPromise;
     await fileChooser.setFiles(invalidPath);
 
-    // Wait for the async processing to complete.
-    await page.waitForTimeout(3_000);
+    // The rejection toast is the positive completion signal; once it shows,
+    // the validate-and-reject path has fully run.
+    await expect(page.getByText("Import Failed").first()).toBeVisible({
+      timeout: 15_000,
+    });
 
-    // ── Verify no notebook was added ─────────────────────────────────────
     const afterCount = await page.evaluate(async () => {
       const nbs = await window.IronpadStorage.listNotebooks();
       return nbs.length;
     });
     expect(afterCount).toBe(beforeCount);
 
-    // The WASM validation correctly rejected the JSON; the ToasterInjection
-    // panic confirms the validation path was reached (the toast dispatch
-    // is the next step after validation detects the error).
-    expect(wasmErrors.length).toBeGreaterThan(0);
-
     // Clean up temp file.
     fs.unlinkSync(invalidPath);
   });
 
-  test("import JSON missing required fields is rejected", async ({ page }) => {
-    // Verifies that JSON missing required fields (e.g. "cells") is rejected.
+  test("import JSON missing required fields does not add a notebook", async ({
+    page,
+  }) => {
+    // Same contract as the sibling "import invalid JSON" test: validation
+    // rejects the file with a visible "Import Failed" toast and no notebook
+    // is added.
     test.setTimeout(60_000);
-
-    const wasmErrors: string[] = [];
-    page.on("console", (msg) => {
-      if (
-        msg.type() === "error" &&
-        msg.text().includes("ToasterInjection")
-      ) {
-        wasmErrors.push(msg.text());
-      }
-    });
 
     // ── Navigate and wait for hydration ──────────────────────────────────
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000);
 
-    // Count existing notebooks before import attempt.
+    // Count existing notebooks before the import attempt.
     const beforeCount = await page.evaluate(async () => {
       const nbs = await window.IronpadStorage.listNotebooks();
       return nbs.length;
@@ -307,19 +283,17 @@ test.describe("Notebook import/export", () => {
     const fileChooser = await fileChooserPromise;
     await fileChooser.setFiles(badPath);
 
-    // Wait for the async processing to complete.
-    await page.waitForTimeout(3_000);
+    // The rejection toast is the positive completion signal (see the
+    // invalid-JSON test).
+    await expect(page.getByText("Import Failed").first()).toBeVisible({
+      timeout: 15_000,
+    });
 
-    // ── Verify no notebook was added ─────────────────────────────────────
     const afterCount = await page.evaluate(async () => {
       const nbs = await window.IronpadStorage.listNotebooks();
       return nbs.length;
     });
     expect(afterCount).toBe(beforeCount);
-
-    // The WASM validation rejected the JSON (missing "cells" field); the
-    // ToasterInjection panic confirms the validation-error path was reached.
-    expect(wasmErrors.length).toBeGreaterThan(0);
 
     // Clean up temp file.
     fs.unlinkSync(badPath);
