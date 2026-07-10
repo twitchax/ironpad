@@ -13,8 +13,6 @@ principles:
 - "Degrade honestly: threaded (rayon) cells cannot run in cross-origin embeds; say so in the UI rather than failing silently"
 
 references:
-- name: "Design draft (session scratchpad)"
-  url: "file:///tmp/claude-1000/-home-twitchax-projects-ironpad/be75dcf4-4c50-4c40-b52a-fe3bfde20bf5/scratchpad/embed-design-draft.md"
 - name: "crossOriginIsolated and SharedArrayBuffer requirements"
   url: https://developer.mozilla.org/en-US/docs/Web/API/Window/crossOriginIsolated
 
@@ -22,60 +20,60 @@ acceptance_tests:
 - id: uat-001
   name: "Embed route renders a public notebook without app chrome and with runnable cells"
   command: npx playwright test tests/e2e/embed.spec.ts
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "embed.js loader injects an auto-resizing iframe for both snippet styles and handles multiple embeds per page"
   command: npx playwright test tests/e2e/embed.spec.ts
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Embed snippet button copies iframe and script snippets from the view-only toolbar"
   command: npx playwright test tests/e2e/embed.spec.ts
-  uat_status: unverified
+  uat_status: verified
 - id: uat-004
   name: "Full gate stays green"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
   title: "Embed routes + EmbedNotebookPage (shared + public sources), chrome-less AppLayout"
   priority: 1
-  status: todo
+  status: done
   notes: "Routes /embed/shared/{hash} and /embed/public/{filename} in lib.rs; one page component parameterized by source; AppLayout skips header/status bar on /embed/ path prefix via use_location (SSR-deterministic); LayoutContext still provided."
 - id: T-002
   title: "Embed mode in ViewOnlyNotebook: hide Fork, add 'Open in ironpad' badge"
   priority: 1
-  status: todo
+  status: done
   notes: "Optional embed prop (default false). Fork writes IndexedDB, which is partitioned in cross-origin iframes; replace with target=_blank canonical link. Slim footer badge links to /shared/{hash} or /notebook/public/{filename}."
 - id: T-003
   title: "In-frame height reporter posting ironpad:embed:height to parent"
   priority: 2
-  status: todo
-  notes: "Load + ResizeObserver; include per-embed id echoed from the ?embed_id= query param; only active when window.parent !== window."
+  status: done
+  notes: "public/embed-frame.js: measures the layout root's scrollHeight (documentElement is viewport-clamped in iframes), polls on change, echoes the ?embed_id= per-embed id; only active when window.parent !== window."
 - id: T-004
   title: "public/embed.js host-side loader"
   priority: 2
-  status: todo
+  status: done
   notes: "Vanilla JS, no deps. Supports script[data-notebook] self-invocation and .ironpad-embed[data-notebook] divs; data-notebook is 'shared/{hash}' or 'public/{filename}'. Origin derived from document.currentScript.src; origin-validated message listener; multiple embeds per page via unique embed ids; iframe width 100%, loading=lazy."
 - id: T-005
   title: "Embed snippet UI in the view-only toolbar"
   priority: 2
-  status: todo
+  status: done
   notes: "Embed button opens a popover with iframe snippet + script snippet, each with CopyButton. Visible on /shared and /notebook/public pages; hidden in embed mode itself."
 - id: T-006
   title: "CORP header for /embed/* and /embed.js"
   priority: 3
-  status: todo
+  status: done
   notes: "Cross-Origin-Resource-Policy: cross-origin scoped to embed responses so COEP-isolated embedders can frame us. Server main.rs layer; config test."
 - id: T-007
   title: "Threaded-cell degradation notice in embeds"
   priority: 3
-  status: todo
+  status: done
   notes: "Cross-origin iframes are never crossOriginIsolated, so SharedArrayBuffer (rayon cells) is unavailable. Detect !crossOriginIsolated in embed mode and show a friendly note on cells that request rayon instead of a raw failure."
 - id: T-008
   title: "Playwright embed.spec.ts + docs"
   priority: 3
-  status: todo
+  status: done
   notes: "Host-page fixture exercising both snippet styles: renders, chrome absent, resize message fires, snippet copy works. Update CLAUDE.md routes list + README embed section."
 ---
 
@@ -142,3 +140,4 @@ third-party page
 # History
 
 - 2026-07-10: PRD created from the approved brainstorm design (session: code-quality + notebooks + embed).
+- 2026-07-10: T-001..T-008 implemented on the `embed` branch. Notable deviations from the original notes: the height reporter measures the layout root's `scrollHeight` instead of `document.documentElement` (the latter is viewport-clamped inside an iframe, so short notebooks pinned at the placeholder size and frames could never shrink), and it polls on change rather than using ResizeObserver (content mounts via Suspense and never resizes a stable observable ancestor). An embed layout CSS variant lets the document grow with content instead of scrolling internally, which the height protocol requires. 4 Playwright tests cover uat-001..003.

@@ -13,6 +13,8 @@ use crate::server_fns::get_shared_notebook;
 pub fn SharedNotebookPage() -> impl IntoView {
     let params = use_params_map();
     let hash = params.read_untracked().get("hash").unwrap_or_default();
+    // Spec handed to ViewOnlyNotebook so its Embed button can build snippets.
+    let embed_spec = (!hash.is_empty()).then(|| format!("shared/{hash}"));
 
     // Reset layout context for shared notebook.
     let ctx = expect_context::<LayoutContext>();
@@ -38,11 +40,17 @@ pub fn SharedNotebookPage() -> impl IntoView {
                 </div>
             }
         }>
-            {move || Suspend::new(async move {
+            {move || {
+                let embed_spec = embed_spec.clone();
+                Suspend::new(async move {
                 match notebook_resource.await {
                     Ok(notebook) => {
                         view! {
-                            <ViewOnlyNotebook notebook fork_label="Fork to Private".to_string() />
+                            <ViewOnlyNotebook
+                                notebook
+                                fork_label="Fork to Private".to_string()
+                                embed_spec=embed_spec.unwrap_or_default()
+                            />
                         }.into_any()
                     }
 
@@ -58,7 +66,8 @@ pub fn SharedNotebookPage() -> impl IntoView {
                         </div>
                     }.into_any(),
                 }
-            })}
+            })
+            }}
         </Suspense>
     }
 }

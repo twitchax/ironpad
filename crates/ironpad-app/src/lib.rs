@@ -17,7 +17,10 @@ use leptos_router::{
     components::{Route, Router, Routes},
     ParamSegment, StaticSegment,
 };
-use pages::{HomePage, NotebookEditorPage, PublicNotebookPage, SharedNotebookPage};
+use pages::{
+    EmbedPublicPage, EmbedSharedPage, HomePage, NotebookEditorPage, PublicNotebookPage,
+    SharedNotebookPage,
+};
 use thaw::{ConfigProvider, Theme, ToastPosition, ToasterProvider};
 
 /// Server-side shell rendered around the app.
@@ -55,6 +58,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 // IndexedDB notebook storage.
                 <script src="/storage.js"></script>
 
+                // Embed height reporter (no-op unless framed with ?embed_id=).
+                <script src="/embed-frame.js"></script>
+
                 // Drag-and-drop sortable library.
                 <script src="/sortable.min.js"></script>
             </head>
@@ -89,6 +95,8 @@ pub fn App() -> impl IntoView {
                             <Route path=StaticSegment("") view=HomePage/>
                             <Route path=(StaticSegment("notebook"), StaticSegment("public"), ParamSegment("filename")) view=PublicNotebookPage/>
                             <Route path=(StaticSegment("shared"), ParamSegment("hash")) view=SharedNotebookPage/>
+                            <Route path=(StaticSegment("embed"), StaticSegment("shared"), ParamSegment("hash")) view=EmbedSharedPage/>
+                            <Route path=(StaticSegment("embed"), StaticSegment("public"), ParamSegment("filename")) view=EmbedPublicPage/>
                             <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=NotebookEditorPage/>
                         </Routes>
                     </AppLayout>
