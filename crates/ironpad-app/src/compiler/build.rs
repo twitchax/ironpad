@@ -42,14 +42,17 @@ const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 
 /// Toolchain used for `std::autodiff` (Enzyme) cell builds.
 ///
-/// Deliberately the *rolling* `nightly` (not the atomics pin): the `enzyme`
-/// rustup component only exists on recent nightlies (absent for
-/// 2025-12-22), and each libEnzyme is built against its own nightly's LLVM.
-/// The deploy image installs `nightly` + `enzyme` together at image build
-/// time, which pins the pair per-image. If both rayon and autodiff are
-/// requested, this toolchain wins (it has rust-src for `-Zbuild-std`; the
-/// atomics pin has no Enzyme).
-const AUTODIFF_TOOLCHAIN: &str = "nightly";
+/// **Pinned**, for the same reason as [`ATOMICS_TOOLCHAIN`]: rolling nightlies
+/// drift into breakage. The first deploy used the rolling `nightly` and the
+/// 2026-07 nightly promptly ICE'd on cannon-notebook cells
+/// (`rustc_middle/src/ty/typetree.rs: incorrect autodiff typetree handling
+/// for slice`); this 2026-06-01 nightly is the one the feature was verified
+/// end to end on. The `enzyme` rustup component exists for it (absent for the
+/// atomics pin, 2025-12-22) and ships a matching libEnzyme/LLVM pair. The
+/// deploy image and dev hosts must install this toolchain with the `enzyme`
+/// + `rust-src` components and the wasm32 target. If both rayon and autodiff
+/// are requested, this toolchain wins (it has rust-src for `-Zbuild-std`).
+const AUTODIFF_TOOLCHAIN: &str = "nightly-2026-06-01";
 
 /// Hard timeout for a single `cargo build` invocation.
 /// Override with `IRONPAD_BUILD_TIMEOUT_SECS` env var (default: 300s).
