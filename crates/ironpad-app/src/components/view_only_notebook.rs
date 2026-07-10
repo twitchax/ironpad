@@ -21,6 +21,20 @@ use crate::server_fns::compile_cell;
 
 // ── ViewOnlyNotebook ────────────────────────────────────────────────────────
 
+/// Await `ms` milliseconds via a `setTimeout`-backed promise, for spacing
+/// compile-transport retries.
+#[cfg(feature = "hydrate")]
+async fn transport_backoff(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(window) = leptos::web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        } else {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 /// Derive the canonical (full-page) route for an embed spec:
 /// `shared/{hash}` → `/shared/{hash}`, `public/{file}` → `/notebook/public/{file}`.
 fn canonical_path(spec: &str) -> Option<String> {
@@ -573,7 +587,28 @@ fn ViewOnlyCodeCell(
                 };
 
                 let compile_start = js_sys::Date::now();
-                match compile_cell(request).await {
+                // Compile requests are idempotent (cache-keyed server-side), so
+                // TRANSPORT failures — a dropped connection mid-build, a network
+                // change on a mobile client — are safe to retry; the server's
+                // incremental target dir makes retried builds much cheaper than
+                // the first attempt. Compile diagnostics are Ok responses and
+                // never retried.
+                let compile_result = {
+                    let mut attempt: i32 = 0;
+                    loop {
+                        match compile_cell(request.clone()).await {
+                            Err(e) if attempt < 2 => {
+                                attempt += 1;
+                                leptos::logging::warn!(
+                                    "compile transport error (attempt {attempt}): {e}; retrying"
+                                );
+                                transport_backoff(1_500 * attempt).await;
+                            }
+                            other => break other,
+                        }
+                    }
+                };
+                match compile_result {
                     Ok(response) => {
                         compile_time_ms.set(Some(js_sys::Date::now() - compile_start));
                         if response.wasm_blob.is_empty() {
