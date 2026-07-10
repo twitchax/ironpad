@@ -1318,19 +1318,25 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         {
             use wasm_bindgen::prelude::*;
 
+            // One-shot: `once_into_js` frees the Rust closure when the timer
+            // fires. It must NOT live in this effect's scope (e.g. via
+            // StoredValue): the effect re-runs immediately (it sets
+            // `pending_focus_cell` above, which it also reads), disposing this
+            // run's scope and dropping the closure before the timeout — JS then
+            // throws "closure invoked recursively or after being dropped".
             let handle = source_handle;
-            let closure = Closure::<dyn Fn()>::new(move || {
+            let focus_cb = Closure::once_into_js(move || {
                 if let Some(h) = handle.get_untracked() {
                     h.focus();
                 }
             });
-            let focus_fn: js_sys::Function =
-                closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
-            closure.forget();
 
             let _ = web_sys::window()
                 .unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(&focus_fn, 300);
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    focus_cb.unchecked_ref(),
+                    300,
+                );
         }
     });
 
@@ -1420,13 +1426,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Compiling => "◐ compiling…".to_string(),
                                         CellStatus::Running => "◐ running…".to_string(),
                                         CellStatus::Success => {
-                                            let compile = compile_time_ms.get();
-                                            let runtime = execution_result.get().map(|r| r.execution_time_ms);
-                                            // Show compile time only (the cryptic
-                                            // "c+r" form read as one number); runtime
-                                            // is shown in the Output panel meta.
-                                            let _ = runtime;
-                                            match compile {
+                                            // Show compile time only; runtime is shown in the
+                                            // Output panel meta (the "c+r" form read as one number).
+                                            match compile_time_ms.get() {
                                                 Some(c) => format!("✓ {c:.0} ms"),
                                                 None => "✓ done".to_string(),
                                             }
