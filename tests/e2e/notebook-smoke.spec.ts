@@ -102,9 +102,12 @@ test.describe("Notebook smoke tests", () => {
     const outputs = page.locator(".view-only-output-display");
     await expect(outputs.first()).toBeVisible({ timeout: CELL_OUTPUT_TIMEOUT });
 
-    // Both cells produce BlobImage output rendered as <img> elements.
+    // Both cells produce BlobImage output rendered as <img> elements. Wait for
+    // the SECOND image, not just the first: Run All executes cells
+    // sequentially, so counting right after the first image races cell 2's
+    // execution (timing badges only signal compilation).
     const images = page.locator(".view-only-output-display img");
-    await expect(images.first()).toBeVisible({ timeout: 30_000 });
+    await expect(images.nth(1)).toBeVisible({ timeout: CELL_OUTPUT_TIMEOUT });
     const imageCount = await images.count();
     expect(imageCount).toBeGreaterThanOrEqual(2);
 
