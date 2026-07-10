@@ -149,6 +149,11 @@ pub struct IronpadNotebook {
     /// When `true`, editing a cell auto-re-executes downstream cells after a debounce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactive_mode: Option<bool>,
+    /// When `true`, view-only pages render code cells expanded (source
+    /// visible) instead of collapsed — for notebooks where the code is the
+    /// story, not just the machinery behind an output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expand_code: Option<bool>,
     pub cells: Vec<IronpadCell>,
 }
 
@@ -178,6 +183,7 @@ impl IronpadNotebook {
             shared_cargo_toml: Some(DEFAULT_SHARED_CARGO_TOML.to_string()),
             shared_source: None,
             reactive_mode: None,
+            expand_code: None,
             cells: Vec::new(),
         }
     }
@@ -309,6 +315,42 @@ mod tests {
         assert!(
             !json.contains("reactive_mode"),
             "reactive_mode=None should be skipped"
+        );
+    }
+
+    // ── expand_code field ──────────────────────────────────────────────
+
+    #[test]
+    fn notebook_without_expand_code_defaults_to_none() {
+        let json = r#"{
+            "version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "title": "Test",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z",
+            "cells": []
+        }"#;
+        let nb: IronpadNotebook = serde_json::from_str(json).unwrap();
+        assert_eq!(nb.expand_code, None);
+    }
+
+    #[test]
+    fn notebook_with_expand_code_true_round_trips() {
+        let mut nb = IronpadNotebook::new("Code-Forward");
+        nb.expand_code = Some(true);
+        let json = serde_json::to_string(&nb).unwrap();
+        assert!(json.contains("\"expand_code\":true"));
+        let back: IronpadNotebook = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.expand_code, Some(true));
+    }
+
+    #[test]
+    fn notebook_expand_code_none_is_omitted_from_json() {
+        let nb = IronpadNotebook::new("Default");
+        let json = serde_json::to_string(&nb).unwrap();
+        assert!(
+            !json.contains("expand_code"),
+            "expand_code=None should be skipped"
         );
     }
 

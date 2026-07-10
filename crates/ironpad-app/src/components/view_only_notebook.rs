@@ -89,6 +89,10 @@ pub fn ViewOnlyNotebook(
         threaded_cells_blocked = mentions_rayon && !isolated;
     }
 
+    // Code-forward notebooks (blog-style posts about the code itself) render
+    // code cells expanded by default in view mode.
+    let expand_code = notebook.expand_code.unwrap_or(false);
+
     let notebook = StoredValue::new(notebook);
 
     // Shared state: execution outputs keyed by cell ID (for piping between cells).
@@ -324,6 +328,7 @@ pub fn ViewOnlyNotebook(
                                 cell_outputs=cell_outputs
                                 run_all_queue=run_all_queue
                                 force_recompile=force_recompile
+                                expand_code=expand_code
                             />
                         }
                     }).collect_view()
@@ -409,6 +414,7 @@ fn ViewOnlyCell(
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
     force_recompile: RwSignal<bool>,
+    expand_code: bool,
 ) -> impl IntoView {
     match cell.cell_type {
         CellType::Code => view! {
@@ -421,6 +427,7 @@ fn ViewOnlyCell(
                 cell_outputs=cell_outputs
                 run_all_queue=run_all_queue
                 force_recompile=force_recompile
+                expand_code=expand_code
             />
         }
         .into_any(),
@@ -446,6 +453,7 @@ fn ViewOnlyCodeCell(
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
     force_recompile: RwSignal<bool>,
+    expand_code: bool,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let all_cells = StoredValue::new(all_cells);
@@ -655,8 +663,10 @@ fn ViewOnlyCodeCell(
     #[cfg(not(feature = "hydrate"))]
     let _ = &run_cell;
 
-    // Code is collapsed by default to match editor view mode.
-    let collapsed = RwSignal::new(true);
+    // Code is collapsed by default to match editor view mode, unless the
+    // notebook opts into expanded code (expand_code) because the code is the
+    // content.
+    let collapsed = RwSignal::new(!expand_code);
     let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
     let body_class = Signal::derive(move || {
         if collapsed.get() {

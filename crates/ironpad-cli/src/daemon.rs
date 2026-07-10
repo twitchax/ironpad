@@ -340,12 +340,14 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             shared_cargo_toml,
             shared_source,
             reactive_mode,
+            expand_code,
         } => apply_notebook_meta_updated(
             nb,
             title.as_ref(),
             shared_cargo_toml.as_ref(),
             shared_source.as_ref(),
             *reactive_mode,
+            *expand_code,
         ),
         // Compilation/execution events don't affect the notebook structure; an
         // unknown event from a newer peer is likewise ignored here.
@@ -421,6 +423,7 @@ fn apply_notebook_meta_updated(
     shared_cargo_toml: Option<&Option<String>>,
     shared_source: Option<&Option<String>>,
     reactive_mode: Option<bool>,
+    expand_code: Option<bool>,
 ) {
     if let Some(t) = title {
         nb.title.clone_from(t);
@@ -433,6 +436,9 @@ fn apply_notebook_meta_updated(
     }
     if let Some(rm) = reactive_mode {
         nb.reactive_mode = if rm { Some(true) } else { None };
+    }
+    if let Some(ec) = expand_code {
+        nb.expand_code = if ec { Some(true) } else { None };
     }
 }
 

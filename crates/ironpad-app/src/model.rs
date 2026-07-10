@@ -104,9 +104,14 @@ impl NotebookModel {
                 shared_cargo_toml,
                 shared_source,
                 reactive_mode,
-            } => {
-                self.notebook_update_meta(title, shared_cargo_toml, shared_source, reactive_mode)?
-            }
+                expand_code,
+            } => self.notebook_update_meta(
+                title,
+                shared_cargo_toml,
+                shared_source,
+                reactive_mode,
+                expand_code,
+            )?,
             // A mutation from a newer peer this build doesn't recognise. It
             // can't be applied — surface an error rather than silently acting.
             Mutation::Unknown => {
@@ -474,6 +479,7 @@ impl NotebookModel {
         shared_cargo_toml: Option<Option<String>>,
         shared_source: Option<Option<String>>,
         reactive_mode: Option<bool>,
+        expand_code: Option<bool>,
     ) -> Result<(MutationResult, Event), ModelError> {
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
@@ -489,6 +495,9 @@ impl NotebookModel {
             if let Some(rm) = reactive_mode {
                 nb.reactive_mode = if rm { Some(true) } else { None };
             }
+            if let Some(ec) = expand_code {
+                nb.expand_code = if ec { Some(true) } else { None };
+            }
         });
 
         if shared_cargo_toml.is_some() || shared_source.is_some() {
@@ -502,6 +511,7 @@ impl NotebookModel {
                 shared_cargo_toml,
                 shared_source,
                 reactive_mode,
+                expand_code,
             },
         ))
     }

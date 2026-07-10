@@ -119,5 +119,6 @@
     "view-types",
     "polonius",
     "rust-2026"
-  ]
+  ],
+  "expand_code": true
 }

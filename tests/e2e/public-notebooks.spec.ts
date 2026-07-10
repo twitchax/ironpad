@@ -146,3 +146,36 @@ test.describe("Stylesheet token hygiene", () => {
     expect(foreign).toBeNull();
   });
 });
+
+test.describe("Expand code setting", () => {
+  test("expand_code notebooks render code cells expanded", async ({
+    page,
+  }) => {
+    // The blog-style notebooks are ABOUT the code, so they ship
+    // expand_code: true — sources visible without any clicks.
+    await page.goto("/notebook/public/dynosaur.ironpad");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(
+      page.locator(".ironpad-cell-body--collapsed")
+    ).toHaveCount(0);
+    // A code cell's Monaco is visible immediately.
+    await expect(
+      page.locator(".view-only-cell .monaco-editor").first()
+    ).toBeVisible({ timeout: 15_000 });
+  });
+
+  test("notebooks without expand_code keep code collapsed", async ({
+    page,
+  }) => {
+    await page.goto("/notebook/public/welcome.ironpad");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+    const collapsed = await page
+      .locator(".ironpad-cell-body--collapsed")
+      .count();
+    expect(collapsed).toBeGreaterThan(0);
+  });
+});

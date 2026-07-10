@@ -86,5 +86,6 @@
     "traits",
     "dynosaur",
     "dyn-compatibility"
-  ]
+  ],
+  "expand_code": true
 }

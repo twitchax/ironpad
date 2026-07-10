@@ -93,5 +93,6 @@
     "reflection",
     "facet",
     "language-design"
-  ]
+  ],
+  "expand_code": true
 }

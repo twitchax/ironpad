@@ -137,6 +137,8 @@ pub enum Mutation {
         shared_source: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reactive_mode: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expand_code: Option<bool>,
     },
     /// An unrecognised mutation from a newer peer (see the [`Message`] forward-compat docs).
     #[serde(other)]
@@ -233,6 +235,8 @@ pub enum Event {
         shared_source: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reactive_mode: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expand_code: Option<bool>,
     },
     Error {
         code: ErrorCode,
@@ -433,6 +437,7 @@ mod tests {
                 shared_cargo_toml: Some(Some("toml content".into())),
                 shared_source: None,
                 reactive_mode: None,
+                expand_code: None,
             }),
         };
         round_trip(&msg);
@@ -645,6 +650,26 @@ mod tests {
         assert!(cell.cargo_toml.is_none());
     }
 
+    // ── expand_code in protocol messages ────────────────────────────────
+
+    #[test]
+    fn mutation_notebook_update_meta_with_expand_code() {
+        let msg = Message {
+            id: "req-expand".into(),
+            kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
+                title: None,
+                shared_cargo_toml: None,
+                shared_source: None,
+                reactive_mode: None,
+                expand_code: Some(true),
+            }),
+        };
+        round_trip(&msg);
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"expand_code\":true"));
+    }
+
     // ── reactive_mode in protocol messages ──────────────────────────────
 
     #[test]
@@ -656,6 +681,7 @@ mod tests {
                 shared_cargo_toml: None,
                 shared_source: None,
                 reactive_mode: Some(true),
+                expand_code: None,
             }),
         };
         round_trip(&msg);
@@ -673,6 +699,7 @@ mod tests {
                 shared_cargo_toml: None,
                 shared_source: None,
                 reactive_mode: None,
+                expand_code: None,
             }),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -694,6 +721,7 @@ mod tests {
                     shared_cargo_toml: None,
                     shared_source: None,
                     reactive_mode: Some(false),
+                    expand_code: None,
                 },
             }),
         };
@@ -797,6 +825,7 @@ mod tests {
                     shared_cargo_toml: None,
                     shared_source: None,
                     reactive_mode: None,
+                    expand_code: None,
                 },
             }),
         };
