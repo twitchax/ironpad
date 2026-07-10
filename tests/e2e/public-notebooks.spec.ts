@@ -89,3 +89,46 @@ test.describe("Public notebooks", () => {
     expect(jsErrors).toEqual([]);
   });
 });
+
+test.describe("View-only polish", () => {
+  test("shared source and dependencies render as a collapsed appendix", async ({
+    page,
+  }) => {
+    // The borrows notebook ships both shared source and shared Cargo.toml.
+    await page.goto("/notebook/public/borrows.ironpad");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const headers = page.locator(".view-only-shared-header");
+    await expect(headers).toHaveCount(2);
+    await expect(headers.nth(0)).toContainText("Shared Source");
+    await expect(headers.nth(1)).toContainText("Shared Dependencies");
+
+    // Collapsed by default; expanding mounts a read-only Monaco lazily.
+    await expect(page.locator(".view-only-shared-body")).toHaveCount(0);
+    await page.waitForTimeout(3_000); // hydration
+    await headers.nth(0).click();
+    await expect(
+      page.locator(".view-only-shared-body .monaco-editor")
+    ).toBeVisible({ timeout: 15_000 });
+  });
+
+  test("toolbar controls keep intrinsic height when the title wraps", async ({
+    page,
+  }) => {
+    // Narrow viewport + the longest notebook title: the title must shrink and
+    // wrap while the buttons keep their single-line height (regression: they
+    // used to squeeze into multi-line pills).
+    await page.setViewportSize({ width: 700, height: 800 });
+    await page.goto("/notebook/public/borrows.ironpad");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const h = await page
+      .locator(".run-all-button")
+      .evaluate((el) => el.getBoundingClientRect().height);
+    expect(h).toBeLessThan(45);
+  });
+});
