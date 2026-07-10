@@ -64,18 +64,33 @@ pub fn AppLayout(children: Children) -> impl IntoView {
 
     let location = leptos_router::hooks::use_location();
     let show_footer = Memo::new(move |_| location.pathname.get() != "/");
+    // Chrome-less embed mode (PRD-0039): /embed/* routes render only the page
+    // content. Path-derived so SSR and client navigation agree; LayoutContext
+    // is still provided, so pages that touch it keep working.
+    let embed_mode = Memo::new(move |_| location.pathname.get().starts_with("/embed/"));
 
     view! {
-        <div class="ironpad-root-layout">
-            <header class="ironpad-header">
-                <HeaderContent ctx />
-            </header>
+        <div class=move || {
+            if embed_mode.get() {
+                // The embed variant lets the document grow with its content:
+                // the height reporter measures scrollHeight, which stays
+                // pinned at the iframe size if the layout scrolls internally.
+                "ironpad-root-layout ironpad-root-layout--embed"
+            } else {
+                "ironpad-root-layout"
+            }
+        }>
+            {move || (!embed_mode.get()).then(|| view! {
+                <header class="ironpad-header">
+                    <HeaderContent ctx />
+                </header>
+            })}
 
             <div class="ironpad-content">
                 {children()}
             </div>
 
-            {move || show_footer.get().then(|| view! {
+            {move || (show_footer.get() && !embed_mode.get()).then(|| view! {
                 <footer class="ironpad-status-bar">
                     <StatusBar ctx />
                 </footer>

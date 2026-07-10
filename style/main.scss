@@ -2836,3 +2836,108 @@ samp,
         color: var(--ip-text-tertiary, #888);
     }
 }
+
+// ── Notebook embedding (PRD-0039) ────────────────────────────────────────────
+
+.view-only-embed {
+    position: relative;
+}
+
+.embed-button {
+    padding: 0.5rem 1rem;
+    background: transparent;
+    color: var(--colorNeutralForeground2);
+    border: 1px solid var(--colorNeutralStroke1);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-family: var(--fontFamilyMonospace, monospace);
+
+    &:hover {
+        color: var(--colorNeutralForeground1);
+        border-color: var(--colorBrandBackground);
+    }
+}
+
+.view-only-embed-popover {
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    right: 0;
+    z-index: 40;
+    width: min(560px, 80vw);
+    padding: 0.75rem;
+    background: var(--colorNeutralBackground2);
+    border: 1px solid var(--colorNeutralStroke1);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.view-only-embed-snippet {
+    position: relative; // anchors the CopyButton
+
+    pre {
+        margin: 0.25rem 0 0;
+        padding: 0.5rem 2.5rem 0.5rem 0.5rem;
+        background: var(--colorNeutralBackground3);
+        border-radius: 4px;
+        font-size: 0.75rem;
+        white-space: pre-wrap;
+        word-break: break-all;
+    }
+}
+
+.view-only-embed-snippet-label {
+    font-size: 0.75rem;
+    color: var(--colorNeutralForeground3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.view-only-embed-notice {
+    margin: 0 1rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--colorStatusWarningBackground1, rgb(255 200 60 / 12%));
+    border: 1px solid var(--colorStatusWarningBorder1, rgb(255 200 60 / 45%));
+    border-radius: 4px;
+    font-size: 0.85rem;
+    color: var(--colorNeutralForeground2);
+}
+
+.ironpad-embed-badge {
+    display: block;
+    padding: 0.4rem 1rem;
+    border-top: 1px solid var(--colorNeutralStroke2);
+    font-size: 0.8rem;
+    color: var(--colorNeutralForeground3);
+    text-decoration: none;
+    text-align: right;
+
+    &:hover {
+        color: var(--colorBrandForegroundLink, var(--colorNeutralForeground1));
+    }
+}
+
+// Embed variant (PRD-0039): the document must grow with content instead of
+// scrolling internally — the iframe height protocol measures scrollHeight,
+// which never changes while the layout is viewport-locked.
+.ironpad-root-layout--embed {
+    height: auto;
+    overflow: visible;
+
+    .ironpad-content {
+        overflow-y: visible;
+        padding: 12px;
+    }
+
+    .view-only-notebook {
+        height: auto;
+    }
+
+    .view-only-cells {
+        flex: none;
+        overflow-y: visible;
+    }
+}

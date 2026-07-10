@@ -177,6 +177,8 @@ The core of ironpad is a 5-stage WASM compiler:
 - `/notebook/{id}` — NotebookEditorPage (private, IndexedDB-backed)
 - `/notebook/public/{filename}` — PublicNotebookPage (read-only, static `.ironpad` file)
 - `/shared/{hash}` — SharedNotebookPage (read-only, shared via hash)
+- `/embed/shared/{hash}` — EmbedSharedPage (chrome-less iframe variant; PRD-0039)
+- `/embed/public/{filename}` — EmbedPublicPage (chrome-less iframe variant; PRD-0039)
 - `/ws/host?notebook_id=<id>` — WebSocket: browser connects as session host
 - `/ws/connect?token=<token>` — WebSocket: CLI connects as session guest
 

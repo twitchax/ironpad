@@ -34,6 +34,12 @@ test.describe("Editor UX (PRD-0032)", () => {
     await input.fill("Persisted Rename");
     await input.press("Enter");
 
+    // Wait for the commit to reflect in the header before reloading —
+    // navigating immediately races the async IndexedDB write.
+    await expect(page.locator(".ironpad-header-center")).toContainText(
+      "Persisted Rename"
+    );
+
     // Reload from IndexedDB and verify the new title survived.
     await page.goto(url);
     await expect(page.locator(".ironpad-header-center")).toContainText(

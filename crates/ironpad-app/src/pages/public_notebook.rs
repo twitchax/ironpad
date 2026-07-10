@@ -21,6 +21,12 @@ pub fn PublicNotebookPage() -> impl IntoView {
     ctx.notebook_title.set(None);
     ctx.show_save_button.set(false);
 
+    // Spec handed to ViewOnlyNotebook so its Embed button can build snippets.
+    let embed_spec = params
+        .read_untracked()
+        .get("filename")
+        .map(|f| format!("public/{f}"));
+
     let notebook_resource = Resource::new(move || filename.clone(), get_public_notebook);
 
     // Update footer cell count when the resource resolves (Effect runs on the
@@ -40,10 +46,15 @@ pub fn PublicNotebookPage() -> impl IntoView {
             }
         }>
             {move || {
+                let embed_spec = embed_spec.clone();
                 Suspend::new(async move {
                     match notebook_resource.await {
                         Ok(notebook) => view! {
-                            <ViewOnlyNotebook notebook fork_label="Fork to Private".to_string()/>
+                            <ViewOnlyNotebook
+                                notebook
+                                fork_label="Fork to Private".to_string()
+                                embed_spec=embed_spec.unwrap_or_default()
+                            />
                         }
                         .into_any(),
 

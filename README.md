@@ -59,6 +59,22 @@ Every notebook below is available in the [live playground](https://ironpad.twitc
 | **Cellular Automata**        | Langton's Ant, Rule 110, Maze Generator                                                                     |
 | **Data & Utilities**         | Working with JSON, Shared Code                                                                              |
 
+## Embedding
+
+Any shared or public notebook drops into a blog post or docs page as a **live, runnable embed**: readers get the full notebook (Monaco, cell execution, rendered output) inside an iframe, not a screenshot. Two snippet styles, both copyable from the **Embed** button on any notebook's view page:
+
+```html
+<!-- One line, auto-resizing -->
+<script src="https://ironpad.twitchax.com/embed.js"
+        data-notebook="public/mandelbrot.ironpad" async></script>
+
+<!-- Or a plain iframe, if you'd rather own the sizing -->
+<iframe src="https://ironpad.twitchax.com/embed/public/mandelbrot.ironpad"
+        style="width:100%;border:0;" height="600" loading="lazy"></iframe>
+```
+
+The script variant scans for `.ironpad-embed` placeholder divs too, so one script tag can mount any number of notebooks. One honest limitation: **threaded (rayon) cells can't run inside a cross-origin embed** (they need `SharedArrayBuffer`, which requires a cross-origin-isolated page); plain and async cells run fine, and the embed says so rather than failing quietly.
+
 ## How It Works
 
 ironpad compiles each cell into a standalone WASM module via a 5-stage pipeline:

@@ -10,6 +10,7 @@ use leptos::prelude::*;
 use ironpad_common::CompileRequest;
 use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 
+use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
 use crate::components::output_render::{
@@ -20,6 +21,17 @@ use crate::server_fns::compile_cell;
 
 // ── ViewOnlyNotebook ────────────────────────────────────────────────────────
 
+/// Derive the canonical (full-page) route for an embed spec:
+/// `shared/{hash}` → `/shared/{hash}`, `public/{file}` → `/notebook/public/{file}`.
+fn canonical_path(spec: &str) -> Option<String> {
+    spec.strip_prefix("shared/")
+        .map(|h| format!("/shared/{h}"))
+        .or_else(|| {
+            spec.strip_prefix("public/")
+                .map(|f| format!("/notebook/public/{f}"))
+        })
+}
+
 /// Read-only notebook view. Displays cells (code + markdown), supports
 /// execution, and provides a fork button to clone the notebook.
 #[allow(clippy::needless_pass_by_value)]
@@ -29,7 +41,48 @@ pub fn ViewOnlyNotebook(
     /// Label shown on the fork button (e.g., "Fork" for public, "Fork to Private" for shared).
     #[prop(default = "Fork".to_string())]
     fork_label: String,
+    /// Render for iframe embedding (PRD-0039): hides Fork (IndexedDB is
+    /// partitioned inside cross-origin iframes), adds the "Open in ironpad"
+    /// badge, and surfaces the threaded-cell limitation.
+    #[prop(optional)]
+    embed: bool,
+    /// Notebook source spec (`shared/{hash}` or `public/{filename}`), used to
+    /// build embed snippets on view pages and the canonical link inside embeds.
+    /// Empty means "unknown source": no Embed button, badge links to `/`.
+    #[prop(optional)]
+    embed_spec: Option<String>,
 ) -> impl IntoView {
+    // Leptos's optional-prop setter takes the bare String, so callers with no
+    // spec pass ""; normalize that back to None here.
+    let embed_spec = embed_spec.filter(|s| !s.is_empty());
+    // Threaded (rayon) cells need SharedArrayBuffer, which requires a
+    // crossOriginIsolated context — impossible inside a cross-origin iframe.
+    // Detect the combination up front and explain it instead of letting cells
+    // fail cryptically (PRD-0039 T-007). Hydrate-only: SSR can't know the
+    // isolation state, and the banner only matters in a live embed.
+    #[allow(unused_mut)]
+    let mut threaded_cells_blocked = false;
+    #[cfg(feature = "hydrate")]
+    if embed {
+        let mentions_rayon = notebook
+            .shared_cargo_toml
+            .as_deref()
+            .unwrap_or("")
+            .contains("rayon")
+            || notebook
+                .cells
+                .iter()
+                .any(|c| c.cargo_toml.as_deref().unwrap_or("").contains("rayon"));
+        let isolated = leptos::web_sys::window()
+            .and_then(|w| {
+                js_sys::Reflect::get(&w, &"crossOriginIsolated".into())
+                    .ok()
+                    .and_then(|v| v.as_bool())
+            })
+            .unwrap_or(false);
+        threaded_cells_blocked = mentions_rayon && !isolated;
+    }
+
     let notebook = StoredValue::new(notebook);
 
     // Shared state: execution outputs keyed by cell ID (for piping between cells).
@@ -128,6 +181,43 @@ pub fn ViewOnlyNotebook(
         }
     };
 
+    // ── Embed snippets popover (view pages only) ────────────────────────
+    //
+    // Snippets need the deployment origin, which only the browser knows, so
+    // they're built lazily on first open (hydrate) rather than at SSR time.
+    let embed_popover_open = RwSignal::new(false);
+    let embed_snippets: RwSignal<Option<(String, String)>> = RwSignal::new(None);
+    let embed_spec_stored = StoredValue::new(embed_spec.clone());
+    let toggle_embed_popover = move |_| {
+        #[cfg(feature = "hydrate")]
+        if !embed_popover_open.get_untracked() && embed_snippets.get_untracked().is_none() {
+            if let (Some(spec), Some(win)) =
+                (embed_spec_stored.get_value(), leptos::web_sys::window())
+            {
+                if let Ok(origin) = win.location().origin() {
+                    let iframe = format!(
+                        r#"<iframe src="{origin}/embed/{spec}" style="width:100%;border:0;" height="600" loading="lazy" title="ironpad notebook"></iframe>"#
+                    );
+                    let script = format!(
+                        r#"<script src="{origin}/embed.js" data-notebook="{spec}" async></script>"#
+                    );
+                    embed_snippets.set(Some((iframe, script)));
+                }
+            }
+        }
+        embed_popover_open.update(|open| *open = !*open);
+    };
+
+    // Canonical full-page link shown as a badge inside embeds. Relative href:
+    // inside the iframe it resolves against the ironpad origin, and
+    // target="_blank" opens the full app in a new tab.
+    let embed_badge_href = embed.then(|| {
+        embed_spec
+            .as_deref()
+            .and_then(canonical_path)
+            .unwrap_or_else(|| "/".to_string())
+    });
+
     view! {
         <div class="view-only-notebook">
             <div class="view-only-toolbar">
@@ -153,14 +243,44 @@ pub fn ViewOnlyNotebook(
                 >
                     {move || if running_all.get() { "◐ Running…" } else { "▶▶ Run All" }}
                 </button>
-                <button
-                    class="fork-button"
-                    on:click=fork_action
-                    disabled=move || forking.get()
-                >
-                    {move || if forking.get() { "↳ Forking…".to_string() } else { format!("↳ {fork_label_clone}") }}
-                </button>
+                {(!embed).then(|| view! {
+                    <button
+                        class="fork-button"
+                        on:click=fork_action
+                        disabled=move || forking.get()
+                    >
+                        {move || if forking.get() { "↳ Forking…".to_string() } else { format!("↳ {fork_label_clone}") }}
+                    </button>
+                })}
+                {(!embed && embed_spec.is_some()).then(|| view! {
+                    <div class="view-only-embed">
+                        <button class="embed-button" on:click=toggle_embed_popover>
+                            "</> Embed"
+                        </button>
+                        {move || embed_popover_open.get().then(|| view! {
+                            <div class="view-only-embed-popover">
+                                {move || embed_snippets.get().map(|(iframe_snip, script_snip)| view! {
+                                    <div class="view-only-embed-snippet">
+                                        <span class="view-only-embed-snippet-label">"iframe"</span>
+                                        <pre>{iframe_snip.clone()}</pre>
+                                        <CopyButton text=iframe_snip />
+                                    </div>
+                                    <div class="view-only-embed-snippet">
+                                        <span class="view-only-embed-snippet-label">"script (auto-resizing)"</span>
+                                        <pre>{script_snip.clone()}</pre>
+                                        <CopyButton text=script_snip />
+                                    </div>
+                                }.into_any())}
+                            </div>
+                        })}
+                    </div>
+                })}
             </div>
+            {threaded_cells_blocked.then(|| view! {
+                <div class="view-only-embed-notice">
+                    "This notebook uses threaded (rayon) cells, which need a cross-origin-isolated page and can't run inside an embed. Plain and async cells run fine; use the badge below to open the full notebook."
+                </div>
+            })}
             <div class="view-only-cells">
                 {notebook.with_value(|nb| {
                     let cells = nb.cells.clone();
@@ -190,6 +310,11 @@ pub fn ViewOnlyNotebook(
                     }).collect_view()
                 })}
             </div>
+            {embed_badge_href.map(|href| view! {
+                <a class="ironpad-embed-badge" href=href target="_blank" rel="noopener">
+                    "⚡ Powered by ironpad · Open ↗"
+                </a>
+            })}
         </div>
     }
 }

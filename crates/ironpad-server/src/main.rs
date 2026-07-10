@@ -157,6 +157,10 @@ async fn main() {
             HeaderName::from_static("cross-origin-embedder-policy"),
             HeaderValue::from_static("require-corp"),
         ))
+        // Embeddable responses (/embed/* + the loader script) additionally opt
+        // in to being loaded by COEP-isolated third-party pages via CORP
+        // (PRD-0039 T-006); everything else keeps same-origin protection.
+        .layer(axum::middleware::from_fn(embed_corp_header))
         // One span per HTTP request (at INFO so it passes the default filter),
         // which is what OpenTelemetry exports as a trace. Outermost layer so it
         // spans the whole request.
@@ -172,6 +176,49 @@ async fn main() {
     axum::serve(listener, app.into_make_service())
         .await
         .expect("server");
+}
+
+/// Is this a path we deliberately serve to third-party embedders? The embed
+/// routes themselves plus the two loader scripts a host page pulls directly.
+fn is_embeddable_path(path: &str) -> bool {
+    path.starts_with("/embed/") || path == "/embed.js" || path == "/embed-frame.js"
+}
+
+/// Stamp `Cross-Origin-Resource-Policy: cross-origin` onto embeddable
+/// responses so pages that are themselves COEP-isolated can still frame the
+/// notebook and load `embed.js` (PRD-0039 T-006).
+async fn embed_corp_header(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let embeddable = is_embeddable_path(req.uri().path());
+    let mut res = next.run(req).await;
+    if embeddable {
+        res.headers_mut().insert(
+            HeaderName::from_static("cross-origin-resource-policy"),
+            HeaderValue::from_static("cross-origin"),
+        );
+    }
+    res
+}
+
+#[cfg(test)]
+mod embed_header_tests {
+    use super::is_embeddable_path;
+
+    #[test]
+    fn embeddable_paths_are_exactly_the_embed_surface() {
+        assert!(is_embeddable_path("/embed/shared/abc123"));
+        assert!(is_embeddable_path("/embed/public/welcome.ironpad"));
+        assert!(is_embeddable_path("/embed.js"));
+        assert!(is_embeddable_path("/embed-frame.js"));
+
+        assert!(!is_embeddable_path("/"));
+        assert!(!is_embeddable_path("/shared/abc123"));
+        assert!(!is_embeddable_path("/notebook/public/welcome.ironpad"));
+        assert!(!is_embeddable_path("/embedx"));
+        assert!(!is_embeddable_path("/api/embed/whatever"));
+    }
 }
 
 /// Tracer + logger providers for OTLP export, held for the process lifetime so
