@@ -1,3 +1,9 @@
+//! CLI/environment configuration for the ironpad server binary.
+//!
+//! Parses process arguments and environment variables (via `clap`) into the
+//! shared [`ironpad_common::AppConfig`] consumed by the Axum app and
+//! `#[server]` functions.
+
 use std::path::PathBuf;
 
 use clap::Parser;

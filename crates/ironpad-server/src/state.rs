@@ -102,6 +102,21 @@ pub enum ClaimOutcome {
     Rejected,
 }
 
+/// Outcome of routing a message to a notebook's host (see
+/// [`WsState::send_to_host`]). `Full` is kept distinct from `Disconnected` so a
+/// transient backpressure drop on a *live* host isn't reported to a guest as a
+/// dead host — the misleading terminal error this enum exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostDelivery {
+    /// The message was enqueued for the host.
+    Delivered,
+    /// The host is connected but its outbound queue is full; the message was
+    /// dropped under backpressure.
+    Full,
+    /// No host is registered for the notebook, or its channel is closed.
+    Disconnected,
+}
+
 impl WsState {
     // ── Configuration (builders + accessors) ────────────────────────────
 
@@ -203,6 +218,19 @@ impl WsState {
     /// Forget a notebook's host-secret binding once it is idle — no host
     /// connection AND no sessions. This bounds the map and lets a fresh TOFU
     /// claim take over an abandoned notebook, where there is nothing to hijack.
+    ///
+    /// # Known TOCTOU window (accepted)
+    ///
+    /// A legitimate reconnect that has already matched the secret in
+    /// [`claim_host`](Self::claim_host) but has not yet reached
+    /// [`register_host`](Self::register_host) leaves no trace here (no host
+    /// entry, no session). If this runs in that gap it drops the binding, after
+    /// which a *different* secret would be TOFU-accepted — the hijack the binding
+    /// prevents. Closing it cleanly requires tracking in-flight claims (a
+    /// claim→register lifetime), which is out of proportion to the risk: the
+    /// window is a few microseconds, requires zero active sessions, the map is
+    /// in-memory only (a restart re-TOFUs anyway), and the claimant must already
+    /// know the `notebook_id`. Documented rather than fixed (review L3).
     pub async fn forget_secret_if_idle(&self, notebook_id: &str) {
         if self.hosts.read().await.contains_key(notebook_id) {
             return;
@@ -218,13 +246,18 @@ impl WsState {
         }
     }
 
-    /// Send a JSON message to the host of a notebook.
-    pub async fn send_to_host(&self, notebook_id: &str, message: &str) -> bool {
+    /// Send a JSON message to the host of a notebook, reporting whether it was
+    /// enqueued, dropped under backpressure, or the host is gone. See
+    /// [`HostDelivery`] for why `Full` and `Disconnected` are kept distinct.
+    pub async fn send_to_host(&self, notebook_id: &str, message: &str) -> HostDelivery {
         let hosts = self.hosts.read().await;
-        if let Some(host) = hosts.get(notebook_id) {
-            host.sender.try_send(message.to_string()).is_ok()
-        } else {
-            false
+        let Some(host) = hosts.get(notebook_id) else {
+            return HostDelivery::Disconnected;
+        };
+        match host.sender.try_send(message.to_string()) {
+            Ok(()) => HostDelivery::Delivered,
+            Err(mpsc::error::TrySendError::Full(_)) => HostDelivery::Full,
+            Err(mpsc::error::TrySendError::Closed(_)) => HostDelivery::Disconnected,
         }
     }
 
@@ -335,16 +368,35 @@ impl WsState {
 
     /// Session IDs for a notebook whose permissions grant `read`. Used to gate
     /// content-bearing event broadcasts (see [`broadcast_to_notebook_guests`]),
-    /// which is why sessions with `read: false` are filtered out here.
-    ///
-    /// O(n) over sessions — fine for the expected scale.
+    /// which is why sessions with `read: false` are filtered out. Delegates to
+    /// [`SessionStore::readable_session_ids`], which filters under the read lock
+    /// without cloning whole sessions — this is the hot per-event path.
     async fn readable_sessions_for_notebook(&self, notebook_id: &str) -> Vec<String> {
-        let sessions = self.sessions.all_sessions().await;
-        sessions
-            .into_iter()
-            .filter(|s| s.notebook_id == notebook_id && s.permissions.read)
-            .map(|s| s.id)
-            .collect()
+        self.sessions.readable_session_ids(notebook_id).await
+    }
+
+    /// Whether the connected guest `client_id` belongs to a session that grants
+    /// `read`. A write-only ("blind") agent is skipped by the read-gated event
+    /// broadcast, so [`handle_host_message`](crate::ws) uses this to decide
+    /// whether a guest-originated mutation's confirming Event already reaches it,
+    /// or must be delivered directly (see the host `Event` arm).
+    pub(crate) async fn guest_can_read(&self, client_id: &str) -> bool {
+        let session_id = {
+            let guests = self.guests.read().await;
+            guests.iter().find_map(|(sid, list)| {
+                list.iter()
+                    .any(|g| g.client_id == client_id)
+                    .then(|| sid.clone())
+            })
+        };
+        match session_id {
+            Some(sid) => self
+                .sessions
+                .get_session(&sid)
+                .await
+                .is_some_and(|s| s.permissions.read),
+            None => false,
+        }
     }
 }
 
@@ -477,14 +529,45 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(64);
 
         ws.register_host("nb-1", "conn-1", tx).await;
-        assert!(ws.send_to_host("nb-1", "hello").await);
+        assert_eq!(
+            ws.send_to_host("nb-1", "hello").await,
+            HostDelivery::Delivered
+        );
         assert_eq!(rx.recv().await.unwrap(), "hello");
     }
 
     #[tokio::test]
-    async fn send_to_host_returns_false_for_unknown() {
+    async fn send_to_host_reports_disconnected_for_unknown() {
         let ws = WsState::default();
-        assert!(!ws.send_to_host("no-such-nb", "hello").await);
+        assert_eq!(
+            ws.send_to_host("no-such-nb", "hello").await,
+            HostDelivery::Disconnected
+        );
+    }
+
+    #[tokio::test]
+    async fn send_to_host_distinguishes_full_from_closed() {
+        let ws = WsState::default();
+
+        // A capacity-1 channel we fill so the next send hits backpressure.
+        let (tx, rx) = mpsc::channel(1);
+        ws.register_host("nb-1", "conn-1", tx).await;
+
+        // First send occupies the single slot.
+        assert_eq!(
+            ws.send_to_host("nb-1", "first").await,
+            HostDelivery::Delivered
+        );
+        // Second send finds the queue full — reported as backpressure, NOT as a
+        // dead host.
+        assert_eq!(ws.send_to_host("nb-1", "second").await, HostDelivery::Full);
+
+        // Once the host's receiver is gone, the channel is closed → Disconnected.
+        drop(rx);
+        assert_eq!(
+            ws.send_to_host("nb-1", "third").await,
+            HostDelivery::Disconnected
+        );
     }
 
     #[tokio::test]
@@ -710,6 +793,45 @@ mod tests {
         // Channels closed — recv returns None.
         assert!(rx1.recv().await.is_none());
         assert!(rx2.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn guest_can_read_reflects_session_permissions() {
+        let ws = WsState::default();
+
+        // A readable session and a write-only session on the same notebook.
+        let reader = ws
+            .sessions
+            .create_session(
+                "nb-1".into(),
+                "conn-1".into(),
+                Permissions {
+                    read: true,
+                    write: true,
+                },
+            )
+            .await;
+        let blind = ws
+            .sessions
+            .create_session(
+                "nb-1".into(),
+                "conn-1".into(),
+                Permissions {
+                    read: false,
+                    write: true,
+                },
+            )
+            .await;
+
+        let (tx_r, _rx_r) = mpsc::channel(8);
+        let (tx_b, _rx_b) = mpsc::channel(8);
+        ws.register_guest(&reader.session_id, "reader", tx_r).await;
+        ws.register_guest(&blind.session_id, "writer", tx_b).await;
+
+        assert!(ws.guest_can_read("reader").await);
+        assert!(!ws.guest_can_read("writer").await);
+        // An unknown client id is treated as non-readable.
+        assert!(!ws.guest_can_read("ghost").await);
     }
 
     #[tokio::test]

@@ -70,6 +70,8 @@ fn gpu_output_size(width: u32, height: u32) -> Option<u32> {
 
 // ── GpuCanvas ───────────────────────────────────────────────────────────────
 
+type FallbackFn = Box<dyn Fn(u32, u32, &[f32]) -> (u8, u8, u8)>;
+
 /// A compute-shader-driven canvas that executes on the GPU via WebGPU.
 ///
 /// On conversion to [`CellOutput`](crate::CellOutput), the shader runs on the
@@ -102,8 +104,6 @@ fn gpu_output_size(width: u32, height: u32) -> Option<u32> {
 ///         (r, g, 128)
 ///     })
 /// ```
-type FallbackFn = Box<dyn Fn(u32, u32, &[f32]) -> (u8, u8, u8)>;
-
 pub struct GpuCanvas {
     width: u32,
     height: u32,

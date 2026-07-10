@@ -184,6 +184,20 @@ impl SessionStore {
             .collect()
     }
 
+    /// IDs of non-expired sessions for `notebook_id` whose permissions grant
+    /// `read`. Filters under the read lock and clones only the ids — this runs
+    /// on the hot event-broadcast path, where cloning whole [`Session`]s (as
+    /// [`all_sessions`](Self::all_sessions) does) per event would be wasteful.
+    pub async fn readable_session_ids(&self, notebook_id: &str) -> Vec<String> {
+        let sessions = self.sessions.read().await;
+        let now = Utc::now();
+        sessions
+            .values()
+            .filter(|s| s.notebook_id == notebook_id && s.permissions.read && s.expires_at > now)
+            .map(|s| s.id.clone())
+            .collect()
+    }
+
     /// Remove expired sessions. Call periodically to prevent unbounded growth.
     pub async fn sweep_expired(&self) -> usize {
         let mut sessions = self.sessions.write().await;
@@ -361,6 +375,50 @@ mod tests {
 
         // An unknown session id is a no-op.
         assert!(!store.expire_session("no-such-session").await);
+    }
+
+    #[tokio::test]
+    async fn readable_session_ids_filters_by_notebook_read_and_expiry() {
+        let store = SessionStore::new();
+
+        // Readable session on the target notebook — included.
+        let readable = store
+            .create_session(
+                "nb-1".into(),
+                "conn-1".into(),
+                Permissions {
+                    read: true,
+                    write: true,
+                },
+            )
+            .await;
+        // Write-only session on the target notebook — excluded (read: false).
+        store
+            .create_session(
+                "nb-1".into(),
+                "conn-1".into(),
+                Permissions {
+                    read: false,
+                    write: true,
+                },
+            )
+            .await;
+        // Readable session on a different notebook — excluded (wrong notebook).
+        store
+            .create_session("nb-2".into(), "conn-1".into(), Permissions::default())
+            .await;
+        // Readable-but-expired session on the target notebook — excluded.
+        let expired = store
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+        assert!(store.expire_session(&expired.session_id).await);
+
+        let ids = store.readable_session_ids("nb-1").await;
+        assert_eq!(
+            ids,
+            vec![readable.session_id],
+            "only the non-expired, readable session for nb-1 should be returned"
+        );
     }
 
     #[tokio::test]
