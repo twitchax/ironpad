@@ -17,20 +17,29 @@
   var executor = new CellExecutor("window.__IronpadFallback");
 
   // ── Built-in host message handlers ──────────────────────────────────────
+  //
+  // NOTE: These built-in handlers are intentionally duplicated in
+  // executor-bridge.js. The bridge can't load executor-core.js on the main
+  // thread at init time, so there is no shared home for them — keep the two
+  // copies in sync.
 
   executor.onHostMessage("progress_update", function (msg, _cellId) {
     var el = document.querySelector('[data-progress-id="' + msg.id + '"]');
     if (!el) return;
 
+    // Harden the host-message boundary: a non-numeric value would render
+    // "NaN%" and `width: NaN%`. Fall back to 0 when it isn't a finite number.
+    var value = Number.isFinite(msg.value) ? msg.value : 0;
+
     var fill = el.querySelector(".ironpad-progress-fill");
     if (fill) {
-      var pct = Math.min(100, Math.max(0, msg.value));
+      var pct = Math.min(100, Math.max(0, value));
       fill.style.width = pct + "%";
     }
 
     var label = el.querySelector(".ironpad-progress-value");
     if (label) {
-      label.textContent = Math.round(msg.value) + "%";
+      label.textContent = Math.round(value) + "%";
     }
   });
 

@@ -126,7 +126,12 @@ window.IronpadStorage = (function () {
             const all = await this.listNotebooks();
             if (!query || !query.trim()) return all;
             const q = query.toLowerCase().trim();
-            return all.filter((nb) => nb.title.toLowerCase().includes(q));
+            // A stored notebook may lack a title (hand-written or a partial
+            // import): treat a missing/non-string title as a non-match rather
+            // than throwing on `.toLowerCase()`.
+            return all.filter(
+                (nb) => typeof nb.title === "string" && nb.title.toLowerCase().includes(q)
+            );
         },
 
         /**

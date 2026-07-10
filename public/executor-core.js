@@ -49,6 +49,13 @@
 
   var LIVE_TICK_RESULT_SIZE = 12;
 
+  // ── Sim bus ────────────────────────────────────────────────────────────────
+  //
+  // Max entries retained per sim-bus key's ring buffer. executor-bridge.js keeps
+  // a standalone copy of this cap (it can't reuse this module — see updateSimBus).
+
+  var SIM_BUS_RING_CAP = 1000;
+
   // ── WASM trap diagnostics ─────────────────────────────────────────────────
   //
   // When a WASM module traps, the JS engine throws a WebAssembly.RuntimeError
@@ -597,51 +604,89 @@
         /import\s*\{\s*startWorkers\s*\}\s+from\s+['"][^'"]*wasm-bindgen-rayon[^'"]*workerHelpers\.js['"];?/g,
         "\n" +
         "var _rayonWorkers;\n" +
-        "function _waitForMsgType(target, type) {\n" +
-        "  return new Promise(function(resolve) {\n" +
-        "    target.addEventListener('message', function onMsg(event) {\n" +
-        "      if (!event.data || event.data.type !== type) return;\n" +
+        "var _RAYON_WORKER_INIT_TIMEOUT_MS = 30000;\n" +
+        "// Resolve when `target` posts a message of `type`; reject on worker\n" +
+        "// error or after `timeoutMs`. Both listeners AND the timer are always\n" +
+        "// torn down so a sub-worker that never signals ready can't leak the\n" +
+        "// listener or hang initThreadPool forever.\n" +
+        "function _waitForMsgType(target, type, timeoutMs) {\n" +
+        "  return new Promise(function(resolve, reject) {\n" +
+        "    function cleanup() {\n" +
+        "      clearTimeout(timer);\n" +
         "      target.removeEventListener('message', onMsg);\n" +
+        "      target.removeEventListener('error', onErr);\n" +
+        "    }\n" +
+        "    var timer = setTimeout(function() {\n" +
+        "      cleanup();\n" +
+        "      reject(new Error('rayon worker init timed out after ' + timeoutMs + 'ms'));\n" +
+        "    }, timeoutMs);\n" +
+        "    function onMsg(event) {\n" +
+        "      if (!event.data || event.data.type !== type) return;\n" +
+        "      cleanup();\n" +
         "      resolve(event.data);\n" +
-        "    });\n" +
+        "    }\n" +
+        "    function onErr(event) {\n" +
+        "      cleanup();\n" +
+        "      reject(new Error('rayon worker failed to initialize: ' + (event.message || 'unknown error')));\n" +
+        "    }\n" +
+        "    target.addEventListener('message', onMsg);\n" +
+        "    target.addEventListener('error', onErr);\n" +
         "  });\n" +
         "}\n" +
         "async function startWorkers(module, memory, builder) {\n" +
         "  if (builder.numThreads() === 0) throw new Error('num_threads must be > 0');\n" +
-        "  var glueCode = self.__ironpadRayonGlue;\n" +
+        "  // Read this cell's glue by id (not a single shared global) so two\n" +
+        "  // concurrent rayon-cell loads can't clobber each other's code.\n" +
+        "  var glueCode = (self.__ironpadRayonGlue || {})[__ironpad_cell_id];\n" +
+        "  // Terminate any previously-spawned pool so repeated loads of a rayon\n" +
+        "  // cell don't leak a fresh set of sub-workers each time.\n" +
+        "  if (self.__ironpadRayonWorkers) {\n" +
+        "    self.__ironpadRayonWorkers.forEach(function(w) { w.terminate(); });\n" +
+        "    self.__ironpadRayonWorkers = null;\n" +
+        "  }\n" +
         "  var workerInit = {\n" +
         "    type: 'wasm_bindgen_worker_init',\n" +
         "    init: { module_or_path: module, memory: memory },\n" +
         "    receiver: builder.receiver()\n" +
         "  };\n" +
-        "  _rayonWorkers = await Promise.all(\n" +
-        "    Array.from({ length: builder.numThreads() }, async function() {\n" +
-        "      var subWorkerCode =\n" +
-        "        'self.onmessage = async function(e) {' +\n" +
-        "        '  if (e.data && e.data.type === \"wasm_bindgen_worker_init\") {' +\n" +
-        "        '    var blob = new Blob([e.data.glueCode], {type:\"application/javascript\"});' +\n" +
-        "        '    var url = URL.createObjectURL(blob);' +\n" +
-        "        '    try {' +\n" +
-        "        '      var pkg = await import(url);' +\n" +
-        "        '      await pkg.default(e.data.init);' +\n" +
-        "        '      self.postMessage({type:\"wasm_bindgen_worker_ready\"});' +\n" +
-        "        '      pkg.wbg_rayon_start_worker(e.data.receiver);' +\n" +
-        "        '    } finally {' +\n" +
-        "        '      URL.revokeObjectURL(url);' +\n" +
-        "        '    }' +\n" +
-        "        '  }' +\n" +
-        "        '};';\n" +
-        "      var subBlob = new Blob([subWorkerCode], {type:'application/javascript'});\n" +
-        "      var subUrl = URL.createObjectURL(subBlob);\n" +
-        "      var worker = new Worker(subUrl, {type:'module'});\n" +
-        "      URL.revokeObjectURL(subUrl);\n" +
-        "      var msg = { type: workerInit.type, init: workerInit.init,\n" +
-        "                   receiver: workerInit.receiver, glueCode: glueCode };\n" +
-        "      worker.postMessage(msg);\n" +
-        "      await _waitForMsgType(worker, 'wasm_bindgen_worker_ready');\n" +
-        "      return worker;\n" +
-        "    })\n" +
-        "  );\n" +
+        "  var _spawned = [];\n" +
+        "  try {\n" +
+        "    _rayonWorkers = await Promise.all(\n" +
+        "      Array.from({ length: builder.numThreads() }, async function() {\n" +
+        "        var subWorkerCode =\n" +
+        "          'self.onmessage = async function(e) {' +\n" +
+        "          '  if (e.data && e.data.type === \"wasm_bindgen_worker_init\") {' +\n" +
+        "          '    var blob = new Blob([e.data.glueCode], {type:\"application/javascript\"});' +\n" +
+        "          '    var url = URL.createObjectURL(blob);' +\n" +
+        "          '    try {' +\n" +
+        "          '      var pkg = await import(url);' +\n" +
+        "          '      await pkg.default(e.data.init);' +\n" +
+        "          '      self.postMessage({type:\"wasm_bindgen_worker_ready\"});' +\n" +
+        "          '      pkg.wbg_rayon_start_worker(e.data.receiver);' +\n" +
+        "          '    } finally {' +\n" +
+        "          '      URL.revokeObjectURL(url);' +\n" +
+        "          '    }' +\n" +
+        "          '  }' +\n" +
+        "          '};';\n" +
+        "        var subBlob = new Blob([subWorkerCode], {type:'application/javascript'});\n" +
+        "        var subUrl = URL.createObjectURL(subBlob);\n" +
+        "        var worker = new Worker(subUrl, {type:'module'});\n" +
+        "        URL.revokeObjectURL(subUrl);\n" +
+        "        _spawned.push(worker);\n" +
+        "        var msg = { type: workerInit.type, init: workerInit.init,\n" +
+        "                     receiver: workerInit.receiver, glueCode: glueCode };\n" +
+        "        worker.postMessage(msg);\n" +
+        "        await _waitForMsgType(worker, 'wasm_bindgen_worker_ready', _RAYON_WORKER_INIT_TIMEOUT_MS);\n" +
+        "        return worker;\n" +
+        "      })\n" +
+        "    );\n" +
+        "  } catch (err) {\n" +
+        "    // One sub-worker failed to init: terminate every worker we spawned\n" +
+        "    // so a partial pool can't leak, then reject initThreadPool.\n" +
+        "    _spawned.forEach(function(w) { w.terminate(); });\n" +
+        "    throw err;\n" +
+        "  }\n" +
+        "  self.__ironpadRayonWorkers = _rayonWorkers;\n" +
         "  builder.build();\n" +
         "}\n"
       );
@@ -680,9 +725,13 @@
       var jsBlob = new Blob([augmentedGlue], { type: "application/javascript" });
       var jsUrl = URL.createObjectURL(jsBlob);
 
-      // Stash the rewritten glue code so inline startWorkers (rayon thread
-      // pool) can pass it to sub-workers via postMessage.
-      self.__ironpadRayonGlue = augmentedGlue;
+      // Stash the rewritten glue code, keyed by cell id, so inline startWorkers
+      // (rayon thread pool) can pass it to sub-workers via postMessage. Keying
+      // by id avoids a race where two concurrent bindgen loads overwrite a
+      // single shared global before either's startWorkers reads it. Cleared in
+      // unload().
+      if (!self.__ironpadRayonGlue) self.__ironpadRayonGlue = {};
+      self.__ironpadRayonGlue[cellId] = augmentedGlue;
 
       try {
         var mod = await import(/* webpackIgnore: true */ jsUrl);
@@ -801,28 +850,38 @@
     // The wrapper handles both sync and async cells: for sync cells it
     // returns a u32 directly; for async cells it returns a Promise<u32>.
     // Awaiting a non-Promise value is a no-op, so this is safe either way.
+    //
+    // The GPU teardown runs in `finally` so a trap in cell_main can't leave
+    // `_pendingGpuReadbacks` populated or GPU handles leaked — either of which
+    // would poison the *next* execute on this instance. (Interleaved executes
+    // on one instance still share this state; see the note in _executeRaw.)
 
     var resultPtr;
     try {
-      resultPtr = await mod.cell_main(inputPtr, inputLen);
-    } catch (e) {
+      try {
+        resultPtr = await mod.cell_main(inputPtr, inputLen);
+      } catch (e) {
+        throw new Error(_describeWasmTrap(e, memory));
+      }
+      if (!resultPtr) {
+        throw new Error("cell_main returned null");
+      }
+
+      // ── Read CellResult from WASM memory ───────────────────────────────
+
+      var cellResult = this._readCellResult(memory, alloc, dealloc, resultPtr, inputPtr, inputLen, false);
+      inputPtr = 0; // _readCellResult freed the input buffer — don't double-free below.
+
+      // ── GPU post-processing ────────────────────────────────────────────
+
+      return await this._processGpuReadbacks(cellResult);
+    } finally {
+      // Free the input buffer if _readCellResult never ran (trap / null return),
+      // then always tear down per-run GPU state.
       if (inputPtr !== 0) dealloc(inputPtr, inputLen);
-      throw new Error(_describeWasmTrap(e, memory));
+      this._pendingGpuReadbacks = [];
+      _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
     }
-    if (!resultPtr) {
-      if (inputPtr !== 0) dealloc(inputPtr, inputLen);
-      throw new Error("cell_main returned null");
-    }
-
-    // ── Read CellResult from WASM memory ─────────────────────────────────
-
-    var cellResult = this._readCellResult(memory, alloc, dealloc, resultPtr, inputPtr, inputLen, false);
-
-    // ── GPU post-processing ──────────────────────────────────────────────
-
-    cellResult = await this._processGpuReadbacks(cellResult);
-    _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
-    return cellResult;
   };
 
   // ── Legacy raw WASM execution path ───────────────────────────────────────
@@ -877,31 +936,43 @@
       }
     }
 
+    // GPU teardown runs in `finally` so a trap can't leave stale pending
+    // readbacks or leaked handles that poison the next execute (mirrors
+    // _executeBindgen). NOTE: interleaved executes on one instance still share
+    // `_pendingGpuReadbacks` and the module-global handle map; fully fixing that
+    // would need per-run handle scoping or serialized execution.
     try {
-      if (useSret) {
-        cellMain(retptr, inputPtr, inputLen);
-      } else {
-        retptr = cellMain(inputPtr, inputLen);
-        if (!retptr) {
-          throw new Error("cell_main returned null");
+      try {
+        if (useSret) {
+          cellMain(retptr, inputPtr, inputLen);
+        } else {
+          retptr = cellMain(inputPtr, inputLen);
+          if (!retptr) {
+            throw new Error("cell_main returned null");
+          }
         }
+      } catch (e) {
+        // The sret return struct was allocated by us; free it on trap. The
+        // input buffer is freed in `finally`.
+        if (useSret && retptr) dealloc(retptr, CELL_RESULT_SIZE);
+        throw new Error(_describeWasmTrap(e, memory));
       }
-    } catch (e) {
-      // Clean up on WASM trap.
+
+      // ── Read CellResult from WASM memory ───────────────────────────────
+
+      var cellResult = this._readCellResult(memory, alloc, dealloc, retptr, inputPtr, inputLen, useSret);
+      inputPtr = 0; // _readCellResult freed the input buffer — don't double-free below.
+
+      // ── GPU post-processing ────────────────────────────────────────────
+
+      return await this._processGpuReadbacks(cellResult);
+    } finally {
+      // Free the input buffer if _readCellResult never ran (trap / null return),
+      // then always tear down per-run GPU state.
       if (inputPtr !== 0) dealloc(inputPtr, inputLen);
-      if (useSret && retptr) dealloc(retptr, CELL_RESULT_SIZE);
-      throw new Error(_describeWasmTrap(e, memory));
+      this._pendingGpuReadbacks = [];
+      _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
     }
-
-    // ── Read CellResult from WASM memory ─────────────────────────────────
-
-    var cellResult = this._readCellResult(memory, alloc, dealloc, retptr, inputPtr, inputLen, useSret);
-
-    // ── GPU post-processing ──────────────────────────────────────────────
-
-    cellResult = await this._processGpuReadbacks(cellResult);
-    _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
-    return cellResult;
   };
 
   // ── Shared CellResult reader ─────────────────────────────────────────────
@@ -1182,6 +1253,9 @@
   /// Remove a loaded cell module, freeing browser-side resources.
   CellExecutor.prototype.unload = function (cellId) {
     this.modules.delete(cellId);
+    // Release this cell's stashed rayon glue (set in loadBlob) so it isn't
+    // retained for the life of the worker. No-op for non-rayon cells.
+    if (self.__ironpadRayonGlue) delete self.__ironpadRayonGlue[cellId];
   };
 
   /// Check whether a cell has a module loaded with the given hash.
@@ -1191,10 +1265,14 @@
   };
 
   /// Update a sim bus Map: get-or-create the entry for `key`, set its latest
-  /// value to `json`, push to the ring buffer, and cap the ring at 1000.
+  /// value to `json`, push to the ring buffer, and cap the ring at
+  /// SIM_BUS_RING_CAP.
   ///
-  /// This is the single source of truth for sim bus updates — all call sites
-  /// (executor.js, executor-worker.js, executor-bridge.js) must use this helper.
+  /// Single source of truth for the executors that load this module: executor.js
+  /// (main thread) and executor-worker.js (worker) both call this helper.
+  /// executor-bridge.js does NOT — executor-core.js isn't loaded on the main
+  /// thread when the bridge initializes, so the bridge keeps its own
+  /// `_updateSimBus` copy (kept in sync with this one).
   CellExecutor.updateSimBus = function (bus, key, json) {
     var entry = bus.get(key);
     if (!entry) {
@@ -1203,7 +1281,7 @@
     }
     entry.latest = json;
     entry.ring.push(json);
-    if (entry.ring.length > 1000) entry.ring.shift();
+    if (entry.ring.length > SIM_BUS_RING_CAP) entry.ring.shift();
   };
 
   /// Write a value to the sim bus directly from the host (e.g. a slider or
