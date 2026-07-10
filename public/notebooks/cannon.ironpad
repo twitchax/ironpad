@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "id": "f43b5f22-f627-483b-b5f2-f5e37937d080",
+  "title": "Teaching the Compiler to Aim a Cannon",
+  "created_at": "2026-07-10T00:00:00Z",
+  "updated_at": "2026-07-10T00:00:00Z",
+  "shared_cargo_toml": "[dependencies]\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "shared_source": "use std::autodiff::autodiff_reverse;\n\n// ── The simulator ────────────────────────────────────────────────────────────\n//\n// A cannonball with quadratic air drag, integrated in 10 ms steps. There is\n// no closed-form range formula once drag enters the picture: the only way to\n// know where the ball lands is to run the simulation.\n\npub const V0: f64 = 50.0; // muzzle speed, m/s\npub const DRAG: f64 = 0.002; // quadratic drag coefficient\npub const G: f64 = 9.81; // gravity, m/s^2\npub const DT: f64 = 0.01; // timestep, s\n\n/// Where the ball lands, as a function of launch angle (radians).\n///\n/// The `#[autodiff_reverse]` attribute is the whole show: Enzyme differentiates\n/// this function, loop and all, at the LLVM-IR level and generates `d_range`,\n/// which returns `(range, d_range/d_angle)` in a single reverse pass.\n#[autodiff_reverse(d_range, Active, Active)]\npub fn range(angle: f64) -> f64 {\n    let (mut x, mut y) = (0.0_f64, 0.0_f64);\n    let (mut vx, mut vy) = (V0 * angle.cos(), V0 * angle.sin());\n    loop {\n        let speed = (vx * vx + vy * vy).sqrt();\n        vx -= DRAG * speed * vx * DT;\n        vy -= (G + DRAG * speed * vy) * DT;\n        let (x_new, y_new) = (x + vx * DT, y + vy * DT);\n        if y_new < 0.0 {\n            // Land smoothly: interpolate the final partial step to y = 0.\n            // Stopping on a whole timestep makes range(angle) a microscopic\n            // sawtooth whose local slope contradicts the physics; the\n            // interpolation restores a differentiable landing point.\n            let frac = y / (y - y_new);\n            return x + vx * DT * frac;\n        }\n        x = x_new;\n        y = y_new;\n    }\n}\n\n/// Full flight path for plotting (not differentiated).\npub fn trajectory(angle: f64) -> Vec<(f64, f64)> {\n    let (mut x, mut y) = (0.0_f64, 0.0_f64);\n    let (mut vx, mut vy) = (V0 * angle.cos(), V0 * angle.sin());\n    let mut pts = vec![(x, y)];\n    while y >= 0.0 {\n        let speed = (vx * vx + vy * vy).sqrt();\n        vx -= DRAG * speed * vx * DT;\n        vy -= (G + DRAG * speed * vy) * DT;\n        x += vx * DT;\n        y += vy * DT;\n        pts.push((x, y.max(0.0)));\n    }\n    pts\n}\n\n// ── SVG helpers ──────────────────────────────────────────────────────────────\n\n/// Render a set of trajectories (each with a stroke color) plus a target\n/// marker into a self-contained SVG.\npub fn plot_trajectories(curves: &[(Vec<(f64, f64)>, String)], target_x: f64) -> String {\n    let (w, h, max_x, max_y) = (760.0, 320.0, 200.0, 70.0);\n    let sx = |x: f64| 30.0 + x / max_x * (w - 50.0);\n    let sy = |y: f64| (h - 25.0) - y / max_y * (h - 45.0);\n    let mut svg = format!(\n        r##\"<svg viewBox=\"0 0 {w} {h}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;background:#14141e;border-radius:6px\">\n<line x1=\"{ax0}\" y1=\"{ay}\" x2=\"{ax1}\" y2=\"{ay}\" stroke=\"#3a3a4e\" stroke-width=\"1\"/>\n<line x1=\"{tx}\" y1=\"{ay}\" x2=\"{tx}\" y2=\"{ty}\" stroke=\"#f0c040\" stroke-width=\"2\" stroke-dasharray=\"5,4\"/>\n<text x=\"{tx}\" y=\"{tl}\" fill=\"#f0c040\" font-size=\"12\" text-anchor=\"middle\">target</text>\n\"##,\n        ax0 = sx(0.0),\n        ax1 = sx(max_x),\n        ay = sy(0.0),\n        tx = sx(target_x),\n        ty = sy(55.0),\n        tl = sy(58.0),\n    );\n    for (pts, color) in curves {\n        let path: Vec<String> = pts\n            .iter()\n            .step_by(4)\n            .map(|(x, y)| format!(\"{:.1},{:.1}\", sx(*x), sy(*y)))\n            .collect();\n        svg.push_str(&format!(\n            r##\"<polyline points=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>\"##,\n            path.join(\" \")\n        ));\n        svg.push('\\n');\n    }\n    svg.push_str(\"</svg>\");\n    svg\n}\n",
+  "expand_code": true,
+  "cells": [
+    {
+      "id": "cell_hook",
+      "order": 0,
+      "label": "The pitch",
+      "cell_type": "Markdown",
+      "source": "# Teaching the compiler to aim a cannon\n\nThis notebook does something that was impossible on ironpad until this release: it calls the **real `std::autodiff`**. Not a dual-number class, not a hand-rolled tape; the actual nightly feature where [Enzyme](https://enzyme.mit.edu/) differentiates your compiled LLVM IR. The pipeline now detects `std::autodiff` in a cell, flips on the feature gate, fat LTO, and `-Zautodiff=Enable` behind the scenes, and hands Enzyme's tape a working allocator. You write the attribute; the compiler does calculus.\n\nThe demo is a *simulation*: a cannonball with quadratic air drag, integrated step by step. That choice is the point. With drag there is **no formula** for where the ball lands; the only way to know is to run the loop. Which raises the question this notebook answers: if there's no formula, where does the *derivative* come from?\n\nFrom the compiler. `#[autodiff_reverse]` on the simulator function (it's in the shared source below, one attribute on ordinary Rust) gives us `d(range)/d(angle)` in a single reverse pass, exact to machine precision, straight through the timestepped loop. We'll verify it against finite differences, hit one genuinely instructive pothole, and then let Newton's method aim the cannon in **3 iterations**.\n\n*If you want the theory first (dual numbers, tapes, why reverse mode powers all of ML), the companion notebook* [std::autodiff: Differentiation in the Compiler](/notebook/public/autodiff.ironpad) *hand-rolls everything. This one uses the real thing.*",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_fan",
+      "order": 1,
+      "label": "The simulator, firing",
+      "cell_type": "Code",
+      "source": "// Fire the cannon across a fan of launch angles and draw the family.\nlet angles = [0.2_f64, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];\nlet colors = [\"#4fc3f7\", \"#5fd0c0\", \"#7fdc90\", \"#b0e070\", \"#e0d060\", \"#f0a850\", \"#e97050\"];\n\nlet mut rows = Vec::new();\nlet mut curves = Vec::new();\nfor (a, c) in angles.iter().zip(colors) {\n    rows.push(vec![format!(\"{a:.1} rad\"), format!(\"{:.1} m\", shared::range(*a))]);\n    curves.push((shared::trajectory(*a), c.to_string()));\n}\n\n(\n    Svg(shared::plot_trajectories(&curves, 150.0)),\n    Table::new(vec![\"launch angle\", \"range (simulated)\"], rows),\n)",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_wall",
+      "order": 2,
+      "label": "No formula, no problem",
+      "cell_type": "Markdown",
+      "source": "## No formula for the range, but the compiler doesn't care\n\nIn a vacuum, every physics student knows $R = v_0^2 \\sin(2\\theta)/g$ and the optimum is 45°. Add drag proportional to $v^2$ and that formula dies: the range above tops out around **0.74 rad (~42°)** and there's nothing closed-form to differentiate.\n\nThe classical workaround is finite differences: nudge the angle, re-run the sim, divide. It works, but you pay a full simulation per probe and you inherit the [step-size error valley](/notebook/public/autodiff.ironpad) (truncation error fighting roundoff, best case ~1e-11).\n\nEnzyme's move is different: it takes the **compiled** simulator, loop and all, and emits a second function that runs it *backwards*, accumulating exact adjoints. The next cell puts the two side by side.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_grad",
+      "order": 3,
+      "label": "Enzyme vs finite differences",
+      "cell_type": "Code",
+      "source": "// d_range comes from the compiler: one attribute in the shared source.\nlet mut rows = Vec::new();\nfor a in [0.2_f64, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] {\n    let (r, enzyme) = shared::d_range(a, 1.0);\n    let h = 1e-5;\n    let fd = (shared::range(a + h) - shared::range(a - h)) / (2.0 * h);\n    rows.push(vec![\n        format!(\"{a:.1}\"),\n        format!(\"{r:.3}\"),\n        format!(\"{enzyme:.4}\"),\n        format!(\"{fd:.4}\"),\n        format!(\"{:.1e}\", (enzyme - fd).abs()),\n    ]);\n}\n\nTable::new(\n    vec![\"angle (rad)\", \"range (m)\", \"dR/dθ (Enzyme)\", \"dR/dθ (finite diff)\", \"|Δ|\"],\n    rows,\n)",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_gotcha",
+      "order": 4,
+      "label": "The pothole worth knowing about",
+      "cell_type": "Markdown",
+      "source": "## The one pothole: differentiating *events*\n\nFull disclosure: the first version of this simulator produced gradients that were **exactly right and completely useless**. Enzyme and finite differences agreed to four decimals, and both said the range was *decreasing* at angles where it was plainly increasing. Newton's method promptly launched the cannon into orbit.\n\nThe culprit wasn't the derivative; it was the simulator. The loop originally stopped at the **first whole timestep below ground**, so as the angle varied, the landing point jumped in 10 ms quanta. `range(angle)` was a microscopic sawtooth: globally rising, locally falling, and every derivative method faithfully reported the slope of the *teeth*.\n\nThe fix is one line, and it's the line to remember whenever you differentiate through a simulation with a stopping condition: **smooth the event**. Interpolate the final partial step to $y = 0$ (see the landing branch in the shared source) and the sawtooth collapses into the piecewise-smooth function the physics always described. Differentiable simulation isn't just an attribute; it's a contract that your events are smooth too.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_newton",
+      "order": 5,
+      "label": "Newton aims the cannon",
+      "cell_type": "Code",
+      "source": "// Aim for a target at 150 m: Newton's method on range(angle) = target,\n// with the exact derivative supplied by the compiler.\nlet target = 150.0_f64;\nlet mut angle = 0.3_f64;\n\nlet mut rows = Vec::new();\nlet mut curves = Vec::new();\nlet fades = [\"#55607a\", \"#7a89b0\", \"#a9b8e0\", \"#ff5da2\"];\n\nfor i in 0..8 {\n    let (r, dr) = shared::d_range(angle, 1.0);\n    rows.push(vec![\n        format!(\"{i}\"),\n        format!(\"{angle:.6}\"),\n        format!(\"{r:.4}\"),\n        format!(\"{:+.5}\", r - target),\n    ]);\n    curves.push((\n        shared::trajectory(angle),\n        fades[i.min(fades.len() - 1)].to_string(),\n    ));\n    if (r - target).abs() < 1e-4 {\n        break;\n    }\n    angle -= (r - target) / dr;\n}\n\n(\n    Svg(shared::plot_trajectories(&curves, target)),\n    Table::new(vec![\"iteration\", \"angle (rad)\", \"range (m)\", \"error (m)\"], rows),\n)",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_outro",
+      "order": 6,
+      "label": "What just happened",
+      "cell_type": "Markdown",
+      "source": "## What ironpad did while you weren't looking\n\nThat last cell converged to the target in **3 iterations** because Newton's method had the one thing it craves: an exact derivative. Getting it took a single attribute. Everything else happened in the compilation pipeline:\n\n- the generated micro-crate got `#![feature(autodiff)]` at its crate root (the one place a cell can't reach, and the scaffold owns),\n- the build switched to a nightly toolchain carrying **libEnzyme** and compiled with `-Zautodiff=Enable` under **fat LTO** (Enzyme differentiates the *optimized* IR, which is the entire trick),\n- and Enzyme's reverse-mode tape got the C allocator it expects, shimmed onto Rust's allocator inside the cell runtime, because `wasm32-unknown-unknown` famously ships without one.\n\nThe feature itself is still nightly and moving: [tracking issue #124509](https://github.com/rust-lang/rust/issues/124509), driven by [Manuel Drehwald](https://github.com/ZuseZ4) with LLNL and the University of Toronto behind it, with **batching** and [`std::offload`](https://github.com/rust-lang/rust-project-goals/issues/109) (GPU) queued up behind autodiff. Compose those and this notebook's punchline gets an upgrade: differentiated simulations running on the GPU, orchestrated by the compiler.\n\n*For the theory under the hood, the* [companion notebook](/notebook/public/autodiff.ironpad) *builds dual numbers and a reverse-mode tape from scratch, then benchmarks them against exactly the machinery Enzyme just used.*",
+      "cargo_toml": null
+    }
+  ],
+  "description": "A cannonball simulator with air drag, differentiated by the real std::autodiff: exact gradients through the loop, one instructive pothole, and Newton hitting the target in 3 iterations.",
+  "tags": [
+    "autodiff",
+    "enzyme",
+    "simulation",
+    "physics",
+    "newton"
+  ]
+}

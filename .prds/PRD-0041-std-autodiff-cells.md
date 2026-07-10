@@ -1,7 +1,7 @@
 ---
 id: PRD-0041
 title: "std::autodiff in cells: Enzyme-powered derivatives on the wasm pipeline"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-10
 updated: 2026-07-10
@@ -63,7 +63,7 @@ tasks:
 - id: T-007
   title: "Cannon notebook: 'Teaching the compiler to aim a cannon'"
   priority: 3
-  status: todo
+  status: done
   notes: "Drag ballistics sim in shared_source with #[autodiff_reverse]; cells: trajectory plot, gradient vs finite-difference table, gradient-descent aiming with animated convergence; expand_code: true. Ships after infra."
 
 ---
@@ -97,3 +97,4 @@ The opt-in shape mirrors rayon/atomics exactly: detect (source substring) → ha
 # History
 
 - 2026-07-10: Created after the feasibility spike (rustup enzyme component; wasm32 verified end to end including the allocator-shim discovery).
+- 2026-07-10: Shipped. Infra + tests landed; the cannon notebook (7 cells, expand_code) passed the full notebook gate compiling its Enzyme cells through the production pipeline. Numerics validation caught a real differentiable-simulation pitfall (discrete landing step made range(angle) a sawtooth; smoothed via final-step interpolation, now a teaching section). Newton converges to a 150 m target in 3 iterations.
