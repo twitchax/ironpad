@@ -31,11 +31,14 @@ pub fn is_valid_cell_id(cell_id: &str) -> bool {
 ///     lib.rs
 /// ```
 ///
-/// Returns `(crate_dir, preamble_lines, is_async, is_simulation)`:
+/// Returns `(crate_dir, preamble_lines, is_async, is_simulation, needs_atomics)`:
 /// - `crate_dir`: path to the micro-crate root directory
 /// - `preamble_lines`: number of lines before user code (for diagnostic mapping)
 /// - `is_async`: whether the cell wrapper is async (source contains `.await`)
-/// - `is_simulation`: whether the cell implements the `Simulation` trait
+/// - `is_simulation`: whether the cell uses the tick infrastructure (a
+///   `Simulation` or `LiveView` trait impl)
+/// - `needs_atomics`: whether the merged dependencies pull in `rayon`, requiring
+///   the atomics/shared-memory WASM build
 #[allow(clippy::too_many_arguments)]
 pub fn scaffold_micro_crate(
     cache_dir: &Path,
@@ -358,11 +361,12 @@ fn needs_async(source: &str) -> bool {
     source.contains(".await")
 }
 
-/// Detect whether the source implements the `Simulation` trait.
+/// Detect whether the source implements a given trait via `impl <Trait> for <Name>`.
 ///
-/// Scans for `impl Simulation for <Name>` and returns the struct name if found.
-/// Handles whitespace variations between tokens. Ignores commented-out lines.
-fn is_simulation(source: &str) -> Option<String> {
+/// Scans for `impl <trait_name> for <Name>` and returns the struct name if
+/// found. Handles whitespace variations between tokens. Ignores commented-out
+/// lines. Backs [`is_simulation`] and [`is_live_view`].
+fn impl_target_struct(source: &str, trait_name: &str) -> Option<String> {
     for line in source.lines() {
         let trimmed = line.trim();
         // Skip comment lines.
@@ -371,7 +375,7 @@ fn is_simulation(source: &str) -> Option<String> {
         }
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         for window in tokens.windows(4) {
-            if window[0] == "impl" && window[1] == "Simulation" && window[2] == "for" {
+            if window[0] == "impl" && window[1] == trait_name && window[2] == "for" {
                 let name: String = window[3]
                     .chars()
                     .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -385,31 +389,16 @@ fn is_simulation(source: &str) -> Option<String> {
     None
 }
 
-/// Detect whether the source implements the `LiveView` trait.
-///
-/// Scans for `impl LiveView for <Name>` and returns the struct name if found.
-/// Handles whitespace variations between tokens. Ignores commented-out lines.
+/// Detect whether the source implements the `Simulation` trait, returning the
+/// implementing struct's name if so.
+fn is_simulation(source: &str) -> Option<String> {
+    impl_target_struct(source, "Simulation")
+}
+
+/// Detect whether the source implements the `LiveView` trait, returning the
+/// implementing struct's name if so.
 fn is_live_view(source: &str) -> Option<String> {
-    for line in source.lines() {
-        let trimmed = line.trim();
-        // Skip comment lines.
-        if trimmed.starts_with("//") || trimmed.starts_with("/*") {
-            continue;
-        }
-        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        for window in tokens.windows(4) {
-            if window[0] == "impl" && window[1] == "LiveView" && window[2] == "for" {
-                let name: String = window[3]
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                if !name.is_empty() {
-                    return Some(name);
-                }
-            }
-        }
-    }
-    None
+    impl_target_struct(source, "LiveView")
 }
 
 /// Wrap user source code in the `cell_main` wasm-bindgen entry point.

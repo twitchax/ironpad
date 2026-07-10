@@ -233,7 +233,13 @@ impl NotebookModel {
     /// Mark this cell and all downstream Code cells as stale.
     fn mark_downstream_stale(&self, from_cell_id: &str) {
         let cells = self.cells.get_untracked();
-        let my_idx = cells.iter().position(|c| c.id == from_cell_id).unwrap_or(0);
+        // Policy: if the origin cell isn't in the derived list (e.g. it was
+        // already removed), mark nothing. The alternative — treating "not found"
+        // as index 0 via `unwrap_or(0)` — would silently mark *every* Code cell
+        // stale on a lookup miss, over-invalidating downstream compiles.
+        let Some(my_idx) = cells.iter().position(|c| c.id == from_cell_id) else {
+            return;
+        };
         self.cell_stale.update(|stale| {
             for cell in &cells[my_idx..] {
                 if cell.cell_type == CellType::Code {
@@ -608,5 +614,55 @@ mod tests {
             &ClientId::agent("a"),
             &Mutation::CellReorder { cell_ids: vec![] }
         ));
+    }
+}
+
+// ── mark_downstream_stale ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod stale_tests {
+    use super::*;
+    use leptos::reactive::owner::Owner;
+
+    fn code(id: &str) -> CellManifest {
+        CellManifest {
+            id: id.into(),
+            order: 0,
+            label: String::new(),
+            cell_type: CellType::Code,
+        }
+    }
+
+    fn model_with_cells(cells: Vec<CellManifest>) -> NotebookModel {
+        NotebookModel::new(
+            RwSignal::new(None),
+            RwSignal::new(cells),
+            RwSignal::new(HashMap::new()),
+            RwSignal::new(0),
+        )
+    }
+
+    #[test]
+    fn marks_from_origin_cell_onward() {
+        Owner::new().with(|| {
+            let model = model_with_cells(vec![code("a"), code("b"), code("c")]);
+            model.mark_downstream_stale("b");
+            let stale = model.cell_stale.get_untracked();
+            assert_eq!(stale.get("a"), None, "upstream cell must stay fresh");
+            assert_eq!(stale.get("b"), Some(&true));
+            assert_eq!(stale.get("c"), Some(&true));
+        });
+    }
+
+    #[test]
+    fn unknown_origin_id_marks_nothing() {
+        Owner::new().with(|| {
+            let model = model_with_cells(vec![code("a"), code("b")]);
+            model.mark_downstream_stale("missing");
+            assert!(
+                model.cell_stale.get_untracked().is_empty(),
+                "an unknown origin id must not mark any cell stale"
+            );
+        });
     }
 }

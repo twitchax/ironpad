@@ -119,28 +119,16 @@ pub async fn build_micro_crate(
     let timeout = build_timeout();
 
     let mut cmd = Command::new("cargo");
-
-    if needs_atomics {
-        cmd.arg(format!("+{ATOMICS_TOOLCHAIN}"));
-        // Ensure the rustup shim respects our +toolchain over any inherited
-        // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
-        cmd.env_remove("RUSTUP_TOOLCHAIN");
-    }
-
-    cmd.arg("build")
-        .arg("--target")
-        .arg("wasm32-unknown-unknown")
-        .arg("--release")
-        .arg("--message-format=json")
-        .current_dir(crate_dir)
-        .env("CARGO_HOME", &cargo_home)
-        .env("CARGO_TARGET_DIR", &target_dir)
-        // Clear host-target flags that may leak from the parent process
-        // (e.g. cargo-leptos setting RUSTFLAGS with `-fuse-ld=mold`).
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("CARGO_BUILD_RUSTFLAGS")
-        .stdout(std::process::Stdio::piped())
+    configure_cargo_cmd(
+        &mut cmd,
+        "build",
+        crate_dir,
+        &cargo_home,
+        &target_dir,
+        compilation_proxy,
+        needs_atomics,
+    );
+    cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         // Backstop: if the future is dropped, kill at least the direct child.
         .kill_on_drop(true);
@@ -150,16 +138,6 @@ pub async fn build_micro_crate(
     // a compile-bomb's children burning CPU/RAM.
     #[cfg(unix)]
     cmd.process_group(0);
-
-    if let Some(proxy) = compilation_proxy {
-        cmd.env("HTTPS_PROXY", proxy);
-        cmd.env("HTTP_PROXY", proxy);
-    }
-
-    if needs_atomics {
-        cmd.arg("-Zbuild-std=std,panic_abort");
-        cmd.env("RUSTFLAGS", ATOMICS_RUSTFLAGS);
-    }
 
     let child = cmd.spawn().map_err(|e| {
         tracing::error!(cell_id = %cell_id, error = %e, "failed to spawn cargo");
@@ -261,6 +239,58 @@ pub async fn build_micro_crate(
     })
 }
 
+/// Apply the cargo invocation shared by [`build_micro_crate`] and
+/// [`check_micro_crate`]: toolchain selection, the `{subcommand} --target
+/// wasm32-unknown-unknown --release --message-format=json` args,
+/// `CARGO_HOME`/`CARGO_TARGET_DIR`, host-flag scrubbing, the optional compile
+/// proxy, and the atomics/shared-memory flags for rayon cells.
+///
+/// Extracting this keeps the build and check entry points from silently
+/// drifting — e.g. an `env_remove` added later for correctness lands in both the
+/// production build and the `cargo check` guard behind
+/// `all_public_notebook_cells_compile`. Stdio/process-group setup stays with the
+/// caller since only the real build needs it.
+fn configure_cargo_cmd(
+    cmd: &mut Command,
+    subcommand: &str,
+    crate_dir: &Path,
+    cargo_home: &Path,
+    target_dir: &Path,
+    compilation_proxy: Option<&str>,
+    needs_atomics: bool,
+) {
+    if needs_atomics {
+        cmd.arg(format!("+{ATOMICS_TOOLCHAIN}"));
+        // Ensure the rustup shim respects our +toolchain over any inherited
+        // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
+    }
+
+    cmd.arg(subcommand)
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .arg("--release")
+        .arg("--message-format=json")
+        .current_dir(crate_dir)
+        .env("CARGO_HOME", cargo_home)
+        .env("CARGO_TARGET_DIR", target_dir)
+        // Clear host-target flags that may leak from the parent process
+        // (e.g. cargo-leptos setting RUSTFLAGS with `-fuse-ld=mold`).
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_BUILD_RUSTFLAGS");
+
+    if let Some(proxy) = compilation_proxy {
+        cmd.env("HTTPS_PROXY", proxy);
+        cmd.env("HTTP_PROXY", proxy);
+    }
+
+    if needs_atomics {
+        cmd.arg("-Zbuild-std=std,panic_abort");
+        cmd.env("RUSTFLAGS", ATOMICS_RUSTFLAGS);
+    }
+}
+
 /// Check (type-check only) a scaffolded micro-crate without full codegen.
 ///
 /// Runs `cargo check --target wasm32-unknown-unknown --release
@@ -293,34 +323,15 @@ pub async fn check_micro_crate(
     let timeout = build_timeout();
     let output = tokio::time::timeout(timeout, {
         let mut cmd = Command::new("cargo");
-
-        if needs_atomics {
-            cmd.arg(format!("+{ATOMICS_TOOLCHAIN}"));
-            cmd.env_remove("RUSTUP_TOOLCHAIN");
-        }
-
-        cmd.arg("check")
-            .arg("--target")
-            .arg("wasm32-unknown-unknown")
-            .arg("--release")
-            .arg("--message-format=json")
-            .current_dir(crate_dir)
-            .env("CARGO_HOME", &cargo_home)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .env_remove("RUSTFLAGS")
-            .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .env_remove("CARGO_BUILD_RUSTFLAGS");
-
-        if let Some(proxy) = compilation_proxy {
-            cmd.env("HTTPS_PROXY", proxy);
-            cmd.env("HTTP_PROXY", proxy);
-        }
-
-        if needs_atomics {
-            cmd.arg("-Zbuild-std=std,panic_abort");
-            cmd.env("RUSTFLAGS", ATOMICS_RUSTFLAGS);
-        }
-
+        configure_cargo_cmd(
+            &mut cmd,
+            "check",
+            crate_dir,
+            &cargo_home,
+            &target_dir,
+            compilation_proxy,
+            needs_atomics,
+        );
         cmd.output()
     })
     .await

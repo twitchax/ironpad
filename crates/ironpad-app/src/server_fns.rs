@@ -1,3 +1,14 @@
+//! Leptos `#[server]` functions — the SSR boundary between the WASM client and
+//! the server.
+//!
+//! Each `#[server]` fn compiles to a network call on the client (hydrate) and to
+//! the real implementation on the server (ssr). Server-only logic lives in
+//! `ssr`-gated `*_core` helpers so it stays unit-testable without a Leptos
+//! context. Five endpoints are exposed: [`compile_cell`] (the WASM compilation
+//! pipeline), [`list_public_notebooks`] and [`get_public_notebook`] (static
+//! `*.ironpad` notebooks under the site root), and [`share_notebook`] and
+//! [`get_shared_notebook`] (content-addressed shared notebooks under the data dir).
+
 use ironpad_common::{CompileRequest, CompileResponse, IronpadNotebook, PublicNotebookSummary};
 use leptos::prelude::*;
 
@@ -38,15 +49,30 @@ fn redact_server_paths(
 pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, ServerFnError> {
     use ironpad_common::AppConfig;
 
+    let config = expect_context::<AppConfig>();
+    let compile_locks = expect_context::<crate::compiler::CompileLocks>();
+    compile_cell_core(&config, &compile_locks, request).await
+}
+
+/// Server-side compilation pipeline behind [`compile_cell`].
+///
+/// Split out from the `#[server]` wrapper so it takes an explicit [`AppConfig`]
+/// and [`CompileLocks`] instead of Leptos context, which keeps it unit-testable
+/// (mirrors the `*_core` helpers for the other server functions).
+#[cfg(feature = "ssr")]
+async fn compile_cell_core(
+    config: &ironpad_common::AppConfig,
+    compile_locks: &crate::compiler::CompileLocks,
+    request: CompileRequest,
+) -> Result<CompileResponse, ServerFnError> {
     use crate::compiler::{
         build::{build_micro_crate, BuildResult},
         cache::{content_hash, store_blob, try_cache_hit},
         diagnostics::parse_diagnostics,
         optimize::optimize_wasm,
-        scaffold::scaffold_micro_crate,
+        scaffold::{merged_deps_contain_rayon, scaffold_micro_crate},
     };
 
-    let config = expect_context::<AppConfig>();
     let session_id = "default";
 
     // Validate the cell_id before it touches the filesystem or Cargo.toml: it is
@@ -63,24 +89,15 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
     // dir can't be overwritten mid-build (which would cache one source's output
     // under another's hash). Held for the whole compile. Distinct cells don't
     // contend — they scaffold into distinct directories.
-    let compile_locks = expect_context::<crate::compiler::CompileLocks>();
     let _compile_guard = compile_locks.acquire(&request.cell_id).await;
 
-    // Scaffold first so we can detect rayon (needs_atomics) before hashing.
-
-    let (crate_dir, preamble_lines, _is_async, _is_simulation, needs_atomics) =
-        scaffold_micro_crate(
-            &config.cache_dir,
-            &config.ironpad_cell_path,
-            session_id,
-            &request.cell_id,
-            &request.source,
-            &request.cargo_toml,
-            &request.previous_cell_types,
-            request.shared_cargo_toml.as_deref(),
-            request.shared_source.as_deref(),
-        )
-        .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
+    // `needs_atomics` is a pure function of the inputs (no I/O), so the cache key
+    // can be derived before scaffolding. Scaffolding writes Cargo.toml + lib.rs
+    // (+ shared.rs) to disk, so defer it until a confirmed cache miss: a repeat
+    // compile of an unchanged cell (the common case, a hot path) hits the cache
+    // and must not pay those filesystem writes.
+    let needs_atomics =
+        merged_deps_contain_rayon(request.shared_cargo_toml.as_deref(), &request.cargo_toml);
 
     let hash = content_hash(
         &request.source,
@@ -101,6 +118,9 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
                 wasm_blob: cache_hit.wasm_bytes,
                 diagnostics: cache_hit.diagnostics,
                 cached: true,
+                // Cached diagnostics were span-adjusted before storage, so no
+                // preamble offset is needed on a hit; the client never reads this
+                // field for a cached response.
                 preamble_lines: 0,
                 js_glue: cache_hit.js_glue,
             });
@@ -112,6 +132,24 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
     } else {
         tracing::info!(cell_id = %request.cell_id, "cache miss — compiling");
     }
+
+    // Cache miss (or forced recompile): scaffold the micro-crate now — the
+    // on-disk work a cache hit skips. Its returned `needs_atomics` matches the
+    // value hashed above (both derive from the same inputs), so we keep ours.
+
+    let (crate_dir, preamble_lines, _is_async, _is_simulation, _needs_atomics) =
+        scaffold_micro_crate(
+            &config.cache_dir,
+            &config.ironpad_cell_path,
+            session_id,
+            &request.cell_id,
+            &request.source,
+            &request.cargo_toml,
+            &request.previous_cell_types,
+            request.shared_cargo_toml.as_deref(),
+            request.shared_source.as_deref(),
+        )
+        .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
 
     // Build.
 
@@ -516,6 +554,77 @@ mod tests {
         assert!(
             out.contains("<cache>/registry/foo"),
             "cache replaced: {out}"
+        );
+    }
+
+    // ── compile_cell_core (cache-hit path) ───────────────────────────────
+
+    #[tokio::test]
+    async fn compile_cell_core_cache_hit_does_not_scaffold() {
+        use crate::compiler::cache::{content_hash, store_blob};
+        use crate::compiler::scaffold::merged_deps_contain_rayon;
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let cache = tempfile::tempdir().unwrap();
+        let cell_id = "cache-hit-cell";
+        let source = "    CellOutput::empty()";
+        let cargo_toml = "[dependencies]";
+
+        // Pre-seed the cache with a blob under the exact hash compile_cell_core
+        // derives for these inputs, so the request resolves as a cache hit.
+        let needs_atomics = merged_deps_contain_rayon(None, cargo_toml);
+        let hash = content_hash(source, cargo_toml, &[], None, None, needs_atomics);
+        let fake_wasm = b"\x00asm\x01\x00\x00\x00cache-hit";
+        store_blob(
+            cache.path(),
+            &hash,
+            fake_wasm,
+            Some("export function init() {}"),
+            &[],
+        )
+        .unwrap();
+
+        let config = AppConfig {
+            data_dir: cache.path().to_path_buf(),
+            cache_dir: cache.path().to_path_buf(),
+            port: 0,
+            // A hit must not touch the scaffold, so this path is deliberately
+            // bogus — reaching scaffold would fail before writing anything.
+            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
+            compilation_proxy: None,
+        };
+        let request = CompileRequest {
+            notebook_id: "nb".to_string(),
+            cell_id: cell_id.to_string(),
+            source: source.to_string(),
+            cargo_toml: cargo_toml.to_string(),
+            previous_cell_types: vec![],
+            shared_cargo_toml: None,
+            shared_source: None,
+            force: false,
+        };
+
+        let locks = CompileLocks::default();
+        let response = compile_cell_core(&config, &locks, request).await.unwrap();
+
+        assert!(response.cached, "response should be served from cache");
+        assert_eq!(
+            response.wasm_blob, fake_wasm,
+            "cached blob should round-trip"
+        );
+
+        // The scaffold writes to {cache}/workspaces/default/{cell_id}; a cache
+        // hit must never create it.
+        let workspace = cache
+            .path()
+            .join("workspaces")
+            .join("default")
+            .join(cell_id);
+        assert!(
+            !workspace.exists(),
+            "cache hit must not scaffold the micro-crate on disk: {} exists",
+            workspace.display()
         );
     }
 
