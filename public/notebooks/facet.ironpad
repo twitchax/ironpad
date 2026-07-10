@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "id": "93bede8c-8fd3-4fb9-b13d-20650f976b63",
+  "title": "Reflection in Rust",
+  "created_at": "2026-07-10T00:00:00Z",
+  "updated_at": "2026-07-10T00:00:00Z",
+  "shared_cargo_toml": "[dependencies]\nfacet = \"0.46.5\"\nfacet-pretty = \"0.46.5\"\nfacet-reflect = \"0.46.5\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16\n",
+  "shared_source": "use facet::Facet;\n\n#[derive(Facet)]\npub struct Config {\n    pub service: String,\n    pub port: u16,\n    pub replicas: u32,\n    pub debug: bool,\n}\n\n#[derive(Facet)]\npub struct Telemetry {\n    pub endpoint: String,\n    pub sample_rate: f64,\n    pub buffered: bool,\n}\n",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Rust Has No Reflection",
+      "cell_type": "Markdown",
+      "source": "# Reflection in Rust: the thing that 'can't exist'\n\nAsk a room of Rustaceans whether the language has runtime reflection and you will get a confident **no**. It is received wisdom: no `Type.getFields()`, no walking an arbitrary value's structure, no serialization without a derive macro generating the code ahead of time. Rust trades that away for zero-cost monomorphization, and everyone moves on.\n\nAs of mid-2026, the received wisdom is wrong *twice over*.\n\nThe first crack is in the compiler itself: the [**reflection MVP has landed**](https://rust-lang.github.io/rust-project-goals/2026/reflection-and-comptime.html). `TypeId::info()` now hands you a `Type` with a `kind` (tuple, struct, and a new kind supported roughly every week), and reflection-plus-comptime is a named [2026 project goal](https://blog.rust-lang.org/2026/05/18/project-goals-2026-04/) with the lang team actively on it.\n\nThe second crack you can run right now, in this notebook, on **stable** Rust: [**`facet`**](https://facet.rs/), by Amos (fasterthanlime). One `#[derive(Facet)]` and a value knows its own shape. Let me show you.\n\n*Everything below actually compiles to WebAssembly and runs in your browser. The `Config` and `Telemetry` types live in this notebook's shared source; the cells import `facet` and do the rest.*",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Pretty-print, zero boilerplate",
+      "cell_type": "Code",
+      "source": "use facet_pretty::{ColorMode, FacetPretty, PrettyPrinter};\n\nlet config = shared::Config {\n    service: \"checkout\".to_string(),\n    port: 8443,\n    replicas: 3,\n    debug: false,\n};\n\n// Config has no Debug, no Display, no serde. facet-pretty renders it\n// purely by walking the shape the derive recorded at compile time.\nlet plain = PrettyPrinter::new().with_colors(ColorMode::Never);\nMd(format!(\"```rust\\n{}\\n```\", config.pretty_with(plain)))\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "From values to structure",
+      "cell_type": "Markdown",
+      "source": "## From printing values to reading structure\n\nThat is already a little uncanny. `Config` has **no `Debug`, no `Display`, and no `serde`**, yet `facet-pretty` rendered it in full. It did that by reading the *shape* the derive recorded, then walking the value against it.\n\nPrinting is the friendly demo. The interesting part is that the shape is a **first-class value you can hold and inspect**. `Config::SHAPE` is a `&'static Shape`: a compile-time map of the type's fields, their names, and their types. You do not even need an instance to read it.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Walk the shape",
+      "cell_type": "Code",
+      "source": "use facet::{Facet, Type, UserType};\n\n// `Config::SHAPE` is a `&'static Shape`: a compile-time map of the type that\n// the derive emitted. We can read the structure without a value in hand.\nlet Type::User(UserType::Struct(st)) = &<shared::Config as Facet>::SHAPE.ty else {\n    unreachable!(\"Config is a struct\")\n};\n\nlet rows: Vec<Vec<String>> = st\n    .fields\n    .iter()\n    .map(|f| vec![f.name.to_string(), f.shape.get().to_string()])\n    .collect();\n\nTable::new(vec![\"field\", \"type\"], rows)\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_4",
+      "order": 4,
+      "label": "The five-line inspector",
+      "cell_type": "Markdown",
+      "source": "## The five-line inspector\n\nField names and their types, pulled out of thin air, no instance required. Now the reveal.\n\nBecause the shape is generic machinery, the code that reads it does not care *which* type it is looking at. Wrap the walk in one function bounded by `T: Facet`, add a `Peek` to read live field values, and you have an inspector that works on **every** `#[derive(Facet)]` type in the program. Same five lines, any type. That is the sentence that is supposed to be impossible in Rust.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_5",
+      "order": 5,
+      "label": "One inspector, any type",
+      "cell_type": "Code",
+      "source": "use facet::{Facet, Type, UserType};\nuse facet_reflect::Peek;\n\n// The whole payoff in one generic function. It works on ANY `#[derive(Facet)]`\n// struct: pair each field's declared name and type (read from the SHAPE) with\n// its live value (read through a Peek into the struct).\nfn inspect<'a, T: Facet<'a>>(value: &'a T) -> Table {\n    let Type::User(UserType::Struct(st)) = &T::SHAPE.ty else {\n        return Table::new(vec![\"note\"], vec![vec![\"not a struct\".to_string()]]);\n    };\n    let peek = Peek::new(value).into_struct().expect(\"value is a struct\");\n    let rows = st\n        .fields\n        .iter()\n        .enumerate()\n        .map(|(i, f)| {\n            vec![\n                f.name.to_string(),\n                f.shape.get().to_string(),\n                peek.field(i).expect(\"field in range\").to_string(),\n            ]\n        })\n        .collect();\n    Table::new(vec![\"field\", \"type\", \"value\"], rows)\n}\n\nlet config = shared::Config {\n    service: \"checkout\".into(),\n    port: 8443,\n    replicas: 3,\n    debug: false,\n};\nlet telemetry = shared::Telemetry {\n    endpoint: \"otel-collector:4317\".into(),\n    sample_rate: 0.25,\n    buffered: true,\n};\n\n// One inspector. Two unrelated types. Zero per-type code.\n(inspect(&config), inspect(&telemetry))\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_6",
+      "order": 6,
+      "label": "Serialization is reflection",
+      "cell_type": "Markdown",
+      "source": "## Serialization is just reflection you consume\n\nHere is the part that reframes a decade of Rust tooling. **Serialization is reflection you happen to consume.** When you `#[derive(Serialize)]`, serde's macro reads your type at compile time and *writes out*, by hand, the exact field-walking code we just did generically. Every type, every crate, every build.\n\nSo let me write a serializer the other way around: not code generated per type, but one generic function that walks any shape at runtime and emits JSON. No serde, no `facet-json`, about **fifteen lines**.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_7",
+      "order": 7,
+      "label": "A serde-free JSON serializer",
+      "cell_type": "Code",
+      "source": "use facet::{Facet, Type, UserType};\nuse facet_reflect::Peek;\n\n// A JSON serializer for any `#[derive(Facet)]` struct of scalars. No serde, no\n// facet-json: we walk the shape and read each field through a Peek. This is, in\n// miniature, exactly what serde's derive hand-writes for every type you own.\nfn to_json<'a, T: Facet<'a>>(value: &'a T) -> String {\n    let Type::User(UserType::Struct(st)) = &T::SHAPE.ty else {\n        return \"null\".to_string();\n    };\n    let peek = Peek::new(value).into_struct().expect(\"value is a struct\");\n    let body: Vec<String> = st\n        .fields\n        .iter()\n        .enumerate()\n        .map(|(i, f)| {\n            let v = peek.field(i).expect(\"field in range\");\n            // Strings get quoted; numbers and bools serialize bare.\n            let rendered = if f.shape.get().is_type::<String>() {\n                format!(\"\\\"{v}\\\"\")\n            } else {\n                v.to_string()\n            };\n            format!(\"  \\\"{}\\\": {}\", f.name, rendered)\n        })\n        .collect();\n    format!(\"{{\\n{}\\n}}\", body.join(\",\\n\"))\n}\n\nlet config = shared::Config {\n    service: \"checkout\".into(),\n    port: 8443,\n    replicas: 3,\n    debug: false,\n};\n\n// Feed our hand-rolled output into ironpad's Json renderer, which will only\n// accept it if it is genuine, parseable JSON.\nlet text = to_json(&config);\nJson(text.parse().expect(\"hand-rolled output is valid JSON\"))\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_8",
+      "order": 8,
+      "label": "Why it matters",
+      "cell_type": "Markdown",
+      "source": "## Why a compiler substrate changes everything\n\nFifteen lines replaced the machinery a proc-macro emits for every struct you own. That gap is the whole point, and it is worth being precise about the stakes.\n\nToday every crate pays a **derive-macro tax**. `serde`, `Debug`, `bevy`'s `Component`, `facet` itself: each ships a proc-macro that parses your type and generates trait impls, and you pay for it in compile time, in binary size, and in the papercut of remembering to add the derive in the first place. `facet` shrinks the tax to a *single* derive that many tools share, which is already a real win. But it is still a derive.\n\nA **compiler-provided reflection substrate** removes the derive from the equation entirely. The 2026 [reflection-and-comptime goal](https://rust-lang.github.io/rust-project-goals/2026/reflection-and-comptime.html) is explicit about the target: let tools introspect *arbitrary* types with no `#[derive]` and no trait bound, so that (one concrete example) Bevy could accept any type as a component instead of demanding `#[derive(Component)]` on it. dtolnay's [`reflect`](https://github.com/dtolnay/reflect) proof-of-concept has poked at the same space from the proc-macro side for years. The through-line is consistent: reflection wants to be a **language capability, not a library obligation**.\n\n`facet` is deliberately positioned as the ecosystem consumer of that eventual API. Amos has been [clear about the plan](https://fasterthanli.me/articles/introducing-facet-reflection-for-rust): when the compiler can hand out shapes directly, `facet` drops its own derive and keeps its ergonomics. The library is a placeholder for a compiler feature that is still being built, and it is a genuinely useful placeholder you can ship on stable *today*.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_9",
+      "order": 9,
+      "label": "Status and links",
+      "cell_type": "Markdown",
+      "source": "## Status, and where it is going\n\nTwo efforts, one direction, as of mid-2026.\n\n- The [reflection MVP](https://rust-lang.github.io/rust-project-goals/2026/reflection-and-comptime.html) is in-tree and growing: `TypeId::info()`, a `Type` and `kind` surface, a new type kind landing roughly weekly, carried as a 2026 project goal with **Josh Triplett** and the lang team engaged. This is early. The API will move.\n- [`facet`](https://github.com/facet-rs/facet), driven by **Amos**, is the thing you can use now: a `no_std` core, a light `unsynn`-based derive (no `syn`), and consumers that need *no feature gate*. It is `0.x`, it moves fast, and it already does pretty-printing, reflection, and serialization off one derive.\n\nThe received wisdom that \"Rust has no reflection\" was true for a long time. It is now the kind of thing you can disprove in a browser tab. If you want to follow the thread, start with the [2026 goal page](https://rust-lang.github.io/rust-project-goals/2026/reflection-and-comptime.html), Amos's [`facet` introduction](https://fasterthanli.me/articles/introducing-facet-reflection-for-rust), and whatever the latest [This Week in Rust](https://this-week-in-rust.org/) says, because on this topic that last caveat is **load-bearing**.",
+      "cargo_toml": null
+    }
+  ],
+  "description": "Received wisdom says Rust has no reflection; the compiler's MVP and the facet crate both say otherwise, and you can run the proof right here.",
+  "tags": [
+    "reflection",
+    "facet",
+    "language-design"
+  ]
+}
