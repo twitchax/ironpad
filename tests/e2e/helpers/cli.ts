@@ -1,13 +1,21 @@
 /**
  * Helpers for spawning and interacting with the ironpad-cli daemon in tests.
  */
-import { spawn, ChildProcess, execSync } from "child_process";
+import { spawn, ChildProcess, execFileSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 
 const CLI_BIN = path.join(process.cwd(), "target", "release", "ironpad-cli");
-const DAEMON_DIR = path.join(os.homedir(), ".ironpad");
+
+// Hermetic isolation: the daemon resolves its runtime dir from `$HOME/.ironpad`
+// (see ironpad-cli `daemon_dir()`). Point every CLI invocation at a private
+// temp HOME so tests never touch the developer's real `~/.ironpad` — or collide
+// with a running daemon / stale socket there. One dir per test process, shared
+// by the serial session suite.
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ironpad-e2e-home-"));
+const DAEMON_DIR = path.join(TEST_HOME, ".ironpad");
+const CLI_ENV = { ...process.env, HOME: TEST_HOME };
 
 export interface CliHandle {
   process: ChildProcess;
@@ -32,7 +40,7 @@ export async function connectCli(
   const child = spawn(CLI_BIN, ["--host", host, "--token", token, "daemon"], {
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
-    env: { ...process.env, RUST_LOG: "ironpad=debug" },
+    env: { ...CLI_ENV, RUST_LOG: "ironpad=debug" },
   });
 
   // Surface daemon errors in test output for debugging.
@@ -48,9 +56,12 @@ export async function connectCli(
 
 /** Execute a CLI command and return parsed JSON response. */
 export function cliExec(command: string[]): any {
-  const result = execSync([CLI_BIN, ...command].join(" "), {
+  // execFileSync (no shell) passes each element as a literal argv entry, so
+  // callers never need to shell-quote args that contain spaces.
+  const result = execFileSync(CLI_BIN, command, {
     encoding: "utf-8",
     timeout: 15_000,
+    env: CLI_ENV,
   });
   return JSON.parse(result.trim());
 }
@@ -60,9 +71,10 @@ export function cliExecRaw(
   command: string[]
 ): { stdout: string; stderr: string; exitCode: number } {
   try {
-    const stdout = execSync([CLI_BIN, ...command].join(" "), {
+    const stdout = execFileSync(CLI_BIN, command, {
       encoding: "utf-8",
       timeout: 15_000,
+      env: CLI_ENV,
     });
     return { stdout: stdout.trim(), stderr: "", exitCode: 0 };
   } catch (e: any) {
@@ -77,9 +89,10 @@ export function cliExecRaw(
 /** Stop the daemon gracefully. */
 export function stopCli(handle: CliHandle): void {
   try {
-    execSync([CLI_BIN, "daemon-stop"].join(" "), {
+    execFileSync(CLI_BIN, ["daemon-stop"], {
       encoding: "utf-8",
       timeout: 5_000,
+      env: CLI_ENV,
     });
   } catch {}
   try {
@@ -109,9 +122,10 @@ async function waitForDaemonReady(
   while (Date.now() - start < timeoutMs) {
     try {
       const status = JSON.parse(
-        execSync([CLI_BIN, "status"].join(" "), {
+        execFileSync(CLI_BIN, ["status"], {
           encoding: "utf-8",
           timeout: 5_000,
+          env: CLI_ENV,
         }).trim()
       );
       if (status.connected) {

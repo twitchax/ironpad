@@ -1,9 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { startSession, endSession } from "./helpers/session";
 import { connectCli, cliExec, cliExecRaw, stopCli, CliHandle } from "./helpers/cli";
+import { trackJsErrors } from "./helpers/errors";
 
-// Session tests share a single daemon socket (~/.ironpad/daemon.sock)
-// and must run serially to avoid conflicts.
+// Session tests share a single daemon socket (under a per-run temp HOME; see
+// helpers/cli.ts) and must run serially to avoid conflicts.
 test.describe.serial("Agent Session", () => {
   let cliHandle: CliHandle | null = null;
 
@@ -17,12 +18,7 @@ test.describe.serial("Agent Session", () => {
   test("session lifecycle: start, connect, end", async ({ page }) => {
     test.setTimeout(60_000);
 
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // Create a new notebook.
     await page.goto("/");
@@ -50,11 +46,12 @@ test.describe.serial("Agent Session", () => {
     // End session from browser.
     await endSession(page);
 
-    // Verify CLI commands fail after session ends.
-    // Give the daemon a moment to receive the close.
-    await page.waitForTimeout(2_000);
-    const result = cliExecRaw(["status"]);
-    expect(result.exitCode).not.toBe(0);
+    // Verify CLI commands fail after the session ends. Poll rather than sleep:
+    // the daemon needs a moment to observe the WS close, and `status` then
+    // exits non-zero.
+    await expect
+      .poll(() => cliExecRaw(["status"]).exitCode, { timeout: 10_000 })
+      .not.toBe(0);
 
     expect(jsErrors).toEqual([]);
   });
@@ -107,9 +104,9 @@ test.describe.serial("Agent Session", () => {
       "cells",
       "add",
       "--source",
-      '"let x = 42;"',
+      "let x = 42;",
       "--label",
-      '"Agent Cell"',
+      "Agent Cell",
     ]);
     expect(addResult.exitCode).toBe(0);
 
@@ -157,7 +154,7 @@ test.describe.serial("Agent Session", () => {
       "update",
       cellId,
       "--source",
-      '"let x = 99;"',
+      "let x = 99;",
     ]);
     expect(updateResult.exitCode).toBe(0);
 

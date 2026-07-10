@@ -1,14 +1,10 @@
 import { test, expect } from "@playwright/test";
+import { trackJsErrors } from "./helpers/errors";
 
 test.describe("Public notebooks", () => {
   test("home page shows public notebook badges", async ({ page }) => {
     // Collect JS errors during navigation.
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // Navigate to home page.
     await page.goto("/");
@@ -26,12 +22,7 @@ test.describe("Public notebooks", () => {
     page,
   }) => {
     // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // Navigate directly to the Welcome public notebook.
     await page.goto("/notebook/public/welcome.ironpad");
@@ -61,12 +52,7 @@ test.describe("Public notebooks", () => {
     test.setTimeout(60_000);
 
     // Collect JS errors (filter known WASM hydration noise).
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // Navigate to the Welcome public notebook.
     await page.goto("/notebook/public/welcome.ironpad");

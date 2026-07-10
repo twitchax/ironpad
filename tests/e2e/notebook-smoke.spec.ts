@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
+import { trackJsErrors } from "./helpers/errors";
 
 /**
- * Smoke tests that open complex public notebooks, wait for auto-compilation,
- * and verify that output actually renders. These exercise the full pipeline:
+ * Smoke tests that open complex public notebooks, trigger Run All (execution
+ * is opt-in per PRD-0025), and verify that output actually renders. These exercise the full pipeline:
  * SSR → hydration → server-side WASM compilation → client-side execution → output display.
  *
  * Each notebook chosen exercises a different output path:
@@ -14,17 +15,6 @@ import { test, expect } from "@playwright/test";
 // First compilation in a session downloads crates — allow plenty of time.
 const NOTEBOOK_TIMEOUT = 600_000; // 10 min per test
 const CELL_OUTPUT_TIMEOUT = 480_000; // 8 min for all cells to compile+run
-
-/** Collect JS errors during page lifetime, ignoring known WASM hydration noise. */
-function trackJsErrors(page: import("@playwright/test").Page): string[] {
-  const errors: string[] = [];
-  page.on("pageerror", (error) => {
-    if (!error.message.includes("unreachable")) {
-      errors.push(error.message);
-    }
-  });
-  return errors;
-}
 
 test.describe("Notebook smoke tests", () => {
   test("mandelbrot notebook compiles and renders fractal images", async ({
@@ -40,6 +30,10 @@ test.describe("Notebook smoke tests", () => {
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,
     });
+
+    // Execution is opt-in (PRD-0025: "never auto-execute unless the user
+    // explicitly enables it"); non-reactive notebooks run via Run All.
+    await page.locator("button", { hasText: "Run All" }).click();
 
     // The notebook has 2 code cells (cell_1, cell_2) that each produce a
     // BlobImage canvas output rendered as an <img> inside .view-only-output-display.
@@ -91,6 +85,10 @@ test.describe("Notebook smoke tests", () => {
       timeout: 30_000,
     });
 
+    // Execution is opt-in (PRD-0025: "never auto-execute unless the user
+    // explicitly enables it"); non-reactive notebooks run via Run All.
+    await page.locator("button", { hasText: "Run All" }).click();
+
     // The notebook has 2 code cells that each produce BlobImage output:
     //   cell_1: "Simulation & Final State" — computes grid + renders final state image
     //   cell_2: "Evolution Filmstrip" — renders 5-frame filmstrip as a single image
@@ -129,6 +127,10 @@ test.describe("Notebook smoke tests", () => {
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,
     });
+
+    // Execution is opt-in (PRD-0025: "never auto-execute unless the user
+    // explicitly enables it"); non-reactive notebooks run via Run All.
+    await page.locator("button", { hasText: "Run All" }).click();
 
     // The notebook has 2 code cells:
     //   cell_controls: interactive widget (slider/dropdown controls)

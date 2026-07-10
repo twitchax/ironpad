@@ -1,14 +1,10 @@
 import { test, expect } from "@playwright/test";
+import { trackJsErrors } from "./helpers/errors";
 
 test.describe("Welcome public notebook", () => {
   test("welcome notebook is listed on home page and opens", async ({ page }) => {
     // Collect JS errors during navigation.
-    const jsErrors: string[] = [];
-    page.on("pageerror", (error) => {
-      if (!error.message.includes("unreachable")) {
-        jsErrors.push(error.message);
-      }
-    });
+    const jsErrors = trackJsErrors(page);
 
     // Navigate to home page.
     await page.goto("/");
