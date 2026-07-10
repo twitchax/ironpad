@@ -76,6 +76,11 @@ async fn main() {
     tracing::info!(cache_dir = %config.cache_dir.display(), "cache directory");
     tracing::info!(ironpad_cell_path = %config.ironpad_cell_path.display(), "ironpad-cell crate path");
 
+    // Startup-only so it can never race an in-flight build: no requests are
+    // being served yet. Fly auto-stops the machine when idle, so restarts (and
+    // therefore valve checks) happen at least once per burst of visits.
+    cache_pressure_valve(&config.cache_dir, || fs_used_percent(&config.cache_dir));
+
     let conf = get_configuration(None).expect("leptos configuration");
     let leptos_options = conf.leptos_options;
 
@@ -176,6 +181,167 @@ async fn main() {
     axum::serve(listener, app.into_make_service())
         .await
         .expect("server");
+}
+
+/// Maximum percentage of the cache filesystem that may be in use before the
+/// startup pressure valve clears the rebuildable caches. The compile cache
+/// shares its volume with the share store, and a full disk fails cell
+/// compiles AND share writes — trading cold rebuilds for headroom is always
+/// the right side of that bargain.
+const CACHE_PRESSURE_MAX_USED_PCT: u8 = 80;
+
+/// Percentage of the filesystem holding `path` currently in use, or `None`
+/// when it can't be measured (non-unix, or `statvfs` failure).
+#[cfg(unix)]
+fn fs_used_percent(path: &std::path::Path) -> Option<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is a valid NUL-terminated path and `stat` is a valid
+    // out-pointer for the duration of the call.
+    if unsafe { libc::statvfs(c_path.as_ptr(), &raw mut stat) } != 0 {
+        return None;
+    }
+    if stat.f_blocks == 0 {
+        return None;
+    }
+    let used = u128::from(stat.f_blocks.saturating_sub(stat.f_bavail));
+    let pct = used * 100 / u128::from(stat.f_blocks);
+    u8::try_from(pct).ok()
+}
+
+#[cfg(not(unix))]
+fn fs_used_percent(_path: &std::path::Path) -> Option<u8> {
+    None
+}
+
+/// Disk-pressure valve for the compile cache: when the cache volume is at or
+/// above [`CACHE_PRESSURE_MAX_USED_PCT`], clear the rebuildable caches in two
+/// tiers — `targets/` + `workspaces/` (pure compile-speed caches) first, then
+/// `cargo-home/` (crates.io registry cache) only if pressure persists.
+///
+/// `blobs/` is never touched: it holds the content-addressed compiled cells,
+/// so unchanged cells stay warm across a wipe and only the next *novel*
+/// compile pays a cold build.
+///
+/// `used_pct_probe` measures the volume's usage; it is called once up front
+/// and again after the first tier to decide on escalation (injected so tests
+/// can drive both decisions without a real full disk).
+fn cache_pressure_valve(cache_dir: &std::path::Path, used_pct_probe: impl Fn() -> Option<u8>) {
+    let Some(used) = used_pct_probe() else {
+        tracing::warn!("cache volume usage unmeasurable; pressure valve skipped");
+        return;
+    };
+    if used < CACHE_PRESSURE_MAX_USED_PCT {
+        tracing::info!(used_pct = used, "cache volume below pressure threshold");
+        return;
+    }
+
+    tracing::warn!(
+        used_pct = used,
+        "cache volume under disk pressure — clearing rebuildable caches"
+    );
+    clear_cache_tier(cache_dir, &["targets", "workspaces"]);
+
+    // Re-measure: only escalate to the registry cache if still under pressure.
+    match used_pct_probe() {
+        Some(still) if still >= CACHE_PRESSURE_MAX_USED_PCT => {
+            tracing::warn!(
+                used_pct = still,
+                "pressure persists — clearing the cargo registry cache too"
+            );
+            clear_cache_tier(cache_dir, &["cargo-home"]);
+        }
+        Some(still) => tracing::info!(used_pct = still, "pressure relieved"),
+        None => {}
+    }
+}
+
+/// Remove the given subdirectories of `cache_dir`, ignoring ones that don't
+/// exist and logging (but not failing on) other errors — the valve must never
+/// prevent startup.
+fn clear_cache_tier(cache_dir: &std::path::Path, subdirs: &[&str]) {
+    for sub in subdirs {
+        let dir = cache_dir.join(sub);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => tracing::info!(dir = %dir.display(), "cleared cache tier"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(dir = %dir.display(), error = %e, "failed to clear cache tier");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cache_pressure_tests {
+    use super::{cache_pressure_valve, fs_used_percent, CACHE_PRESSURE_MAX_USED_PCT};
+
+    fn seed_cache(root: &std::path::Path) {
+        for sub in ["targets/a", "workspaces/b", "blobs", "cargo-home/reg"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        std::fs::write(root.join("targets/a/artifact.rlib"), b"x").unwrap();
+        std::fs::write(root.join("blobs/deadbeef.wasm"), b"\0asm").unwrap();
+    }
+
+    #[test]
+    fn below_threshold_wipes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_cache(tmp.path());
+        cache_pressure_valve(tmp.path(), || Some(CACHE_PRESSURE_MAX_USED_PCT - 1));
+        assert!(tmp.path().join("targets/a/artifact.rlib").exists());
+        assert!(tmp.path().join("workspaces/b").exists());
+    }
+
+    #[test]
+    fn at_threshold_wipes_rebuildable_tiers_but_never_blobs() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_cache(tmp.path());
+        // First measurement: under pressure. Re-measurement: relieved.
+        let calls = std::cell::Cell::new(0u8);
+        cache_pressure_valve(tmp.path(), || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                Some(CACHE_PRESSURE_MAX_USED_PCT)
+            } else {
+                Some(40)
+            }
+        });
+        assert!(!tmp.path().join("targets").exists());
+        assert!(!tmp.path().join("workspaces").exists());
+        // The warm-cell cache survives every tier.
+        assert!(tmp.path().join("blobs/deadbeef.wasm").exists());
+        // Pressure relieved after tier one, so the registry tier is spared.
+        assert!(tmp.path().join("cargo-home/reg").exists());
+    }
+
+    #[test]
+    fn persistent_pressure_escalates_to_the_registry_tier() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_cache(tmp.path());
+        cache_pressure_valve(tmp.path(), || Some(95));
+        assert!(!tmp.path().join("targets").exists());
+        assert!(!tmp.path().join("cargo-home").exists());
+        // Blobs survive even full escalation.
+        assert!(tmp.path().join("blobs/deadbeef.wasm").exists());
+    }
+
+    #[test]
+    fn unmeasurable_usage_is_a_no_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_cache(tmp.path());
+        cache_pressure_valve(tmp.path(), || None);
+        assert!(tmp.path().join("targets/a/artifact.rlib").exists());
+    }
+
+    #[test]
+    fn fs_used_percent_measures_real_filesystems() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pct = fs_used_percent(tmp.path()).expect("statvfs should work on a tempdir");
+        assert!(pct <= 100);
+    }
 }
 
 /// Is this a path we deliberately serve to third-party embedders? The embed
