@@ -73,7 +73,7 @@ Any shared or public notebook drops into a blog post or docs page as a **live, r
         style="width:100%;border:0;" height="600" loading="lazy"></iframe>
 ```
 
-The script variant scans for `.ironpad-embed` placeholder divs too, so one script tag can mount any number of notebooks. One honest limitation: **threaded (rayon) cells can't run inside a cross-origin embed** (they need `SharedArrayBuffer`, which requires a cross-origin-isolated page); plain and async cells run fine, and the embed says so rather than failing quietly.
+The script variant scans for `.ironpad-embed` placeholder divs too, so one script tag can mount any number of notebooks. Embeds are **click-to-run by default**; add `data-autorun` to the script or placeholder to run cells on load (honored only for public notebooks: shared notebooks are arbitrary user content and never auto-execute, anywhere). One honest limitation: **threaded (rayon) cells can't run inside a cross-origin embed** (they need `SharedArrayBuffer`, which requires a cross-origin-isolated page); plain and async cells run fine, and the embed says so rather than failing quietly.
 
 ## How It Works
 
