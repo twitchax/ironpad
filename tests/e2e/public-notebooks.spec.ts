@@ -132,3 +132,17 @@ test.describe("View-only polish", () => {
     expect(h).toBeLessThan(45);
   });
 });
+
+test.describe("Stylesheet token hygiene", () => {
+  test("compiled CSS references only the app's --ip- palette", async ({
+    request,
+  }) => {
+    // Thaw's --colorXxx tokens live on its wrapper element and fail SILENTLY
+    // when a name doesn't exist (transparent backgrounds, currentColor
+    // borders — the invisible-popover bug). App styles must use the --ip-*
+    // palette, which is defined at :root with light-theme overrides.
+    const css = await (await request.get("/pkg/ironpad.css")).text();
+    const foreign = css.match(/var\(--color[A-Za-z0-9]+/g);
+    expect(foreign).toBeNull();
+  });
+});
