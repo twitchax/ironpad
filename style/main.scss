@@ -748,14 +748,13 @@ a:focus-visible {
 
 .ironpad-shared-deps-editor-wrapper {
     width: 100%;
-    height: 250px;
+    // No fixed height: the Monaco bridge auto-sizes its container to the
+    // content (60-600px, internal scroll beyond). A fixed 250px box with
+    // overflow hidden fought that inline height — long shared source was
+    // clipped unreachably, with no scrollbar and a dead mouse wheel.
     border: 1px solid var(--ip-border);
     border-radius: var(--ip-radius-sm);
-    overflow: hidden;
-}
-
-.ironpad-shared-deps-editor-wrapper .ironpad-monaco-container {
-    height: 100%;
+    overflow: hidden; // clips the editor to the rounded corners
 }
 
 /* ── Cell list ───────────────────────────────────────────────────────── */
@@ -1921,18 +1920,31 @@ samp,
 .view-only-toolbar {
     display: flex;
     align-items: center;
+    // Long titles: controls flow to the next row as whole pills instead of
+    // overflowing once the title can't shrink any further.
+    flex-wrap: wrap;
     gap: 0.5rem;
     padding: 1rem;
     max-width: 1060px;
     margin: 0 auto;
     width: 100%;
     border-bottom: 1px solid var(--colorNeutralStroke1);
+
+    // The title is the only item that shrinks (by wrapping its text); the
+    // controls keep their intrinsic size. Without this, a long title
+    // squeezes the buttons into multi-line pills of ragged heights.
+    > :not(.view-only-title) {
+        flex-shrink: 0;
+        white-space: nowrap;
+    }
 }
 
 .view-only-title {
     margin: 0;
     font-size: 1.5rem;
     color: var(--colorNeutralForeground1);
+    // Shrink below the intrinsic text width so the title wraps first.
+    min-width: 0;
 }
 
 .view-only-toolbar .ironpad-theme-toggle {
@@ -2846,16 +2858,16 @@ samp,
 .embed-button {
     padding: 0.5rem 1rem;
     background: transparent;
-    color: var(--colorNeutralForeground2);
-    border: 1px solid var(--colorNeutralStroke1);
+    color: var(--ip-text-secondary);
+    border: 1px solid var(--ip-border);
     border-radius: 4px;
     cursor: pointer;
     font-size: 0.9rem;
     font-family: var(--fontFamilyMonospace, monospace);
 
     &:hover {
-        color: var(--colorNeutralForeground1);
-        border-color: var(--colorBrandBackground);
+        color: var(--ip-text-primary);
+        border-color: var(--ip-border-hover);
     }
 }
 
@@ -2866,8 +2878,8 @@ samp,
     z-index: 40;
     width: min(560px, 80vw);
     padding: 0.75rem;
-    background: var(--colorNeutralBackground2);
-    border: 1px solid var(--colorNeutralStroke1);
+    background: var(--ip-bg-elevated);
+    border: 1px solid var(--ip-border);
     border-radius: 6px;
     box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
     display: flex;
@@ -2881,7 +2893,7 @@ samp,
     pre {
         margin: 0.25rem 0 0;
         padding: 0.5rem 2.5rem 0.5rem 0.5rem;
-        background: var(--colorNeutralBackground3);
+        background: var(--ip-bg-primary);
         border-radius: 4px;
         font-size: 0.75rem;
         white-space: pre-wrap;
@@ -2891,7 +2903,7 @@ samp,
 
 .view-only-embed-snippet-label {
     font-size: 0.75rem;
-    color: var(--colorNeutralForeground3);
+    color: var(--ip-text-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
@@ -2899,24 +2911,24 @@ samp,
 .view-only-embed-notice {
     margin: 0 1rem;
     padding: 0.5rem 0.75rem;
-    background: var(--colorStatusWarningBackground1, rgb(255 200 60 / 12%));
-    border: 1px solid var(--colorStatusWarningBorder1, rgb(255 200 60 / 45%));
+    background: rgb(240 192 64 / 12%);
+    border: 1px solid var(--ip-warning);
     border-radius: 4px;
     font-size: 0.85rem;
-    color: var(--colorNeutralForeground2);
+    color: var(--ip-text-secondary);
 }
 
 .ironpad-embed-badge {
     display: block;
     padding: 0.4rem 1rem;
-    border-top: 1px solid var(--colorNeutralStroke2);
+    border-top: 1px solid var(--ip-border);
     font-size: 0.8rem;
-    color: var(--colorNeutralForeground3);
+    color: var(--ip-text-tertiary);
     text-decoration: none;
     text-align: right;
 
     &:hover {
-        color: var(--colorBrandForegroundLink, var(--colorNeutralForeground1));
+        color: var(--ip-text-primary);
     }
 }
 
@@ -2940,4 +2952,44 @@ samp,
         flex: none;
         overflow-y: visible;
     }
+}
+
+// ── Shared source / dependencies appendix (view-only pages) ─────────────────
+
+.view-only-shared-appendix {
+    max-width: 1060px;
+    margin: 0 auto;
+    width: 100%;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.view-only-shared-section {
+    border: 1px solid var(--ip-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.view-only-shared-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    background: var(--ip-bg-elevated);
+    color: var(--ip-text-secondary);
+    border: none;
+    cursor: pointer;
+    font-size: 0.85rem;
+    text-align: left;
+
+    &:hover {
+        color: var(--ip-text-primary);
+    }
+}
+
+.view-only-shared-body {
+    border-top: 1px solid var(--ip-border);
 }

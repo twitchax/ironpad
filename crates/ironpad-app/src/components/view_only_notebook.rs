@@ -215,6 +215,18 @@ pub fn ViewOnlyNotebook(
         embed_popover_open.update(|open| *open = !*open);
     };
 
+    // ── Shared source / dependencies appendix ───────────────────────────
+    //
+    // Cells reference notebook-level shared code as `shared::…`, so readers
+    // need a way to see it. Rendered after the cells as collapsed sections:
+    // the cells are the story, the shared code is the footnotes.
+    let shared_source_appendix = notebook
+        .with_value(|nb| nb.shared_source.clone())
+        .filter(|s| !s.trim().is_empty());
+    let shared_cargo_appendix = notebook
+        .with_value(|nb| nb.shared_cargo_toml.clone())
+        .filter(|s| !s.trim().is_empty());
+
     // Canonical full-page link shown as a badge inside embeds. Relative href:
     // inside the iframe it resolves against the ironpad origin, and
     // target="_blank" opens the full app in a new tab.
@@ -316,11 +328,68 @@ pub fn ViewOnlyNotebook(
                         }
                     }).collect_view()
                 })}
+                // `.into_any()` erases this block's view type: the extra
+                // nesting otherwise pushes the whole-page tachys type past
+                // rustc's query depth limit on the SSR build.
+                {(shared_source_appendix.is_some() || shared_cargo_appendix.is_some()).then(|| view! {
+                    <div class="view-only-shared-appendix">
+                        {shared_source_appendix.map(|src| view! {
+                            <SharedAppendixSection
+                                label="\u{270e} Shared Source (shared.rs)"
+                                language="rust"
+                                content=src
+                            />
+                        })}
+                        {shared_cargo_appendix.map(|toml| view! {
+                            <SharedAppendixSection
+                                label="\u{2b21} Shared Dependencies (Cargo.toml)"
+                                language="toml"
+                                content=toml
+                            />
+                        })}
+                    </div>
+                }.into_any())}
             </div>
             {embed_badge_href.map(|href| view! {
                 <a class="ironpad-embed-badge" href=href target="_blank" rel="noopener">
                     "⚡ Powered by ironpad · Open ↗"
                 </a>
+            })}
+        </div>
+    }
+}
+
+// ── Shared appendix ─────────────────────────────────────────────────────────
+
+/// One collapsed-by-default appendix section showing notebook-level shared
+/// text (shared source or Cargo.toml) in a read-only Monaco editor. The
+/// editor mounts lazily on first expand.
+#[component]
+fn SharedAppendixSection(
+    label: &'static str,
+    language: &'static str,
+    content: String,
+) -> impl IntoView {
+    let collapsed = RwSignal::new(true);
+    let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
+
+    view! {
+        <div class="view-only-shared-section">
+            <button
+                class="view-only-shared-header"
+                on:click=move |_| collapsed.update(|c| *c = !*c)
+            >
+                <span class="ironpad-output-toggle">{toggle_icon}</span>
+                <span>{label}</span>
+            </button>
+            {move || (!collapsed.get()).then(|| view! {
+                <div class="view-only-shared-body">
+                    <MonacoEditor
+                        initial_value=content.clone()
+                        language=language
+                        read_only=true
+                    />
+                </div>
             })}
         </div>
     }
