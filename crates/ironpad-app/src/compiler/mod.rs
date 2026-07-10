@@ -192,8 +192,8 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]\nrand = \"0.8\"";
 
         // Hashes must match.
-        let hash_a = content_hash(source, cargo_toml, &[], None, None, false, false);
-        let hash_b = content_hash(source, cargo_toml, &[], None, None, false, false);
+        let hash_a = content_hash(source, cargo_toml, &[], None, None, false, false, false);
+        let hash_b = content_hash(source, cargo_toml, &[], None, None, false, false, false);
         assert_eq!(hash_a, hash_b, "same inputs must produce identical hashes");
 
         // Scaffolded content must be identical for the same inputs.
@@ -238,8 +238,26 @@ mod pipeline_tests {
     #[test]
     fn changed_source_invalidates_hash() {
         let cargo = "[dependencies]";
-        let hash_v1 = content_hash("    let x = 1;", cargo, &[], None, None, false, false);
-        let hash_v2 = content_hash("    let x = 2;", cargo, &[], None, None, false, false);
+        let hash_v1 = content_hash(
+            "    let x = 1;",
+            cargo,
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+        );
+        let hash_v2 = content_hash(
+            "    let x = 2;",
+            cargo,
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+        );
         assert_ne!(
             hash_v1, hash_v2,
             "different source must produce different hashes"
@@ -257,6 +275,7 @@ mod pipeline_tests {
             None,
             false,
             false,
+            false,
         );
         let hash_b = content_hash(
             source,
@@ -264,6 +283,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            false,
             false,
             false,
         );
@@ -321,7 +341,7 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input.
-        let hash = content_hash(source, cargo_toml, &[], None, None, false, false);
+        let hash = content_hash(source, cargo_toml, &[], None, None, false, false, false);
         assert_eq!(hash.len(), 64, "blake3 hash should be 64 hex chars");
         assert!(
             hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -397,7 +417,7 @@ mod pipeline_tests {
 
         let source = "    CellOutput::text(\"cached\")";
         let cargo = "[dependencies]";
-        let hash = content_hash(source, cargo, &[], None, None, false, false);
+        let hash = content_hash(source, cargo, &[], None, None, false, false, false);
 
         let cache_dir = tempdir();
         let fake_wasm = b"\x00asm\x01\x00\x00\x00fake-wasm-bytes";
@@ -419,6 +439,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            false,
             false,
             false,
         );
@@ -444,7 +465,9 @@ mod e2e_tests {
     use super::build::{build_micro_crate, check_micro_crate, BuildResult, CheckResult};
     use super::cache::{content_hash, store_blob, try_cache_hit};
     use super::diagnostics::parse_diagnostics;
-    use super::scaffold::{merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff};
+    use super::scaffold::{
+        merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff, uses_wasm_simd,
+    };
 
     /// Resolve the path to the `ironpad-cell` crate relative to this crate's manifest.
     fn ironpad_cell_path() -> PathBuf {
@@ -488,7 +511,7 @@ mod e2e_tests {
 
         // Build to WASM.
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -604,7 +627,7 @@ pub fn range(angle: f64) -> f64 {
         assert!(preamble >= 1);
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, true,
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, true, false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -617,6 +640,61 @@ pub fn range(angle: f64) -> f64 {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "std::autodiff cell should build.\nstdout(tail): {}\nstderr(tail): {}",
+                    &stdout[stdout.len().saturating_sub(2000)..],
+                    &stderr[stderr.len().saturating_sub(1500)..],
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn compile_cell_with_portable_simd_builds_successfully() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "portable-simd";
+
+        // Mixes portable SIMD (`std::simd`, needs the injected feature gate)
+        // with a raw `std::arch::wasm32` intrinsic. The intrinsic is the
+        // stronger probe: calling it from a plain function only compiles when
+        // `-C target-feature=+simd128` actually reached rustc, so a build
+        // success proves the flag plumbing end to end.
+        let source = "    use std::simd::prelude::*;\n    use std::arch::wasm32::{f32x4_extract_lane, f32x4_splat};\n    let v = f32x4::from_array([1.0, 2.0, 3.0, 4.0]) * f32x4::splat(2.0);\n    let intrinsic = f32x4_extract_lane::<0>(f32x4_splat(21.0)) * 2.0;\n    CellOutput::from(f64::from(v.reduce_sum() + intrinsic))";
+        let cargo_toml = "[dependencies]";
+
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+        )
+        .expect("scaffold should succeed");
+
+        // The scaffold must have opted in: feature gate on line 1.
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(lib_rs.starts_with("#![feature(portable_simd)]\n"));
+        assert!(preamble >= 1);
+
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, true,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                let wasm_bytes = std::fs::read(&wasm_path).unwrap();
+                assert_eq!(&wasm_bytes[..4], b"\x00asm");
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "portable SIMD cell should build.\nstdout(tail): {}\nstderr(tail): {}",
                     &stdout[stdout.len().saturating_sub(2000)..],
                     &stderr[stderr.len().saturating_sub(1500)..],
                 );
@@ -651,7 +729,7 @@ pub fn range(angle: f64) -> f64 {
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -701,7 +779,7 @@ pub fn range(angle: f64) -> f64 {
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -741,7 +819,7 @@ pub fn range(angle: f64) -> f64 {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input (should be a cache miss).
-        let hash = content_hash(source, cargo_toml, &[], None, None, false, false);
+        let hash = content_hash(source, cargo_toml, &[], None, None, false, false, false);
         assert!(
             try_cache_hit(&cache_dir, &hash).is_none(),
             "should be a cache miss before compilation",
@@ -762,7 +840,7 @@ pub fn range(angle: f64) -> f64 {
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
         )
         .await
         .expect("build should not return an infra error");
@@ -802,6 +880,7 @@ pub fn range(angle: f64) -> f64 {
             &[],
             None,
             None,
+            false,
             false,
             false,
         );
@@ -864,7 +943,7 @@ impl Simulation for BusSim {
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -953,7 +1032,7 @@ impl LiveView for Counter {
         );
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false,
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1104,6 +1183,9 @@ impl LiveView for Counter {
                 // Match production for autodiff cells too: nightly toolchain,
                 // -Zautodiff, and the fat-LTO profile the scaffold enforces.
                 let needs_autodiff = uses_std_autodiff(&cell.source, shared_source);
+                // And for SIMD cells: the +simd128 target feature (the scaffold
+                // injects the portable_simd gate either way).
+                let needs_simd = uses_wasm_simd(&cell.source, shared_source);
                 let result = check_micro_crate(
                     &crate_dir,
                     &cache_dir,
@@ -1112,6 +1194,7 @@ impl LiveView for Counter {
                     None,
                     needs_atomics,
                     needs_autodiff,
+                    needs_simd,
                 )
                 .await;
 

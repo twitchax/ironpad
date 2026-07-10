@@ -85,6 +85,13 @@ pub fn scaffold_micro_crate(
         lib_rs.insert_str(0, "#![feature(autodiff)]\n");
         preamble_lines += 1;
     }
+    if uses_wasm_simd(source, shared_source) {
+        // Crate-root gate for `std::simd` (portable SIMD is nightly-only);
+        // harmless when the cell only uses stable `std::arch::wasm32`
+        // intrinsics. Same preamble bump rule as the autodiff gate above.
+        lib_rs.insert_str(0, "#![feature(portable_simd)]\n");
+        preamble_lines += 1;
+    }
     std::fs::write(src_dir.join("lib.rs"), lib_rs)?;
 
     if let Some(shared) = shared_source {
@@ -271,6 +278,21 @@ pub fn uses_std_autodiff(source: &str, shared_source: Option<&str>) -> bool {
         s.contains("autodiff_forward")
             || s.contains("autodiff_reverse")
             || s.contains("std::autodiff")
+    };
+    hit(source) || shared_source.is_some_and(hit)
+}
+
+/// Returns `true` if the cell (or the notebook's shared source) uses WASM
+/// SIMD, opting the build into `-C target-feature=+simd128` and a crate-root
+/// `#![feature(portable_simd)]` gate (PRD-0042).
+///
+/// Same substring-detection spirit as [`uses_std_autodiff`]: using the feature
+/// IS the opt-in. A false positive (the strings in a comment) costs only an
+/// unused feature gate and a harmless codegen flag — every current browser
+/// instantiates simd128 modules natively.
+pub fn uses_wasm_simd(source: &str, shared_source: Option<&str>) -> bool {
+    let hit = |s: &str| {
+        s.contains("std::simd") || s.contains("core::simd") || s.contains("std::arch::wasm32")
     };
     hit(source) || shared_source.is_some_and(hit)
 }
@@ -1777,6 +1799,113 @@ impl LiveView for Dashboard {
             None,
             "[dependencies]\nserde = \"1\""
         ));
+    }
+
+    // ── WASM SIMD opt-in (PRD-0042) ─────────────────────────────────────
+
+    #[test]
+    fn uses_wasm_simd_detects_in_cell_source() {
+        assert!(uses_wasm_simd("use std::simd::prelude::*;", None));
+        assert!(uses_wasm_simd(
+            "let v = core::simd::f32x4::splat(0.0);",
+            None
+        ));
+        assert!(uses_wasm_simd("use std::arch::wasm32::f32x4_add;", None));
+        assert!(!uses_wasm_simd("let x = 42;", None));
+    }
+
+    #[test]
+    fn uses_wasm_simd_detects_in_shared_source() {
+        let shared = "use std::simd::prelude::*;\npub fn dot(a: &[f32]) -> f32 { a[0] }";
+        assert!(uses_wasm_simd("shared::dot(&[1.0])", Some(shared)));
+        assert!(!uses_wasm_simd("let x = 1;", Some("pub fn f() {}")));
+    }
+
+    #[test]
+    fn simd_scaffold_adds_feature_gate_and_bumps_preamble() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Baseline without simd for the preamble delta.
+        let (_, base_preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "no-simd",
+            "    1",
+            "[dependencies]",
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "with-simd",
+            "    use std::simd::prelude::*;\n    f32x4::splat(1.0).reduce_sum()",
+            "[dependencies]",
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(
+            lib_rs.starts_with("#![feature(portable_simd)]\n"),
+            "feature gate must be the first crate-root line"
+        );
+        assert_eq!(
+            preamble,
+            base_preamble + 1,
+            "the injected feature line shifts diagnostics by exactly one"
+        );
+    }
+
+    #[test]
+    fn simd_and_autodiff_gates_compose_with_two_preamble_bumps() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell_src =
+            "    use std::simd::prelude::*;\n    let (_v, g) = shared::d_f(2.0, 1.0);\n    g";
+        let shared = "#[autodiff_reverse(d_f, Active, Active)]\npub fn f(x: f64) -> f64 { x * x }";
+
+        let (_, base_preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "plain",
+            "    1",
+            "[dependencies]",
+            &[],
+            None,
+            Some("pub fn f() {}"),
+        )
+        .unwrap();
+
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "simd-ad",
+            cell_src,
+            "[dependencies]",
+            &[],
+            None,
+            Some(shared),
+        )
+        .unwrap();
+
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        let lines: Vec<&str> = lib_rs.lines().take(2).collect();
+        assert_eq!(lines[0], "#![feature(portable_simd)]");
+        assert_eq!(lines[1], "#![feature(autodiff)]");
+        assert_eq!(
+            preamble,
+            base_preamble + 2,
+            "each injected gate shifts diagnostics by one line"
+        );
     }
 
     // ── std::autodiff opt-in (PRD-0041) ─────────────────────────────────

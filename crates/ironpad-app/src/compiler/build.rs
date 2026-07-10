@@ -11,13 +11,20 @@ use std::time::Duration;
 use anyhow::Context;
 use tokio::process::Command;
 
-/// Full RUSTFLAGS for atomics/shared-memory WASM builds (rayon cells).
+/// Target features for atomics/shared-memory WASM builds (rayon cells).
 ///
-/// Required by wasm-bindgen-rayon: enables atomics target features AND linker
-/// flags for shared memory, imported memory, and TLS exports so that the
-/// resulting WASM module can be shared across Web Workers via `postMessage`.
-const ATOMICS_RUSTFLAGS: &str = "\
-    -C target-feature=+atomics,+bulk-memory,+mutable-globals \
+/// Kept separate from [`ATOMICS_LINK_RUSTFLAGS`] because rustc keeps only the
+/// **last** `-C target-feature=` occurrence — features from independent
+/// concerns (atomics, simd) must be merged into a single flag or the earlier
+/// set is silently dropped (see [`compose_rustflags`]).
+const ATOMICS_TARGET_FEATURES: &str = "+atomics,+bulk-memory,+mutable-globals";
+
+/// Linker flags for atomics/shared-memory WASM builds (rayon cells).
+///
+/// Required by wasm-bindgen-rayon: shared memory, imported memory, and TLS
+/// exports so that the resulting WASM module can be shared across Web Workers
+/// via `postMessage`.
+const ATOMICS_LINK_RUSTFLAGS: &str = "\
     -C link-arg=--shared-memory \
     -C link-arg=--max-memory=2147483648 \
     -C link-arg=--import-memory \
@@ -25,6 +32,11 @@ const ATOMICS_RUSTFLAGS: &str = "\
     -C link-arg=--export=__tls_size \
     -C link-arg=--export=__tls_align \
     -C link-arg=--export=__tls_base";
+
+/// Target feature enabling baseline WASM SIMD (fixed-width 128-bit) for cells
+/// that use `std::simd` / `std::arch::wasm32` (PRD-0042). No `-Zbuild-std`
+/// needed: simd128 cell code links fine against the precompiled non-simd std.
+const SIMD_TARGET_FEATURES: &str = "+simd128";
 
 /// Toolchain used for atomics/shared-memory (rayon) cell builds.
 ///
@@ -111,6 +123,7 @@ pub async fn build_micro_crate(
     compilation_proxy: Option<&str>,
     needs_atomics: bool,
     needs_autodiff: bool,
+    needs_simd: bool,
 ) -> anyhow::Result<BuildResult> {
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = if needs_atomics {
@@ -132,6 +145,7 @@ pub async fn build_micro_crate(
         cargo_home = %cargo_home.display(),
         target_dir = %target_dir.display(),
         needs_atomics = needs_atomics,
+        needs_simd = needs_simd,
         rustup_toolchain = %std::env::var("RUSTUP_TOOLCHAIN").unwrap_or_default(),
         "starting WASM build",
     );
@@ -148,6 +162,7 @@ pub async fn build_micro_crate(
         compilation_proxy,
         needs_atomics,
         needs_autodiff,
+        needs_simd,
     );
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -281,6 +296,7 @@ fn configure_cargo_cmd(
     compilation_proxy: Option<&str>,
     needs_atomics: bool,
     needs_autodiff: bool,
+    needs_simd: bool,
 ) {
     if needs_autodiff {
         cmd.arg(format!("+{AUTODIFF_TOOLCHAIN}"));
@@ -311,18 +327,49 @@ fn configure_cargo_cmd(
         cmd.env("HTTP_PROXY", proxy);
     }
 
-    // Compose RUSTFLAGS: atomics and autodiff can coexist (both are plain
-    // flag sets; the autodiff toolchain carries rust-src for -Zbuild-std).
-    let mut rustflags = Vec::new();
     if needs_atomics {
         cmd.arg("-Zbuild-std=std,panic_abort");
-        rustflags.push(ATOMICS_RUSTFLAGS);
+    }
+    if let Some(rustflags) = compose_rustflags(needs_atomics, needs_autodiff, needs_simd) {
+        cmd.env("RUSTFLAGS", rustflags);
+    }
+}
+
+/// Compose the cell-build `RUSTFLAGS` for the requested feature set, or `None`
+/// when no flags are needed.
+///
+/// Target features from independent concerns (atomics, simd) are merged into a
+/// **single** `-C target-feature=` flag: rustc keeps only the last occurrence
+/// of the option, so emitting two would silently drop the earlier feature set
+/// (a rayon+simd cell would lose its atomics features and fail to link).
+fn compose_rustflags(
+    needs_atomics: bool,
+    needs_autodiff: bool,
+    needs_simd: bool,
+) -> Option<String> {
+    let mut target_features: Vec<&str> = Vec::new();
+    if needs_atomics {
+        target_features.push(ATOMICS_TARGET_FEATURES);
+    }
+    if needs_simd {
+        target_features.push(SIMD_TARGET_FEATURES);
+    }
+
+    let mut rustflags: Vec<String> = Vec::new();
+    if !target_features.is_empty() {
+        rustflags.push(format!("-C target-feature={}", target_features.join(",")));
+    }
+    if needs_atomics {
+        rustflags.push(ATOMICS_LINK_RUSTFLAGS.to_string());
     }
     if needs_autodiff {
-        rustflags.push(AUTODIFF_RUSTFLAGS);
+        rustflags.push(AUTODIFF_RUSTFLAGS.to_string());
     }
-    if !rustflags.is_empty() {
-        cmd.env("RUSTFLAGS", rustflags.join(" "));
+
+    if rustflags.is_empty() {
+        None
+    } else {
+        Some(rustflags.join(" "))
     }
 }
 
@@ -334,6 +381,7 @@ fn configure_cargo_cmd(
 ///
 /// Intended for bulk validation (e.g. checking every public notebook cell).
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub async fn check_micro_crate(
     crate_dir: &Path,
     cache_dir: &Path,
@@ -342,6 +390,7 @@ pub async fn check_micro_crate(
     compilation_proxy: Option<&str>,
     needs_atomics: bool,
     needs_autodiff: bool,
+    needs_simd: bool,
 ) -> anyhow::Result<CheckResult> {
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = if needs_atomics {
@@ -368,6 +417,7 @@ pub async fn check_micro_crate(
             compilation_proxy,
             needs_atomics,
             needs_autodiff,
+            needs_simd,
         );
         cmd.output()
     })
@@ -433,6 +483,46 @@ pub fn expected_wasm_path(target_dir: &Path, cell_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── compose_rustflags ───────────────────────────────────────────────
+
+    #[test]
+    fn rustflags_none_when_no_features() {
+        assert_eq!(compose_rustflags(false, false, false), None);
+    }
+
+    #[test]
+    fn rustflags_simd_only() {
+        assert_eq!(
+            compose_rustflags(false, false, true).as_deref(),
+            Some("-C target-feature=+simd128"),
+        );
+    }
+
+    #[test]
+    fn rustflags_atomics_only_keeps_features_and_link_args() {
+        let flags = compose_rustflags(true, false, false).unwrap();
+        assert!(flags.starts_with("-C target-feature=+atomics,+bulk-memory,+mutable-globals"));
+        assert!(flags.contains("-C link-arg=--shared-memory"));
+        assert!(flags.contains("-C link-arg=--export=__tls_base"));
+    }
+
+    #[test]
+    fn rustflags_atomics_plus_simd_merge_into_one_target_feature_flag() {
+        let flags = compose_rustflags(true, false, true).unwrap();
+        // One merged flag — a second `-C target-feature=` would make rustc
+        // silently drop the first set.
+        assert_eq!(flags.matches("-C target-feature=").count(), 1);
+        assert!(flags.contains("+atomics,+bulk-memory,+mutable-globals,+simd128"));
+        assert!(flags.contains("-C link-arg=--shared-memory"));
+    }
+
+    #[test]
+    fn rustflags_autodiff_composes_with_simd() {
+        let flags = compose_rustflags(false, true, true).unwrap();
+        assert!(flags.contains("-C target-feature=+simd128"));
+        assert!(flags.contains("-Zautodiff=Enable"));
+    }
 
     // ── cargo_home_dir ──────────────────────────────────────────────────
 
