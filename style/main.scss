@@ -1379,7 +1379,7 @@ a:focus-visible {
 
 .ironpad-output-fallback-badge {
     font-size: 0.65rem;
-    color: var(--colorPaletteYellowForeground1, #c4a000);
+    color: var(--ip-warning);
     background: rgba(196, 160, 0, 0.15);
     padding: 2px 8px;
     border-radius: 10px;
@@ -1729,7 +1729,7 @@ samp,
 }
 
 .ironpad-error-boundary-hint {
-    color: var(--colorNeutralForeground3);
+    color: var(--ip-text-tertiary);
     font-size: 0.9rem;
     margin-top: 0.5rem;
 }
@@ -1928,7 +1928,7 @@ samp,
     max-width: 1060px;
     margin: 0 auto;
     width: 100%;
-    border-bottom: 1px solid var(--colorNeutralStroke1);
+    border-bottom: 1px solid var(--ip-border);
 
     // The title is the only item that shrinks (by wrapping its text); the
     // controls keep their intrinsic size. Without this, a long title
@@ -1942,7 +1942,7 @@ samp,
 .view-only-title {
     margin: 0;
     font-size: 1.5rem;
-    color: var(--colorNeutralForeground1);
+    color: var(--ip-text-primary);
     // Shrink below the intrinsic text width so the title wraps first.
     min-width: 0;
 }
@@ -1953,15 +1953,15 @@ samp,
 
 .fork-button {
     padding: 0.5rem 1.5rem;
-    background: var(--colorBrandBackground);
-    color: var(--colorNeutralForegroundOnBrand);
+    background: var(--ip-accent);
+    color: var(--ip-text-on-accent);
     border: none;
     border-radius: 4px;
     cursor: pointer;
     font-size: 1rem;
 
     &:hover {
-        background: var(--colorBrandBackgroundHover);
+        background: var(--ip-accent-hover);
     }
 }
 
@@ -1975,7 +1975,7 @@ samp,
     max-width: 1060px;
     margin: 0 auto;
     padding: 1rem;
-    border-bottom: 1px solid var(--colorNeutralStroke2);
+    border-bottom: 1px solid var(--ip-border);
 }
 
 .view-only-cell-header {
@@ -1987,20 +1987,20 @@ samp,
 
 .view-only-cell-label {
     font-weight: 600;
-    color: var(--colorNeutralForeground2);
+    color: var(--ip-text-secondary);
 }
 
 .view-only-run-button {
     padding: 0.25rem 0.75rem;
-    background: var(--colorBrandBackground);
-    color: var(--colorNeutralForegroundOnBrand);
+    background: var(--ip-accent);
+    color: var(--ip-text-on-accent);
     border: none;
     border-radius: 4px;
     cursor: pointer;
     font-size: 0.85rem;
 
     &:hover {
-        background: var(--colorBrandBackgroundHover);
+        background: var(--ip-accent-hover);
     }
 
     &:disabled {
@@ -2039,7 +2039,7 @@ samp,
 
 .view-only-output {
     margin-top: 0.5rem;
-    border: 1px solid var(--colorNeutralStroke2);
+    border: 1px solid var(--ip-border);
     border-radius: 4px;
     overflow: hidden;
 }
@@ -2053,9 +2053,9 @@ samp,
     gap: 1rem;
     padding: 0.25rem 0.75rem;
     font-size: 0.75rem;
-    color: var(--colorNeutralForeground3);
-    background: var(--colorNeutralBackground3);
-    border-bottom: 1px solid var(--colorNeutralStroke2);
+    color: var(--ip-text-tertiary);
+    background: var(--ip-bg-elevated);
+    border-bottom: 1px solid var(--ip-border);
 }
 
 .view-only-output-display {
