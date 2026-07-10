@@ -3,11 +3,28 @@
  */
 import { Page, expect } from "@playwright/test";
 
+/**
+ * Navigate home and create a fresh notebook, robustly under full-suite load:
+ * wait for the home page AND hydration before clicking (a pre-hydration click
+ * hits no handler and strands the test on the home page), and give the editor
+ * a load-tolerant timeout.
+ */
+export async function createNotebook(page: Page): Promise<void> {
+  await page.goto("/");
+  await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+  await page.waitForTimeout(3_000); // hydration (suite convention)
+  await page.locator("button", { hasText: "+ New Notebook" }).click();
+  await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/, { timeout: 15_000 });
+  await expect(page.locator(".ironpad-editor")).toBeVisible({
+    timeout: 15_000,
+  });
+}
+
 /** Start an agent session and return the token. */
 export async function startSession(page: Page): Promise<string> {
   // Click the session button.
   const btn = page.locator(".ironpad-session-button");
-  await expect(btn).toBeVisible({ timeout: 5_000 });
+  await expect(btn).toBeVisible({ timeout: 15_000 });
   await btn.click();
 
   // Wait for the session panel to appear with a token.

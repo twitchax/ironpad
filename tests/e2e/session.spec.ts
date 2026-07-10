@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { startSession, endSession } from "./helpers/session";
+import { createNotebook, startSession, endSession } from "./helpers/session";
 import { connectCli, cliExec, cliExecRaw, stopCli, CliHandle } from "./helpers/cli";
 import { trackJsErrors } from "./helpers/errors";
 
@@ -21,10 +21,7 @@ test.describe.serial("Agent Session", () => {
     const jsErrors = trackJsErrors(page);
 
     // Create a new notebook.
-    await page.goto("/");
-    await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
-    await expect(page.locator(".ironpad-editor")).toBeVisible();
+    await createNotebook(page);
 
     // Start session and get token.
     const token = await startSession(page);
@@ -60,9 +57,7 @@ test.describe.serial("Agent Session", () => {
     test.setTimeout(60_000);
 
     // Create notebook with a cell.
-    await page.goto("/");
-    await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page.locator(".ironpad-editor")).toBeVisible();
+    await createNotebook(page);
 
     // Add a cell via UI.
     await page.locator(".ironpad-add-cell-btn").first().click();
@@ -91,9 +86,7 @@ test.describe.serial("Agent Session", () => {
     test.setTimeout(60_000);
 
     // Create empty notebook.
-    await page.goto("/");
-    await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page.locator(".ironpad-editor")).toBeVisible();
+    await createNotebook(page);
 
     // Start session and connect.
     const token = await startSession(page);
@@ -133,9 +126,7 @@ test.describe.serial("Agent Session", () => {
     test.setTimeout(60_000);
 
     // Create notebook with a cell.
-    await page.goto("/");
-    await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page.locator(".ironpad-editor")).toBeVisible();
+    await createNotebook(page);
     await page.locator(".ironpad-add-cell-btn").first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
     await page.waitForTimeout(2_000);
@@ -167,9 +158,7 @@ test.describe.serial("Agent Session", () => {
     test.setTimeout(60_000);
 
     // Create notebook.
-    await page.goto("/");
-    await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page.locator(".ironpad-editor")).toBeVisible();
+    await createNotebook(page);
 
     // Start session and connect.
     const token = await startSession(page);

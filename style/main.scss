@@ -1918,37 +1918,42 @@ samp,
 }
 
 .view-only-toolbar {
+    // Title row, then a controls row below it: blog-length titles plus
+    // per-item flex wrapping used to strand buttons on ragged rows.
     display: flex;
-    align-items: center;
-    // Long titles: controls flow to the next row as whole pills instead of
-    // overflowing once the title can't shrink any further.
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.6rem;
     padding: 1rem;
     max-width: 1060px;
     margin: 0 auto;
     width: 100%;
     border-bottom: 1px solid var(--ip-border);
-
-    // The title is the only item that shrinks (by wrapping its text); the
-    // controls keep their intrinsic size. Without this, a long title
-    // squeezes the buttons into multi-line pills of ragged heights.
-    > :not(.view-only-title) {
-        flex-shrink: 0;
-        white-space: nowrap;
-    }
 }
 
 .view-only-title {
     margin: 0;
     font-size: 1.5rem;
     color: var(--ip-text-primary);
-    // Shrink below the intrinsic text width so the title wraps first.
-    min-width: 0;
 }
 
-.view-only-toolbar .ironpad-theme-toggle {
-    margin-right: auto;
+.view-only-toolbar-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    // On very narrow screens the controls may wrap among themselves — as
+    // whole, single-line pills.
+    flex-wrap: wrap;
+
+    > * {
+        flex-shrink: 0;
+        white-space: nowrap;
+    }
+
+    // Cache toggle sits left; action buttons group to the right.
+    .ironpad-theme-toggle {
+        margin-right: auto;
+    }
 }
 
 .fork-button {

@@ -245,6 +245,11 @@ pub fn ViewOnlyNotebook(
         <div class="view-only-notebook">
             <div class="view-only-toolbar">
                 <h1 class="view-only-title">{notebook.with_value(|nb| nb.title.clone())}</h1>
+                // Controls live in their own row below the title: a long title
+                // plus per-item flex wrapping used to strand buttons on ragged
+                // rows (and Run All's width changes while running reflowed them
+                // live).
+                <div class="view-only-toolbar-controls">
                 <div class="ironpad-theme-toggle" title="Bypass WASM cache and force fresh compilation">
                     <button
                         class=move || if force_recompile.get() { "ironpad-theme-toggle-segment" } else { "ironpad-theme-toggle-segment ironpad-theme-toggle-segment--active" }
@@ -298,6 +303,7 @@ pub fn ViewOnlyNotebook(
                         })}
                     </div>
                 })}
+                </div>
             </div>
             {threaded_cells_blocked.then(|| view! {
                 <div class="view-only-embed-notice">
@@ -566,8 +572,6 @@ fn ViewOnlyCodeCell(
                     force: force_recompile.get_untracked(),
                 };
 
-                let mut had_error = false;
-
                 let compile_start = js_sys::Date::now();
                 match compile_cell(request).await {
                     Ok(response) => {
@@ -579,7 +583,6 @@ fn ViewOnlyCodeCell(
                                 .map(|d| d.message.clone())
                                 .collect();
                             error_message.set(Some(errors.join("\n")));
-                            had_error = true;
                         } else {
                             let hash =
                                 crate::components::executor::hash_wasm_blob(&response.wasm_blob);
@@ -626,33 +629,30 @@ fn ViewOnlyCodeCell(
                                         Err(e) => {
                                             error_message
                                                 .set(Some(format!("Execution error: {e}")));
-                                            had_error = true;
                                         }
                                     }
                                 }
                                 Err(e) => {
                                     error_message.set(Some(format!("WASM load error: {e}")));
-                                    had_error = true;
                                 }
                             }
                         }
                     }
                     Err(e) => {
                         error_message.set(Some(format!("Compile error: {e}")));
-                        had_error = true;
                     }
                 }
 
-                // Advance or clear the run-all queue.
-                if had_error {
-                    run_all_queue.set(vec![]);
-                } else {
-                    run_all_queue.update(|q| {
-                        if q.first().is_some_and(|id| id == &cell_id) {
-                            q.remove(0);
-                        }
-                    });
-                }
+                // Advance the run-all queue past this cell whether it
+                // succeeded or failed. A failure renders inline on the cell
+                // (sometimes deliberately — teaching cells fail on purpose),
+                // and the cells behind it must still run; aborting the queue
+                // used to strand every later cell with no indication why.
+                run_all_queue.update(|q| {
+                    if q.first().is_some_and(|id| id == &cell_id) {
+                        q.remove(0);
+                    }
+                });
 
                 compiling.set(false);
             });

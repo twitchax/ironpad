@@ -114,22 +114,51 @@ test.describe("View-only polish", () => {
     ).toBeVisible({ timeout: 15_000 });
   });
 
-  test("toolbar controls keep intrinsic height when the title wraps", async ({
+  test("toolbar controls render below the title as single-line pills", async ({
     page,
   }) => {
-    // Narrow viewport + the longest notebook title: the title must shrink and
-    // wrap while the buttons keep their single-line height (regression: they
-    // used to squeeze into multi-line pills).
+    // Long titles used to strand buttons on ragged wrap rows (and squeeze
+    // them into multi-line pills). Controls now live in their own row under
+    // the title, each keeping its single-line height.
     await page.setViewportSize({ width: 700, height: 800 });
     await page.goto("/notebook/public/borrows.ironpad");
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,
     });
 
+    const titleBottom = await page
+      .locator(".view-only-title")
+      .evaluate((el) => el.getBoundingClientRect().bottom);
+    const controlsTop = await page
+      .locator(".view-only-toolbar-controls")
+      .evaluate((el) => el.getBoundingClientRect().top);
+    expect(controlsTop).toBeGreaterThanOrEqual(titleBottom);
+
     const h = await page
       .locator(".run-all-button")
       .evaluate((el) => el.getBoundingClientRect().height);
     expect(h).toBeLessThan(45);
+  });
+
+  test("autorun continues past a deliberately failing cell", async ({
+    page,
+  }) => {
+    // dynosaur's first code cell fails on purpose (the dyn-AFIT wall); the
+    // two cells behind it must still compile and run, and the teaching
+    // failure must be visible. The queue used to abort on any error,
+    // stranding every later cell.
+    test.setTimeout(600_000);
+    await page.goto("/notebook/public/dynosaur.ironpad");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // Both succeeding cells produce timing badges.
+    await expect(page.locator(".view-only-timing-badge").nth(1)).toBeVisible({
+      timeout: 480_000,
+    });
+    // The deliberate failure renders inline rather than being swallowed.
+    expect(await page.locator(".view-only-error").count()).toBeGreaterThan(0);
   });
 });
 
