@@ -1,0 +1,92 @@
+{
+ "version": 1,
+ "id": "3e8a41c7-92d5-4b6f-a1c3-7d20e5b9f684",
+ "title": "Four Lanes Wide: SIMD in a Browser Tab",
+ "created_at": "2026-07-10T00:00:00Z",
+ "updated_at": "2026-07-10T00:00:00Z",
+ "shared_cargo_toml": null,
+ "shared_source": null,
+ "expand_code": true,
+ "description": "One dot product, three gears: a scalar baseline, the autovectorizer (spoiler: it refuses floats), and explicit std::simd, all timed live in your browser. Then a Mandelbrot rendered four pixels per instruction.",
+ "tags": [
+  "simd",
+  "std-simd",
+  "performance",
+  "wasm",
+  "benchmark"
+ ],
+ "cells": [
+  {
+   "id": "cell_hook",
+   "cell_type": "Markdown",
+   "label": "The pitch",
+   "source": "# Four Lanes Wide\n\nEvery browser your readers are likely to own has shipped **128-bit WASM SIMD since 2021** (Safari joined at 16.4), which puts coverage around **95% of sessions**. One instruction, four `f32` lanes. And yet almost all Rust compiled to WASM runs one lane at a time, because the `simd128` target feature is off by default.\n\nIn ironpad, **using SIMD is the opt-in**: any cell that mentions `std::simd` gets compiled with `-C target-feature=+simd128` and a crate-root `#![feature(portable_simd)]` gate, the same way autodiff cells opt into Enzyme. Nothing else changes.\n\nThis notebook races one kernel through three gears: a scalar baseline, the autovectorizer, and explicit `std::simd`. Then it spends the winnings on a fractal. Every number you see is measured **live, in your browser, right now**.",
+   "order": 0,
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_scalar",
+   "cell_type": "Code",
+   "label": "Gear one: scalar",
+   "source": "// A dot product over two 16K-element f32 buffers, the classic kernel.\n// This cell never mentions SIMD, so ironpad compiles it WITHOUT the\n// simd128 target feature: an honest one-lane baseline.\nconst N: usize = 16_384;\nconst REPS: usize = 1_000;\n\nlet a: Vec<f32> = (0..N).map(|i| (i % 71) as f32 * 0.25).collect();\nlet b: Vec<f32> = (0..N).map(|i| (i % 53) as f32 * 0.5).collect();\n\nlet sw = Stopwatch::new();\nlet mut dot = 0.0f32;\nfor _ in 0..REPS {\n    dot = 0.0;\n    for i in 0..N {\n        dot += a[i] * b[i];\n    }\n}\nlet ms = sw.elapsed_ms();\n\nMd(format!(\n    \"**Scalar baseline:** {REPS} passes over {N} floats took **{ms:.1} ms** \\\n     (dot = {dot:.0}). Remember this number.\",\n))",
+   "order": 1,
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_freelunch_md",
+   "cell_type": "Markdown",
+   "label": "The free lunch, inspected",
+   "source": "## The free lunch, inspected\n\nThe obvious question: if the flag is all it takes, why not just enable `simd128` and let **LLVM's autovectorizer** rewrite the loop? Sometimes that works, and it is genuinely free. But the vectorizer follows rules, and the big one bites here: summing floats in a different order gives (slightly) different answers, so the compiler is **not allowed to reassociate floating-point addition**. A `dot += a[i] * b[i]` chain over `f32` must stay a serial chain.\n\nIntegers have no such scruples. Integer addition is associative, so the same loop shape over `i32` vectorizes freely.\n\nThe next cell runs both, with exactly one functional change from the baseline: a comment that names the intrinsics module, which is enough to flip the flag.",
+   "order": 2,
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_autovec",
+   "cell_type": "Code",
+   "label": "Gear two: the autovectorizer",
+   "source": "// OPT-IN: this comment names std::arch::wasm32 on purpose. ironpad's\n// detection is substring-based, so mentioning the intrinsics module is\n// enough to compile this cell with `-C target-feature=+simd128`. Not one\n// line of the loops below changed.\nconst N: usize = 16_384;\nconst REPS: usize = 1_000;\n\nlet af: Vec<f32> = (0..N).map(|i| (i % 71) as f32 * 0.25).collect();\nlet bf: Vec<f32> = (0..N).map(|i| (i % 53) as f32 * 0.5).collect();\nlet ai: Vec<i32> = (0..N).map(|i| (i % 71) as i32).collect();\nlet bi: Vec<i32> = (0..N).map(|i| (i % 53) as i32).collect();\n\n// The float loop: identical to the baseline cell.\nlet sw = Stopwatch::new();\nlet mut dotf = 0.0f32;\nfor _ in 0..REPS {\n    dotf = 0.0;\n    for i in 0..N {\n        dotf += af[i] * bf[i];\n    }\n}\nlet f32_ms = sw.elapsed_ms();\n\n// The integer twin: same shape, associative math.\nlet sw = Stopwatch::new();\nlet mut doti = 0i32;\nfor _ in 0..REPS {\n    doti = 0;\n    for i in 0..N {\n        doti = doti.wrapping_add(ai[i].wrapping_mul(bi[i]));\n    }\n}\nlet i32_ms = sw.elapsed_ms();\n\n// The dot values appear in the table for a load-bearing reason: a\n// benchmark whose result is never used is a benchmark LLVM will happily\n// delete. Consuming the values keeps the loops honest.\nTable::new(\n    vec![\"kernel (simd128 ON, no code changes)\", \"time (ms)\", \"dot\", \"what the autovectorizer did\"],\n    vec![\n        vec![\n            \"f32 dot product\".to_string(),\n            format!(\"{f32_ms:.1}\"),\n            format!(\"{dotf:.0}\"),\n            \"left it scalar: reordering float adds changes the answer\".to_string(),\n        ],\n        vec![\n            \"i32 dot product\".to_string(),\n            format!(\"{i32_ms:.1}\"),\n            format!(\"{doti}\"),\n            \"vectorized it for free: integer adds are associative\".to_string(),\n        ],\n    ],\n)",
+   "order": 3,
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_lanes_md",
+   "cell_type": "Markdown",
+   "label": "Spelling out the lanes",
+   "source": "## Spelling out the lanes\n\nFor floats, the reassociation is **yours to authorize**, and `std::simd` is how you sign the form. Writing `f32x4` accumulators says explicitly: I accept lane-order summation.\n\nThere are two separate wins hiding in the explicit version, and it is worth keeping them apart:\n\n1. **Width**: each `f32x4` multiply-add does four elements per instruction.\n2. **Independence**: the scalar loop is a single dependency chain, so each add waits on the last one. Four *independent* accumulators let the CPU overlap them. This trick would speed up scalar code too; SIMD just makes you think about it.\n\nThe scoreboard below runs all three variants in one cell, on one core. No rayon anywhere; that multiplier stacks separately.",
+   "order": 4,
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_explicit",
+   "cell_type": "Code",
+   "label": "Gear three: explicit std::simd",
+   "source": "use std::simd::prelude::*;\n\nconst N: usize = 16_384;\nconst REPS: usize = 1_000;\n\nlet a: Vec<f32> = (0..N).map(|i| (i % 71) as f32 * 0.25).collect();\nlet b: Vec<f32> = (0..N).map(|i| (i % 53) as f32 * 0.5).collect();\n\n// Gear 1: the scalar chain. Even in this simd128-enabled cell it stays\n// scalar (the float-reassociation rule again), so it is a fair baseline.\nlet sw = Stopwatch::new();\nlet mut dot_scalar = 0.0f32;\nfor _ in 0..REPS {\n    dot_scalar = 0.0;\n    for i in 0..N {\n        dot_scalar += a[i] * b[i];\n    }\n}\nlet scalar_ms = sw.elapsed_ms();\n\n// Gear 2: four lanes, one accumulator. Wide, but still one dependency\n// chain: every += waits for the previous one.\nlet sw = Stopwatch::new();\nlet mut dot_one = 0.0f32;\nfor _ in 0..REPS {\n    let mut acc = f32x4::splat(0.0);\n    let mut ca = a.chunks_exact(4);\n    let mut cb = b.chunks_exact(4);\n    for (xa, xb) in (&mut ca).zip(&mut cb) {\n        acc += f32x4::from_slice(xa) * f32x4::from_slice(xb);\n    }\n    dot_one = acc.reduce_sum();\n    for (x, y) in ca.remainder().iter().zip(cb.remainder()) {\n        dot_one += x * y;\n    }\n}\nlet one_ms = sw.elapsed_ms();\n\n// Gear 3: four lanes, four independent accumulators. Sixteen floats in\n// flight per iteration and no chain to wait on.\nlet sw = Stopwatch::new();\nlet mut dot_four = 0.0f32;\nfor _ in 0..REPS {\n    let mut acc = [f32x4::splat(0.0); 4];\n    let mut ca = a.chunks_exact(16);\n    let mut cb = b.chunks_exact(16);\n    for (xa, xb) in (&mut ca).zip(&mut cb) {\n        for l in 0..4 {\n            acc[l] += f32x4::from_slice(&xa[l * 4..]) * f32x4::from_slice(&xb[l * 4..]);\n        }\n    }\n    dot_four = (acc[0] + acc[1] + acc[2] + acc[3]).reduce_sum();\n    for (x, y) in ca.remainder().iter().zip(cb.remainder()) {\n        dot_four += x * y;\n    }\n}\nlet four_ms = sw.elapsed_ms();\n\nlet row = |name: &str, ms: f64, dot: f32| {\n    vec![\n        name.to_string(),\n        format!(\"{ms:.1}\"),\n        format!(\"{:.1}x\", scalar_ms / ms),\n        format!(\"{dot:.0}\"),\n    ]\n};\n\nTable::new(\n    vec![\"variant\", \"time (ms)\", \"speedup\", \"dot\"],\n    vec![\n        row(\"scalar f32\", scalar_ms, dot_scalar),\n        row(\"f32x4, one accumulator\", one_ms, dot_one),\n        row(\"f32x4, four accumulators\", four_ms, dot_four),\n    ],\n)",
+   "order": 5,
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_payoff_md",
+   "cell_type": "Markdown",
+   "label": "The payoff",
+   "source": "## The payoff\n\nDot products are a warm-up; they spend most of their time waiting on memory. The place SIMD earns its keep is **compute-bound** work, and the Mandelbrot set is the classic: hundreds of multiply-adds per pixel, no memory traffic to hide behind.\n\nThe vector version runs the escape-time loop on **four pixels per instruction**. The wrinkle is that lanes escape at different iterations, so you keep a per-lane mask: escaped lanes stop counting while their neighbors keep iterating, and the whole quad retires when the last lane escapes (their values blow up to infinity in the meantime, which the comparison happily treats as escaped).\n\nOne honesty check is built in: both renders use the same per-pixel coordinate arithmetic, and the cell asserts the two iteration grids are **bit-identical** before showing you anything.",
+   "order": 6,
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_mandel",
+   "cell_type": "Code",
+   "label": "Mandelbrot, four pixels per instruction",
+   "source": "use std::simd::prelude::*;\n\nconst W: u32 = 800;\nconst H: u32 = 600;\nconst MAX_ITER: u32 = 300;\nconst X_MIN: f32 = -2.5;\nconst X_MAX: f32 = 1.0;\nconst Y_MIN: f32 = -1.25;\nconst Y_MAX: f32 = 1.25;\n\nfn cx_at(x: u32) -> f32 {\n    X_MIN + (x as f32 + 0.5) / W as f32 * (X_MAX - X_MIN)\n}\n\nfn cy_at(y: u32) -> f32 {\n    Y_MIN + (y as f32 + 0.5) / H as f32 * (Y_MAX - Y_MIN)\n}\n\nfn render_scalar() -> Vec<u32> {\n    let mut out = vec![0u32; (W * H) as usize];\n    for y in 0..H {\n        let cy = cy_at(y);\n        for x in 0..W {\n            let cx = cx_at(x);\n            let (mut zx, mut zy) = (0.0f32, 0.0f32);\n            let mut n = 0u32;\n            while zx * zx + zy * zy <= 4.0 && n < MAX_ITER {\n                let tmp = zx * zx - zy * zy + cx;\n                zy = 2.0 * zx * zy + cy;\n                zx = tmp;\n                n += 1;\n            }\n            out[(y * W + x) as usize] = n;\n        }\n    }\n    out\n}\n\nfn render_simd() -> Vec<u32> {\n    let mut out = vec![0u32; (W * H) as usize];\n    for y in 0..H {\n        let cy = f32x4::splat(cy_at(y));\n        let mut x = 0u32;\n        // Four pixels per quad. Same per-pixel coordinate math as the\n        // scalar path, one lane per pixel, so the renders are bit-identical.\n        while x + 4 <= W {\n            let cx = f32x4::from_array(std::array::from_fn(|l| cx_at(x + l as u32)));\n            let mut zx = f32x4::splat(0.0);\n            let mut zy = f32x4::splat(0.0);\n            let mut n = u32x4::splat(0);\n            for _ in 0..MAX_ITER {\n                let zx2 = zx * zx;\n                let zy2 = zy * zy;\n                // Escaped lanes go inactive: their counters freeze while the\n                // rest of the quad keeps iterating (the escaped values race\n                // off to infinity, which the <= 4 test treats as escaped).\n                let active = (zx2 + zy2).simd_le(f32x4::splat(4.0));\n                if !active.any() {\n                    break;\n                }\n                n += active.select(u32x4::splat(1), u32x4::splat(0));\n                let tmp = zx2 - zy2 + cx;\n                zy = (zx + zx) * zy + cy;\n                zx = tmp;\n            }\n            let ns = n.to_array();\n            for (l, &count) in ns.iter().enumerate() {\n                out[(y * W + x) as usize + l] = count;\n            }\n            x += 4;\n        }\n        // W is not necessarily a multiple of 4; finish the row one lane at\n        // a time with the scalar kernel.\n        while x < W {\n            let cx = cx_at(x);\n            let (mut zx, mut zy) = (0.0f32, 0.0f32);\n            let mut n = 0u32;\n            while zx * zx + zy * zy <= 4.0 && n < MAX_ITER {\n                let tmp = zx * zx - zy * zy + cx;\n                zy = 2.0 * zx * zy + cy_at(y);\n                zx = tmp;\n                n += 1;\n            }\n            out[(y * W + x) as usize] = n;\n            x += 1;\n        }\n    }\n    out\n}\n\n// Bernstein-polynomial palette, same family as the scalar mandelbrot\n// notebook: black interior, blue to teal to orange outside.\nfn color_map(n: u32) -> (u8, u8, u8) {\n    if n == MAX_ITER {\n        return (0, 0, 0);\n    }\n    let t = f64::from(n) / f64::from(MAX_ITER);\n    (\n        (9.0 * (1.0 - t) * t * t * t * 255.0) as u8,\n        (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8,\n        (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8,\n    )\n}\n\nlet sw = Stopwatch::new();\nlet scalar = render_scalar();\nlet scalar_ms = sw.elapsed_ms();\n\nlet sw = Stopwatch::new();\nlet simd = render_simd();\nlet simd_ms = sw.elapsed_ms();\n\nassert_eq!(scalar, simd, \"the two renders must be bit-identical\");\n\nlet pixels: Vec<(u8, u8, u8)> = simd.iter().map(|&n| color_map(n)).collect();\nlet canvas = Canvas::from_pixels(W, H, pixels);\n\n(\n    Table::new(\n        vec![\"render (800 x 600, 300 iters, one core)\", \"time (ms)\", \"speedup\"],\n        vec![\n            vec![\"scalar\".to_string(), format!(\"{scalar_ms:.0}\"), \"1.0x\".to_string()],\n            vec![\n                \"f32x4, four pixels per instruction\".to_string(),\n                format!(\"{simd_ms:.0}\"),\n                format!(\"{:.1}x\", scalar_ms / simd_ms),\n            ],\n        ],\n    ),\n    canvas,\n)",
+   "order": 7,
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_notes",
+   "cell_type": "Markdown",
+   "label": "Field notes",
+   "source": "## Field notes\n\n- **Where the wins live.** The dot product improved despite being memory-bound; the fractal improved close to the theoretical 4x because it is compute-bound. Profile before you reach for lanes: if the loop is waiting on RAM, wider math just waits wider.\n- **Floats need your signature.** The autovectorizer handled integers for free and refused the floats. That refusal is a feature: `std::simd` is you accepting lane-order summation, in writing.\n- **It stacks with rayon.** Everything here ran on one core. A rayon cell splits rows across cores while each core runs four lanes; the multipliers compose.\n- **What is deliberately missing**: relaxed-simd (FMA and friends). It shipped in Chrome and Firefox but is still behind a flag in Safari, so ironpad sticks to baseline `simd128` for now.\n- **The plumbing**, for the curious: mentioning `std::simd`, `core::simd`, or the intrinsics module in a cell (comments count, as the autovectorizer cell demonstrated) compiles that cell with `-C target-feature=+simd128` plus a crate-root `#![feature(portable_simd)]`, and the flag is part of the compile cache key. Cells that never mention SIMD are untouched.",
+   "order": 8,
+   "cargo_toml": null
+  }
+ ]
+}
