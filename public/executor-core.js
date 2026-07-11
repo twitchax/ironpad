@@ -693,10 +693,18 @@
         "ironpad_gpu_dispatch_compute: function(sp, sl, uh, oh, w, h) { " +
         "return " + globalRef + " ? " + globalRef + "._gpuDispatchComputeForCell(" +
         escapedCellId + ", sp, sl, uh, oh, w, h) : 1; }, " +
-        "ironpad_blocking_sleep_ms: " + globalRef + "._jspiImport(function(ms) { " +
-        "return new Promise(function(res) { setTimeout(res, ms); }); }), " +
-        "ironpad_blocking_fetch: " + globalRef + "._jspiImport(function(p, l) { " +
-        "return " + globalRef + "._blockingFetch(" + escapedCellId + ", p, l); }), " +
+        // The Suspending wrappers are built inline (never via the executor
+        // global): this shim text also evaluates inside rayon sub-workers,
+        // where the executor global is undefined — any build-time dereference
+        // of it would crash worker init before the thread pool exists.
+        "ironpad_blocking_sleep_ms: (typeof WebAssembly.Suspending === 'function') " +
+        "? new WebAssembly.Suspending(function(ms) { " +
+        "return new Promise(function(res) { setTimeout(res, ms); }); }) " +
+        ": function() { throw new Error('blocking host calls need WebAssembly JSPI (Chrome/Edge 137+)'); }, " +
+        "ironpad_blocking_fetch: (typeof WebAssembly.Suspending === 'function') " +
+        "? new WebAssembly.Suspending(function(p, l) { " +
+        "return " + globalRef + "._blockingFetch(" + escapedCellId + ", p, l); }) " +
+        ": function() { throw new Error('blocking host calls need WebAssembly JSPI (Chrome/Edge 137+)'); }, " +
         "ironpad_blocking_fetch_ok: function() { " +
         "return " + globalRef + " ? " + globalRef + "._blockingFetchOk(" + escapedCellId + ") : 0; }, " +
         "ironpad_blocking_read: function(p, l) { " +
@@ -834,12 +842,19 @@
         "    imports.env.ironpad_gpu_dispatch_compute = function(sp, sl, uh, oh, w, h) {\n" +
         "      return " + globalRef + " ? " + globalRef + "._gpuDispatchComputeForCell(__ironpad_cell_id, sp, sl, uh, oh, w, h) : 1;\n" +
         "    };\n" +
-        "    imports.env.ironpad_blocking_sleep_ms = " + globalRef + "._jspiImport(function(ms) {\n" +
-        "      return new Promise(function(res) { setTimeout(res, ms); });\n" +
-        "    });\n" +
-        "    imports.env.ironpad_blocking_fetch = " + globalRef + "._jspiImport(function(p, l) {\n" +
-        "      return " + globalRef + "._blockingFetch(__ironpad_cell_id, p, l);\n" +
-        "    });\n" +
+        // Inline Suspending construction, NOT via the executor global: this
+        // preamble also runs inside rayon sub-workers where that global is
+        // undefined, and a build-time dereference would crash worker init.
+        "    imports.env.ironpad_blocking_sleep_ms = (typeof WebAssembly.Suspending === 'function')\n" +
+        "      ? new WebAssembly.Suspending(function(ms) {\n" +
+        "          return new Promise(function(res) { setTimeout(res, ms); });\n" +
+        "        })\n" +
+        "      : function() { throw new Error('blocking host calls need WebAssembly JSPI (Chrome/Edge 137+)'); };\n" +
+        "    imports.env.ironpad_blocking_fetch = (typeof WebAssembly.Suspending === 'function')\n" +
+        "      ? new WebAssembly.Suspending(function(p, l) {\n" +
+        "          return " + globalRef + "._blockingFetch(__ironpad_cell_id, p, l);\n" +
+        "        })\n" +
+        "      : function() { throw new Error('blocking host calls need WebAssembly JSPI (Chrome/Edge 137+)'); };\n" +
         "    imports.env.ironpad_blocking_fetch_ok = function() {\n" +
         "      return " + globalRef + " ? " + globalRef + "._blockingFetchOk(__ironpad_cell_id) : 0;\n" +
         "    };\n" +
