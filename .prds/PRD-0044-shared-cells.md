@@ -1,7 +1,7 @@
 ---
 id: PRD-0044
 title: "Shared cells: narrate the shared.rs library inline"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-11
 updated: 2026-07-11
@@ -16,15 +16,15 @@ acceptance_tests:
 - id: uat-001
   name: "Editor: mark a cell shared, a later cell calls shared::fn and runs; shared cell shows amber chrome and no run button"
   command: cargo make playwright
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "Notebook gate compiles public notebooks whose shared code lives in shared cells"
   command: cargo make test-integration
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Full gate green with the feature and the content pass in place"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
@@ -104,3 +104,4 @@ For notebooks like the cannon (PRD-0041), the most important code in the whole p
 # History
 
 - 2026-07-11: Created; T-001..T-004 implemented (data model, editor, view-only, gate).
+- 2026-07-11: All tasks done, UATs verified (ci 632, notebook gate green over the restructured cannon/autodiff/shared-code, Playwright 48 incl. the shared-cells spec). Shipped as v0.8.0.
