@@ -123,6 +123,9 @@ pub struct CellManifest {
     /// for backward compatibility with existing notebooks.
     #[serde(default)]
     pub cell_type: CellType,
+    /// Shared cell (PRD-0044); surfaces the flag to manifest consumers (CLI).
+    #[serde(default)]
+    pub shared: bool,
 }
 
 // ── Self-contained Notebook Types ───────────────────────────────────────────
@@ -187,6 +190,48 @@ impl IronpadNotebook {
             cells: Vec::new(),
         }
     }
+
+    /// The shared source the compiler should see: the notebook-level
+    /// `shared_source` followed by every shared cell's source, in notebook
+    /// order. See [`effective_shared_source`].
+    #[must_use]
+    pub fn effective_shared_source(&self) -> Option<String> {
+        effective_shared_source(self.shared_source.as_deref(), &self.cells)
+    }
+}
+
+/// Assemble the shared source for compilation: the notebook-level shared
+/// source first, then the source of every `shared` cell in notebook order,
+/// separated by blank lines.
+///
+/// This is the single definition of how shared cells fold into `shared.rs` —
+/// the browser (editor and view-only paths) and the public-notebook check
+/// gate must all call it, or validation drifts from production. Returns
+/// `None` when there is no shared content at all, preserving the
+/// `Option<String>` shape the compile pipeline keys its cache on
+/// (`None` and `Some("")` hash differently on purpose).
+///
+/// Rust item order is compilation-irrelevant, so cell order only affects the
+/// readability of the generated `shared.rs`.
+#[must_use]
+pub fn effective_shared_source(
+    notebook_shared: Option<&str>,
+    cells: &[IronpadCell],
+) -> Option<String> {
+    let mut cells_by_order: Vec<&IronpadCell> = cells.iter().filter(|c| c.shared).collect();
+    cells_by_order.sort_by_key(|c| c.order);
+
+    let mut parts: Vec<&str> = Vec::with_capacity(cells_by_order.len() + 1);
+    if let Some(s) = notebook_shared {
+        parts.push(s);
+    }
+    parts.extend(cells_by_order.iter().map(|c| c.source.as_str()));
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 /// A single cell within an [`IronpadNotebook`], including its source code.
@@ -201,6 +246,14 @@ pub struct IronpadCell {
     /// Per-cell `Cargo.toml` content. `None` for Markdown cells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo_toml: Option<String>,
+    /// Shared cell: its source is appended to the notebook's `shared.rs`
+    /// (after the notebook-level shared source) instead of executing. Shared
+    /// cells render highlighted, have no run button and no output, and exist
+    /// so a notebook can narrate the load-bearing parts of its shared code
+    /// inline instead of hiding them in one collapsed blob (PRD-0044).
+    /// Defaults to `false` so every pre-existing notebook parses unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
     /// Optimistic concurrency control version. Incremented on each mutation.
     /// Defaults to 0 for backward compatibility with existing notebooks.
     #[serde(default)]
@@ -228,6 +281,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cell_without_shared_field_defaults_to_false() {
+        let json = r#"{"id": "c", "order": 0, "label": "c", "source": "1"}"#;
+        let cell: IronpadCell = serde_json::from_str(json).unwrap();
+        assert!(!cell.shared);
+    }
+
+    #[test]
+    fn effective_shared_source_combines_notebook_and_cells_in_order() {
+        let mk = |id: &str, order: u32, shared: bool, src: &str| IronpadCell {
+            id: id.into(),
+            order,
+            label: id.into(),
+            cell_type: CellType::Code,
+            source: src.into(),
+            cargo_toml: None,
+            shared,
+            version: 0,
+        };
+        // Out-of-order Vec on purpose: assembly must follow `order`, not
+        // Vec position.
+        let cells = vec![
+            mk("b", 3, true, "fn b() {}"),
+            mk("x", 1, false, "let x = 1;"),
+            mk("a", 2, true, "fn a() {}"),
+        ];
+
+        assert_eq!(
+            effective_shared_source(Some("fn base() {}"), &cells).as_deref(),
+            Some("fn base() {}\n\nfn a() {}\n\nfn b() {}"),
+        );
+        assert_eq!(
+            effective_shared_source(None, &cells).as_deref(),
+            Some("fn a() {}\n\nfn b() {}"),
+        );
+        assert_eq!(effective_shared_source(None, &cells[1..2]), None);
+        // None vs Some("") must stay distinct — the cache hashes them apart.
+        assert_eq!(
+            effective_shared_source(Some(""), &cells[1..2]).as_deref(),
+            Some(""),
+        );
+    }
+
+    #[test]
     fn cell_without_version_field_defaults_to_zero() {
         // Simulates loading a notebook saved before the version field existed.
         let json = r#"{
@@ -249,6 +345,7 @@ mod tests {
             cell_type: CellType::Code,
             source: "42".into(),
             cargo_toml: None,
+            shared: false,
             version: 7,
         };
         let json = serde_json::to_string(&cell).unwrap();
@@ -265,6 +362,7 @@ mod tests {
             cell_type: CellType::Code,
             source: "42".into(),
             cargo_toml: None,
+            shared: false,
             version: 0,
         };
         let json = serde_json::to_string(&cell).unwrap();

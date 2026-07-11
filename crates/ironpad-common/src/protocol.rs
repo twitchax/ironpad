@@ -116,6 +116,9 @@ pub enum Mutation {
         cargo_toml: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// Toggle the shared-cell flag (PRD-0044). `None` leaves it unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shared: Option<bool>,
         /// Expected current version (optimistic concurrency control).
         version: u64,
     },
@@ -155,6 +158,9 @@ pub struct NewCell {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo_toml: Option<String>,
+    /// Create the cell as a shared cell (PRD-0044).
+    #[serde(default)]
+    pub shared: bool,
 }
 
 fn default_cell_label() -> String {
@@ -204,6 +210,9 @@ pub enum Event {
         cargo_toml: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// Shared-cell flag change (PRD-0044). `None` = unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shared: Option<bool>,
         version: u64,
     },
     CellDeleted {
@@ -383,6 +392,7 @@ mod tests {
                     cell_type: CellType::Code,
                     label: "My Cell".into(),
                     cargo_toml: None,
+                    shared: false,
                 },
                 after_cell_id: Some("cell-0".into()),
             }),
@@ -399,6 +409,7 @@ mod tests {
                 source: Some("let x = 99;".into()),
                 cargo_toml: None,
                 label: None,
+                shared: None,
                 version: 3,
             }),
         };
@@ -474,6 +485,7 @@ mod tests {
                     source: Some("let x = 99;".into()),
                     cargo_toml: None,
                     label: None,
+                    shared: None,
                     version: 4,
                 },
             }),
@@ -539,6 +551,7 @@ mod tests {
                     order: 0,
                     label: "First".into(),
                     cell_type: CellType::Code,
+                    shared: false,
                 }],
             }),
         };

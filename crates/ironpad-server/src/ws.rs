@@ -1041,6 +1041,7 @@ mod tests {
                     cell_type: CellType::Code,
                     label: "Test".into(),
                     cargo_toml: None,
+                    shared: false,
                 },
                 after_cell_id: None,
             }),

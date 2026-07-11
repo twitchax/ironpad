@@ -280,7 +280,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
                         .cells
                         .get_untracked()
                         .iter()
-                        .filter(|c| c.cell_type == CellType::Code)
+                        .filter(|c| c.cell_type == CellType::Code && !c.shared)
                         .map(|c| c.id.clone())
                         .collect();
                     if !cell_ids.is_empty() {
@@ -300,6 +300,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
                             cell: ironpad_common::protocol::NewCell {
                                 source: "42".to_string(),
                                 cell_type: CellType::Code,
+                                shared: false,
                                 label: format!(
                                     "Cell {}",
                                     state.notebook.with_untracked(|nb| nb
@@ -474,6 +475,7 @@ fn NotebookContent() -> impl IntoView {
                 cell: ironpad_common::protocol::NewCell {
                     source: default_source,
                     cell_type,
+                    shared: false,
                     label: format!(
                         "Cell {}",
                         state
@@ -670,7 +672,7 @@ fn NotebookContent() -> impl IntoView {
                 .cells
                 .get_untracked()
                 .iter()
-                .filter(|c| c.cell_type == CellType::Code)
+                .filter(|c| c.cell_type == CellType::Code && !c.shared)
                 .map(|c| c.id.clone())
                 .collect();
             if !cell_ids.is_empty() {
@@ -703,7 +705,7 @@ fn NotebookContent() -> impl IntoView {
                         .cells
                         .get_untracked()
                         .iter()
-                        .filter(|c| c.cell_type == CellType::Code)
+                        .filter(|c| c.cell_type == CellType::Code && !c.shared)
                         .map(|c| c.id.clone())
                         .collect();
                     if !cell_ids.is_empty() {

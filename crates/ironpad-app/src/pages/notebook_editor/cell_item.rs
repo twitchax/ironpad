@@ -55,6 +55,19 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     let is_markdown = cell.cell_type == CellType::Markdown;
 
+    // Shared flag, looked up live from the manifest list (like `order_display`)
+    // so the toggle below re-renders this cell without a rebuild.
+    let cell_id_for_shared = cell.id.clone();
+    let initial_shared = cell.shared;
+    let is_shared = Signal::derive(move || {
+        state.cells.with(|cells| {
+            cells
+                .iter()
+                .find(|c| c.id == cell_id_for_shared)
+                .map_or(initial_shared, |c| c.shared)
+        })
+    });
+
     let is_active = move || state.active_cell.get().as_deref() == Some(cell_id.as_str());
 
     let on_click = move |_| {
@@ -175,6 +188,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     source: None,
                     cargo_toml: None,
                     label: Some(current),
+                    shared: None,
                     version,
                 },
                 ironpad_common::protocol::ClientId::browser(),
@@ -264,6 +278,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     cell_type: original.cell_type,
                     label: format!("{} (copy)", original.label),
                     cargo_toml: original.cargo_toml,
+                    shared: original.shared,
                 },
                 after_cell_id: Some(cid),
             },
@@ -331,8 +346,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
         match my_pos {
             Some(0) => {
-                // Markdown cells skip compilation — advance the queue immediately.
-                if is_markdown {
+                // Markdown and shared cells skip compilation — advance the
+                // queue immediately (shared cells compile as part of every
+                // OTHER cell's shared.rs, never on their own).
+                if is_markdown || is_shared.get_untracked() {
                     state.run_all_queue.update(|q| {
                         if q.first().is_some_and(|id| id == &cid) {
                             q.remove(0);
@@ -387,6 +404,33 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         }
     });
 
+    // ── Shared-cell toggle (PRD-0044) ───────────────────────────────────
+
+    let cell_id_for_shared_toggle = StoredValue::new(cell.id.clone());
+    let on_toggle_shared = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        menu_open.set(false);
+        let cid = cell_id_for_shared_toggle.get_value();
+        let version = model.cell_version(&cid);
+        let next = !is_shared.get_untracked();
+        if model
+            .apply(
+                ironpad_common::protocol::Mutation::CellUpdate {
+                    cell_id: cid,
+                    source: None,
+                    cargo_toml: None,
+                    label: None,
+                    shared: Some(next),
+                    version,
+                },
+                ironpad_common::protocol::ClientId::browser(),
+            )
+            .is_ok()
+        {
+            persist_notebook(&state);
+        }
+    };
+
     // ── Run All Below trigger ───────────────────────────────────────────
 
     let cell_id_for_run_all = StoredValue::new(cell.id.clone());
@@ -398,7 +442,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
         let queue: Vec<String> = cells[my_idx..]
             .iter()
-            .filter(|c| c.cell_type == CellType::Code)
+            .filter(|c| c.cell_type == CellType::Code && !c.shared)
             .map(|c| c.id.clone())
             .collect();
         if !queue.is_empty() {
@@ -413,8 +457,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             return;
         }
 
-        // Markdown cells skip compilation entirely.
-        if is_markdown {
+        // Markdown cells skip compilation entirely; shared cells compile as
+        // part of every other cell's shared.rs, never on their own.
+        if is_markdown || is_shared.get_untracked() {
             return;
         }
 
@@ -440,7 +485,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             let outputs = state.cell_outputs.get_untracked();
             let unexecuted: Vec<String> = cells[..my_idx]
                 .iter()
-                .filter(|c| c.cell_type == CellType::Code && !outputs.contains_key(&c.id))
+                .filter(|c| {
+                    c.cell_type == CellType::Code && !c.shared && !outputs.contains_key(&c.id)
+                })
                 .map(|c| c.id.clone())
                 .collect();
 
@@ -555,7 +602,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 cargo_toml: current_cargo_toml,
                 previous_cell_types,
                 shared_cargo_toml: state.shared_cargo_toml.get_untracked(),
-                shared_source: state.shared_source.get_untracked(),
+                // Notebook-level shared source plus every shared cell, in
+                // notebook order — the single assembly defined in
+                // ironpad-common (PRD-0044).
+                shared_source: state.notebook.with_untracked(|nb| {
+                    nb.as_ref()
+                        .and_then(ironpad_common::IronpadNotebook::effective_shared_source)
+                }),
                 force: state.force_recompile.get_untracked(),
             };
 
@@ -1077,6 +1130,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         source: Some(val),
                         cargo_toml: None,
                         label: None,
+                        shared: None,
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),
@@ -1144,6 +1198,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         source: None,
                         cargo_toml: Some(Some(val)),
                         label: None,
+                        shared: None,
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),
@@ -1222,6 +1277,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         source: Some(src),
                         cargo_toml: Some(Some(toml)),
                         label: None,
+                        shared: None,
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),
@@ -1268,6 +1324,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let mut class = "ironpad-cell-card".to_string();
         if is_markdown {
             class.push_str(" ironpad-cell-card--markdown");
+        }
+        if is_shared.get() {
+            class.push_str(" ironpad-cell-card--shared");
         }
         if is_active() {
             class.push_str(" ironpad-cell-card--active");
@@ -1380,7 +1439,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     />
 
                     {move || {
-                        if is_markdown {
+                        if is_markdown || is_shared.get() {
                             return view! { <span /> }.into_any();
                         }
                         let is_stale = state.cell_stale.get()
@@ -1404,6 +1463,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         }.into_any()
                     } else {
                         view! {
+                            {move || if is_shared.get() {
+                                view! {
+                                    <Tag size=TagSize::ExtraSmall class="ironpad-cell-type-badge ironpad-cell-type-badge--shared">
+                                        "⬡ shared"
+                                    </Tag>
+                                }.into_any()
+                            } else {
+                                view! { <span /> }.into_any()
+                            }}
                             <Tag
                                 size=TagSize::ExtraSmall
                                 class=Signal::derive(move || {
@@ -1416,7 +1484,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Error => "error",
                                         CellStatus::Blocked => "blocked",
                                     };
-                                    format!("ironpad-cell-status ironpad-cell-status--{suffix}")
+                                    let hidden = if is_shared.get() {
+                                        " ironpad-cell-status--hidden"
+                                    } else {
+                                        ""
+                                    };
+                                    format!("ironpad-cell-status ironpad-cell-status--{suffix}{hidden}")
                                 })
                             >
                                 {move || {
@@ -1530,7 +1603,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             } else {
                 view! { <span /> }.into_any()
             }}
-            {if is_markdown {
+            {move || if is_markdown || is_shared.get() {
                 view! { <span /> }.into_any()
             } else {
                 view! {
@@ -1636,11 +1709,27 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                 view! { <span /> }.into_any()
                             } else {
                                 view! {
+                                    {move || if is_shared.get() {
+                                        view! { <span /> }.into_any()
+                                    } else {
+                                        view! {
+                                            <button
+                                                class="ironpad-cell-menu-item"
+                                                on:click=on_run_all_below
+                                            >
+                                                "▶▶ Run All Below"
+                                            </button>
+                                        }.into_any()
+                                    }}
                                     <button
                                         class="ironpad-cell-menu-item"
-                                        on:click=on_run_all_below
+                                        on:click=on_toggle_shared
                                     >
-                                        "▶▶ Run All Below"
+                                        {move || if is_shared.get() {
+                                            "⬡ Unmark Shared"
+                                        } else {
+                                            "⬡ Mark as Shared"
+                                        }}
                                     </button>
                                 }.into_any()
                             }}

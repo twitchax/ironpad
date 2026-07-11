@@ -324,6 +324,7 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             source,
             cargo_toml,
             label,
+            shared,
             version,
         } => apply_cell_updated(
             nb,
@@ -331,6 +332,7 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             source.as_ref(),
             cargo_toml.as_ref(),
             label.as_ref(),
+            *shared,
             *version,
         ),
         protocol::Event::CellDeleted { cell_id } => apply_cell_deleted(nb, cell_id),
@@ -384,6 +386,7 @@ fn apply_cell_updated(
     source: Option<&String>,
     cargo_toml: Option<&Option<String>>,
     label: Option<&String>,
+    shared: Option<bool>,
     version: u64,
 ) {
     if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cell_id) {
@@ -395,6 +398,9 @@ fn apply_cell_updated(
         }
         if let Some(lbl) = label {
             cell.label.clone_from(lbl);
+        }
+        if let Some(sh) = shared {
+            cell.shared = sh;
         }
         cell.version = version;
     }
@@ -637,12 +643,19 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
+            let shared = req
+                .args
+                .get("shared")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+
             Ok(MessageKind::Mutation(protocol::Mutation::CellAdd {
                 cell: protocol::NewCell {
                     source,
                     cell_type,
                     label,
                     cargo_toml,
+                    shared,
                 },
                 after_cell_id,
             }))
@@ -669,6 +682,7 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 .get("label")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let shared = req.args.get("shared").and_then(serde_json::Value::as_bool);
             let version = req
                 .args
                 .get("version")
@@ -680,6 +694,7 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 source,
                 cargo_toml,
                 label,
+                shared,
                 version,
             }))
         }
@@ -774,6 +789,7 @@ mod tests {
             cell_type: CellType::Code,
             source: String::new(),
             cargo_toml: None,
+            shared: false,
             version: 1,
         }
     }
@@ -847,12 +863,14 @@ mod tests {
                 source,
                 cargo_toml,
                 label,
+                shared,
                 version,
             }) => {
                 assert_eq!(cell_id, "c1");
                 assert_eq!(source.as_deref(), Some("new code"));
                 assert!(cargo_toml.is_none());
                 assert!(label.is_none());
+                assert!(shared.is_none());
                 assert_eq!(version, 3);
             }
             other => panic!("expected CellUpdate, got {other:?}"),
@@ -974,6 +992,7 @@ mod tests {
             order: 0,
             label: "First".into(),
             cell_type: CellType::Code,
+            shared: false,
         }];
         let resp = translate_response(wrap(MessageKind::Response(Response::CellsList { cells })));
         assert!(resp.ok);

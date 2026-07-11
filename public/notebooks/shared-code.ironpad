@@ -1,49 +1,67 @@
 {
-  "version": 1,
-  "id": "00000000-0000-0000-0000-000000000007",
-  "title": "Shared Code",
-  "created_at": "2026-03-11T00:00:00Z",
-  "updated_at": "2026-03-11T00:00:00Z",
-  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
-  "shared_source": "pub fn format_greeting(name: &str) -> String {\n    format!(\"Hello, {name}! Welcome to ironpad.\")\n}\n\npub fn fibonacci(n: u64) -> u64 {\n    match n {\n        0 => 0,\n        1 => 1,\n        _ => {\n            let (mut a, mut b) = (0u64, 1u64);\n            for _ in 2..=n {\n                let next = a + b;\n                a = b;\n                b = next;\n            }\n            b\n        }\n    }\n}",
-  "cells": [
-    {
-      "id": "cell_0",
-      "order": 0,
-      "label": "Introduction",
-      "cell_type": "Markdown",
-      "source": "# Shared Code \ud83d\udce6\n\nironpad lets you define a **shared Rust module** at the notebook level. Every cell can access it via `shared::function_name()`. This keeps helper functions in one place instead of duplicating them across cells.\n\nThis notebook defines `format_greeting` and `fibonacci` in the shared source panel.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_1",
-      "order": 1,
-      "label": "Greeting",
-      "cell_type": "Code",
-      "source": "let greeting = shared::format_greeting(\"World\");\n\nCellOutput::text(greeting)\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_2",
-      "order": 2,
-      "label": "Fibonacci",
-      "cell_type": "Code",
-      "source": "let fib_10 = shared::fibonacci(10);\n\nCellOutput::text(format!(\"fibonacci(10) = {fib_10}\"))\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_3",
-      "order": 3,
-      "label": "Combined",
-      "cell_type": "Code",
-      "source": "let fibs: Vec<u64> = (0..=10).map(shared::fibonacci).collect();\nlet list = fibs\n    .iter()\n    .enumerate()\n    .map(|(i, v)| format!(\"fib({i}) = {v}\"))\n    .collect::<Vec<_>>()\n    .join(\", \");\n\nlet greeting = shared::format_greeting(\"Rustacean\");\n\nMd(format!(\n    \"## Results\\n\\n\\\n     {greeting}\\n\\n\\\n     **First 11 Fibonacci numbers:** {list}\"\n))\n",
-      "cargo_toml": null
-    }
-  ],
-  "description": "Define reusable helper functions in a shared module accessible from every cell.",
-  "tags": [
-    "shared-source",
-    "modules",
-    "reuse"
-  ]
+ "version": 1,
+ "id": "00000000-0000-0000-0000-000000000007",
+ "title": "Shared Code",
+ "created_at": "2026-03-11T00:00:00Z",
+ "updated_at": "2026-07-11T00:00:00Z",
+ "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+ "shared_source": null,
+ "cells": [
+  {
+   "id": "cell_0",
+   "order": 0,
+   "label": "Introduction",
+   "cell_type": "Markdown",
+   "source": "# Shared Code\n\nEvery cell in a notebook can call into a common `shared` module. There are two ways to put code there, and this notebook uses both kinds of visibility deliberately:\n\n- **Shared cells** (the amber ones below) sit inline with the narrative. They never run on their own; their contents are appended to `shared.rs` and every cell can call them as `shared::...`. Use them when the shared code *is* part of the story.\n- The **notebook-level shared source** (the collapsed appendix at the bottom of view mode, or the pencil panel in the editor) holds plumbing that readers don't need to see.\n\nBelow, two amber shared cells define `format_greeting` and `fibonacci`, and the ordinary cells after them consume both.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_shared_greet",
+   "cell_type": "Code",
+   "label": "format_greeting (shared)",
+   "source": "pub fn format_greeting(name: &str) -> String {\n    format!(\"Hello, {name}! Welcome to ironpad.\")\n}",
+   "order": 1,
+   "cargo_toml": null,
+   "shared": true
+  },
+  {
+   "id": "cell_shared_fib",
+   "cell_type": "Code",
+   "label": "fibonacci (shared)",
+   "source": "pub fn fibonacci(n: u64) -> u64 {\n    match n {\n        0 => 0,\n        1 => 1,\n        _ => {\n            let (mut a, mut b) = (0u64, 1u64);\n            for _ in 2..=n {\n                let next = a + b;\n                a = b;\n                b = next;\n            }\n            b\n        }\n    }\n}",
+   "order": 2,
+   "cargo_toml": null,
+   "shared": true
+  },
+  {
+   "id": "cell_1",
+   "order": 3,
+   "label": "Greeting",
+   "cell_type": "Code",
+   "source": "let greeting = shared::format_greeting(\"World\");\n\nCellOutput::text(greeting)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_2",
+   "order": 4,
+   "label": "Fibonacci",
+   "cell_type": "Code",
+   "source": "let fib_10 = shared::fibonacci(10);\n\nCellOutput::text(format!(\"fibonacci(10) = {fib_10}\"))\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_3",
+   "order": 5,
+   "label": "Combined",
+   "cell_type": "Code",
+   "source": "let fibs: Vec<u64> = (0..=10).map(shared::fibonacci).collect();\nlet list = fibs\n    .iter()\n    .enumerate()\n    .map(|(i, v)| format!(\"fib({i}) = {v}\"))\n    .collect::<Vec<_>>()\n    .join(\", \");\n\nlet greeting = shared::format_greeting(\"Rustacean\");\n\nMd(format!(\n    \"## Results\\n\\n\\\n     {greeting}\\n\\n\\\n     **First 11 Fibonacci numbers:** {list}\"\n))\n",
+   "cargo_toml": null
+  }
+ ],
+ "description": "Reusable helpers in the shared module, two ways: amber shared cells inline with the story, and the hidden notebook-level shared source for plumbing.",
+ "tags": [
+  "shared-source",
+  "modules",
+  "reuse"
+ ]
 }

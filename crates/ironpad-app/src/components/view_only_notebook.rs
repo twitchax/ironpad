@@ -140,7 +140,7 @@ pub fn ViewOnlyNotebook(
                 let cell_ids: Vec<String> = notebook.with_value(|nb| {
                     nb.cells
                         .iter()
-                        .filter(|c| c.cell_type == CellType::Code)
+                        .filter(|c| c.cell_type == CellType::Code && !c.shared)
                         .map(|c| c.id.clone())
                         .collect()
                 });
@@ -159,7 +159,7 @@ pub fn ViewOnlyNotebook(
         let cell_ids: Vec<String> = notebook.with_value(|nb| {
             nb.cells
                 .iter()
-                .filter(|c| c.cell_type == CellType::Code)
+                .filter(|c| c.cell_type == CellType::Code && !c.shared)
                 .map(|c| c.id.clone())
                 .collect()
         });
@@ -328,7 +328,9 @@ pub fn ViewOnlyNotebook(
                 {notebook.with_value(|nb| {
                     let cells = nb.cells.clone();
                     let shared_cargo_toml = nb.shared_cargo_toml.clone();
-                    let shared_source = nb.shared_source.clone();
+                    // Notebook-level shared source plus every shared cell, in
+                    // notebook order (PRD-0044) — what the compiler must see.
+                    let shared_source = nb.effective_shared_source();
                     let notebook_id = nb.id.to_string();
 
                     cells.iter().map(|cell| {
@@ -436,6 +438,14 @@ fn ViewOnlyCell(
     force_recompile: RwSignal<bool>,
     expand_code: bool,
 ) -> impl IntoView {
+    if cell.shared {
+        // Shared cells never execute: their source rides in every other
+        // cell's shared.rs. Render read-only with the shared chrome.
+        return view! {
+            <ViewOnlySharedCell cell=cell expand_code=expand_code />
+        }
+        .into_any();
+    }
     match cell.cell_type {
         CellType::Code => view! {
             <ViewOnlyCodeCell
@@ -776,6 +786,48 @@ fn ViewOnlyCodeCell(
                 let all_cells_vec = all_cells.get_value();
                 view! { <ViewOnlyOutput result=result cell_id=cell_id all_cells=all_cells_vec run_all_queue=run_all_queue cell_outputs=cell_outputs /> }
             })}
+        </div>
+    }
+}
+
+// ── ViewOnlySharedCell ──────────────────────────────────────────────────────
+
+/// Renders a shared cell (PRD-0044): read-only source with the amber shared
+/// chrome, no run button and no output — the code compiles as part of every
+/// other cell's `shared.rs`, never on its own.
+#[component]
+fn ViewOnlySharedCell(cell: IronpadCell, expand_code: bool) -> impl IntoView {
+    let collapsed = RwSignal::new(!expand_code);
+    let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
+    let body_class = Signal::derive(move || {
+        if collapsed.get() {
+            "ironpad-cell-body ironpad-cell-body--collapsed"
+        } else {
+            "ironpad-cell-body"
+        }
+    });
+
+    view! {
+        <div class="view-only-cell ironpad-cell--view-mode view-only-cell--shared">
+            <div class="view-only-cell-header">
+                <button
+                    class="ironpad-cell-collapse-btn"
+                    on:click=move |_| collapsed.update(|c| *c = !*c)
+                >
+                    {collapse_icon}
+                </button>
+                <span class="view-only-cell-label">{cell.label.clone()}</span>
+                <span class="ironpad-cell-type-badge ironpad-cell-type-badge--shared">
+                    "\u{2b21} shared"
+                </span>
+            </div>
+            <div class=body_class>
+                <MonacoEditor
+                    initial_value=cell.source.clone()
+                    language="rust"
+                    read_only=true
+                />
+            </div>
         </div>
     }
 }

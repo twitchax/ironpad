@@ -95,8 +95,9 @@ impl NotebookModel {
                 source,
                 cargo_toml,
                 label,
+                shared,
                 version,
-            } => self.cell_update(cell_id, source, cargo_toml, label, version)?,
+            } => self.cell_update(cell_id, source, cargo_toml, label, shared, version)?,
             Mutation::CellDelete { cell_id, version } => self.cell_delete(cell_id, version)?,
             Mutation::CellReorder { cell_ids } => self.cell_reorder(cell_ids)?,
             Mutation::NotebookUpdateMeta {
@@ -220,6 +221,7 @@ impl NotebookModel {
                         order: c.order,
                         label: c.label.clone(),
                         cell_type: c.cell_type.clone(),
+                        shared: c.shared,
                     })
                     .collect(),
             );
@@ -247,7 +249,8 @@ impl NotebookModel {
         };
         self.cell_stale.update(|stale| {
             for cell in &cells[my_idx..] {
-                if cell.cell_type == CellType::Code {
+                // Shared cells never execute, so they are never stale.
+                if cell.cell_type == CellType::Code && !cell.shared {
                     stale.insert(cell.id.clone(), true);
                 }
             }
@@ -259,7 +262,8 @@ impl NotebookModel {
         self.cell_stale.update(|stale| {
             let cells = self.cells.get_untracked();
             for cell in &cells {
-                if cell.cell_type == CellType::Code {
+                // Shared cells never execute, so they are never stale.
+                if cell.cell_type == CellType::Code && !cell.shared {
                     stale.insert(cell.id.clone(), true);
                 }
             }
@@ -284,6 +288,7 @@ impl NotebookModel {
             None
         };
 
+        let is_shared = new_cell.shared;
         let cell = IronpadCell {
             id: new_id.clone(),
             order: 0,
@@ -291,6 +296,7 @@ impl NotebookModel {
             cell_type: new_cell.cell_type,
             source: new_cell.source,
             cargo_toml,
+            shared: is_shared,
             version: 0,
         };
 
@@ -336,6 +342,7 @@ impl NotebookModel {
         source: Option<String>,
         cargo_toml: Option<Option<String>>,
         label: Option<String>,
+        shared: Option<bool>,
         version: u64,
     ) -> Result<(MutationResult, Event), ModelError> {
         // OCC check.
@@ -362,6 +369,17 @@ impl NotebookModel {
 
         let new_version = current + 1;
         let content_changed = source.is_some() || cargo_toml.is_some();
+        // Shared-cell edits change EVERY cell's compilation input, not just
+        // downstream: shared source is global. Capture the flag before the
+        // update so both "was shared" (source edited) and "became (un)shared"
+        // (flag toggled) widen the staling below.
+        let was_shared = self.notebook.with_untracked(|nb_opt| {
+            nb_opt
+                .as_ref()
+                .is_some_and(|nb| nb.cells.iter().any(|c| c.id == cell_id && c.shared))
+        });
+        let affects_shared =
+            shared.is_some_and(|s| s != was_shared) || (was_shared && content_changed);
 
         // Use update_untracked for content-only changes (performance: avoids
         // triggering the notebook-level Effect that syncs layout title, etc.).
@@ -379,6 +397,9 @@ impl NotebookModel {
             if let Some(ref lbl) = label {
                 cell.label.clone_from(lbl);
             }
+            if let Some(sh) = shared {
+                cell.shared = sh;
+            }
             cell.version = new_version;
         });
 
@@ -386,12 +407,15 @@ impl NotebookModel {
             v.insert(cell_id.clone(), new_version);
         });
 
-        if content_changed {
+        if affects_shared {
+            self.mark_all_code_cells_stale();
+        } else if content_changed {
             self.mark_downstream_stale(&cell_id);
         }
 
-        // Label is part of CellManifest, so sync the derived list.
-        if label.is_some() {
+        // Label and the shared flag are part of CellManifest, so sync the
+        // derived list.
+        if label.is_some() || shared.is_some() {
             self.sync_from_notebook();
         }
 
@@ -405,6 +429,7 @@ impl NotebookModel {
                 source,
                 cargo_toml,
                 label,
+                shared,
                 version: new_version,
             },
         ))
@@ -577,6 +602,7 @@ mod tests {
             source: source.map(Into::into),
             cargo_toml: None,
             label: label.map(Into::into),
+            shared: None,
             version: 0,
         }
     }
@@ -596,6 +622,7 @@ mod tests {
             source: None,
             cargo_toml: Some(Some("[package]".into())),
             label: None,
+            shared: None,
             version: 0,
         };
         assert!(is_remote_content_edit(&ClientId::agent("a"), &m));
@@ -640,6 +667,7 @@ mod stale_tests {
             order: 0,
             label: String::new(),
             cell_type: CellType::Code,
+            shared: false,
         }
     }
 

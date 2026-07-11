@@ -218,6 +218,7 @@ async fn relay_integration_round_trip() {
                 cell_type: CellType::Code,
                 label: "Test Cell".to_string(),
                 cargo_toml: None,
+                shared: false,
             },
             after_cell_id: None,
         }),

@@ -1161,7 +1161,11 @@ impl LiveView for Counter {
                 .unwrap_or_else(|e| panic!("failed to parse {filename}: {e}"));
 
             let shared_cargo_toml = notebook.shared_cargo_toml.as_deref();
-            let shared_source = notebook.shared_source.as_deref();
+            // Match production: cells compile against the notebook-level
+            // shared source PLUS every shared cell, assembled by the same
+            // ironpad-common helper the browser uses (PRD-0044).
+            let effective_shared = notebook.effective_shared_source();
+            let shared_source = effective_shared.as_deref();
 
             // Sort cells by order so previous_cell_types accumulates correctly.
             let mut cells = notebook.cells.clone();
@@ -1170,7 +1174,10 @@ impl LiveView for Counter {
             let mut previous_cell_types: Vec<String> = Vec::new();
 
             for cell in &cells {
-                if cell.cell_type != CellType::Code {
+                if cell.cell_type != CellType::Code || cell.shared {
+                    // Markdown never compiles; shared cells compile as part of
+                    // every OTHER cell's shared.rs, not as cells. Both hold an
+                    // empty piping slot so cellN indices stay positional.
                     previous_cell_types.push(String::new());
                     continue;
                 }

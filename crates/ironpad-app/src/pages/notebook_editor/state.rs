@@ -130,7 +130,9 @@ impl NotebookState {
             let stale_ids: Vec<String> = all_cells
                 .iter()
                 .filter(|c| {
-                    c.cell_type == CellType::Code && stale_map.get(&c.id).copied().unwrap_or(false)
+                    c.cell_type == CellType::Code
+                        && !c.shared
+                        && stale_map.get(&c.id).copied().unwrap_or(false)
                 })
                 .map(|c| c.id.clone())
                 .collect();
