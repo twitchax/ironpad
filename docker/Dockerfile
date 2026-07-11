@@ -92,12 +92,15 @@ COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-
 COPY --from=builder /usr/bin/wasm-opt /usr/bin/wasm-opt
 
 # Pre-warm the cargo registry cache with ironpad-cell dependencies so that
-# the first cell compile only downloads user-added deps.
+# the first cell compile only downloads user-added deps. Warmups fail the
+# image build LOUDLY — a `|| true` here once hid a manifest error for months,
+# shipping images with no warmed cache and (via the entrypoint seed) crashing
+# fresh deployments.
 COPY crates/ironpad-cell /tmp/warmup/crates/ironpad-cell
 COPY docker/warmup-Cargo.toml /tmp/warmup/Cargo.toml
 RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
     && cd /tmp/warmup \
-    && cargo +nightly-2026-06-01 build --target wasm32-unknown-unknown --release 2>/dev/null || true \
+    && cargo +nightly-2026-06-01 build --target wasm32-unknown-unknown --release \
     && rm -rf /tmp/warmup \
     && rm -rf /usr/local/cargo/registry/src
 
@@ -120,7 +123,7 @@ RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs
                   -C link-arg=--export=__tls_align \
                   -C link-arg=--export=__tls_base" \
        cargo +nightly-2025-12-22 build --target wasm32-unknown-unknown --release \
-       -Zbuild-std=std,panic_abort 2>/dev/null || true \
+       -Zbuild-std=std,panic_abort \
     && rm -rf /tmp/warmup-atomics
 
 WORKDIR /app

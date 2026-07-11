@@ -1,6 +1,17 @@
 # Warmup Cargo.toml for atomics/rayon — used during Docker build to
 # pre-build std with atomics support and cache rayon dependencies.
 
+# ironpad-cell inherits `[lints] workspace = true`; without a workspace root
+# defining `workspace.lints` here, the whole warmup build fails to parse the
+# manifest (and used to do so SILENTLY behind `|| true`, leaving images with
+# no pre-warmed cache at all). Empty lint tables satisfy the inheritance.
+[workspace]
+members = ["crates/ironpad-cell"]
+
+[workspace.lints.rust]
+
+[workspace.lints.clippy]
+
 [package]
 name = "ironpad-warmup-atomics"
 version = "0.0.0"

@@ -1,5 +1,9 @@
 services:
   ironpad:
+    # Run the image `cargo make docker-build` produces. Without this, compose
+    # builds and caches its OWN tag (docker-ironpad) on first `up` and reuses
+    # it forever — docker-uat spent months testing a stale container.
+    image: ironpad:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile

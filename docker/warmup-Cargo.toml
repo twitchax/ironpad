@@ -2,6 +2,17 @@
 # ironpad-cell's transitive dependencies into the cargo registry cache.
 # This avoids a download step on the first user cell compile.
 
+# ironpad-cell inherits `[lints] workspace = true`; without a workspace root
+# defining `workspace.lints` here, the whole warmup build fails to parse the
+# manifest (and used to do so SILENTLY behind `|| true`, leaving images with
+# no pre-warmed cache at all). Empty lint tables satisfy the inheritance.
+[workspace]
+members = ["crates/ironpad-cell"]
+
+[workspace.lints.rust]
+
+[workspace.lints.clippy]
+
 [package]
 name = "ironpad-warmup"
 version = "0.0.0"
