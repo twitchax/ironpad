@@ -67,6 +67,10 @@ test.describe("Public notebooks", () => {
       timeout: 15_000,
     });
 
+    // IronpadStorage present means storage.js loaded, not that Leptos
+    // hydration wired the button — give hydration the suite-convention beat.
+    await page.waitForTimeout(3_000); // hydration (suite convention)
+
     // Click the fork button.
     const forkButton = page.locator(".fork-button");
     await expect(forkButton).toBeVisible();

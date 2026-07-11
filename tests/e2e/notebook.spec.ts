@@ -12,6 +12,7 @@ test.describe("Notebook", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
 
     // Click "+ New Notebook" button.
+    await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
 
     // Verify navigation to /notebook/{id}.
@@ -56,6 +57,7 @@ test.describe("Notebook", () => {
     // Create a new notebook.
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
@@ -104,6 +106,7 @@ test.describe("Notebook", () => {
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
@@ -200,6 +203,7 @@ test.describe("Notebook", () => {
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
@@ -272,6 +276,7 @@ test.describe("Notebook", () => {
     // ── Create a new notebook ───────────────────────────────────────────
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();

@@ -49,6 +49,7 @@ test.describe("Notebook import/export", () => {
     // ── Create a new notebook with a cell ────────────────────────────────
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
     await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
