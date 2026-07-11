@@ -184,6 +184,8 @@ The core of ironpad is a 5-stage WASM compiler:
 
 Cell I/O uses **bincode 2.0** serialization for piping output between cells.
 
+**Shared cells (PRD-0044)**: a cell with `shared: true` renders amber inline, never executes, and its source is appended to the notebook's `shared.rs` after the notebook-level shared source. The assembly is `ironpad_common::effective_shared_source` — used by the editor, the view-only runner, and the notebook gate; never assemble it by hand. Shared cells hold empty piping slots (`cellN` indices stay positional), and editing one stales ALL code cells. Caveat: shared-cell text feeds feature detection (simd/autodiff/rayon), so a shared cell mentioning `std::simd` opts every cell in the notebook into simd128.
+
 ### Agent Collaboration Architecture
 
 The browser is the authoritative model server. The API server is a dumb relay. The CLI daemon keeps a warm WebSocket connection for fast agent interactions.
@@ -547,5 +549,5 @@ Sharp edges: target features from independent concerns must merge into ONE `-C t
 
 ---
 
-**Last Updated**: 2026-07-11 — unified cell toolchains (CELL_TOOLCHAIN everywhere, v0.7.2) + special-cases table
+**Last Updated**: 2026-07-11 — shared cells (PRD-0044, v0.8.0); unified cell toolchains; special-cases table
 **Target Audience**: AI agents, developers contributing to ironpad
