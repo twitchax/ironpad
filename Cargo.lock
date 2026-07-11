@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "ironpad-app"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "ironpad-cell"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "bincode",
  "console_error_panic_hook",
@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "ironpad-cli"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1602,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "ironpad-common"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "chrono",
  "serde",
@@ -1612,7 +1612,7 @@ dependencies = [
 
 [[package]]
 name = "ironpad-frontend"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "console_error_panic_hook",
  "ironpad-app",
@@ -1622,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "ironpad-proxy"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "tokio",
  "tracing",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "ironpad-server"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "axum",
