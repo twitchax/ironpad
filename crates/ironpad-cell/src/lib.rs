@@ -744,7 +744,18 @@ impl IntoPanels for Json {
 
 impl IntoPanels for canvas::Canvas {
     fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Html(self.to_html())]
+        // Must match the `From<Canvas> for CellOutput` rendering: a structured
+        // BlobImage panel the UI displays directly. Emitting an `<img>` inside
+        // an Html panel puts the data: URI through the HTML sanitizer, which
+        // strips it (ammonia's URL schemes exclude `data:`) — a tuple output
+        // like `(Table, canvas)` then renders a correctly-sized empty image.
+        let bmp = self.to_bmp();
+        vec![DisplayPanel::BlobImage {
+            mime_type: "image/bmp".into(),
+            base64_data: canvas::base64_encode(&bmp),
+            width: self.width(),
+            height: self.height(),
+        }]
     }
 }
 
@@ -1314,6 +1325,52 @@ pub unsafe extern "C" fn ironpad_dealloc(ptr: *mut u8, len: usize) {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+
+    // ── Canvas panel rendering ───────────────────────────────────────────
+
+    #[test]
+    fn canvas_into_panels_is_a_blob_image_not_html() {
+        // Tuple outputs like `(Table, canvas)` render via IntoPanels. An Html
+        // panel would route the data: URI through the HTML sanitizer, which
+        // strips it — the viewer got a correctly-sized EMPTY image. The panel
+        // must be the same structured BlobImage the direct From<Canvas> path
+        // produces.
+        let canvas = canvas::Canvas::new(4, 2);
+        let panels = canvas.into_panels();
+        assert_eq!(panels.len(), 1);
+        match &panels[0] {
+            DisplayPanel::BlobImage {
+                mime_type,
+                base64_data,
+                width,
+                height,
+            } => {
+                assert_eq!(mime_type, "image/bmp");
+                assert!(!base64_data.is_empty());
+                assert_eq!((*width, *height), (4, 2));
+            }
+            other => panic!("expected BlobImage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tuple_with_canvas_renders_the_same_panel_as_direct_canvas_output() {
+        let direct = CellOutput::from(canvas::Canvas::new(3, 3));
+        let tupled = CellOutput::from((
+            Table::new(vec!["h"], vec![vec!["v"]]),
+            canvas::Canvas::new(3, 3),
+        ));
+        let blob_of = |out: &CellOutput| {
+            out.panels
+                .iter()
+                .find_map(|p| match p {
+                    DisplayPanel::BlobImage { base64_data, .. } => Some(base64_data.clone()),
+                    _ => None,
+                })
+                .expect("output should carry a BlobImage panel")
+        };
+        assert_eq!(blob_of(&direct), blob_of(&tupled));
+    }
 
     // ── CellInputs::from_raw bounds checking ─────────────────────────────
 

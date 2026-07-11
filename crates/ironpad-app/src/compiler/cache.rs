@@ -41,7 +41,11 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// module (JSPI host imports), so cached cells must rebuild against the new
 /// runtime. (The `needs_simd` hash byte added in the same release also
 /// changes every key; the bump keeps the documented ironpad-cell discipline.)
-const CACHE_EPOCH: u32 = 5;
+///
+/// Bumped 5 -> 6: `IntoPanels for Canvas` switched from an Html panel (whose
+/// data: URI the sanitizer strips — tuple outputs rendered an empty image) to
+/// the structured `BlobImage` panel; cached blobs bake the old behavior in.
+const CACHE_EPOCH: u32 = 6;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
