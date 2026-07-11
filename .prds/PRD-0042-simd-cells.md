@@ -1,10 +1,10 @@
 ---
 id: PRD-0042
 title: "WASM SIMD cell support (simd128 + portable_simd)"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-10
-updated: 2026-07-10
+updated: 2026-07-11
 
 principles:
 - "Using the feature is the opt-in: cells that mention std::simd / core::simd / std::arch::wasm32 get the simd128 build, everything else is untouched (mirrors PRD-0041 autodiff detection)."
@@ -21,42 +21,42 @@ acceptance_tests:
 - id: uat-001
   name: "A cell using std::simd (portable SIMD) compiles to WASM successfully with v128 codegen enabled"
   command: cargo make test-integration
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "Full gate: ci + integration + Playwright pass with SIMD infra and notebook in place"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
   title: "Detection + scaffold injection: uses_wasm_simd(), inject #![feature(portable_simd)] at crate root, preamble bump"
   priority: 1
-  status: todo
+  status: done
   notes: "Substrings: std::simd, core::simd, std::arch::wasm32. Injection composes with the autodiff feature gate (each bumps preamble_lines by 1). Unit tests for detection and preamble mapping."
 - id: T-002
   title: "RUSTFLAGS composition: merge target-features so simd128 cannot clobber atomics"
   priority: 1
-  status: todo
+  status: done
   notes: "rustc takes the LAST -C target-feature flag; a naive '-C target-feature=+simd128' push would wipe +atomics,+bulk-memory,+mutable-globals on rayon cells. Split ATOMICS_RUSTFLAGS into target-feature list + link-arg flags and emit ONE merged -C target-feature. Unit test the composed flag string for atomics+simd."
 - id: T-003
   title: "Cache key: needs_simd byte in content_hash"
   priority: 1
-  status: todo
+  status: done
   notes: "After needs_autodiff byte. Test hash_changes_with_needs_simd."
 - id: T-004
   title: "Thread needs_simd through server_fns compile path and the public-notebook check gate"
   priority: 2
-  status: todo
+  status: done
   notes: "Compute pre-cache-check in compile_cell (like needs_autodiff); log it; same computation in compiler/mod.rs notebook gate for check parity."
 - id: T-005
   title: "Integration test: portable SIMD cell builds end to end"
   priority: 2
-  status: todo
+  status: done
   notes: "Follows compile_cell_with_std_autodiff_builds_successfully pattern; assert feature gate on generated line 1 and successful wasm build."
 - id: T-006
   title: "Public notebook: scalar vs autovectorized vs explicit portable SIMD, live benchmarks"
   priority: 3
-  status: todo
+  status: done
   notes: "Per-cell detection means a scalar baseline cell compiles WITHOUT simd128 while SIMD cells compile WITH it — one notebook shows all tiers honestly. Stopwatch benchmarks; expand_code true; my-voice rules."
 ---
 
@@ -107,3 +107,4 @@ The one structural change: `configure_cargo_cmd` must emit a **single merged** `
 # History
 
 - 2026-07-10: Created after spike verified portable_simd + simd128 on the rolling nightly (24 v128 ops in binary, correct execution in V8).
+- 2026-07-11: T-001..T-006 done. Infra shipped with merged -C target-feature composition (rustc last-flag-wins trap covered by unit test); integration test builds a real portable_simd cell (23s). Notebook "Four Lanes Wide" verified live in Chromium: autovectorizer refuses f32 (29ms flat) but vectorizes i32 free (7ms); explicit gears 28/7/5ms (5.6x); Mandelbrot 164ms -> 44ms with bit-identical renders. One teaching artifact found live: an unused benchmark result lets LLVM delete the loop (0.0ms) — the notebook now consumes every dot value and says why.

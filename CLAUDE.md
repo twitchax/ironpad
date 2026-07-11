@@ -524,6 +524,19 @@ Cell compilation targets `wasm32-unknown-unknown`, which uses `rust-lld` as the 
 
 **Fix**: annotate each host-import `extern "C"` block with `#[link(wasm_import_module = "env")]` (PRD-0031 T-001). This is a compile-time hint, not a linker flag — no `.cargo/config.toml` or `RUSTFLAGS` changes are needed. Regression coverage lives in `crates/ironpad-app/src/compiler/mod.rs::e2e_tests::compile_cell_with_host_imports_links_successfully`.
 
+### Cell Special Cases (opt-in by usage)
+
+Cells opt into heavier build modes just by using a feature; detection is substring-based over (source, shared_source):
+
+| Feature | Trigger substrings | Build effect | Runtime effect |
+| --- | --- | --- | --- |
+| rayon (atomics) | `rayon` in merged deps | pinned `nightly-2025-12-22`, `-Zbuild-std`, atomics target features + shared-memory link flags | wasm-bindgen-rayon worker pool |
+| autodiff (Enzyme) | `autodiff_forward` / `autodiff_reverse` / `std::autodiff` | pinned `nightly-2026-06-01` + `enzyme` component, `-Zautodiff=Enable`, forced fat-LTO profile, crate-root `#![feature(autodiff)]` | none |
+| SIMD (PRD-0042) | `std::simd` / `core::simd` / `std::arch::wasm32` (comments count) | `-C target-feature=+simd128`, crate-root `#![feature(portable_simd)]`; rolling nightly, no std rebuild | none (all modern browsers) |
+| blocking/JSPI (PRD-0043) | imports `ironpad_blocking_*` (via `ironpad_cell::blocking`) | none (plain imports) | executor wraps imports in `WebAssembly.Suspending`, enters raw `cell_main` via `WebAssembly.promising`; Chrome/Edge 137+ only, friendly gate elsewhere |
+
+Sharp edges: target features from independent concerns must merge into ONE `-C target-feature=` flag (rustc keeps only the last; see `compose_rustflags` in `build.rs`); each injected crate-root gate bumps `preamble_lines` by one for diagnostics mapping; all detection booleans are part of the blake3 cache key; a cell whose text contains the literal `.await` substring anywhere (even in a string) compiles to an async wrapper, which the JSPI promising path cannot enter — keep `blocking::*` cells free of it.
+
 ### PRDs
 
 - **PRD files live in `.prds/`** with YAML frontmatter (currently `PRD-0001` through `PRD-0038`)
@@ -532,5 +545,5 @@ Cell compilation targets `wasm32-unknown-unknown`, which uses `rust-lld` as the 
 
 ---
 
-**Last Updated**: 2026-07-10 — docs accuracy pass (PRD paths, task table, executor loading, public-notebook serving)
+**Last Updated**: 2026-07-11 — cell special-cases table (rayon/autodiff/SIMD/JSPI opt-ins, PRD-0042/0043)
 **Target Audience**: AI agents, developers contributing to ironpad

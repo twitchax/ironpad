@@ -1,10 +1,10 @@
 ---
 id: PRD-0043
 title: "JSPI blocking host calls: synchronous Rust that suspends the WASM stack"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-10
-updated: 2026-07-10
+updated: 2026-07-11
 
 principles:
 - "The point is the absence of coloring: plain synchronous Rust calls that suspend the whole WASM stack. Cells can already do async I/O via .await; JSPI removes the async requirement entirely."
@@ -24,41 +24,41 @@ acceptance_tests:
 - id: uat-001
   name: "A cell using ironpad_cell::blocking compiles and links (imports resolve under wasm_import_module env)"
   command: cargo make test-integration
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "Playwright (Chromium >= 137): blocking sleep suspends and resumes; blocking fetch returns same-origin content from plain sync Rust"
   command: cargo make playwright
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Full gate passes with JSPI infra and notebook in place"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
   title: "ironpad-cell blocking module: sleep_ms, fetch_text, fetch_json, fetch_bytes over ironpad_blocking_* env imports"
   priority: 1
-  status: todo
+  status: done
   notes: "#[link(wasm_import_module = \"env\")] (PRD-0031 lesson). Two-phase fetch protocol: ironpad_blocking_fetch(url_ptr, url_len) -> payload_len (suspending), ironpad_blocking_fetch_ok() -> u32, ironpad_blocking_read(buf_ptr, buf_len) -> copied (sync). Native stubs: sleep via std::thread::sleep, fetch returns Err (sim.rs pattern)."
 - id: T-002
   title: "executor-core.js: Suspending imports + promising entry + needs-JSPI detection + friendly unsupported-browser error"
   priority: 1
-  status: todo
+  status: done
   notes: "Pre-compile module, scan WebAssembly.Module.imports for ironpad_blocking_ prefix, store needsJspi on the entry. Add shims to all three import sites (ESM env rewrite, __wbg_get_imports patch, raw path). execute(): needsJspi + JSPI available -> WebAssembly.promising(entry.wasm.cell_main); needsJspi + unavailable -> throw 'requires Chrome/Edge 137+' before invoking."
 - id: T-003
   title: "Integration test: blocking cell compiles and links"
   priority: 2
-  status: todo
+  status: done
   notes: "e2e_tests in compiler/mod.rs, follows compile_cell_with_host_imports_links_successfully."
 - id: T-004
   title: "Playwright e2e: sleep suspends (Stopwatch elapsed >= sleep) and same-origin blocking fetch returns content"
   priority: 2
-  status: todo
+  status: done
   notes: "Playwright Chromium ships JSPI; feature-detect in the test and fail loudly if the bundled Chromium is too old."
 - id: T-005
   title: "Public notebook: function-coloring story, Chrome/Edge-only banner"
   priority: 3
-  status: todo
+  status: done
   notes: "Contrast existing async cell (ironpad_cell::http::get + .await) with the JSPI version in fully synchronous code (e.g. inside an Iterator chain). Prominent Chrome/Edge 137+ note in description + first markdown cell. Same-origin fetch primary demo; api.github.com secondary (per-visitor rate limits, CORS-enabled)."
 ---
 
@@ -107,3 +107,4 @@ The executor pre-compiles the cell module and scans `WebAssembly.Module.imports(
 # History
 
 - 2026-07-10: Created. Chrome/Edge 137 ship JSPI by default; Firefox behind a flag; Safari implementing after dropping its objection late 2025.
+- 2026-07-11: T-001..T-005 done. Protocol proven three ways: Node harness (--experimental-wasm-jspi: 80ms real suspension, fetch body, 404 propagation), Playwright e2e (300ms suspend + same-origin fetch through the production executor), and the live notebook (sleep 401ms; three fetches inside Iterator::map; api.github.com round trip 291ms). CACHE_EPOCH bumped 4 -> 5 for the ironpad-cell change. Pitfall documented in the generator: cell text must never contain the literal ".await" substring or needs_async() flips the cell to the async wrapper the promising path cannot enter.
