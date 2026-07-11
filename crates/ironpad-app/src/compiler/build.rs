@@ -38,6 +38,17 @@ const ATOMICS_LINK_RUSTFLAGS: &str = "\
 /// needed: simd128 cell code links fine against the precompiled non-simd std.
 const SIMD_TARGET_FEATURES: &str = "+simd128";
 
+/// Toolchain for SIMD-only cells (no autodiff, no atomics).
+///
+/// The scaffold injects `#![feature(portable_simd)]` at the crate root, which
+/// stable rustc refuses ("may not be used on the stable release channel") —
+/// and the deploy image's DEFAULT toolchain is stable, even though dev hosts
+/// default to nightly (which is how this only surfaced on prod). Reuse the
+/// autodiff pin rather than adding a fourth toolchain to the image: it is
+/// nightly, already installed with the wasm32 target, and pinned for
+/// reproducibility.
+const SIMD_TOOLCHAIN: &str = AUTODIFF_TOOLCHAIN;
+
 /// Toolchain used for atomics/shared-memory (rayon) cell builds.
 ///
 /// `-Zbuild-std` requires a nightly with the `rust-src` component. This is
@@ -306,6 +317,11 @@ fn configure_cargo_cmd(
         // Ensure the rustup shim respects our +toolchain over any inherited
         // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
         cmd.env_remove("RUSTUP_TOOLCHAIN");
+    } else if needs_simd {
+        // SIMD-only cells still need nightly for the injected portable_simd
+        // gate; the deploy image's default toolchain is stable.
+        cmd.arg(format!("+{SIMD_TOOLCHAIN}"));
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
     }
 
     cmd.arg(subcommand)
@@ -522,6 +538,55 @@ mod tests {
         let flags = compose_rustflags(false, true, true).unwrap();
         assert!(flags.contains("-C target-feature=+simd128"));
         assert!(flags.contains("-Zautodiff=Enable"));
+    }
+
+    /// The toolchain `+arg` (or its absence) for each feature combination.
+    fn selected_toolchain_arg(atomics: bool, autodiff: bool, simd: bool) -> Option<String> {
+        let mut cmd = Command::new("cargo");
+        configure_cargo_cmd(
+            &mut cmd,
+            "build",
+            Path::new("/crate"),
+            Path::new("/cargo-home"),
+            Path::new("/target"),
+            None,
+            atomics,
+            autodiff,
+            simd,
+        );
+        cmd.as_std()
+            .get_args()
+            .next()
+            .map(|a| a.to_string_lossy().into_owned())
+            .filter(|a| a.starts_with('+'))
+    }
+
+    #[test]
+    fn simd_only_cells_pin_a_nightly_toolchain() {
+        // The scaffold injects #![feature(portable_simd)], which stable rustc
+        // refuses — and the deploy image's default toolchain IS stable. A
+        // simd-only cell must therefore pin nightly explicitly (dev hosts
+        // default to nightly, which is exactly how this once slipped to prod).
+        assert_eq!(
+            selected_toolchain_arg(false, false, true).as_deref(),
+            Some(format!("+{SIMD_TOOLCHAIN}").as_str()),
+        );
+        assert!(SIMD_TOOLCHAIN.starts_with("nightly"));
+    }
+
+    #[test]
+    fn toolchain_selection_priority_is_autodiff_then_atomics_then_simd() {
+        let autodiff = format!("+{AUTODIFF_TOOLCHAIN}");
+        let atomics = format!("+{ATOMICS_TOOLCHAIN}");
+        assert_eq!(
+            selected_toolchain_arg(true, true, true).as_deref(),
+            Some(autodiff.as_str()),
+        );
+        assert_eq!(
+            selected_toolchain_arg(true, false, true).as_deref(),
+            Some(atomics.as_str()),
+        );
+        assert_eq!(selected_toolchain_arg(false, false, false), None);
     }
 
     // ── cargo_home_dir ──────────────────────────────────────────────────
