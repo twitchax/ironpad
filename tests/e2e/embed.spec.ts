@@ -41,6 +41,11 @@ test.describe("Notebook embedding", () => {
   test("embed autorun is opt-in: default idle, ?autorun=1 runs cells", async ({
     page,
   }) => {
+    // The autorun half compiles the welcome notebook's cells; a fully cold
+    // cache needs minutes, and the default 30s TEST timeout silently capped
+    // the generous expect timeout below (the test only ever passed warm).
+    test.setTimeout(600_000);
+
     // Default: an embed does NOT auto-run (readers of a third-party page
     // didn't choose ironpad). No timing badge appears without a click.
     await page.goto("/embed/public/welcome.ironpad");

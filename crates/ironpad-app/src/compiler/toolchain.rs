@@ -34,21 +34,39 @@ static WASM_BINDGEN_CLI_VERSION: LazyLock<Option<String>> = LazyLock::new(|| {
 /// Folded into the compilation cache key (`compiler/cache.rs`) so that
 /// upgrading either the rustc toolchain or the wasm-bindgen CLI invalidates
 /// stale cached blobs instead of silently serving incompatible output.
+///
+/// The rustc queried is the pinned [`crate::CELL_TOOLCHAIN`] — the compiler
+/// that actually builds cells — NOT the host default, which differs between
+/// dev (nightly) and the deploy image and never touches a cell. Falls back to
+/// the default `rustc` on hosts without the pin installed (e.g. plain CI
+/// runners that never build cells).
 static TOOLCHAIN_FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
-    let rustc_version = std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map_or_else(
-            || "rustc-unknown".to_string(),
-            |output| String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        );
+    let rustc_version = rustc_version_output(Some(crate::CELL_TOOLCHAIN))
+        .or_else(|| rustc_version_output(None))
+        .unwrap_or_else(|| "rustc-unknown".to_string());
 
     let wasm_bindgen_version = wasm_bindgen_cli_version().unwrap_or("wasm-bindgen-unknown");
 
     format!("{rustc_version}\x00{wasm_bindgen_version}")
 });
+
+/// `rustc [+toolchain] --version` via the rustup shim, or `None` on any
+/// failure (missing toolchain, missing rustup, unparseable output).
+fn rustc_version_output(toolchain: Option<&str>) -> Option<String> {
+    let mut cmd = std::process::Command::new("rustc");
+    if let Some(toolchain) = toolchain {
+        cmd.arg(format!("+{toolchain}"));
+    }
+    let output = cmd.arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if version.is_empty() {
+        return None;
+    }
+    Some(version)
+}
 
 /// Parse the version out of `wasm-bindgen --version` output, e.g.
 /// `"wasm-bindgen 0.2.126\n"` -> `Some("0.2.126")`.
@@ -164,5 +182,20 @@ mod tests {
     #[test]
     fn toolchain_fingerprint_is_non_empty() {
         assert!(!toolchain_fingerprint().is_empty());
+    }
+
+    #[test]
+    fn fingerprint_reports_the_cell_toolchain_when_installed() {
+        // On hosts with the pin installed (dev boxes, the deploy image), the
+        // fingerprint must describe the rustc that actually builds cells, not
+        // the host default. Hosts without it (plain CI runners) exercise the
+        // fallback, which this test then skips.
+        let Some(pinned) = rustc_version_output(Some(crate::CELL_TOOLCHAIN)) else {
+            return;
+        };
+        assert!(
+            toolchain_fingerprint().starts_with(&pinned),
+            "fingerprint should lead with the pinned rustc version",
+        );
     }
 }

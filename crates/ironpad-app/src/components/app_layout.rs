@@ -49,7 +49,7 @@ impl LayoutContext {
             cell_count: RwSignal::new(0),
             last_save_time: RwSignal::new(None),
             save_status: RwSignal::new(SaveStatus::Idle),
-            compiler_version: RwSignal::new("stable".to_string()),
+            compiler_version: RwSignal::new(crate::CELL_TOOLCHAIN.to_string()),
         }
     }
 }

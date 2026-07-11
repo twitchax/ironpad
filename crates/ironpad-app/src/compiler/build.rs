@@ -11,6 +11,8 @@ use std::time::Duration;
 use anyhow::Context;
 use tokio::process::Command;
 
+use crate::CELL_TOOLCHAIN;
+
 /// Target features for atomics/shared-memory WASM builds (rayon cells).
 ///
 /// Kept separate from [`ATOMICS_LINK_RUSTFLAGS`] because rustc keeps only the
@@ -38,17 +40,6 @@ const ATOMICS_LINK_RUSTFLAGS: &str = "\
 /// needed: simd128 cell code links fine against the precompiled non-simd std.
 const SIMD_TARGET_FEATURES: &str = "+simd128";
 
-/// Toolchain for SIMD-only cells (no autodiff, no atomics).
-///
-/// The scaffold injects `#![feature(portable_simd)]` at the crate root, which
-/// stable rustc refuses ("may not be used on the stable release channel") —
-/// and the deploy image's DEFAULT toolchain is stable, even though dev hosts
-/// default to nightly (which is how this only surfaced on prod). Reuse the
-/// autodiff pin rather than adding a fourth toolchain to the image: it is
-/// nightly, already installed with the wasm32 target, and pinned for
-/// reproducibility.
-const SIMD_TOOLCHAIN: &str = AUTODIFF_TOOLCHAIN;
-
 /// Toolchain used for atomics/shared-memory (rayon) cell builds.
 ///
 /// `-Zbuild-std` requires a nightly with the `rust-src` component. This is
@@ -63,20 +54,11 @@ const ATOMICS_TOOLCHAIN: &str = "nightly-2025-12-22";
 /// RUSTFLAGS enabling Enzyme autodiff (`std::autodiff`) for a cell build.
 const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 
-/// Toolchain used for `std::autodiff` (Enzyme) cell builds.
-///
-/// **Pinned**, for the same reason as [`ATOMICS_TOOLCHAIN`]: rolling nightlies
-/// drift into breakage. The first deploy used the rolling `nightly` and the
-/// 2026-07 nightly promptly ICE'd on cannon-notebook cells
-/// (`rustc_middle/src/ty/typetree.rs: incorrect autodiff typetree handling
-/// for slice`); this 2026-06-01 nightly is the one the feature was verified
-/// end to end on. The `enzyme` rustup component exists for it (absent for the
-/// atomics pin, 2025-12-22) and ships a matching libEnzyme/LLVM pair. The
-/// deploy image and dev hosts must install this toolchain with the `enzyme`
-/// and `rust-src` components and the wasm32 target. If both rayon and
-/// autodiff are requested, this toolchain wins (it has rust-src for
-/// `-Zbuild-std`).
-const AUTODIFF_TOOLCHAIN: &str = "nightly-2026-06-01";
+// The default toolchain for cell builds is [`crate::CELL_TOOLCHAIN`] — every
+// cell except rayon/atomics ones compiles on that pin (autodiff cells
+// additionally get `-Zautodiff=Enable`, SIMD cells `+simd128`; plain cells
+// just run on it). See the const's docs for the rationale and the deploy-image
+// requirements.
 
 /// Hard timeout for a single `cargo build` invocation.
 /// Override with `IRONPAD_BUILD_TIMEOUT_SECS` env var (default: 300s).
@@ -309,20 +291,21 @@ fn configure_cargo_cmd(
     needs_autodiff: bool,
     needs_simd: bool,
 ) {
-    if needs_autodiff {
-        cmd.arg(format!("+{AUTODIFF_TOOLCHAIN}"));
-        cmd.env_remove("RUSTUP_TOOLCHAIN");
-    } else if needs_atomics {
-        cmd.arg(format!("+{ATOMICS_TOOLCHAIN}"));
-        // Ensure the rustup shim respects our +toolchain over any inherited
-        // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
-        cmd.env_remove("RUSTUP_TOOLCHAIN");
-    } else if needs_simd {
-        // SIMD-only cells still need nightly for the injected portable_simd
-        // gate; the deploy image's default toolchain is stable.
-        cmd.arg(format!("+{SIMD_TOOLCHAIN}"));
-        cmd.env_remove("RUSTUP_TOOLCHAIN");
-    }
+    // Every cell build pins its toolchain explicitly — never the host default,
+    // which differs between dev (nightly) and the deploy image, and once let
+    // nightly-only cells validate green locally and fail on prod. Atomics
+    // (rayon) cells keep their own pin (wasm-bindgen-rayon breaks on newer
+    // nightlies) — unless autodiff is also requested, where CELL_TOOLCHAIN
+    // wins (it carries enzyme AND rust-src for -Zbuild-std).
+    let toolchain = if needs_atomics && !needs_autodiff {
+        ATOMICS_TOOLCHAIN
+    } else {
+        CELL_TOOLCHAIN
+    };
+    cmd.arg(format!("+{toolchain}"));
+    // Ensure the rustup shim respects our +toolchain over any inherited
+    // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
+    cmd.env_remove("RUSTUP_TOOLCHAIN");
 
     cmd.arg(subcommand)
         .arg("--target")
@@ -562,31 +545,40 @@ mod tests {
     }
 
     #[test]
-    fn simd_only_cells_pin_a_nightly_toolchain() {
-        // The scaffold injects #![feature(portable_simd)], which stable rustc
-        // refuses — and the deploy image's default toolchain IS stable. A
-        // simd-only cell must therefore pin nightly explicitly (dev hosts
-        // default to nightly, which is exactly how this once slipped to prod).
-        assert_eq!(
-            selected_toolchain_arg(false, false, true).as_deref(),
-            Some(format!("+{SIMD_TOOLCHAIN}").as_str()),
-        );
-        assert!(SIMD_TOOLCHAIN.starts_with("nightly"));
+    fn every_cell_build_pins_a_toolchain_explicitly() {
+        // Never the host default: dev hosts run nightly, the deploy image ran
+        // stable, and the divergence once let nightly-only cells (the injected
+        // portable_simd gate) validate green locally and fail on prod.
+        let cell = format!("+{CELL_TOOLCHAIN}");
+        for (atomics, autodiff, simd) in [
+            (false, false, false), // plain
+            (false, false, true),  // simd
+            (false, true, false),  // autodiff
+            (false, true, true),   // autodiff + simd
+            (true, true, true),    // everything: CELL_TOOLCHAIN wins (enzyme + rust-src)
+        ] {
+            assert_eq!(
+                selected_toolchain_arg(atomics, autodiff, simd).as_deref(),
+                Some(cell.as_str()),
+                "({atomics}, {autodiff}, {simd})",
+            );
+        }
+        assert!(CELL_TOOLCHAIN.starts_with("nightly"));
     }
 
     #[test]
-    fn toolchain_selection_priority_is_autodiff_then_atomics_then_simd() {
-        let autodiff = format!("+{AUTODIFF_TOOLCHAIN}");
+    fn atomics_without_autodiff_keeps_the_rayon_pin() {
+        // wasm-bindgen-rayon's atomics guard breaks on newer nightlies, so
+        // rayon cells stay on their own pin.
         let atomics = format!("+{ATOMICS_TOOLCHAIN}");
         assert_eq!(
-            selected_toolchain_arg(true, true, true).as_deref(),
-            Some(autodiff.as_str()),
+            selected_toolchain_arg(true, false, false).as_deref(),
+            Some(atomics.as_str()),
         );
         assert_eq!(
             selected_toolchain_arg(true, false, true).as_deref(),
             Some(atomics.as_str()),
         );
-        assert_eq!(selected_toolchain_arg(false, false, false), None);
     }
 
     // ── cargo_home_dir ──────────────────────────────────────────────────

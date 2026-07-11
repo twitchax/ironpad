@@ -59,26 +59,33 @@ RUN cargo build --release -p ironpad-proxy
 
 FROM rust:1.93.0-slim AS runtime
 
-# The runtime needs the Rust toolchain + wasm target for compiling user cells.
-RUN rustup target add wasm32-unknown-unknown
-
-# rust-src is needed to rebuild std with atomics flags (for rayon cells).
-RUN rustup component add rust-src
-
-# Nightly toolchain + rust-src for pre-building the atomics sysroot at image build time.
-# Cell compilation at runtime uses stable; it reuses the pre-built artifacts.
-RUN rustup toolchain install nightly \
-    && rustup target add wasm32-unknown-unknown --toolchain nightly \
-    && rustup component add rust-src --toolchain nightly
-
-# Pinned autodiff toolchain (PRD-0041; keep in sync with AUTODIFF_TOOLCHAIN in
-# compiler/build.rs). Pinned because rolling nightlies drift: the 2026-07
-# nightly ICEs on autodiff typetrees for slices. The `enzyme` component ships
-# the libEnzyme matched to this nightly's LLVM.
+# Cell compilation runs on exactly two pinned toolchains — never the host
+# default (see CELL_TOOLCHAIN in crates/ironpad-app/src/lib.rs and
+# ATOMICS_TOOLCHAIN in compiler/build.rs; keep both in sync here):
+#
+#   nightly-2026-06-01  every cell except rayon ones. Carries `enzyme`
+#                       (matched libEnzyme/LLVM for std::autodiff), rust-src
+#                       (for -Zbuild-std when autodiff+rayon combine), and the
+#                       wasm32 target. Also the image's rustup default, so any
+#                       stray bare cargo/rustc invocation matches cell builds.
+#   nightly-2025-12-22  rayon/atomics cells (wasm-bindgen-rayon's atomics
+#                       guard breaks on newer nightlies).
+#
+# The base image's stable toolchain is uninstalled at the end: nothing uses it,
+# and it costs ~1 GB of image.
 RUN rustup toolchain install nightly-2026-06-01 --profile minimal \
     && rustup target add wasm32-unknown-unknown --toolchain nightly-2026-06-01 \
     && rustup component add rust-src --toolchain nightly-2026-06-01 \
-    && rustup component add enzyme --toolchain nightly-2026-06-01
+    && rustup component add enzyme --toolchain nightly-2026-06-01 \
+    && rustup toolchain install nightly-2025-12-22 --profile minimal \
+    && rustup target add wasm32-unknown-unknown --toolchain nightly-2025-12-22 \
+    && rustup component add rust-src --toolchain nightly-2025-12-22 \
+    && rustup default nightly-2026-06-01
+
+# Best-effort (own RUN so a failure can't mask the toolchain installs above):
+# drop the base image's stable toolchain — nothing uses it after the default
+# switch, and it costs ~1 GB.
+RUN rustup toolchain uninstall stable 1.93.0 || true
 
 # Copy tool binaries from builder (avoids recompiling / reinstalling in runtime).
 COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-bindgen
@@ -90,13 +97,15 @@ COPY crates/ironpad-cell /tmp/warmup/crates/ironpad-cell
 COPY docker/warmup-Cargo.toml /tmp/warmup/Cargo.toml
 RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
     && cd /tmp/warmup \
-    && cargo build --target wasm32-unknown-unknown --release 2>/dev/null || true \
+    && cargo +nightly-2026-06-01 build --target wasm32-unknown-unknown --release 2>/dev/null || true \
     && rm -rf /tmp/warmup \
     && rm -rf /usr/local/cargo/registry/src
 
-# Pre-build atomics sysroot for rayon-enabled cells.
-# Uses nightly -Zbuild-std to compile std with atomics support; cell compilation
-# at runtime points CARGO_TARGET_DIR here and reuses these artifacts via stable.
+# Pre-build atomics sysroot for rayon-enabled cells with the SAME pinned
+# toolchain runtime rayon builds use (ATOMICS_TOOLCHAIN) — a warmup on any
+# other nightly produces artifacts the runtime build fingerprints as stale and
+# silently rebuilds from scratch, which can blow the 300s build timeout on the
+# 2-CPU machine.
 COPY crates/ironpad-cell /tmp/warmup-atomics/crates/ironpad-cell
 COPY docker/warmup-atomics-Cargo.toml /tmp/warmup-atomics/Cargo.toml
 RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs \
@@ -110,7 +119,7 @@ RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs
                   -C link-arg=--export=__tls_size \
                   -C link-arg=--export=__tls_align \
                   -C link-arg=--export=__tls_base" \
-       cargo +nightly build --target wasm32-unknown-unknown --release \
+       cargo +nightly-2025-12-22 build --target wasm32-unknown-unknown --release \
        -Zbuild-std=std,panic_abort 2>/dev/null || true \
     && rm -rf /tmp/warmup-atomics
 
