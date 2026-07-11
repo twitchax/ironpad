@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
+import { createNotebook } from "./helpers/session";
 
 /**
  * E2E coverage for PRD-0042 (WASM SIMD cells) and PRD-0043 (JSPI blocking
@@ -10,11 +11,7 @@ import { trackJsErrors } from "./helpers/errors";
 
 /** Create a fresh notebook with one cell and return its locator. */
 async function newNotebookWithCell(page) {
-  await page.goto("/");
-  await expect(page.locator(".ironpad-home")).toBeVisible();
-  await page.locator("button", { hasText: "+ New Notebook" }).click();
-  await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
-  await expect(page.locator(".ironpad-editor")).toBeVisible();
+  await createNotebook(page);
 
   await page.locator(".ironpad-add-cell-btn").first().click();
   const cell = page.locator(".ironpad-cell-card").first();

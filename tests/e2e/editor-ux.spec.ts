@@ -1,5 +1,6 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
+import { createNotebook as newNotebook } from "./helpers/session";
 
 /**
  * End-to-end coverage for the PRD-0032 editor UX fixes.
@@ -9,15 +10,11 @@ import { setCellSource } from "./helpers/monaco";
  *   uat-003 — switching to view mode renders an in-edit markdown cell
  *   uat-005 — Share surfaces the share URL
  *   uat-004 — cancel does not re-run on the main thread (see note below)
+ *
+ * Notebook creation goes through the hardened shared helper: a local copy
+ * without the hydration wait raced the WASM click wiring under full-suite
+ * parallel load (the "+ New Notebook" click landed on a dead button).
  */
-
-async function newNotebook(page: Page) {
-  await page.goto("/");
-  await expect(page.locator(".ironpad-home")).toBeVisible();
-  await page.locator("button", { hasText: "+ New Notebook" }).click();
-  await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
-  await expect(page.locator(".ironpad-editor")).toBeVisible();
-}
 
 test.describe("Editor UX (PRD-0032)", () => {
   // uat-002: renaming a notebook persists across reload.
