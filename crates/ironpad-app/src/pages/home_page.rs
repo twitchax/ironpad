@@ -49,7 +49,7 @@ fn public_notebook_matches(summary: &PublicNotebookSummary, query: &str) -> bool
             .any(|t| t.to_lowercase().contains(query))
 }
 
-/// Whether a private (IndexedDB) notebook matches a lowercased search query:
+/// Whether a private (`IndexedDB`) notebook matches a lowercased search query:
 /// title or any tag, same contract as public search.
 fn private_notebook_matches(nb: &IronpadNotebook, query: &str) -> bool {
     query.is_empty()
