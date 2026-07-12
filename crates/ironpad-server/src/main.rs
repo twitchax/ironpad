@@ -79,7 +79,7 @@ async fn main() {
     // Startup-only so it can never race an in-flight build: no requests are
     // being served yet. Fly auto-stops the machine when idle, so restarts (and
     // therefore valve checks) happen at least once per burst of visits.
-    cache_pressure_valve(&config.cache_dir, || fs_used_percent(&config.cache_dir));
+    cache_pressure_valve(&config.cache_dir, || fs_usage(&config.cache_dir));
 
     let conf = get_configuration(None).expect("leptos configuration");
     let leptos_options = conf.leptos_options;
@@ -194,10 +194,35 @@ async fn main() {
 /// the right side of that bargain.
 const CACHE_PRESSURE_MAX_USED_PCT: u8 = 80;
 
-/// Percentage of the filesystem holding `path` currently in use, or `None`
-/// when it can't be measured (non-unix, or `statvfs` failure).
+/// Absolute free-space floor for the pressure valve: a volume with at least
+/// this much headroom is not under pressure no matter what the percentage
+/// says. Percentage alone misfires on big disks — a dev box at 86% of 3TB
+/// still has hundreds of GB free, and wiping its caches on every server
+/// start makes the first live check of each e2e run minutes-cold. On the
+/// 5GB Fly volume, available space can never reach this floor, so prod
+/// behavior is decided by the percentage exactly as before.
+const CACHE_PRESSURE_MIN_FREE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+
+/// Usage of the filesystem holding the cache dir.
+#[derive(Clone, Copy, Debug)]
+struct FsUsage {
+    used_pct: u8,
+    available_bytes: u64,
+}
+
+impl FsUsage {
+    /// Under pressure only when the volume is BOTH proportionally full and
+    /// short on absolute headroom.
+    fn under_pressure(self) -> bool {
+        self.used_pct >= CACHE_PRESSURE_MAX_USED_PCT
+            && self.available_bytes < CACHE_PRESSURE_MIN_FREE_BYTES
+    }
+}
+
+/// Usage of the filesystem holding `path`, or `None` when it can't be
+/// measured (non-unix, or `statvfs` failure).
 #[cfg(unix)]
-fn fs_used_percent(path: &std::path::Path) -> Option<u8> {
+fn fs_usage(path: &std::path::Path) -> Option<FsUsage> {
     use std::os::unix::ffi::OsStrExt as _;
 
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -212,11 +237,15 @@ fn fs_used_percent(path: &std::path::Path) -> Option<u8> {
     }
     let used = u128::from(stat.f_blocks.saturating_sub(stat.f_bavail));
     let pct = used * 100 / u128::from(stat.f_blocks);
-    u8::try_from(pct).ok()
+    let available = u64::try_from(u128::from(stat.f_bavail) * u128::from(stat.f_frsize)).ok()?;
+    Some(FsUsage {
+        used_pct: u8::try_from(pct).ok()?,
+        available_bytes: available,
+    })
 }
 
 #[cfg(not(unix))]
-fn fs_used_percent(_path: &std::path::Path) -> Option<u8> {
+fn fs_usage(_path: &std::path::Path) -> Option<FsUsage> {
     None
 }
 
@@ -229,35 +258,40 @@ fn fs_used_percent(_path: &std::path::Path) -> Option<u8> {
 /// so unchanged cells stay warm across a wipe and only the next *novel*
 /// compile pays a cold build.
 ///
-/// `used_pct_probe` measures the volume's usage; it is called once up front
+/// `usage_probe` measures the volume's usage; it is called once up front
 /// and again after the first tier to decide on escalation (injected so tests
 /// can drive both decisions without a real full disk).
-fn cache_pressure_valve(cache_dir: &std::path::Path, used_pct_probe: impl Fn() -> Option<u8>) {
-    let Some(used) = used_pct_probe() else {
+fn cache_pressure_valve(cache_dir: &std::path::Path, usage_probe: impl Fn() -> Option<FsUsage>) {
+    let Some(usage) = usage_probe() else {
         tracing::warn!("cache volume usage unmeasurable; pressure valve skipped");
         return;
     };
-    if used < CACHE_PRESSURE_MAX_USED_PCT {
-        tracing::info!(used_pct = used, "cache volume below pressure threshold");
+    if !usage.under_pressure() {
+        tracing::info!(
+            used_pct = usage.used_pct,
+            available_bytes = usage.available_bytes,
+            "cache volume below pressure threshold"
+        );
         return;
     }
 
     tracing::warn!(
-        used_pct = used,
+        used_pct = usage.used_pct,
+        available_bytes = usage.available_bytes,
         "cache volume under disk pressure — clearing rebuildable caches"
     );
     clear_cache_tier(cache_dir, &["targets", "workspaces"]);
 
     // Re-measure: only escalate to the registry cache if still under pressure.
-    match used_pct_probe() {
-        Some(still) if still >= CACHE_PRESSURE_MAX_USED_PCT => {
+    match usage_probe() {
+        Some(still) if still.under_pressure() => {
             tracing::warn!(
-                used_pct = still,
+                used_pct = still.used_pct,
                 "pressure persists — clearing the cargo registry cache too"
             );
             clear_cache_tier(cache_dir, &["cargo-home"]);
         }
-        Some(still) => tracing::info!(used_pct = still, "pressure relieved"),
+        Some(still) => tracing::info!(used_pct = still.used_pct, "pressure relieved"),
         None => {}
     }
 }
@@ -280,7 +314,18 @@ fn clear_cache_tier(cache_dir: &std::path::Path, subdirs: &[&str]) {
 
 #[cfg(test)]
 mod cache_pressure_tests {
-    use super::{cache_pressure_valve, fs_used_percent, CACHE_PRESSURE_MAX_USED_PCT};
+    use super::{
+        cache_pressure_valve, fs_usage, FsUsage, CACHE_PRESSURE_MAX_USED_PCT,
+        CACHE_PRESSURE_MIN_FREE_BYTES,
+    };
+
+    /// A volume that is proportionally full AND short on headroom.
+    fn pressured(used_pct: u8) -> FsUsage {
+        FsUsage {
+            used_pct,
+            available_bytes: 1024 * 1024 * 1024,
+        }
+    }
 
     fn seed_cache(root: &std::path::Path) {
         for sub in ["targets/a", "workspaces/b", "blobs", "cargo-home/reg"] {
@@ -294,7 +339,9 @@ mod cache_pressure_tests {
     fn below_threshold_wipes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         seed_cache(tmp.path());
-        cache_pressure_valve(tmp.path(), || Some(CACHE_PRESSURE_MAX_USED_PCT - 1));
+        cache_pressure_valve(tmp.path(), || {
+            Some(pressured(CACHE_PRESSURE_MAX_USED_PCT - 1))
+        });
         assert!(tmp.path().join("targets/a/artifact.rlib").exists());
         assert!(tmp.path().join("workspaces/b").exists());
     }
@@ -308,9 +355,9 @@ mod cache_pressure_tests {
         cache_pressure_valve(tmp.path(), || {
             calls.set(calls.get() + 1);
             if calls.get() == 1 {
-                Some(CACHE_PRESSURE_MAX_USED_PCT)
+                Some(pressured(CACHE_PRESSURE_MAX_USED_PCT))
             } else {
-                Some(40)
+                Some(pressured(40))
             }
         });
         assert!(!tmp.path().join("targets").exists());
@@ -325,7 +372,7 @@ mod cache_pressure_tests {
     fn persistent_pressure_escalates_to_the_registry_tier() {
         let tmp = tempfile::tempdir().unwrap();
         seed_cache(tmp.path());
-        cache_pressure_valve(tmp.path(), || Some(95));
+        cache_pressure_valve(tmp.path(), || Some(pressured(95)));
         assert!(!tmp.path().join("targets").exists());
         assert!(!tmp.path().join("cargo-home").exists());
         // Blobs survive even full escalation.
@@ -341,10 +388,28 @@ mod cache_pressure_tests {
     }
 
     #[test]
-    fn fs_used_percent_measures_real_filesystems() {
+    fn high_percentage_with_ample_headroom_wipes_nothing() {
+        // The dev-box case: a big disk past the percentage threshold but with
+        // hundreds of GB free is NOT under pressure (the wipe would only slow
+        // the next runs down; see CACHE_PRESSURE_MIN_FREE_BYTES).
         let tmp = tempfile::tempdir().unwrap();
-        let pct = fs_used_percent(tmp.path()).expect("statvfs should work on a tempdir");
-        assert!(pct <= 100);
+        seed_cache(tmp.path());
+        cache_pressure_valve(tmp.path(), || {
+            Some(FsUsage {
+                used_pct: 95,
+                available_bytes: CACHE_PRESSURE_MIN_FREE_BYTES * 20,
+            })
+        });
+        assert!(tmp.path().join("targets/a/artifact.rlib").exists());
+        assert!(tmp.path().join("cargo-home/reg").exists());
+    }
+
+    #[test]
+    fn fs_usage_measures_real_filesystems() {
+        let tmp = tempfile::tempdir().unwrap();
+        let usage = fs_usage(tmp.path()).expect("statvfs should work on a tempdir");
+        assert!(usage.used_pct <= 100);
+        assert!(usage.available_bytes > 0);
     }
 }
 
