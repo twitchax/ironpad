@@ -123,6 +123,11 @@ description = "Fail if the committed completions index is stale vs ironpad-cell'
 command = "python3"
 args = ["tools/gen-completions.py", "--check"]
 
+[tasks.warm-prod]
+description = "Converge a deployed instance's compile/check caches (post-deploy)"
+command = "bash"
+args = ["tools/warm-prod.sh"]
+
 [tasks.clippy]
 description = "Run clippy lints on all targets"
 command = "cargo"

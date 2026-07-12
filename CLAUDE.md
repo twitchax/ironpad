@@ -79,6 +79,7 @@ cargo make uat
 | `test-integration`   | Slow tests (requires wasm32 target)                |
 | `gen-completions`    | Regenerate Monaco completions index from ironpad-cell source |
 | `gen-completions-check` | Fail if the committed completions index is stale |
+| `warm-prod`          | Converge a deployed instance's compile/check caches (post-deploy) |
 | `ci`                 | fmt-check + gen-completions-check + clippy + test  |
 | `warmup-atomics`     | Pre-build std with atomics for rayon cells (one-time) |
 | `playwright-install` | Install Playwright browsers                        |
