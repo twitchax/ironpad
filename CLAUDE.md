@@ -56,7 +56,7 @@ cargo make dev
 # Run all tests
 cargo make test
 
-# Full CI (fmt-check + clippy + test)
+# Full CI (fmt-check + gen-completions-check + clippy + test)
 cargo make ci
 
 # UAT (the one true gate: CI + integration tests + Playwright)
@@ -77,7 +77,9 @@ cargo make uat
 | `clippy`             | Run clippy lints                                   |
 | `test`               | Unit/integration tests via cargo-nextest           |
 | `test-integration`   | Slow tests (requires wasm32 target)                |
-| `ci`                 | fmt-check + clippy + test                          |
+| `gen-completions`    | Regenerate Monaco completions index from ironpad-cell source |
+| `gen-completions-check` | Fail if the committed completions index is stale |
+| `ci`                 | fmt-check + gen-completions-check + clippy + test  |
 | `warmup-atomics`     | Pre-build std with atomics for rayon cells (one-time) |
 | `playwright-install` | Install Playwright browsers                        |
 | `playwright`         | Build CLI + run Playwright e2e tests               |

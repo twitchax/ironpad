@@ -118,6 +118,11 @@ description = "Regenerate the Monaco completions index from ironpad-cell's sourc
 command = "python3"
 args = ["tools/gen-completions.py"]
 
+[tasks.gen-completions-check]
+description = "Fail if the committed completions index is stale vs ironpad-cell's source"
+command = "python3"
+args = ["tools/gen-completions.py", "--check"]
+
 [tasks.clippy]
 description = "Run clippy lints on all targets"
 command = "cargo"
@@ -138,8 +143,8 @@ args = ["nextest", "run", "--run-ignored=ignored-only", "--no-tests=pass"]
 # ── CI (fmt-check + clippy + test) ───────────────────────────────────────────
 
 [tasks.ci]
-description = "Full CI check: fmt-check → clippy → test"
-dependencies = ["fmt-check", "clippy", "test"]
+description = "Full CI check: fmt-check → gen-completions-check → clippy → test"
+dependencies = ["fmt-check", "gen-completions-check", "clippy", "test"]
 
 # ── CLI Build ───────────────────────────────────────────────────────────
 

@@ -14,6 +14,7 @@ the output is committed so builds don't depend on this script.
 
 import json
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -138,6 +139,8 @@ def scan_file(path):
 
 
 def main():
+    check_only = "--check" in sys.argv[1:]
+
     items = []
     for path in sorted(SRC.glob("*.rs")):
         if path.name in SKIP_FILES:
@@ -154,7 +157,21 @@ def main():
         seen.add(key)
         unique.append(item)
 
-    OUT.write_text(json.dumps({"items": unique}, indent=1) + "\n")
+    rendered = json.dumps({"items": unique}, indent=1) + "\n"
+
+    if check_only:
+        current = OUT.read_text() if OUT.exists() else ""
+        if current != rendered:
+            print(
+                f"{OUT.relative_to(ROOT)} is stale: run `cargo make gen-completions` "
+                "and commit the result",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"{OUT.relative_to(ROOT)} is up to date ({len(unique)} items)")
+        return
+
+    OUT.write_text(rendered)
     print(f"wrote {OUT.relative_to(ROOT)} with {len(unique)} items")
 
 
