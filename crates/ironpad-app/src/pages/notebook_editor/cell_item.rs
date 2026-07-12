@@ -78,6 +78,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     let cell_status = RwSignal::new(CellStatus::Idle);
     let last_compile: RwSignal<Option<CompileResponse>> = RwSignal::new(None);
+    // Live check-on-type (PRD-0045): latest check diagnostics and a
+    // generation counter so superseded responses are discarded.
+    let last_check: RwSignal<Option<Vec<Diagnostic>>> = RwSignal::new(None);
+    let check_generation: RwSignal<u64> = RwSignal::new(0);
     let compile_time_ms: RwSignal<Option<f64>> = RwSignal::new(None);
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
 
@@ -595,6 +599,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
             let cell_id_for_exec = cid.clone();
 
+            let request_cargo_toml_for_warmth = current_cargo_toml.clone();
             let request = CompileRequest {
                 notebook_id: state.notebook_id.get_untracked(),
                 cell_id: cid,
@@ -625,6 +630,19 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         .diagnostics
                         .iter()
                         .any(|d| d.severity == Severity::Error);
+
+                    // A clean compile proves this manifest's dependency tree
+                    // is built — custom-deps cells become live-check eligible
+                    // (PRD-0045 warmth policy).
+                    if !has_errors {
+                        let key = warm_manifest_key(
+                            state.shared_cargo_toml.get_untracked().as_deref(),
+                            &request_cargo_toml_for_warmth,
+                        );
+                        state.warm_manifests.update(|set| {
+                            set.insert(key);
+                        });
+                    }
 
                     if !response.wasm_blob.is_empty() && !has_errors {
                         // Compilation succeeded — load and execute the WASM blob.
@@ -1056,50 +1074,21 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 return;
             };
 
-            let markers = js_sys::Array::new();
+            handle.set_markers(&diagnostics_to_markers(&response.diagnostics));
+        });
 
-            for diag in &response.diagnostics {
-                let severity: u32 = match diag.severity {
-                    Severity::Error => 8,
-                    Severity::Warning => 4,
-                    Severity::Note => 2,
-                };
-
-                // If spans are available, create a marker per span.
-                if diag.spans.is_empty() {
-                    continue;
-                }
-
-                for span in &diag.spans {
-                    let marker = js_sys::Object::new();
-                    let _ = js_sys::Reflect::set(
-                        &marker,
-                        &"startLineNumber".into(),
-                        &(span.line_start).into(),
-                    );
-                    let _ = js_sys::Reflect::set(
-                        &marker,
-                        &"startColumn".into(),
-                        &(span.col_start).into(),
-                    );
-                    let _ = js_sys::Reflect::set(
-                        &marker,
-                        &"endLineNumber".into(),
-                        &(span.line_end).into(),
-                    );
-                    let _ =
-                        js_sys::Reflect::set(&marker, &"endColumn".into(), &(span.col_end).into());
-
-                    // Use span label if available, else fall back to diagnostic message.
-                    let msg = span.label.as_deref().unwrap_or(&diag.message);
-                    let _ = js_sys::Reflect::set(&marker, &"message".into(), &msg.into());
-                    let _ = js_sys::Reflect::set(&marker, &"severity".into(), &severity.into());
-
-                    markers.push(&marker);
-                }
-            }
-
-            handle.set_markers(&markers);
+        // Live check-on-type markers (PRD-0045). Compile and check results
+        // share the marker surface; whichever finished last wins, which is
+        // also the freshest information.
+        Effect::new(move || {
+            let check = last_check.get();
+            let Some(handle) = source_handle.get_untracked() else {
+                return;
+            };
+            let Some(diagnostics) = check else {
+                return;
+            };
+            handle.set_markers(&diagnostics_to_markers(&diagnostics));
         });
     }
 
@@ -1119,6 +1108,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
         // Build a reusable JS function that reads the *current* source from
         // the signal and persists it via the model.
+        let cid_check = cell.id.clone();
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = source.get_untracked();
             let cid = cid_save.clone();
@@ -1139,6 +1129,21 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             {
                 persist_notebook(&state);
                 source_dirty.set(false);
+
+                // Live check-on-type (PRD-0045): the model is current here by
+                // construction (the save just landed), so this is the one
+                // honest moment to type-check what the user sees.
+                dispatch_live_check(
+                    &state,
+                    cid_check.clone(),
+                    is_markdown,
+                    is_shared,
+                    cell_status,
+                    source,
+                    cargo_toml,
+                    last_check,
+                    check_generation,
+                );
             }
         });
         let save_fn: js_sys::Function =
@@ -1747,4 +1752,160 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         </div>
         </div>
     }
+}
+
+// ── Live check-on-type helpers (PRD-0045) ───────────────────────────────────
+
+/// Key identifying a dependency manifest pair for the warmth policy.
+fn warm_manifest_key(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> String {
+    format!(
+        "{}\u{0}{}",
+        shared_cargo_toml.unwrap_or(""),
+        cell_cargo_toml
+    )
+}
+
+/// Convert preamble-adjusted diagnostics into Monaco model markers.
+#[cfg(feature = "hydrate")]
+fn diagnostics_to_markers(diagnostics: &[Diagnostic]) -> js_sys::Array {
+    let markers = js_sys::Array::new();
+
+    for diag in diagnostics {
+        let severity: u32 = match diag.severity {
+            Severity::Error => 8,
+            Severity::Warning => 4,
+            Severity::Note => 2,
+        };
+
+        for span in &diag.spans {
+            let marker = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(
+                &marker,
+                &"startLineNumber".into(),
+                &(span.line_start).into(),
+            );
+            let _ = js_sys::Reflect::set(&marker, &"startColumn".into(), &(span.col_start).into());
+            let _ = js_sys::Reflect::set(&marker, &"endLineNumber".into(), &(span.line_end).into());
+            let _ = js_sys::Reflect::set(&marker, &"endColumn".into(), &(span.col_end).into());
+
+            // Use span label if available, else fall back to diagnostic message.
+            let msg = span.label.as_deref().unwrap_or(&diag.message);
+            let _ = js_sys::Reflect::set(&marker, &"message".into(), &msg.into());
+            let _ = js_sys::Reflect::set(&marker, &"severity".into(), &severity.into());
+
+            markers.push(&marker);
+        }
+    }
+
+    markers
+}
+
+/// Fire a live check for `cid` if the cell is eligible, discarding the
+/// response unless it is still the newest dispatch (generation match).
+///
+/// Eligibility (PRD-0045): code cell, not shared, not mid-compile, warm by
+/// the manifest policy, and not referencing piped inputs that have no
+/// outputs yet (those would produce false "cannot find value cellN" noise —
+/// the run path cascades predecessors, a check cannot).
+#[cfg(feature = "hydrate")]
+#[allow(clippy::too_many_arguments)]
+fn dispatch_live_check(
+    state: &NotebookState,
+    cid: String,
+    is_markdown: bool,
+    is_shared: Signal<bool>,
+    cell_status: RwSignal<CellStatus>,
+    source: RwSignal<String>,
+    cargo_toml: RwSignal<String>,
+    last_check: RwSignal<Option<Vec<Diagnostic>>>,
+    check_generation: RwSignal<u64>,
+) {
+    use ironpad_common::{manifest_has_custom_deps, CheckStatus};
+
+    if is_markdown || is_shared.get_untracked() {
+        return;
+    }
+    if matches!(
+        cell_status.get_untracked(),
+        CellStatus::Compiling | CellStatus::Running
+    ) {
+        return;
+    }
+
+    let current_source = source.get_untracked();
+    let current_cargo_toml = cargo_toml.get_untracked();
+    let shared_cargo = state.shared_cargo_toml.get_untracked();
+
+    // Warmth policy: default deps are pre-checked by the image warmup;
+    // custom deps must have compiled once this session.
+    if manifest_has_custom_deps(shared_cargo.as_deref(), &current_cargo_toml) {
+        let key = warm_manifest_key(shared_cargo.as_deref(), &current_cargo_toml);
+        if !state
+            .warm_manifests
+            .with_untracked(|set| set.contains(&key))
+        {
+            return;
+        }
+    }
+
+    // Piped-input references with missing predecessor outputs would produce
+    // false errors; the compile path cascades, a check can't.
+    let previous_cell_types: Vec<String> = {
+        let cells = state.cells.get_untracked();
+        let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+        let outputs = state.cell_outputs.get_untracked();
+        let types: Vec<String> = cells[..my_idx]
+            .iter()
+            .map(|c| {
+                if c.cell_type == CellType::Code {
+                    outputs
+                        .get(&c.id)
+                        .and_then(|d| d.type_tag.clone())
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            })
+            .collect();
+        let references_pipes = (0..10).any(|i| current_source.contains(&format!("cell{i}")));
+        if references_pipes && types.iter().all(String::is_empty) {
+            return;
+        }
+        types
+    };
+
+    let generation = check_generation.get_untracked() + 1;
+    check_generation.set(generation);
+
+    let request = CompileRequest {
+        notebook_id: state.notebook_id.get_untracked(),
+        cell_id: cid,
+        source: current_source,
+        cargo_toml: current_cargo_toml,
+        previous_cell_types,
+        shared_cargo_toml: shared_cargo,
+        shared_source: state.notebook.with_untracked(|nb| {
+            nb.as_ref()
+                .and_then(ironpad_common::IronpadNotebook::effective_shared_source)
+        }),
+        force: false,
+    };
+
+    leptos::task::spawn_local(async move {
+        let Ok(response) = crate::server_fns::check_cell(request).await else {
+            // Transport/infra failure: leave existing markers alone.
+            return;
+        };
+        // A newer dispatch supersedes this one.
+        if check_generation.get_untracked() != generation {
+            return;
+        }
+        match response.status {
+            CheckStatus::Clean | CheckStatus::Errors => {
+                last_check.set(Some(response.diagnostics));
+            }
+            // Busy or cold: no information this round; keep current markers.
+            CheckStatus::Skipped | CheckStatus::TimedOut => {}
+        }
+    });
 }

@@ -101,6 +101,64 @@ pub struct ExecutionResult {
     pub ran_on_main_thread: bool,
 }
 
+// ── Live check (PRD-0045) ────────────────────────────────────────────────────
+
+/// Outcome bucket for a live `cargo check` of a cell.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CheckStatus {
+    /// Type-checked clean (no error diagnostics).
+    Clean,
+    /// Check completed with diagnostics.
+    Errors,
+    /// Skipped: the cell's compile lock was busy (a build/check in flight).
+    Skipped,
+    /// Exceeded the live-check time budget (expected for cold caches).
+    TimedOut,
+}
+
+/// Response for the live check-on-type server fn. Diagnostics are already
+/// preamble-adjusted to user-source coordinates, same as compile responses.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CheckResponse {
+    pub status: CheckStatus,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// True when the merged manifests declare any dependency beyond
+/// `ironpad-cell` — the static half of the live-check warmth policy
+/// (PRD-0045): the image warmup pre-checks the ironpad-cell tree, so a cell
+/// with no custom deps is warm by construction, while custom deps mean the
+/// first check would pay a full dependency build and must wait for a
+/// successful compile instead.
+///
+/// Line-based on purpose (mirrors the scaffold's dependency merging): a dep
+/// is any non-comment `name = ...` line inside a `[dependencies]` section.
+#[must_use]
+pub fn manifest_has_custom_deps(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> bool {
+    fn has_custom(toml: &str) -> bool {
+        let mut in_deps = false;
+        for line in toml.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_deps = trimmed == "[dependencies]";
+                continue;
+            }
+            if !in_deps || trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let Some(name) = trimmed.split('=').next() else {
+                continue;
+            };
+            let name = name.trim().trim_matches('"');
+            if !name.is_empty() && name != "ironpad-cell" {
+                return true;
+            }
+        }
+        false
+    }
+    shared_cargo_toml.is_some_and(has_custom) || has_custom(cell_cargo_toml)
+}
+
 // ── Cell Type ────────────────────────────────────────────────────────────────
 
 /// Distinguishes code cells (compiled to WASM) from markdown documentation cells.
@@ -279,6 +337,34 @@ pub struct PublicNotebookSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_custom_deps_classification() {
+        // The static half of the live-check warmth policy (PRD-0045).
+        assert!(!manifest_has_custom_deps(None, "[dependencies]"));
+        assert!(!manifest_has_custom_deps(None, ""));
+        assert!(!manifest_has_custom_deps(
+            Some(DEFAULT_SHARED_CARGO_TOML),
+            "[dependencies]\n# serde = \"1\" (commented out)",
+        ));
+        assert!(!manifest_has_custom_deps(
+            None,
+            "[dependencies]\nironpad-cell = { path = \"x\" }",
+        ));
+        assert!(manifest_has_custom_deps(
+            None,
+            "[dependencies]\nserde_json = \"1\"",
+        ));
+        assert!(manifest_has_custom_deps(
+            Some("[dependencies]\nrayon = \"1\""),
+            "[dependencies]",
+        ));
+        // Deps outside a [dependencies] section don't count.
+        assert!(!manifest_has_custom_deps(
+            None,
+            "[profile.release]\nopt-level = 1",
+        ));
+    }
 
     #[test]
     fn cell_without_shared_field_defaults_to_false() {

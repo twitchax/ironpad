@@ -66,6 +66,29 @@
       { label: "iflet", insert: "if let ${1:pattern} = ${2:expr} {\n\t$0\n}", doc: "If-let expression" },
     ];
 
+    // Generated API-surface index (tools/gen-completions.py over the
+    // ironpad-cell source): real signatures + doc first-paragraphs for the
+    // prelude cells actually see. Loaded once, best-effort — the curated
+    // lists below still work if the fetch fails.
+    var preludeIndex = [];
+    fetch("/monaco/completions-index.json")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (data && data.items) preludeIndex = data.items;
+      })
+      .catch(function () {});
+
+    function preludeKind(Kind, kind) {
+      switch (kind) {
+        case "method": return Kind.Method;
+        case "struct": return Kind.Struct;
+        case "enum": return Kind.Enum;
+        case "interface": return Kind.Interface;
+        case "constant": return Kind.Constant;
+        default: return Kind.Function;
+      }
+    }
+
     var ironpadHelpers = [
       { label: "CellOutput::text", insert: 'CellOutput::text("${1:text}")', doc: "Create text cell output" },
       { label: "CellOutput::html", insert: 'CellOutput::html("${1:html}")', doc: "Create HTML cell output" },
@@ -94,6 +117,40 @@
       }
       return null;
     }
+
+    monaco.languages.registerHoverProvider("rust", {
+      provideHover: function (model, position) {
+        var word = model.getWordAtPosition(position);
+        if (!word || preludeIndex.length === 0) return null;
+
+        // Prefer a qualified match (Type::word or module::word) using the
+        // token to the left of the word, then fall back to bare-name match.
+        var line = model.getLineContent(position.lineNumber);
+        var before = line.slice(0, word.startColumn - 1);
+        var qual = before.match(/([A-Za-z_][A-Za-z0-9_]*)::$/);
+        var qualified = qual ? qual[1] + "::" + word.word : null;
+
+        var hit = null;
+        for (var i = 0; i < preludeIndex.length; i++) {
+          var item = preludeIndex[i];
+          if (qualified && item.label === qualified) { hit = item; break; }
+          if (!hit && (item.label === word.word || item.label.endsWith("::" + word.word))) {
+            hit = item;
+          }
+        }
+        if (!hit) return null;
+
+        var contents = [{ value: "```rust\n" + hit.detail + "\n```" }];
+        if (hit.doc) contents.push({ value: hit.doc });
+        return {
+          range: new monaco.Range(
+            position.lineNumber, word.startColumn,
+            position.lineNumber, word.endColumn
+          ),
+          contents: contents,
+        };
+      },
+    });
 
     monaco.languages.registerCompletionItemProvider("rust", {
       triggerCharacters: [".", ":"],
@@ -150,6 +207,20 @@
             documentation: sn.doc,
             range: range,
             sortText: "3_" + sn.label,
+          });
+        }
+
+        // Generated prelude index: the full ironpad-cell API surface.
+        for (var p = 0; p < preludeIndex.length; p++) {
+          var pi = preludeIndex[p];
+          suggestions.push({
+            label: pi.label,
+            kind: preludeKind(Kind, pi.kind),
+            insertText: pi.insert,
+            detail: pi.detail,
+            documentation: pi.doc || "",
+            range: range,
+            sortText: "1_" + pi.label,
           });
         }
 

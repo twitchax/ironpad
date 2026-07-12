@@ -1,0 +1,928 @@
+{
+ "items": [
+  {
+   "label": "blocking::sleep_ms",
+   "insert": "blocking::sleep_ms",
+   "kind": "function",
+   "detail": "pub fn sleep_ms(ms: f64)",
+   "doc": "Block for `ms` milliseconds."
+  },
+  {
+   "label": "blocking::fetch_bytes",
+   "insert": "blocking::fetch_bytes",
+   "kind": "function",
+   "detail": "pub fn fetch_bytes(url: &str) -> Result<Vec<u8>, String>",
+   "doc": "Perform a blocking GET request, returning the raw response body."
+  },
+  {
+   "label": "blocking::fetch_text",
+   "insert": "blocking::fetch_text",
+   "kind": "function",
+   "detail": "pub fn fetch_text(url: &str) -> Result<String, String>",
+   "doc": "Perform a blocking GET request, returning the response body as text."
+  },
+  {
+   "label": "blocking::fetch_json",
+   "insert": "blocking::fetch_json",
+   "kind": "function",
+   "detail": "pub fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String>",
+   "doc": "Perform a blocking GET request and deserialize the JSON response."
+  },
+  {
+   "label": "Canvas",
+   "insert": "Canvas",
+   "kind": "struct",
+   "detail": "pub struct Canvas",
+   "doc": "A 2D pixel buffer that renders as a bitmap `<img>` tag."
+  },
+  {
+   "label": "Canvas::new",
+   "insert": "Canvas::new",
+   "kind": "method",
+   "detail": "pub fn new(width: u32, height: u32) -> Self",
+   "doc": "Create a new canvas filled with black."
+  },
+  {
+   "label": "Canvas::from_pixels",
+   "insert": "Canvas::from_pixels",
+   "kind": "method",
+   "detail": "pub fn from_pixels(width: u32, height: u32, pixels: Vec<(u8, u8, u8)>) -> Self",
+   "doc": "Create a canvas from a vector of `(r, g, b)` tuples."
+  },
+  {
+   "label": "Canvas::from_fn",
+   "insert": "Canvas::from_fn",
+   "kind": "method",
+   "detail": "pub fn from_fn(width: u32, height: u32, mut f: impl FnMut(u32, u32) -> (u8, u8, u8)) -> Self",
+   "doc": "Create a canvas by evaluating a function at each pixel."
+  },
+  {
+   "label": "Canvas::set_pixel",
+   "insert": "set_pixel",
+   "kind": "method",
+   "detail": "pub fn set_pixel(&mut self, x: u32, y: u32, color: (u8, u8, u8))",
+   "doc": "Set the color of a single pixel."
+  },
+  {
+   "label": "Canvas::get_pixel",
+   "insert": "get_pixel",
+   "kind": "method",
+   "detail": "pub fn get_pixel(&self, x: u32, y: u32) -> (u8, u8, u8)",
+   "doc": "Get the color of a single pixel."
+  },
+  {
+   "label": "Canvas::fill",
+   "insert": "fill",
+   "kind": "method",
+   "detail": "pub fn fill(&mut self, color: (u8, u8, u8))",
+   "doc": "Fill the entire canvas with a single color."
+  },
+  {
+   "label": "Canvas::width",
+   "insert": "width",
+   "kind": "method",
+   "detail": "pub fn width(&self) -> u32",
+   "doc": "Canvas width in pixels."
+  },
+  {
+   "label": "Canvas::height",
+   "insert": "height",
+   "kind": "method",
+   "detail": "pub fn height(&self) -> u32",
+   "doc": "Canvas height in pixels."
+  },
+  {
+   "label": "Canvas::pixels",
+   "insert": "pixels",
+   "kind": "method",
+   "detail": "pub fn pixels(&self) -> &[u8]",
+   "doc": "Raw RGB pixel bytes (flat, row-major)."
+  },
+  {
+   "label": "Canvas::into_pixels",
+   "insert": "into_pixels",
+   "kind": "method",
+   "detail": "pub fn into_pixels(self) -> Vec<u8>",
+   "doc": "Consume the canvas and return the raw RGB pixel bytes."
+  },
+  {
+   "label": "Canvas::to_bmp",
+   "insert": "to_bmp",
+   "kind": "method",
+   "detail": "pub fn to_bmp(&self) -> Vec<u8>",
+   "doc": "Encode the pixel buffer as a 24-bit BMP (top-down, no compression)."
+  },
+  {
+   "label": "Canvas::to_html",
+   "insert": "to_html",
+   "kind": "method",
+   "detail": "pub fn to_html(&self) -> String",
+   "doc": "Render the canvas as an HTML `<img>` tag with a base64 BMP data URL."
+  },
+  {
+   "label": "Animation",
+   "insert": "Animation",
+   "kind": "struct",
+   "detail": "pub struct Animation",
+   "doc": "A sequence of [`Canvas`] frames with a target frame rate."
+  },
+  {
+   "label": "Animation::new",
+   "insert": "Animation::new",
+   "kind": "method",
+   "detail": "pub fn new(frames: Vec<Canvas>, fps: u32) -> Self",
+   "doc": "Create a new animation from a list of frames and a target FPS."
+  },
+  {
+   "label": "Animation::frames",
+   "insert": "frames",
+   "kind": "method",
+   "detail": "pub fn frames(&self) -> &[Canvas]",
+   "doc": "The animation frames."
+  },
+  {
+   "label": "Animation::fps",
+   "insert": "fps",
+   "kind": "method",
+   "detail": "pub fn fps(&self) -> u32",
+   "doc": "Target frames per second."
+  },
+  {
+   "label": "gpu_available",
+   "insert": "gpu_available",
+   "kind": "function",
+   "detail": "pub fn gpu_available() -> bool",
+   "doc": "Check if WebGPU is available in the current execution environment."
+  },
+  {
+   "label": "GpuCanvas",
+   "insert": "GpuCanvas",
+   "kind": "struct",
+   "detail": "pub struct GpuCanvas",
+   "doc": "A compute-shader-driven canvas that executes on the GPU via WebGPU."
+  },
+  {
+   "label": "GpuCanvas::new",
+   "insert": "GpuCanvas::new",
+   "kind": "method",
+   "detail": "pub fn new(width: u32, height: u32, shader: &str, uniforms: &[f32]) -> Self",
+   "doc": "Create a new GPU canvas with a WGSL compute shader."
+  },
+  {
+   "label": "GpuCanvas::with_fallback",
+   "insert": "GpuCanvas::with_fallback",
+   "kind": "method",
+   "detail": "pub fn with_fallback(mut self, f: impl Fn(u32, u32, &[f32]) -> (u8, u8, u8) + 'static) -> Self",
+   "doc": "Attach a CPU fallback closure for when WebGPU is unavailable."
+  },
+  {
+   "label": "GpuCanvas::render",
+   "insert": "render",
+   "kind": "method",
+   "detail": "pub fn render(self) -> Canvas",
+   "doc": "Render the GPU canvas, returning a standard [`Canvas`]."
+  },
+  {
+   "label": "GpuSimulation",
+   "insert": "GpuSimulation",
+   "kind": "interface",
+   "detail": "pub trait GpuSimulation: Sized + 'static",
+   "doc": "Trait for GPU-driven live simulations."
+  },
+  {
+   "label": "get",
+   "insert": "get",
+   "kind": "function",
+   "detail": "pub async fn get(url: &str) -> Result<String, String>",
+   "doc": "Perform a GET request and return the response body as a String."
+  },
+  {
+   "label": "get_json",
+   "insert": "get_json",
+   "kind": "function",
+   "detail": "pub async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String>",
+   "doc": "Perform a GET request and deserialize the JSON response."
+  },
+  {
+   "label": "post_json",
+   "insert": "post_json",
+   "kind": "function",
+   "detail": "pub async fn post_json<B: serde::Serialize, R: serde::de::DeserializeOwned>( url: &str, body: &B, ) -> Result<R, String>",
+   "doc": "Perform a POST request with a JSON body."
+  },
+  {
+   "label": "host_message",
+   "insert": "host_message",
+   "kind": "function",
+   "detail": "pub fn host_message(msg: &str)",
+   "doc": "Send a JSON message to the host runtime during cell execution."
+  },
+  {
+   "label": "host_message_json",
+   "insert": "host_message_json",
+   "kind": "function",
+   "detail": "pub fn host_message_json<T: serde::Serialize>(value: &T)",
+   "doc": "Send a structured message to the host runtime."
+  },
+  {
+   "label": "CellInput",
+   "insert": "CellInput",
+   "kind": "struct",
+   "detail": "pub struct CellInput<'a>",
+   "doc": "Read-only wrapper around the raw bytes produced by the previous cell."
+  },
+  {
+   "label": "CellInput::new",
+   "insert": "CellInput::new",
+   "kind": "method",
+   "detail": "pub fn new(bytes: &'a [u8]) -> Self",
+   "doc": "Create a `CellInput` from a raw byte slice."
+  },
+  {
+   "label": "CellInput::deserialize",
+   "insert": "CellInput::deserialize",
+   "kind": "method",
+   "detail": "pub fn deserialize<T: serde::de::DeserializeOwned>( &self, ) -> Result<T, bincode::error::DecodeError>",
+   "doc": "Deserialize the input bytes into `T` using bincode + serde."
+  },
+  {
+   "label": "CellInput::is_empty",
+   "insert": "is_empty",
+   "kind": "method",
+   "detail": "pub fn is_empty(&self) -> bool",
+   "doc": "Returns `true` when no data was passed from a preceding cell."
+  },
+  {
+   "label": "CellInput::raw",
+   "insert": "raw",
+   "kind": "method",
+   "detail": "pub fn raw(&self) -> &[u8]",
+   "doc": "Access the underlying byte slice directly."
+  },
+  {
+   "label": "CellInputs",
+   "insert": "CellInputs",
+   "kind": "struct",
+   "detail": "pub struct CellInputs",
+   "doc": "Container for all previous cell outputs, passed to a cell's `cell_main` function."
+  },
+  {
+   "label": "CellInputs::from_raw",
+   "insert": "CellInputs::from_raw",
+   "kind": "method",
+   "detail": "pub fn from_raw(bytes: &[u8]) -> Self",
+   "doc": "Decode from the length-prefixed wire format. If `bytes` is empty, returns an empty `CellInputs`."
+  },
+  {
+   "label": "CellInputs::serialize",
+   "insert": "CellInputs::serialize",
+   "kind": "method",
+   "detail": "pub fn serialize(outputs: &[&[u8]]) -> Vec<u8>",
+   "doc": "Encode a list of output byte slices into the wire format. This is used by the frontend to package all previous cell outputs."
+  },
+  {
+   "label": "CellInputs::get",
+   "insert": "get",
+   "kind": "method",
+   "detail": "pub fn get(&self, index: usize) -> CellInput<'_>",
+   "doc": "Get the output at `index` as a `CellInput`. Returns an empty `CellInput` if `index` is out of bounds."
+  },
+  {
+   "label": "CellInputs::last",
+   "insert": "last",
+   "kind": "method",
+   "detail": "pub fn last(&self) -> CellInput<'_>",
+   "doc": "Get the last output as a `CellInput`. Returns an empty `CellInput` if there are no outputs."
+  },
+  {
+   "label": "CellInputs::len",
+   "insert": "len",
+   "kind": "method",
+   "detail": "pub fn len(&self) -> usize",
+   "doc": "Number of cell outputs."
+  },
+  {
+   "label": "CellInputs::is_empty",
+   "insert": "is_empty",
+   "kind": "method",
+   "detail": "pub fn is_empty(&self) -> bool",
+   "doc": "Whether there are no cell outputs."
+  },
+  {
+   "label": "DisplayPanel",
+   "insert": "DisplayPanel",
+   "kind": "enum",
+   "detail": "pub enum DisplayPanel",
+   "doc": "A single display panel in cell output. Multiple panels can be shown simultaneously."
+  },
+  {
+   "label": "Svg",
+   "insert": "Svg",
+   "kind": "struct",
+   "detail": "pub struct Svg(pub String)",
+   "doc": "SVG content for rich display output. Use in tuples: `(data, Svg(svg_string))`"
+  },
+  {
+   "label": "Html",
+   "insert": "Html",
+   "kind": "struct",
+   "detail": "pub struct Html(pub String)",
+   "doc": "HTML content for rich display output. Use in tuples: `(data, Html(html_string))`"
+  },
+  {
+   "label": "Table",
+   "insert": "Table",
+   "kind": "struct",
+   "detail": "pub struct Table",
+   "doc": "Structured table for rich display output. Use in tuples: `(data, Table::new(headers, rows))`"
+  },
+  {
+   "label": "Table::new",
+   "insert": "Table::new",
+   "kind": "method",
+   "detail": "pub fn new(headers: Vec<impl Into<String>>, rows: Vec<Vec<impl Into<String>>>) -> Self",
+   "doc": ""
+  },
+  {
+   "label": "Md",
+   "insert": "Md",
+   "kind": "struct",
+   "detail": "pub struct Md(pub String)",
+   "doc": "Markdown content for rich display output. Use in tuples: `(data, Md(md_string))`"
+  },
+  {
+   "label": "Json",
+   "insert": "Json",
+   "kind": "struct",
+   "detail": "pub struct Json(pub serde_json::Value)",
+   "doc": "JSON content for syntax-highlighted display output."
+  },
+  {
+   "label": "CellOutput",
+   "insert": "CellOutput",
+   "kind": "struct",
+   "detail": "pub struct CellOutput",
+   "doc": "Output produced by a cell."
+  },
+  {
+   "label": "CellOutput::new",
+   "insert": "CellOutput::new",
+   "kind": "method",
+   "detail": "pub fn new<T: serde::Serialize>(value: &T) -> Result<Self, bincode::error::EncodeError>",
+   "doc": "Serialize `value` with bincode and store the bytes as output."
+  },
+  {
+   "label": "CellOutput::with_display",
+   "insert": "CellOutput::with_display",
+   "kind": "method",
+   "detail": "pub fn with_display(mut self, text: String) -> Self",
+   "doc": "Append a text panel to this output."
+  },
+  {
+   "label": "CellOutput::with_text",
+   "insert": "CellOutput::with_text",
+   "kind": "method",
+   "detail": "pub fn with_text(mut self, s: impl Into<String>) -> Self",
+   "doc": "Append a text panel."
+  },
+  {
+   "label": "CellOutput::with_html",
+   "insert": "CellOutput::with_html",
+   "kind": "method",
+   "detail": "pub fn with_html(mut self, s: impl Into<String>) -> Self",
+   "doc": "Append an HTML panel."
+  },
+  {
+   "label": "CellOutput::with_svg",
+   "insert": "CellOutput::with_svg",
+   "kind": "method",
+   "detail": "pub fn with_svg(mut self, s: impl Into<String>) -> Self",
+   "doc": "Append an SVG panel."
+  },
+  {
+   "label": "CellOutput::with_markdown",
+   "insert": "CellOutput::with_markdown",
+   "kind": "method",
+   "detail": "pub fn with_markdown(mut self, s: impl Into<String>) -> Self",
+   "doc": "Append a Markdown panel."
+  },
+  {
+   "label": "CellOutput::empty",
+   "insert": "CellOutput::empty",
+   "kind": "method",
+   "detail": "pub fn empty() -> Self",
+   "doc": "Create an empty output (no data, no display panels)."
+  },
+  {
+   "label": "CellOutput::text",
+   "insert": "CellOutput::text",
+   "kind": "method",
+   "detail": "pub fn text(msg: impl Into<String>) -> Self",
+   "doc": "Create a display-only output with a single text panel and no binary payload."
+  },
+  {
+   "label": "CellOutput::html",
+   "insert": "CellOutput::html",
+   "kind": "method",
+   "detail": "pub fn html(content: impl Into<String>) -> Self",
+   "doc": "Create a display-only output with a single HTML panel and no binary payload."
+  },
+  {
+   "label": "CellOutput::svg",
+   "insert": "CellOutput::svg",
+   "kind": "method",
+   "detail": "pub fn svg(content: impl Into<String>) -> Self",
+   "doc": "Create a display-only output with a single SVG panel and no binary payload."
+  },
+  {
+   "label": "CellOutput::markdown",
+   "insert": "CellOutput::markdown",
+   "kind": "method",
+   "detail": "pub fn markdown(content: impl Into<String>) -> Self",
+   "doc": "Create a display-only output with a single Markdown panel and no binary payload."
+  },
+  {
+   "label": "IntoPanels",
+   "insert": "IntoPanels",
+   "kind": "interface",
+   "detail": "pub trait IntoPanels",
+   "doc": "Trait for types that can produce display panels."
+  },
+  {
+   "label": "TypeTag",
+   "insert": "TypeTag",
+   "kind": "interface",
+   "detail": "pub trait TypeTag",
+   "doc": "Trait for types that have a known Rust type tag for scaffold injection."
+  },
+  {
+   "label": "Simulation",
+   "insert": "Simulation",
+   "kind": "interface",
+   "detail": "pub trait Simulation: Sized + 'static",
+   "doc": "Trait for live simulations that produce frames on each tick."
+  },
+  {
+   "label": "SimSliderMeta",
+   "insert": "SimSliderMeta",
+   "kind": "struct",
+   "detail": "pub struct SimSliderMeta",
+   "doc": "Metadata for a simulation slider, declaring a bus key and value range."
+  },
+  {
+   "label": "SimulationMeta",
+   "insert": "SimulationMeta",
+   "kind": "struct",
+   "detail": "pub struct SimulationMeta",
+   "doc": "Metadata emitted by the scaffold for a [`Simulation`] cell."
+  },
+  {
+   "label": "TickResult",
+   "insert": "TickResult",
+   "kind": "struct",
+   "detail": "pub struct TickResult",
+   "doc": "FFI-safe return type for the `cell_tick` export."
+  },
+  {
+   "label": "LiveView",
+   "insert": "LiveView",
+   "kind": "interface",
+   "detail": "pub trait LiveView: Sized + 'static",
+   "doc": "Trait for live views that produce text/HTML/Markdown on each tick."
+  },
+  {
+   "label": "LiveContent",
+   "insert": "LiveContent",
+   "kind": "enum",
+   "detail": "pub enum LiveContent",
+   "doc": "Content produced by a [`LiveView`] tick."
+  },
+  {
+   "label": "LiveViewMeta",
+   "insert": "LiveViewMeta",
+   "kind": "struct",
+   "detail": "pub struct LiveViewMeta",
+   "doc": "Metadata emitted by the scaffold for a [`LiveView`] cell."
+  },
+  {
+   "label": "LiveTickResult",
+   "insert": "LiveTickResult",
+   "kind": "struct",
+   "detail": "pub struct LiveTickResult",
+   "doc": "FFI-safe return type for the `cell_tick` export of a `LiveView` cell."
+  },
+  {
+   "label": "CellResult",
+   "insert": "CellResult",
+   "kind": "struct",
+   "detail": "pub struct CellResult",
+   "doc": "FFI-compatible result struct returned from `cell_main`."
+  },
+  {
+   "label": "Plot",
+   "insert": "Plot",
+   "kind": "struct",
+   "detail": "pub struct Plot",
+   "doc": "Builder for creating charts rendered to SVG."
+  },
+  {
+   "label": "Plot::line",
+   "insert": "Plot::line",
+   "kind": "method",
+   "detail": "pub fn line(data: &[(f64, f64)]) -> Self",
+   "doc": "Create a line chart from `(x, y)` data points."
+  },
+  {
+   "label": "Plot::bar",
+   "insert": "Plot::bar",
+   "kind": "method",
+   "detail": "pub fn bar(data: &[(&str, f64)]) -> Self",
+   "doc": "Create a bar chart from `(label, value)` data points."
+  },
+  {
+   "label": "Plot::scatter",
+   "insert": "Plot::scatter",
+   "kind": "method",
+   "detail": "pub fn scatter(data: &[(f64, f64)]) -> Self",
+   "doc": "Create a scatter plot from `(x, y)` data points."
+  },
+  {
+   "label": "Plot::title",
+   "insert": "Plot::title",
+   "kind": "method",
+   "detail": "pub fn title(mut self, title: &str) -> Self",
+   "doc": "Set the chart title."
+  },
+  {
+   "label": "Plot::x_label",
+   "insert": "Plot::x_label",
+   "kind": "method",
+   "detail": "pub fn x_label(mut self, label: &str) -> Self",
+   "doc": "Set the x-axis label."
+  },
+  {
+   "label": "Plot::y_label",
+   "insert": "Plot::y_label",
+   "kind": "method",
+   "detail": "pub fn y_label(mut self, label: &str) -> Self",
+   "doc": "Set the y-axis label."
+  },
+  {
+   "label": "Plot::size",
+   "insert": "Plot::size",
+   "kind": "method",
+   "detail": "pub fn size(mut self, width: u32, height: u32) -> Self",
+   "doc": "Set the chart dimensions in pixels (default: 800\u00d7400)."
+  },
+  {
+   "label": "Plot::tooltips",
+   "insert": "Plot::tooltips",
+   "kind": "method",
+   "detail": "pub fn tooltips(mut self, enabled: bool) -> Self",
+   "doc": "Enable native SVG tooltips on data points."
+  },
+  {
+   "label": "Plot::point_labels",
+   "insert": "Plot::point_labels",
+   "kind": "method",
+   "detail": "pub fn point_labels(mut self, enabled: bool) -> Self",
+   "doc": "Show data values as text labels on each data point."
+  },
+  {
+   "label": "sim::emit",
+   "insert": "sim::emit",
+   "kind": "function",
+   "detail": "pub fn emit<T: serde::Serialize>(key: &str, value: &T)",
+   "doc": "Emit a named value to the simulation bus."
+  },
+  {
+   "label": "sim::read",
+   "insert": "sim::read",
+   "kind": "function",
+   "detail": "pub fn read<T: serde::de::DeserializeOwned>(key: &str) -> Option<T>",
+   "doc": "Read the latest value emitted for `key`."
+  },
+  {
+   "label": "sim::read_all",
+   "insert": "sim::read_all",
+   "kind": "function",
+   "detail": "pub fn read_all<T: serde::de::DeserializeOwned>(key: &str) -> Vec<T>",
+   "doc": "Read all buffered values for `key` (ring buffer, oldest-first)."
+  },
+  {
+   "label": "Stopwatch",
+   "insert": "Stopwatch",
+   "kind": "struct",
+   "detail": "pub struct Stopwatch",
+   "doc": "Cross-platform stopwatch that works on both native and `wasm32` targets."
+  },
+  {
+   "label": "Stopwatch::new",
+   "insert": "Stopwatch::new",
+   "kind": "method",
+   "detail": "pub fn new() -> Self",
+   "doc": "Start a new stopwatch."
+  },
+  {
+   "label": "Stopwatch::elapsed_ms",
+   "insert": "elapsed_ms",
+   "kind": "method",
+   "detail": "pub fn elapsed_ms(&self) -> f64",
+   "doc": "Milliseconds elapsed since the stopwatch was created."
+  },
+  {
+   "label": "Stopwatch::elapsed_secs",
+   "insert": "elapsed_secs",
+   "kind": "method",
+   "detail": "pub fn elapsed_secs(&self) -> f64",
+   "doc": "Seconds elapsed since the stopwatch was created."
+  },
+  {
+   "label": "Slider",
+   "insert": "Slider",
+   "kind": "struct",
+   "detail": "pub struct Slider",
+   "doc": "Builder for a range slider widget producing an `f64` value."
+  },
+  {
+   "label": "ui::slider",
+   "insert": "ui::slider",
+   "kind": "function",
+   "detail": "pub fn slider(name: &str, min: f64, max: f64) -> Slider",
+   "doc": "Create a slider widget with the given range and a bus key name."
+  },
+  {
+   "label": "Slider::step",
+   "insert": "Slider::step",
+   "kind": "method",
+   "detail": "pub fn step(mut self, step: f64) -> Self",
+   "doc": "Set the step increment."
+  },
+  {
+   "label": "Slider::label",
+   "insert": "Slider::label",
+   "kind": "method",
+   "detail": "pub fn label(mut self, label: &str) -> Self",
+   "doc": "Set an optional label."
+  },
+  {
+   "label": "Slider::default_value",
+   "insert": "Slider::default_value",
+   "kind": "method",
+   "detail": "pub fn default_value(mut self, value: f64) -> Self",
+   "doc": "Override the default value."
+  },
+  {
+   "label": "Dropdown",
+   "insert": "Dropdown",
+   "kind": "struct",
+   "detail": "pub struct Dropdown",
+   "doc": "Builder for a dropdown select widget producing a `String` value."
+  },
+  {
+   "label": "ui::dropdown",
+   "insert": "ui::dropdown",
+   "kind": "function",
+   "detail": "pub fn dropdown(options: &[&str]) -> Dropdown",
+   "doc": "Create a dropdown widget with the given options."
+  },
+  {
+   "label": "Dropdown::label",
+   "insert": "Dropdown::label",
+   "kind": "method",
+   "detail": "pub fn label(mut self, label: &str) -> Self",
+   "doc": "Set an optional label."
+  },
+  {
+   "label": "Dropdown::default_value",
+   "insert": "Dropdown::default_value",
+   "kind": "method",
+   "detail": "pub fn default_value(mut self, value: &str) -> Self",
+   "doc": "Override the default selected value."
+  },
+  {
+   "label": "Dropdown::name",
+   "insert": "Dropdown::name",
+   "kind": "method",
+   "detail": "pub fn name(mut self, key: &str) -> Self",
+   "doc": "Set a simulation-bus name so the selected index is published as `f64`."
+  },
+  {
+   "label": "Checkbox",
+   "insert": "Checkbox",
+   "kind": "struct",
+   "detail": "pub struct Checkbox",
+   "doc": "Builder for a checkbox widget producing a `bool` value."
+  },
+  {
+   "label": "ui::checkbox",
+   "insert": "ui::checkbox",
+   "kind": "function",
+   "detail": "pub fn checkbox(name: &str) -> Checkbox",
+   "doc": "Create a checkbox widget with the given bus key name."
+  },
+  {
+   "label": "Checkbox::label",
+   "insert": "Checkbox::label",
+   "kind": "method",
+   "detail": "pub fn label(mut self, label: &str) -> Self",
+   "doc": "Set a custom display label (defaults to the name)."
+  },
+  {
+   "label": "Checkbox::default_value",
+   "insert": "Checkbox::default_value",
+   "kind": "method",
+   "detail": "pub fn default_value(mut self, value: bool) -> Self",
+   "doc": "Override the default checked state."
+  },
+  {
+   "label": "TextInput",
+   "insert": "TextInput",
+   "kind": "struct",
+   "detail": "pub struct TextInput",
+   "doc": "Builder for a text input widget producing a `String` value."
+  },
+  {
+   "label": "ui::text_input",
+   "insert": "ui::text_input",
+   "kind": "function",
+   "detail": "pub fn text_input(placeholder: &str) -> TextInput",
+   "doc": "Create a text input widget with the given placeholder."
+  },
+  {
+   "label": "TextInput::label",
+   "insert": "TextInput::label",
+   "kind": "method",
+   "detail": "pub fn label(mut self, label: &str) -> Self",
+   "doc": "Set an optional label."
+  },
+  {
+   "label": "TextInput::default_value",
+   "insert": "TextInput::default_value",
+   "kind": "method",
+   "detail": "pub fn default_value(mut self, value: &str) -> Self",
+   "doc": "Override the default text value."
+  },
+  {
+   "label": "Number",
+   "insert": "Number",
+   "kind": "struct",
+   "detail": "pub struct Number",
+   "doc": "Builder for a number input widget producing an `f64` value."
+  },
+  {
+   "label": "ui::number",
+   "insert": "ui::number",
+   "kind": "function",
+   "detail": "pub fn number(min: f64, max: f64) -> Number",
+   "doc": "Create a number input widget with the given range."
+  },
+  {
+   "label": "Number::step",
+   "insert": "Number::step",
+   "kind": "method",
+   "detail": "pub fn step(mut self, step: f64) -> Self",
+   "doc": "Set the step increment."
+  },
+  {
+   "label": "Number::label",
+   "insert": "Number::label",
+   "kind": "method",
+   "detail": "pub fn label(mut self, label: &str) -> Self",
+   "doc": "Set an optional label."
+  },
+  {
+   "label": "Number::default_value",
+   "insert": "Number::default_value",
+   "kind": "method",
+   "detail": "pub fn default_value(mut self, value: f64) -> Self",
+   "doc": "Override the default value."
+  },
+  {
+   "label": "Switch",
+   "insert": "Switch",
+   "kind": "struct",
+   "detail": "pub struct Switch",
+   "doc": "Builder for a toggle switch widget producing a `bool` value."
+  },
+  {
+   "label": "ui::switch",
+   "insert": "ui::switch",
+   "kind": "function",
+   "detail": "pub fn switch(label: &str) -> Switch",
+   "doc": "Create a toggle switch widget with the given label."
+  },
+  {
+   "label": "Switch::default_value",
+   "insert": "Switch::default_value",
+   "kind": "method",
+   "detail": "pub fn default_value(mut self, value: bool) -> Self",
+   "doc": "Override the default state."
+  },
+  {
+   "label": "Button",
+   "insert": "Button",
+   "kind": "struct",
+   "detail": "pub struct Button",
+   "doc": "Builder for a button widget that acts as a trigger (no data output)."
+  },
+  {
+   "label": "ui::button",
+   "insert": "ui::button",
+   "kind": "function",
+   "detail": "pub fn button(label: &str) -> Button",
+   "doc": "Create a button widget with the given label."
+  },
+  {
+   "label": "ProgressBar",
+   "insert": "ProgressBar",
+   "kind": "struct",
+   "detail": "pub struct ProgressBar",
+   "doc": "Builder for a progress bar widget with real-time update support."
+  },
+  {
+   "label": "ui::progress_bar",
+   "insert": "ui::progress_bar",
+   "kind": "function",
+   "detail": "pub fn progress_bar() -> ProgressBar",
+   "doc": "Create a progress bar widget."
+  },
+  {
+   "label": "ProgressBar::label",
+   "insert": "ProgressBar::label",
+   "kind": "method",
+   "detail": "pub fn label(mut self, label: &str) -> Self",
+   "doc": "Set an optional label."
+  },
+  {
+   "label": "ProgressBar::initial",
+   "insert": "ProgressBar::initial",
+   "kind": "method",
+   "detail": "pub fn initial(mut self, value: f64) -> Self",
+   "doc": "Set the initial progress value (0.0 to 100.0)."
+  },
+  {
+   "label": "ProgressHandle",
+   "insert": "ProgressHandle",
+   "kind": "struct",
+   "detail": "pub struct ProgressHandle",
+   "doc": "Handle for updating a progress bar from a downstream cell."
+  },
+  {
+   "label": "ProgressHandle::new",
+   "insert": "ProgressHandle::new",
+   "kind": "method",
+   "detail": "pub fn new(id: String) -> Self",
+   "doc": "Create a handle from a progress bar ID (obtained from upstream cell output)."
+  },
+  {
+   "label": "ProgressHandle::update",
+   "insert": "update",
+   "kind": "method",
+   "detail": "pub fn update(&self, value: f64)",
+   "doc": "Update the progress bar to the given percentage (0.0\u2013100.0)."
+  },
+  {
+   "label": "SimSlider",
+   "insert": "SimSlider",
+   "kind": "struct",
+   "detail": "pub struct SimSlider",
+   "doc": "Builder for a simulation slider."
+  },
+  {
+   "label": "ui::sim_slider",
+   "insert": "ui::sim_slider",
+   "kind": "function",
+   "detail": "pub fn sim_slider(key: &str, min: f64, max: f64) -> SimSlider",
+   "doc": "Create a simulation slider bound to a bus key."
+  },
+  {
+   "label": "SimSlider::step",
+   "insert": "SimSlider::step",
+   "kind": "method",
+   "detail": "pub fn step(mut self, step: f64) -> Self",
+   "doc": "Set the step increment."
+  },
+  {
+   "label": "SimSlider::label",
+   "insert": "SimSlider::label",
+   "kind": "method",
+   "detail": "pub fn label(mut self, label: &str) -> Self",
+   "doc": "Set the display label."
+  },
+  {
+   "label": "SimSlider::default_value",
+   "insert": "SimSlider::default_value",
+   "kind": "method",
+   "detail": "pub fn default_value(mut self, value: f64) -> Self",
+   "doc": "Set the default value."
+  },
+  {
+   "label": "SimSlider::into_meta",
+   "insert": "into_meta",
+   "kind": "method",
+   "detail": "pub fn into_meta(self) -> crate::SimSliderMeta",
+   "doc": "Consume the builder and return the underlying [`SimSliderMeta`](crate::SimSliderMeta)."
+  }
+ ]
+}

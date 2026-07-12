@@ -194,6 +194,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
         shared_cargo_toml: RwSignal::new(None),
         shared_source: RwSignal::new(None),
         cell_stale: RwSignal::new(HashMap::new()),
+        warm_manifests: RwSignal::new(std::collections::HashSet::new()),
         cell_display_texts: RwSignal::new(HashMap::new()),
         editor_handles: RwSignal::new(HashMap::new()),
         is_view_mode: RwSignal::new(false),

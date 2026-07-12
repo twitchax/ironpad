@@ -62,7 +62,7 @@ const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 
 /// Hard timeout for a single `cargo build` invocation.
 /// Override with `IRONPAD_BUILD_TIMEOUT_SECS` env var (default: 300s).
-fn build_timeout() -> Duration {
+pub(crate) fn build_timeout() -> Duration {
     let secs = std::env::var("IRONPAD_BUILD_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -378,8 +378,12 @@ fn compose_rustflags(
 /// --message-format=json`.  Much faster than [`build_micro_crate`] because it
 /// skips LLVM codegen, WASM linking, and wasm-bindgen post-processing.
 ///
-/// Intended for bulk validation (e.g. checking every public notebook cell).
-#[cfg(test)]
+/// Two consumers with different patience: the notebook gate passes
+/// [`build_timeout`] (a cold dep tree is legitimate there), and the live
+/// check-on-type path passes a short budget so a misclassified cold check
+/// degrades to "no markers this round" instead of a hang (PRD-0045). On
+/// timeout the cargo process is killed (`kill_on_drop`) so it cannot keep
+/// mutating the scaffold dir after the per-cell lock is released.
 #[allow(clippy::too_many_arguments)]
 pub async fn check_micro_crate(
     crate_dir: &Path,
@@ -390,6 +394,7 @@ pub async fn check_micro_crate(
     needs_atomics: bool,
     needs_autodiff: bool,
     needs_simd: bool,
+    timeout: Duration,
 ) -> anyhow::Result<CheckResult> {
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = if needs_atomics {
@@ -404,7 +409,6 @@ pub async fn check_micro_crate(
     let cargo_home = std::fs::canonicalize(&cargo_home)?;
     let target_dir = std::fs::canonicalize(&target_dir)?;
 
-    let timeout = build_timeout();
     let output = tokio::time::timeout(timeout, {
         let mut cmd = Command::new("cargo");
         configure_cargo_cmd(
@@ -418,10 +422,14 @@ pub async fn check_micro_crate(
             needs_autodiff,
             needs_simd,
         );
+        // If the timeout drops the output future, the child must die with it:
+        // an orphaned cargo would keep writing to the scaffold dir after the
+        // caller releases the per-cell lock, racing the next check or build.
+        cmd.kill_on_drop(true);
         cmd.output()
     })
     .await
-    .map_err(|_| anyhow::anyhow!("cargo check timed out after {}s", timeout.as_secs()))?
+    .map_err(|_| CheckTimedOut(timeout))?
     .map_err(|e| anyhow::anyhow!("failed to spawn cargo: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -434,8 +442,14 @@ pub async fn check_micro_crate(
     }
 }
 
+/// Marker error for a check that exceeded its time budget, so callers can
+/// distinguish "too slow right now" (expected for cold caches; degrade
+/// gracefully) from real infrastructure failures.
+#[derive(Debug, thiserror::Error)]
+#[error("cargo check timed out after {}s", .0.as_secs())]
+pub struct CheckTimedOut(pub Duration);
+
 /// Outcome of a `cargo check` invocation.
-#[cfg(test)]
 pub enum CheckResult {
     /// Type-checking passed.
     Ok,

@@ -113,6 +113,11 @@ args = ["fmt", "--all", "--check"]
 
 # ── Clippy ───────────────────────────────────────────────────────────────────
 
+[tasks.gen-completions]
+description = "Regenerate the Monaco completions index from ironpad-cell's source"
+command = "python3"
+args = ["tools/gen-completions.py"]
+
 [tasks.clippy]
 description = "Run clippy lints on all targets"
 command = "cargo"

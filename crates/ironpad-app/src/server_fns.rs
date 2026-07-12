@@ -9,7 +9,9 @@
 //! `*.ironpad` notebooks under the site root), and [`share_notebook`] and
 //! [`get_shared_notebook`] (content-addressed shared notebooks under the data dir).
 
-use ironpad_common::{CompileRequest, CompileResponse, IronpadNotebook, PublicNotebookSummary};
+use ironpad_common::{
+    CheckResponse, CompileRequest, CompileResponse, IronpadNotebook, PublicNotebookSummary,
+};
 use leptos::prelude::*;
 
 // ── Compilation ──────────────────────────────────────────────────────────────
@@ -290,6 +292,127 @@ async fn compile_cell_core(
                 js_glue: None,
             })
         }
+    }
+}
+
+// ── Live check (PRD-0045) ────────────────────────────────────────────────────
+
+/// Type-check a cell without codegen, for live editor diagnostics.
+///
+/// Same pipeline as [`compile_cell`] minus LLVM/link/wasm-bindgen: shared
+/// scaffolding, toolchain selection, RUSTFLAGS, and preamble-adjusted
+/// diagnostics — a cell that checks clean here builds clean there. Designed
+/// to never block typing: the per-cell lock is try-acquired (busy compiles
+/// yield `Skipped`), and the check runs under a short budget (`TimedOut`
+/// instead of hanging on a cold dependency tree).
+#[server]
+pub async fn check_cell(request: CompileRequest) -> Result<CheckResponse, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    let compile_locks = expect_context::<crate::compiler::CompileLocks>();
+    check_cell_core(&config, &compile_locks, request).await
+}
+
+/// Time budget for a single live check (default 10s, override with
+/// `IRONPAD_LIVE_CHECK_TIMEOUT_SECS`). Warm incremental checks land in 1-3s
+/// on the production hardware; anything past the budget is a cold cache the
+/// warmth policy should have caught, and the round degrades to "no markers".
+/// The env override exists for dev/test hosts whose target dirs lack check
+/// artifacts (the deploy image seeds them; local caches accumulate them).
+#[cfg(feature = "ssr")]
+fn live_check_timeout() -> std::time::Duration {
+    let secs = std::env::var("IRONPAD_LIVE_CHECK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(10);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Server-side live-check pipeline behind [`check_cell`].
+#[cfg(feature = "ssr")]
+async fn check_cell_core(
+    config: &ironpad_common::AppConfig,
+    compile_locks: &crate::compiler::CompileLocks,
+    request: CompileRequest,
+) -> Result<CheckResponse, ServerFnError> {
+    use crate::compiler::{
+        build::{check_micro_crate, CheckResult, CheckTimedOut},
+        diagnostics::parse_diagnostics,
+        scaffold::{
+            merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff, uses_wasm_simd,
+        },
+    };
+    use ironpad_common::CheckStatus;
+
+    let session_id = "default";
+
+    if !crate::compiler::scaffold::is_valid_cell_id(&request.cell_id) {
+        return Err(ServerFnError::new(format!(
+            "invalid cell_id {:?}: expected 1-64 chars of [A-Za-z0-9_-]",
+            request.cell_id
+        )));
+    }
+
+    // Never queue a live check behind an in-flight compile (or another
+    // check) of the same cell: skip and let the client try again after the
+    // next quiet period. The post-compile diagnostics cover this window.
+    let Some(_check_guard) = compile_locks.try_acquire(&request.cell_id) else {
+        return Ok(CheckResponse {
+            status: CheckStatus::Skipped,
+            diagnostics: vec![],
+        });
+    };
+
+    let needs_atomics =
+        merged_deps_contain_rayon(request.shared_cargo_toml.as_deref(), &request.cargo_toml);
+    let needs_autodiff = uses_std_autodiff(&request.source, request.shared_source.as_deref());
+    let needs_simd = uses_wasm_simd(&request.source, request.shared_source.as_deref());
+
+    let (crate_dir, preamble_lines, _is_async, _is_simulation, _needs_atomics) =
+        scaffold_micro_crate(
+            &config.cache_dir,
+            &config.ironpad_cell_path,
+            session_id,
+            &request.cell_id,
+            &request.source,
+            &request.cargo_toml,
+            &request.previous_cell_types,
+            request.shared_cargo_toml.as_deref(),
+            request.shared_source.as_deref(),
+        )
+        .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
+
+    let result = check_micro_crate(
+        &crate_dir,
+        &config.cache_dir,
+        session_id,
+        &request.cell_id,
+        config.compilation_proxy.as_deref(),
+        needs_atomics,
+        needs_autodiff,
+        needs_simd,
+        live_check_timeout(),
+    )
+    .await;
+
+    match result {
+        Ok(CheckResult::Ok) => Ok(CheckResponse {
+            status: CheckStatus::Clean,
+            diagnostics: vec![],
+        }),
+        Ok(CheckResult::Failure { stdout, .. }) => Ok(CheckResponse {
+            status: CheckStatus::Errors,
+            diagnostics: parse_diagnostics(&stdout, preamble_lines),
+        }),
+        Err(e) if e.is::<CheckTimedOut>() => {
+            tracing::info!(cell_id = %request.cell_id, "live check timed out — cold cache");
+            Ok(CheckResponse {
+                status: CheckStatus::TimedOut,
+                diagnostics: vec![],
+            })
+        }
+        Err(e) => Err(ServerFnError::new(format!("check invocation failed: {e}"))),
     }
 }
 

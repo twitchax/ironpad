@@ -45,6 +45,18 @@ impl CompileLocks {
         cell_lock.lock_owned().await
     }
 
+    /// Acquire the lock for `cell_id` only if no compile/check currently
+    /// holds it. Returns `None` when busy — live checks use this to SKIP
+    /// rather than queue behind a long build (PRD-0045).
+    pub fn try_acquire(&self, cell_id: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let cell_lock = {
+            let mut table = self.locks.lock().expect("compile-lock table poisoned");
+            table.retain(|id, lock| id == cell_id || Arc::strong_count(lock) > 1);
+            table.entry(cell_id.to_string()).or_default().clone()
+        };
+        cell_lock.try_lock_owned().ok()
+    }
+
     /// Number of entries currently in the lock table (test-only introspection).
     #[cfg(test)]
     fn table_len(&self) -> usize {
@@ -59,6 +71,30 @@ impl CompileLocks {
 mod compile_locks_tests {
     use super::CompileLocks;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn try_acquire_skips_when_busy_and_succeeds_when_free() {
+        // Live checks must SKIP a busy cell (never queue behind a build),
+        // and must themselves exclude a concurrent build once held.
+        let locks = CompileLocks::default();
+
+        let build_guard = locks.acquire("cell-1").await;
+        assert!(
+            locks.try_acquire("cell-1").is_none(),
+            "check must skip while a build holds the lock"
+        );
+        drop(build_guard);
+
+        let check_guard = locks.try_acquire("cell-1");
+        assert!(check_guard.is_some(), "free lock must be acquirable");
+        let blocked =
+            tokio::time::timeout(Duration::from_millis(50), locks.acquire("cell-1")).await;
+        assert!(
+            blocked.is_err(),
+            "build must wait while a check holds the lock"
+        );
+        drop(check_guard);
+    }
 
     #[tokio::test]
     async fn same_cell_serializes() {
@@ -1250,6 +1286,7 @@ impl LiveView for Counter {
                     needs_atomics,
                     needs_autodiff,
                     needs_simd,
+                    super::build::build_timeout(),
                 )
                 .await;
 

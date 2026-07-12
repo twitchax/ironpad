@@ -91,16 +91,22 @@ RUN rustup toolchain uninstall stable 1.93.0 || true
 COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-bindgen
 COPY --from=builder /usr/bin/wasm-opt /usr/bin/wasm-opt
 
-# Pre-warm the cargo registry cache with ironpad-cell dependencies so that
-# the first cell compile only downloads user-added deps. Warmups fail the
-# image build LOUDLY — a `|| true` here once hid a manifest error for months,
-# shipping images with no warmed cache and (via the entrypoint seed) crashing
-# fresh deployments.
+# Pre-warm the cargo registry cache AND the default cell target dir with the
+# ironpad-cell dependency tree: `build` artifacts make the first cell compile
+# fast, `check` artifacts (distinct from build's) make live check-on-type
+# warm from server boot (PRD-0045) — the warmth policy's "default deps are
+# always warm" guarantee rests on this seed. The entrypoint copies it into
+# the volume like the atomics sysroot. Warmups fail the image build LOUDLY —
+# a `|| true` here once hid a manifest error for months, shipping images with
+# no warmed cache and (via the entrypoint seed) crashing fresh deployments.
 COPY crates/ironpad-cell /tmp/warmup/crates/ironpad-cell
 COPY docker/warmup-Cargo.toml /tmp/warmup/Cargo.toml
 RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
     && cd /tmp/warmup \
-    && cargo +nightly-2026-06-01 build --target wasm32-unknown-unknown --release \
+    && CARGO_TARGET_DIR=/warmup-cache/targets/default \
+       cargo +nightly-2026-06-01 build --target wasm32-unknown-unknown --release \
+    && CARGO_TARGET_DIR=/warmup-cache/targets/default \
+       cargo +nightly-2026-06-01 check --target wasm32-unknown-unknown --release \
     && rm -rf /tmp/warmup \
     && rm -rf /usr/local/cargo/registry/src
 

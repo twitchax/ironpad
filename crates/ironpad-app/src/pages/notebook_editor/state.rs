@@ -59,6 +59,11 @@ pub(crate) struct NotebookState {
     pub(super) shared_source: RwSignal<Option<String>>,
     /// Tracks which cells have stale (outdated) execution results.
     pub(super) cell_stale: RwSignal<HashMap<String, bool>>,
+    /// Manifests (shared + cell Cargo.toml pairs) that compiled successfully
+    /// this page session — the dynamic half of the live-check warmth policy
+    /// (PRD-0045): custom-deps cells only live-check once their dependency
+    /// tree is known-built.
+    pub(super) warm_manifests: RwSignal<std::collections::HashSet<String>>,
     /// Per-cell display text (JSON of `Vec<DisplayPanel>`) from the last execution.
     /// Used by the export-to-HTML feature to include cell outputs.
     pub(super) cell_display_texts: RwSignal<HashMap<String, String>>,

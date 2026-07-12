@@ -28,6 +28,12 @@ export default defineConfig({
 
   webServer: {
     command: "cargo leptos serve --release",
+    env: {
+      // Local target dirs lack cargo-check artifacts (the deploy image seeds
+      // them), so the first live check would blow the 10s production budget
+      // and silently skip. Tests get a patient budget instead.
+      IRONPAD_LIVE_CHECK_TIMEOUT_SECS: "300",
+    },
     url: "http://localhost:3111",
     reuseExistingServer: !process.env.CI,
     timeout: 300_000, // 5 min — cargo build can be slow
