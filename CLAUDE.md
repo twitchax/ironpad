@@ -224,7 +224,7 @@ Key modules:
 
 ### Adding a New Server Function
 
-Current server functions: `compile_cell`, `list_public_notebooks`, `get_public_notebook`, `share_notebook`, `get_shared_notebook`.
+Current server functions: `compile_cell`, `check_cell` (live check-on-type, PRD-0045), `list_public_notebooks`, `get_public_notebook`, `share_notebook`, `get_shared_notebook`.
 
 1. Add to `server_fns.rs` with `#[server]` attribute:
    ```rust
@@ -549,5 +549,5 @@ Sharp edges: target features from independent concerns must merge into ONE `-C t
 
 ---
 
-**Last Updated**: 2026-07-11 — shared cells (PRD-0044, v0.8.0); unified cell toolchains; special-cases table
+**Last Updated**: 2026-07-12 — live check-on-type + completions (PRD-0045, v0.9.0); shared cells; unified toolchains
 **Target Audience**: AI agents, developers contributing to ironpad
