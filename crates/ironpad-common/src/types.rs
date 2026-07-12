@@ -26,6 +26,22 @@ pub struct CompileRequest {
     /// When `true`, bypass the compilation cache and force a fresh build.
     #[serde(default)]
     pub force: bool,
+    /// Live-check target inside `shared.rs` (PRD-0046). When set, `check_cell`
+    /// validates the assembled shared source (the cell body is a throwaway)
+    /// and returns only diagnostics anchored inside this line range, remapped
+    /// to cell-local lines. Ignored by `compile_cell`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_check: Option<SharedCheckRange>,
+}
+
+/// The slice of the assembled `shared.rs` occupied by one shared cell, as
+/// computed by [`shared_cell_line_offset`] plus the cell's own line count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedCheckRange {
+    /// 0-based line at which the cell's source begins in the assembly.
+    pub start_line: u32,
+    /// Number of lines the cell's source occupies.
+    pub line_count: u32,
 }
 
 /// Response from the server after a compilation attempt.
@@ -276,20 +292,61 @@ pub fn effective_shared_source(
     notebook_shared: Option<&str>,
     cells: &[IronpadCell],
 ) -> Option<String> {
-    let mut cells_by_order: Vec<&IronpadCell> = cells.iter().filter(|c| c.shared).collect();
-    cells_by_order.sort_by_key(|c| c.order);
-
-    let mut parts: Vec<&str> = Vec::with_capacity(cells_by_order.len() + 1);
-    if let Some(s) = notebook_shared {
-        parts.push(s);
-    }
-    parts.extend(cells_by_order.iter().map(|c| c.source.as_str()));
-
+    let parts = shared_parts(notebook_shared, cells);
     if parts.is_empty() {
         None
     } else {
-        Some(parts.join("\n\n"))
+        Some(
+            parts
+                .iter()
+                .map(|(_, src)| *src)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        )
     }
+}
+
+/// The ordered pieces of the shared assembly: the notebook-level source (no
+/// cell id) followed by each shared cell's `(id, source)` in `order`. Both
+/// [`effective_shared_source`] and [`shared_cell_line_offset`] derive from
+/// this one list, so the join and the line math can never disagree.
+fn shared_parts<'a>(
+    notebook_shared: Option<&'a str>,
+    cells: &'a [IronpadCell],
+) -> Vec<(Option<&'a str>, &'a str)> {
+    let mut cells_by_order: Vec<&IronpadCell> = cells.iter().filter(|c| c.shared).collect();
+    cells_by_order.sort_by_key(|c| c.order);
+
+    let mut parts: Vec<(Option<&str>, &str)> = Vec::with_capacity(cells_by_order.len() + 1);
+    if let Some(s) = notebook_shared {
+        parts.push((None, s));
+    }
+    parts.extend(
+        cells_by_order
+            .iter()
+            .map(|c| (Some(c.id.as_str()), c.source.as_str())),
+    );
+    parts
+}
+
+/// The 0-based line at which `target_id`'s source begins inside
+/// [`effective_shared_source`]'s output, or `None` when the cell is absent or
+/// not shared. Each earlier part contributes its own lines plus the one blank
+/// separator line from the `"\n\n"` join.
+#[must_use]
+pub fn shared_cell_line_offset(
+    notebook_shared: Option<&str>,
+    cells: &[IronpadCell],
+    target_id: &str,
+) -> Option<u32> {
+    let mut line = 0u32;
+    for (cell_id, src) in shared_parts(notebook_shared, cells) {
+        if cell_id == Some(target_id) {
+            return Some(line);
+        }
+        line += u32::try_from(src.split('\n').count()).unwrap_or(u32::MAX) + 1;
+    }
+    None
 }
 
 /// A single cell within an [`IronpadNotebook`], including its source code.
@@ -407,6 +464,52 @@ mod tests {
             effective_shared_source(Some(""), &cells[1..2]).as_deref(),
             Some(""),
         );
+    }
+
+    #[test]
+    fn shared_cell_line_offset_matches_the_assembly() {
+        let mk = |id: &str, order: u32, shared: bool, src: &str| IronpadCell {
+            id: id.into(),
+            order,
+            label: id.into(),
+            cell_type: CellType::Code,
+            source: src.into(),
+            cargo_toml: None,
+            shared,
+            version: 0,
+        };
+        // Multi-line sources, out-of-order Vec: offsets must follow `order`.
+        let cells = vec![
+            mk("late", 5, true, "fn late() {\n    3\n}"),
+            mk("plain", 1, false, "let x = 1;"),
+            mk("early", 2, true, "fn early() {}\nfn early2() {}"),
+        ];
+        let base = "// base\nfn base() {}"; // 2 lines
+
+        // With notebook-level source: base(2) + blank(1) = 3.
+        assert_eq!(
+            shared_cell_line_offset(Some(base), &cells, "early"),
+            Some(3)
+        );
+        // early(2) + blank(1) after that = 6.
+        assert_eq!(shared_cell_line_offset(Some(base), &cells, "late"), Some(6));
+
+        // Without notebook-level source the first shared cell starts at 0.
+        assert_eq!(shared_cell_line_offset(None, &cells, "early"), Some(0));
+        assert_eq!(shared_cell_line_offset(None, &cells, "late"), Some(3));
+
+        // Non-shared or unknown cells have no slice in the assembly.
+        assert_eq!(shared_cell_line_offset(Some(base), &cells, "plain"), None);
+        assert_eq!(shared_cell_line_offset(Some(base), &cells, "nope"), None);
+
+        // The offsets must agree with the actual join: the target's source
+        // starts exactly at the computed line of the assembled text.
+        let assembled = effective_shared_source(Some(base), &cells).unwrap();
+        let lines: Vec<&str> = assembled.split('\n').collect();
+        let early_at = shared_cell_line_offset(Some(base), &cells, "early").unwrap() as usize;
+        assert_eq!(lines[early_at], "fn early() {}");
+        let late_at = shared_cell_line_offset(Some(base), &cells, "late").unwrap() as usize;
+        assert_eq!(lines[late_at], "fn late() {");
     }
 
     #[test]

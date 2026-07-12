@@ -70,14 +70,46 @@ struct RustcSpan {
 pub fn parse_diagnostics(cargo_stdout: &str, preamble_lines: u32) -> Vec<Diagnostic> {
     cargo_stdout
         .lines()
-        .filter_map(|line| parse_single_line(line, preamble_lines))
+        .filter_map(|line| parse_single_line(line, &SpanPolicy::CellBody { preamble_lines }))
+        .collect()
+}
+
+/// Parse cargo's JSON stdout for a shared-cell live check (PRD-0046).
+///
+/// Keeps only diagnostics whose primary span lands in `src/shared.rs` inside
+/// the target cell's slice (`start_line` 0-based, `line_count` lines),
+/// remapped to cell-local 1-based lines. Everything else — other shared
+/// cells, the notebook-level shared source, the throwaway cell body — belongs
+/// to other surfaces and is dropped, including span-less messages.
+pub fn parse_shared_range_diagnostics(
+    cargo_stdout: &str,
+    start_line: u32,
+    line_count: u32,
+) -> Vec<Diagnostic> {
+    let policy = SpanPolicy::SharedSlice {
+        start_line,
+        line_count,
+    };
+    cargo_stdout
+        .lines()
+        .filter_map(|line| parse_single_line(line, &policy))
         .collect()
 }
 
 // ── Internal Helpers ────────────────────────────────────────────────────────
 
+/// Which spans a parse keeps, and how their lines map back to an editor.
+enum SpanPolicy {
+    /// Ordinary cell mode: `src/lib.rs` spans shifted by the wrapper
+    /// preamble; shared-source errors surface as message-only notes.
+    CellBody { preamble_lines: u32 },
+    /// Shared-cell live-check mode: only `src/shared.rs` spans inside the
+    /// target cell's slice, remapped to cell-local lines (PRD-0046).
+    SharedSlice { start_line: u32, line_count: u32 },
+}
+
 /// Attempt to parse a single JSON line into a [`Diagnostic`].
-fn parse_single_line(line: &str, preamble_lines: u32) -> Option<Diagnostic> {
+fn parse_single_line(line: &str, policy: &SpanPolicy) -> Option<Diagnostic> {
     let msg: CargoMessage = serde_json::from_str(line).ok()?;
 
     if msg.reason != "compiler-message" {
@@ -97,25 +129,42 @@ fn parse_single_line(line: &str, preamble_lines: u32) -> Option<Diagnostic> {
     // Extract the error code if present (moved out; `code` is unused afterward).
     let code = rustc_msg.code.map(|c| c.code);
 
-    // Collect primary spans, mapping user-code (src/lib.rs) spans to cell
-    // coordinates. Track whether the error's primary span lives in the
-    // notebook's shared source (src/shared.rs) — those have no inline marker in
-    // this cell's editor, so we note it in the message instead.
+    // Collect primary spans per the policy. In cell mode, track whether the
+    // error's primary span lives in the notebook's shared source
+    // (src/shared.rs) — those have no inline marker in this cell's editor, so
+    // we note it in the message instead.
     let mut spans: Vec<Span> = Vec::new();
     let mut shared_source_primary = false;
     for span in rustc_msg.spans {
         if !span.is_primary {
             continue;
         }
-        match span.file_name.as_str() {
-            "src/lib.rs" => {
-                if let Some(adjusted) = adjust_span(span, preamble_lines) {
+        match (policy, span.file_name.as_str()) {
+            (SpanPolicy::CellBody { preamble_lines }, "src/lib.rs") => {
+                if let Some(adjusted) = adjust_span(span, *preamble_lines) {
                     spans.push(adjusted);
                 }
             }
-            "src/shared.rs" => shared_source_primary = true,
+            (SpanPolicy::CellBody { .. }, "src/shared.rs") => shared_source_primary = true,
+            (
+                SpanPolicy::SharedSlice {
+                    start_line,
+                    line_count,
+                },
+                "src/shared.rs",
+            ) => {
+                if let Some(remapped) = remap_shared_span(span, *start_line, *line_count) {
+                    spans.push(remapped);
+                }
+            }
             _ => {}
         }
+    }
+
+    // A shared-slice parse only reports what anchors inside the target cell;
+    // everything else is another surface's problem.
+    if matches!(policy, SpanPolicy::SharedSlice { .. }) && spans.is_empty() {
+        return None;
     }
 
     let mut message = rustc_msg.message;
@@ -160,6 +209,30 @@ fn adjust_span(span: RustcSpan, preamble_lines: u32) -> Option<Span> {
     Some(Span {
         line_start: adjusted_start,
         line_end: adjusted_end.max(adjusted_start),
+        col_start: span.column_start,
+        col_end: span.column_end,
+        label: span.label,
+    })
+}
+
+/// Remap a `src/shared.rs` span into cell-local coordinates for the shared
+/// cell occupying 1-based lines `[start_line + 1, start_line + line_count]`
+/// of the assembly (PRD-0046). Returns `None` when the span starts outside
+/// that slice; a span that starts inside but runs past the end is clamped.
+fn remap_shared_span(span: RustcSpan, start_line: u32, line_count: u32) -> Option<Span> {
+    // Lines are 1-based in rustc output; the slice math is 0-based.
+    let local_start = span.line_start.checked_sub(start_line)?;
+    if local_start == 0 || local_start > line_count {
+        return None;
+    }
+    let local_end = span
+        .line_end
+        .saturating_sub(start_line)
+        .clamp(local_start, line_count);
+
+    Some(Span {
+        line_start: local_start,
+        line_end: local_end,
         col_start: span.column_start,
         col_end: span.column_end,
         label: span.label,
@@ -246,6 +319,41 @@ mod tests {
 
     /// An error whose primary span is in the notebook's shared source.
     const SHARED_SOURCE_SPAN_JSON: &str = r#"{"reason":"compiler-message","message":{"children":[],"code":null,"level":"error","message":"cannot find value `foo` in this scope","spans":[{"byte_end":100,"byte_start":90,"column_end":10,"column_start":5,"expansion":null,"file_name":"src/shared.rs","is_primary":true,"label":"not found","line_end":3,"line_start":3,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+
+    #[test]
+    fn shared_slice_remaps_in_range_errors_to_cell_lines() {
+        // The fixture's error is at shared.rs line 3 (1-based). A shared cell
+        // occupying lines 3..=5 (start_line 2, count 3) owns it: local line 1.
+        let diags = parse_shared_range_diagnostics(SHARED_SOURCE_SPAN_JSON, 2, 3);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].spans.len(), 1);
+        assert_eq!(diags[0].spans[0].line_start, 1);
+        assert_eq!(diags[0].spans[0].line_end, 1);
+        assert_eq!(diags[0].message, "cannot find value `foo` in this scope");
+    }
+
+    #[test]
+    fn shared_slice_drops_out_of_range_and_foreign_diagnostics() {
+        // Error at shared.rs line 3, but the target cell starts at line 5
+        // (start_line 4): the error belongs to an earlier region, dropped.
+        assert!(parse_shared_range_diagnostics(SHARED_SOURCE_SPAN_JSON, 4, 3).is_empty());
+        // Target slice ends before line 3 (lines 1..=1): also dropped.
+        assert!(parse_shared_range_diagnostics(SHARED_SOURCE_SPAN_JSON, 0, 1).is_empty());
+        // Cell-body (src/lib.rs) errors never anchor in a shared cell.
+        assert!(parse_shared_range_diagnostics(TYPE_ERROR_JSON, 0, 100).is_empty());
+        // Span-less messages ("aborting due to ...") are other surfaces' noise.
+        assert!(parse_shared_range_diagnostics(NOTE_JSON, 0, 100).is_empty());
+    }
+
+    #[test]
+    fn shared_slice_clamps_spans_running_past_the_cell() {
+        // Error spans shared.rs lines 3..3; cell occupies exactly line 3
+        // (start_line 2, count 1): local 1..1, end clamped inside the cell.
+        let diags = parse_shared_range_diagnostics(SHARED_SOURCE_SPAN_JSON, 2, 1);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].spans[0].line_start, 1);
+        assert_eq!(diags[0].spans[0].line_end, 1);
+    }
 
     #[test]
     fn notes_shared_source_errors() {

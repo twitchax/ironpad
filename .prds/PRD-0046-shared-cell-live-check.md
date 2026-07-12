@@ -1,7 +1,7 @@
 ---
 id: PRD-0046
 title: "Live check-on-type for shared cells"
-status: draft
+status: done
 owner: "Aaron Roney"
 created: 2026-07-12
 updated: 2026-07-12
@@ -19,32 +19,32 @@ acceptance_tests:
 - id: uat-001
   name: "Typing an error into a shared cell paints an inline squiggle at the correct cell-local line without running anything; fixing clears it"
   command: cargo make playwright
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "Full gate green with shared-cell live checks in place"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
   title: "shared_cell_line_offset in ironpad-common: given (notebook shared_source, cells, target cell id), return the 0-based line at which that cell's source starts inside effective_shared_source"
   priority: 1
-  status: todo
+  status: done
   notes: "Must live next to effective_shared_source and be derived from the same join logic ('\\n\\n' separators, None/Some semantics) so the two can never drift. Unit tests: no notebook-level source, notebook-level source present, multiple shared cells, target first/middle/last."
 - id: T-002
   title: "check_cell for shared cells: scaffold with the full assembled shared.rs and a trivial cell body, keep only diagnostics whose primary span is src/shared.rs within the target cell's line range, remap to cell-local lines"
   priority: 1
-  status: todo
+  status: done
   notes: "Server side: reuse check_cell_core with a marker or a shared_target_cell_id field on CompileRequest (serde-default so old clients are unaffected). Diagnostics landing in OTHER shared cells or the notebook-level source are dropped for the live path (they surface on those surfaces or via consuming cells as today)."
 - id: T-003
   title: "Client: dispatch live checks from shared-cell editors through the same debounce/generation machinery; markers render in the shared cell's Monaco instance"
   priority: 1
-  status: todo
+  status: done
   notes: "cell_item.rs currently skips shared cells in dispatch_live_check eligibility; replace the skip with the shared-target path. Warmth policy: shared source compiles with the notebook's merged manifest, so reuse manifest_has_custom_deps on (shared_cargo_toml, default cell manifest) plus the warm_manifests set."
 - id: T-004
   title: "Tests: offset unit tests, remap unit tests (error in target cell vs sibling shared cell vs notebook-level source), e2e squiggle-in-shared-cell"
   priority: 2
-  status: todo
+  status: done
   notes: "e2e follows live-check.spec.ts conventions (hydration wait, save-debounce dirty-dot wait, IRONPAD_LIVE_CHECK_TIMEOUT_SECS=300 in the Playwright webServer env)."
 ---
 
@@ -75,6 +75,7 @@ The assembly is deterministic: `effective_shared_source` joins the notebook-leve
 
 - Diagnostics that land in a *different* shared cell or in the notebook-level shared source are dropped on the live path rather than mis-anchored; those surfaces keep today's behavior.
 - A check fired inside the save-debounce window checks the previous model state (same contract as PRD-0044/0045).
+- A TimedOut round paints nothing and waits for the next edit to retry (PRD-0045 contract); under heavy build contention the first squiggle can therefore take a few edits to appear. The e2e mirrors this with nudge-retries.
 - Shared-cell source feeds feature detection, so a shared cell that mentions `std::simd` or the autodiff intrinsics checks under those heavier configurations, matching how consumers will actually build.
 
 # References to Code
@@ -94,3 +95,4 @@ The assembly is deterministic: `effective_shared_source` joins the notebook-leve
 # History
 
 - 2026-07-12: Created after Aaron approved the follow-up during the v0.9.1/v0.10.0 session; identified as the highest-value gap in the pre-review sweep.
+- 2026-07-12: All tasks done, UATs verified (643 unit, 10 integration, 50 Playwright incl. the new spec). Debugging the e2e surfaced an unrelated environmental bug, fixed alongside: the cache pressure valve measured only percentage-full and wiped caches on every server start on big dev disks; it now also requires < 20GB absolute headroom (prod's 5GB volume unaffected). Shipped in v0.11.0.

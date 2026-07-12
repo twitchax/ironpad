@@ -338,7 +338,7 @@ async fn check_cell_core(
 ) -> Result<CheckResponse, ServerFnError> {
     use crate::compiler::{
         build::{check_micro_crate, CheckResult, CheckTimedOut},
-        diagnostics::parse_diagnostics,
+        diagnostics::{parse_diagnostics, parse_shared_range_diagnostics},
         scaffold::{
             merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff, uses_wasm_simd,
         },
@@ -401,10 +401,23 @@ async fn check_cell_core(
             status: CheckStatus::Clean,
             diagnostics: vec![],
         }),
-        Ok(CheckResult::Failure { stdout, .. }) => Ok(CheckResponse {
-            status: CheckStatus::Errors,
-            diagnostics: parse_diagnostics(&stdout, preamble_lines),
-        }),
+        Ok(CheckResult::Failure { stdout, .. }) => {
+            // A shared-cell check (PRD-0046) anchors only diagnostics landing
+            // inside the target cell's slice of shared.rs, remapped to
+            // cell-local lines; an ordinary check maps the cell body. An
+            // empty list under `Errors` is meaningful for shared checks: the
+            // assembly failed, but not in this cell, so its markers clear.
+            let diagnostics = match request.shared_check {
+                Some(range) => {
+                    parse_shared_range_diagnostics(&stdout, range.start_line, range.line_count)
+                }
+                None => parse_diagnostics(&stdout, preamble_lines),
+            };
+            Ok(CheckResponse {
+                status: CheckStatus::Errors,
+                diagnostics,
+            })
+        }
         Err(e) if e.is::<CheckTimedOut>() => {
             tracing::info!(cell_id = %request.cell_id, "live check timed out — cold cache");
             Ok(CheckResponse {
@@ -743,6 +756,7 @@ mod tests {
             shared_cargo_toml: None,
             shared_source: None,
             force: false,
+            shared_check: None,
         };
 
         let locks = CompileLocks::default();

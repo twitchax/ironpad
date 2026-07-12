@@ -594,6 +594,7 @@ fn ViewOnlyCodeCell(
                     shared_cargo_toml: stored_cargo_toml.get_value(),
                     shared_source: stored_source.get_value(),
                     force: force_recompile.get_untracked(),
+                    shared_check: None,
                 };
 
                 let compile_start = js_sys::Date::now();

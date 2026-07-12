@@ -615,6 +615,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         .and_then(ironpad_common::IronpadNotebook::effective_shared_source)
                 }),
                 force: state.force_recompile.get_untracked(),
+                shared_check: None,
             };
 
             let result = compile_cell(request).await;
@@ -1803,10 +1804,15 @@ fn diagnostics_to_markers(diagnostics: &[Diagnostic]) -> js_sys::Array {
 /// Fire a live check for `cid` if the cell is eligible, discarding the
 /// response unless it is still the newest dispatch (generation match).
 ///
-/// Eligibility (PRD-0045): code cell, not shared, not mid-compile, warm by
-/// the manifest policy, and not referencing piped inputs that have no
-/// outputs yet (those would produce false "cannot find value cellN" noise —
-/// the run path cascades predecessors, a check cannot).
+/// Eligibility (PRD-0045): code cell, not mid-compile, warm by the manifest
+/// policy, and not referencing piped inputs that have no outputs yet (those
+/// would produce false "cannot find value cellN" noise — the run path
+/// cascades predecessors, a check cannot).
+///
+/// Shared cells (PRD-0046) check the assembled `shared.rs` instead: the
+/// request carries a throwaway cell body plus the target cell's line slice,
+/// and the server returns only diagnostics anchored inside that slice,
+/// remapped to cell-local lines.
 #[cfg(feature = "hydrate")]
 #[allow(clippy::too_many_arguments)]
 fn dispatch_live_check(
@@ -1820,9 +1826,13 @@ fn dispatch_live_check(
     last_check: RwSignal<Option<Vec<Diagnostic>>>,
     check_generation: RwSignal<u64>,
 ) {
-    use ironpad_common::{manifest_has_custom_deps, CheckStatus};
+    use ironpad_common::{manifest_has_custom_deps, CheckStatus, SharedCheckRange};
 
-    if is_markdown || is_shared.get_untracked() {
+    /// The cell body sent with a shared-cell check: the real code under test
+    /// rides in `shared_source`, but the scaffold still needs a valid cell.
+    const SHARED_CHECK_BODY: &str = "String::new()";
+
+    if is_markdown {
         return;
     }
     if matches!(
@@ -1832,9 +1842,18 @@ fn dispatch_live_check(
         return;
     }
 
+    let shared = is_shared.get_untracked();
     let current_source = source.get_untracked();
-    let current_cargo_toml = cargo_toml.get_untracked();
     let shared_cargo = state.shared_cargo_toml.get_untracked();
+
+    // A shared cell's own manifest never reaches the build (consumers merge
+    // THEIR manifest with the shared one), so its check compiles under the
+    // default cell manifest.
+    let current_cargo_toml = if shared {
+        "[dependencies]".to_string()
+    } else {
+        cargo_toml.get_untracked()
+    };
 
     // Warmth policy: default deps are pre-checked by the image warmup;
     // custom deps must have compiled once this session.
@@ -1848,9 +1867,39 @@ fn dispatch_live_check(
         }
     }
 
+    // Shared cells: locate this cell's slice inside the assembly, from the
+    // same model state the shared_source below is assembled from.
+    let shared_check: Option<SharedCheckRange> = if shared {
+        let range = state.notebook.with_untracked(|nb| {
+            let nb = nb.as_ref()?;
+            let start_line = ironpad_common::shared_cell_line_offset(
+                nb.shared_source.as_deref(),
+                &nb.cells,
+                &cid,
+            )?;
+            let cell = nb.cells.iter().find(|c| c.id == cid)?;
+            let line_count = u32::try_from(cell.source.split('\n').count()).ok()?;
+            Some(SharedCheckRange {
+                start_line,
+                line_count,
+            })
+        });
+        match range {
+            Some(r) => Some(r),
+            // Not (yet) in the assembly — e.g. the shared toggle is still in
+            // flight. No slice to check against; try again next debounce.
+            None => return,
+        }
+    } else {
+        None
+    };
+
     // Piped-input references with missing predecessor outputs would produce
-    // false errors; the compile path cascades, a check can't.
-    let previous_cell_types: Vec<String> = {
+    // false errors; the compile path cascades, a check can't. (Shared cells
+    // hold empty piping slots and their check body references nothing.)
+    let previous_cell_types: Vec<String> = if shared {
+        vec![]
+    } else {
         let cells = state.cells.get_untracked();
         let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
         let outputs = state.cell_outputs.get_untracked();
@@ -1880,7 +1929,11 @@ fn dispatch_live_check(
     let request = CompileRequest {
         notebook_id: state.notebook_id.get_untracked(),
         cell_id: cid,
-        source: current_source,
+        source: if shared {
+            SHARED_CHECK_BODY.to_string()
+        } else {
+            current_source
+        },
         cargo_toml: current_cargo_toml,
         previous_cell_types,
         shared_cargo_toml: shared_cargo,
@@ -1889,6 +1942,7 @@ fn dispatch_live_check(
                 .and_then(ironpad_common::IronpadNotebook::effective_shared_source)
         }),
         force: false,
+        shared_check,
     };
 
     leptos::task::spawn_local(async move {
