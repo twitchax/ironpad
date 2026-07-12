@@ -166,6 +166,10 @@ async fn main() {
         // in to being loaded by COEP-isolated third-party pages via CORP
         // (PRD-0039 T-006); everything else keeps same-origin protection.
         .layer(axum::middleware::from_fn(embed_corp_header))
+        // Cache policy: hashed pkg assets cache forever, everything else must
+        // revalidate. Without this, browsers heuristically cache unhashed
+        // JS/WASM across releases and old clients mis-read newer notebooks.
+        .layer(axum::middleware::from_fn(cache_control_header))
         // One span per HTTP request (at INFO so it passes the default filter),
         // which is what OpenTelemetry exports as a trace. Outermost layer so it
         // spans the whole request.
@@ -368,6 +372,39 @@ async fn embed_corp_header(
     res
 }
 
+/// Cache-Control value for a request path.
+///
+/// The `/pkg/` bundle carries a content hash in its filename (cargo-leptos
+/// `hash-files`), so it can be cached forever: a new release references new
+/// URLs. Everything else (Monaco, executor/storage JS, notebooks, SSR pages)
+/// is served under URL-stable paths, so browsers must revalidate on each use
+/// (`no-cache` still allows conditional 304s via `Last-Modified`).
+fn cache_control_value(path: &str) -> HeaderValue {
+    if path.starts_with("/pkg/") {
+        HeaderValue::from_static("public, max-age=31536000, immutable")
+    } else {
+        HeaderValue::from_static("no-cache")
+    }
+}
+
+/// Sets the cache policy from [`cache_control_value`] on every response that
+/// doesn't already declare one.
+async fn cache_control_header(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let value = cache_control_value(req.uri().path());
+    let mut res = next.run(req).await;
+    if !res
+        .headers()
+        .contains_key(axum::http::header::CACHE_CONTROL)
+    {
+        res.headers_mut()
+            .insert(axum::http::header::CACHE_CONTROL, value);
+    }
+    res
+}
+
 #[cfg(test)]
 mod embed_header_tests {
     use super::is_embeddable_path;
@@ -384,6 +421,31 @@ mod embed_header_tests {
         assert!(!is_embeddable_path("/notebook/public/welcome.ironpad"));
         assert!(!is_embeddable_path("/embedx"));
         assert!(!is_embeddable_path("/api/embed/whatever"));
+    }
+}
+
+#[cfg(test)]
+mod cache_header_tests {
+    use super::cache_control_value;
+
+    #[test]
+    fn hashed_pkg_assets_are_immutable_everything_else_revalidates() {
+        assert_eq!(
+            cache_control_value("/pkg/ironpad.abc123.wasm"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_value("/pkg/ironpad.abc123.js"),
+            "public, max-age=31536000, immutable"
+        );
+
+        // URL-stable assets and pages must revalidate every use: a stale
+        // cached bundle silently drops notebook fields it predates.
+        assert_eq!(cache_control_value("/"), "no-cache");
+        assert_eq!(cache_control_value("/executor-bridge.js"), "no-cache");
+        assert_eq!(cache_control_value("/monaco/vs/loader.js"), "no-cache");
+        assert_eq!(cache_control_value("/notebooks/cannon.ironpad"), "no-cache");
+        assert_eq!(cache_control_value("/pkgx/evil.js"), "no-cache");
     }
 }
 

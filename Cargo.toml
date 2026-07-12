@@ -99,6 +99,12 @@ bin-package = "ironpad-server"
 lib-package = "ironpad-frontend"
 site-root = "target/site"
 site-pkg-dir = "pkg"
+# Content-hash the pkg bundle (ironpad.<hash>.{js,wasm,css}) so browsers can
+# never reuse a stale WASM across releases: unhashed assets with no
+# Cache-Control let a pre-shared-cells bundle linger in heuristic caches and
+# silently drop newer notebook fields. hash.txt must ship next to the server
+# binary in deploy images (leptos reads it relative to current_exe).
+hash-files = true
 style-file = "style/main.scss"
 assets-dir = "public"
 site-addr = "127.0.0.1:3111"

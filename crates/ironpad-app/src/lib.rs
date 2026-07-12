@@ -32,7 +32,7 @@ pub mod storage;
 
 use components::app_layout::AppLayout;
 use leptos::prelude::*;
-use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
+use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
 use leptos_router::{
     components::{Route, Router, Routes},
     ParamSegment, StaticSegment,
@@ -42,6 +42,15 @@ use pages::{
     SharedNotebookPage,
 };
 use thaw::{ConfigProvider, Theme, ToastPosition, ToasterProvider};
+
+/// Appends a release-version query to a URL-stable static asset path so
+/// browsers refetch it after every deploy. These scripts change with releases
+/// but keep the same URL; without a cache-buster a heuristically-cached copy
+/// can outlive several releases (the pkg bundle itself is content-hashed via
+/// cargo-leptos `hash-files` instead).
+fn versioned(path: &str) -> String {
+    format!("{path}?v={}", env!("CARGO_PKG_VERSION"))
+}
 
 /// Server-side shell rendered around the app.
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -57,32 +66,35 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
-                <link rel="stylesheet" href="/katex/katex.min.css"/>
+                <link rel="stylesheet" href=versioned("/katex/katex.min.css")/>
+                // App stylesheet: content-hashed filename (cargo-leptos hash-files),
+                // rendered here because LeptosOptions is server-only.
+                <HashedStylesheet options=options.clone() id="leptos"/>
                 <AutoReload options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>
 
                 // KaTeX math rendering — loaded before Monaco (no defer) to avoid AMD `define` conflict.
-                <script src="/katex/katex.min.js"></script>
-                <script src="/katex/render-math.js"></script>
+                <script src=versioned("/katex/katex.min.js")></script>
+                <script src=versioned("/katex/render-math.js")></script>
 
                 // Monaco editor: AMD loader + worker configuration + languages + Rust bridge.
-                <script src="/monaco/vs/loader.js"></script>
-                <script src="/monaco/init.js"></script>
-                <script src="/monaco/languages.js"></script>
-                <script src="/monaco/bridge.js"></script>
+                <script src=versioned("/monaco/vs/loader.js")></script>
+                <script src=versioned("/monaco/init.js")></script>
+                <script src=versioned("/monaco/languages.js")></script>
+                <script src=versioned("/monaco/bridge.js")></script>
 
                 // WASM cell executor (Web Worker bridge — delegates to executor-worker.js).
-                <script src="/executor-bridge.js"></script>
+                <script src=versioned("/executor-bridge.js")></script>
 
                 // IndexedDB notebook storage.
-                <script src="/storage.js"></script>
+                <script src=versioned("/storage.js")></script>
 
                 // Embed height reporter (no-op unless framed with ?embed_id=).
-                <script src="/embed-frame.js"></script>
+                <script src=versioned("/embed-frame.js")></script>
 
                 // Drag-and-drop sortable library.
-                <script src="/sortable.min.js"></script>
+                <script src=versioned("/sortable.min.js")></script>
             </head>
             <body>
                 <App/>
@@ -104,7 +116,6 @@ pub fn App() -> impl IntoView {
     let theme = RwSignal::new(Theme::dark());
 
     view! {
-        <Stylesheet id="leptos" href="/pkg/ironpad.css"/>
         <Title text="ironpad"/>
 
         <ConfigProvider theme>
@@ -123,5 +134,18 @@ pub fn App() -> impl IntoView {
                 </Router>
             </ToasterProvider>
         </ConfigProvider>
+    }
+}
+
+#[cfg(test)]
+mod shell_asset_tests {
+    use super::versioned;
+
+    #[test]
+    fn versioned_appends_the_release_version_query() {
+        assert_eq!(
+            versioned("/monaco/bridge.js"),
+            format!("/monaco/bridge.js?v={}", env!("CARGO_PKG_VERSION"))
+        );
     }
 }

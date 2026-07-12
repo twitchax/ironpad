@@ -391,6 +391,9 @@ Server functions are async. Avoid sync blocking calls; use `tokio::task::spawn_b
 ### 5. **Cache Invalidation**
 If you change the compilation pipeline, the cache key (blake3 hash input) may need updating. Test with `cargo make test-integration`.
 
+### 6. **Browser-Cache Hygiene for Static Assets**
+The pkg bundle is content-hashed (cargo-leptos `hash-files`; `hash.txt` must sit next to the server binary or leptos panics — the Dockerfile keeps it in lockstep with `LEPTOS_HASH_FILES=true`). Every URL-stable `<script>`/`<link>` in the shell (`lib.rs`) must be wrapped in `versioned()` so it carries a `?v={release}` cache-buster, and a middleware in `ironpad-server/src/main.rs` serves `/pkg/` as immutable and everything else `no-cache`. Without all three, browsers heuristically cache stale JS/WASM across releases, and an old client silently drops newer notebook fields (this shipped a live bug where shared cells compiled as normal cells).
+
 ---
 
 ## Development Workflow

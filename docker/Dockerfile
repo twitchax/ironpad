@@ -139,6 +139,11 @@ COPY --from=builder /build/target/release/ironpad-server /app/ironpad-server
 COPY --from=builder /build/target/release/ironpad-cli /app/ironpad-cli
 COPY --from=builder /build/target/release/ironpad-proxy /app/ironpad-proxy
 
+# Asset-hash manifest (cargo-leptos hash-files). Leptos reads it relative to
+# the server binary at render time and PANICS if LEPTOS_HASH_FILES=true and
+# it's missing — keep this copy in lockstep with the env below.
+COPY --from=builder /build/target/release/hash.txt /app/hash.txt
+
 # Copy the site assets (CSS, JS, WASM frontend bundle).
 COPY --from=builder /build/target/site /app/target/site
 
@@ -160,6 +165,7 @@ ENV IRONPAD_COMPILATION_PROXY=http://127.0.0.1:3112
 ENV IRONPAD_PROXY_ALLOWLIST=crates.io,github.com,githubusercontent.com
 ENV RUST_LOG=info
 ENV LEPTOS_SITE_ROOT=/app/target/site
+ENV LEPTOS_HASH_FILES=true
 
 EXPOSE 3111
 
