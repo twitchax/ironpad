@@ -1,7 +1,7 @@
 ---
 id: PRD-0045
 title: "Tier-3 intellisense: live check-on-type + prelude completions"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-07-12
 updated: 2026-07-12
@@ -16,11 +16,11 @@ acceptance_tests:
 - id: uat-001
   name: "Typing invalid code paints inline markers without running the cell; fixing it clears them"
   command: cargo make playwright
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "Full gate green with live checks and completions in place"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
@@ -69,7 +69,7 @@ Cells only report errors after a full Run (compile + link + wasm-bindgen). The f
 
 Warmth: a static classifier (`manifest_has_custom_deps`) plus a per-page-session set of manifests that have compiled successfully. Default-deps cells are guaranteed warm because the image warmup now seeds `targets/default` with built AND checked artifacts for the ironpad-cell tree, seeded into the volume by the entrypoint exactly like the atomics sysroot.
 
-Completions: `cargo rustdoc --output-format json` over ironpad-cell at authoring time produces a committed index (name, kind, signature, first doc paragraph) that Monaco completion/hover providers serve instantly.
+Completions: a source scan of ironpad-cell (tools/gen-completions.py) at authoring time produces a committed index (name, kind, signature, first doc paragraph) that Monaco completion/hover providers serve instantly.
 
 # Constraints
 
@@ -86,3 +86,4 @@ Completions: `cargo rustdoc --output-format json` over ironpad-cell at authoring
 # History
 
 - 2026-07-12: Created after tier discussion (RA server-side deferred on memory grounds; RA-in-WASM rejected: single-file analysis can't see shared::, cellN, or crates.io deps).
+- 2026-07-12: All tasks done, UATs verified (ci 634, integration 10, Playwright 49 incl. the live-check spec). One design confirmation from the e2e: cold caches converge across timed-out check rounds because killed cargo checks retain completed units — the local dev experience mirrors what prod sees before its check artifacts accumulate. Shipped as v0.9.0.
