@@ -49,6 +49,17 @@ fn public_notebook_matches(summary: &PublicNotebookSummary, query: &str) -> bool
             .any(|t| t.to_lowercase().contains(query))
 }
 
+/// Whether a private (IndexedDB) notebook matches a lowercased search query:
+/// title or any tag, same contract as public search.
+fn private_notebook_matches(nb: &IronpadNotebook, query: &str) -> bool {
+    query.is_empty()
+        || nb.title.to_lowercase().contains(query)
+        || nb
+            .tags
+            .as_ref()
+            .is_some_and(|tags| tags.iter().any(|t| t.to_lowercase().contains(query)))
+}
+
 // ── Home page ───────────────────────────────────────────────────────────────
 
 /// Home page showing private (IndexedDB) and public notebooks with search and
@@ -214,7 +225,7 @@ fn NotebookGrid(
             // Private notebooks first (already sorted by updated_at desc from IndexedDB).
             if matches!(mode, FilterMode::All | FilterMode::Private) {
                 for nb in &private {
-                    if query.is_empty() || nb.title.to_lowercase().contains(&query) {
+                    if private_notebook_matches(nb, &query) {
                         items.push(NotebookListItem::Private {
                             id: nb.id.to_string(),
                             title: nb.title.clone(),
@@ -595,6 +606,22 @@ mod search_tests {
             cell_count: 12,
             tags: vec!["blog".into(), "autodiff".into(), "machine-learning".into()],
         }
+    }
+
+    #[test]
+    fn private_search_matches_title_and_tags() {
+        use ironpad_common::IronpadNotebook;
+        let mut nb = IronpadNotebook::new("My Physics Scratchpad");
+        nb.tags = Some(vec!["blog".into(), "wip".into()]);
+
+        assert!(super::private_notebook_matches(&nb, ""));
+        assert!(super::private_notebook_matches(&nb, "physics"));
+        assert!(super::private_notebook_matches(&nb, "blog"));
+        assert!(!super::private_notebook_matches(&nb, "quaternions"));
+
+        nb.tags = None;
+        assert!(super::private_notebook_matches(&nb, "scratchpad"));
+        assert!(!super::private_notebook_matches(&nb, "blog"));
     }
 
     #[test]
