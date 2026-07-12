@@ -4,7 +4,7 @@
  "title": "Uncolored Functions: Blocking I/O with WASM JSPI",
  "created_at": "2026-07-10T00:00:00Z",
  "updated_at": "2026-07-12T00:00:00Z",
- "shared_cargo_toml": null,
+ "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
  "shared_source": null,
  "expand_code": true,
  "description": "Plain synchronous Rust that sleeps and calls HTTP APIs from inside iterator chains: JSPI suspends the whole WASM stack, so no async is needed anywhere. Requires Chrome or Edge 137+.",
