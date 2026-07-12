@@ -1,124 +1,237 @@
 {
-  "version": 1,
-  "id": "5e493ea4-303c-423b-a9e7-cb1b49b58edc",
-  "title": "Partial Borrows: The Borrow Checker's Oldest Paper Cut",
-  "created_at": "2026-07-10T00:00:00Z",
-  "updated_at": "2026-07-10T00:00:00Z",
-  "shared_cargo_toml": "[dependencies]\nborrow = \"2\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
-  "shared_source": "#![allow(unused_imports)] // borrow::Partial derive emits a self-import that is unused when a cell does not touch the graph\n// Add ONE derive and the wall in Act 1 disappears. Everything else is the\n// same plain struct: two Vecs, a couple of helpers.\n#[derive(Debug, borrow::Partial)]\n#[module(crate::shared)]\npub struct Graph {\n    pub nodes: Vec<String>,\n    pub edges: Vec<(usize, usize)>,\n}\n\n/// A three-node starting point: A -> B -> C.\npub fn sample_graph() -> Graph {\n    Graph {\n        nodes: vec![\"A\".into(), \"B\".into(), \"C\".into()],\n        edges: vec![(0, 1), (1, 2)],\n    }\n}\n\n/// Render the graph as an SVG (nodes on a circle, edges as arrows).\npub fn graph_svg(g: &Graph, title: &str) -> String {\n    let n = g.nodes.len().max(1);\n    let (cx, cy, r) = (200.0_f64, 175.0_f64, 95.0_f64);\n    let pos: Vec<(f64, f64)> = (0..g.nodes.len())\n        .map(|i| {\n            let a = std::f64::consts::TAU * (i as f64) / (n as f64)\n                - std::f64::consts::FRAC_PI_2;\n            (cx + r * a.cos(), cy + r * a.sin())\n        })\n        .collect();\n\n    let mut edges_svg = String::new();\n    for &(from, to) in &g.edges {\n        if let (Some(&(x1, y1)), Some(&(x2, y2))) = (pos.get(from), pos.get(to)) {\n            edges_svg.push_str(&format!(\n                r##\"<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" stroke=\"#8a8f98\" stroke-width=\"2\" marker-end=\"url(#a)\"/>\"##\n            ));\n        }\n    }\n\n    let mut nodes_svg = String::new();\n    for (i, label) in g.nodes.iter().enumerate() {\n        let (x, y) = pos[i];\n        nodes_svg.push_str(&format!(\n            r##\"<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"21\" fill=\"#ff5da2\" stroke=\"#12121e\" stroke-width=\"2\"/><text x=\"{x:.1}\" y=\"{y:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" fill=\"#12121e\" font-family=\"sans-serif\" font-weight=\"700\" font-size=\"15\">{label}</text>\"##\n        ));\n    }\n\n    format!(\n        r##\"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 360\" style=\"width:100%;max-width:400px;background:#12121e;border-radius:10px;display:block;\">\n  <defs>\n    <marker id=\"a\" viewBox=\"0 0 10 10\" refX=\"20\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\n      <path d=\"M 0 0 L 10 5 L 0 10 z\" fill=\"#8a8f98\"/>\n    </marker>\n  </defs>\n  <text x=\"200\" y=\"30\" text-anchor=\"middle\" fill=\"#e6e6f0\" font-family=\"sans-serif\" font-size=\"15\" font-weight=\"600\">{title}</text>\n  {edges_svg}\n  {nodes_svg}\n</svg>\"##\n    )\n}\n",
-  "cells": [
-    {
-      "id": "cell_0",
-      "order": 0,
-      "label": "The oldest paper cut",
-      "cell_type": "Markdown",
-      "source": "# Partial borrows: the borrow checker's oldest paper cut\n\nEvery Rust developer has personally lost this fight. You have a struct, it has two fields, and you want to hand one method the first field and another method the second field, mutably, at the same time. The compiler says no, some variant of:\n\n> error[E0499]: cannot borrow `*self` as mutable more than once at a time\n\nYou *know* the two methods touch disjoint fields. The borrow checker does not, because it never looks inside a method to find out. On a slice you get a pressure valve: [`split_at_mut`](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut) hands you two disjoint `&mut` halves and everyone goes home happy. On the *fields of a struct*, through methods, there has never been an equivalent. This is one of the oldest **paper cuts** in the language.\n\nHere is the fun part: in 2026 this paper cut finally has **three answers moving at once**.\n\n1. A crate, [`borrow` v2](https://lib.rs/crates/borrow), that ships the future syntax *today*, on stable.\n2. [Niko Matsakis' \"maximally minimal view types\"](https://smallcultfollowing.com/babysteps/blog/2026/03/21/view-types-max-min/) (March 21, 2026), the language-side proposal.\n3. The [Reborrow traits 2026 project goal](https://rust-lang.github.io/rust-project-goals/2026/reborrow-traits.html), already landing on nightly for the easy cases.\n\nWe are going to hit the wall on purpose, watch a crate walk straight through it, and read the tea leaves on which of the three lands first. There is a Polonius sidebar at the end too, because the *other* great borrow-checker modernization deserves a cameo.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_1",
-      "order": 1,
-      "label": "Act 1: the wall",
-      "cell_type": "Markdown",
-      "source": "## Act 1: the wall, live\n\nBelow is a `Graph` with two fields, `nodes` and `edges`, and two methods that each borrow exactly one of them. We grab a mutable handle to each, back to back, and try to use both. **This cell does not compile, and that is the whole point.** ironpad renders the compiler's diagnostic inline, right where rustc points.\n\n(Our borrow here is a local we named `g` rather than `self`, so the headline names `g` instead of `*self`: **cannot borrow g as mutable more than once**. Same E0499, same lesson.)",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_2",
-      "order": 2,
-      "label": "The wall (does not compile)",
-      "cell_type": "Code",
-      "source": "// ironpad-test: compile-fail (this cell is a deliberate teaching failure)\nstruct Graph {\n    nodes: Vec<String>,\n    edges: Vec<(usize, usize)>,\n}\n\nimpl Graph {\n    fn nodes_mut(&mut self) -> &mut Vec<String> {\n        &mut self.nodes\n    }\n    fn edges_mut(&mut self) -> &mut Vec<(usize, usize)> {\n        &mut self.edges\n    }\n}\n\nlet mut g = Graph {\n    nodes: vec![\"A\".into(), \"B\".into()],\n    edges: vec![(0, 1)],\n};\n\n// Grab a mutable handle to each field, one method at a time...\nlet ns = g.nodes_mut();\nlet es = g.edges_mut(); // the compiler stops right here.\n\nns.push(\"C\".into());\nes.push((1, 2));\n\nCellOutput::text(\"unreachable: this cell never compiles\")\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_3",
-      "order": 3,
-      "label": "The signature is the contract",
-      "cell_type": "Markdown",
-      "source": "## The signature is the contract\n\nRead `nodes_mut` again: `fn nodes_mut(&mut self) -> &mut Vec<String>`. At the call site, that signature is *all the compiler is allowed to know*. It says \"I borrow **all of `self`** mutably, and I hand you back a reference tied to that borrow.\" The body clearly only touches `self.nodes`, but the borrow checker refuses to read the body to find that out, and for good reason. If it did, every caller would be coupled to the *implementation* of every method, and changing a method body could break code three crates away. **Signatures are the operative boundary.** The checker reasons about the signature, and nothing past it.\n\nThat is also exactly why [`split_at_mut`](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut) works and your two methods do not. Its signature *promises* disjointness right in the return type, `(&mut [T], &mut [T])`, two independent borrows spelled out where the caller can see them. So the whole game is to give an ordinary struct a way to say that same thing in a signature. That is what all three of 2026's answers are really about.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_4",
-      "order": 4,
-      "label": "Act 2: ship the future syntax",
-      "cell_type": "Markdown",
-      "source": "## Act 2: a crate that ships the future syntax\n\nThe [`borrow` crate](https://lib.rs/crates/borrow) (v2, October 2025) does something delightful: it lets you write a partial borrow *in the type* today, on stable Rust, with no nightly flag. You add `#[derive(borrow::Partial)]` to the struct, and then a function can ask for exactly the fields it needs:\n\n- `p!(&<mut nodes> Graph)` means \"a `Graph` whose `nodes` I may mutate, and nothing else.\"\n- `p!(&<mut edges> Graph)` means the same for `edges`.\n\nTwo functions with those two signatures can run against the same graph without a fight, because each one's *signature* now names its footprint, exactly the trick `split_at_mut` pulls. The `Graph` in this notebook's shared source carries the derive. Watch the two functions coexist.\n\n*(The kicker, and the reason this is worth your attention: `p!(&<mut nodes> Graph)` is roughly the **shape** the language feature might eventually take. This is a crate letting you rehearse a syntax that is still being designed.)*",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_5",
-      "order": 5,
-      "label": "Partial borrows, side by side",
-      "cell_type": "Code",
-      "source": "use borrow::partial as p;\nuse borrow::traits::*;\nuse shared::Graph;\n\n// Each function names EXACTLY the field it touches, and nothing else.\nfn add_node(g: p!(&<mut nodes> Graph), label: &str) {\n    g.nodes.push(label.to_string());\n}\nfn add_edge(g: p!(&<mut edges> Graph), from: usize, to: usize) {\n    g.edges.push((from, to));\n}\n\nlet mut g = shared::sample_graph();\n\n// Two \"&mut self through a method\" calls the checker is perfectly happy with.\nadd_node(p!(&mut g), \"D\");\nadd_edge(p!(&mut g), 2, 3);\n\nlet svg = shared::graph_svg(&g, \"add_node + add_edge, no fight\");\n(\n    Svg(svg),\n    Md(format!(\n        \"Now **{} nodes** and **{} edges**. Two mutations, zero `E0499`.\",\n        g.nodes.len(),\n        g.edges.len()\n    )),\n)\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_6",
-      "order": 6,
-      "label": "Were they alive at once?",
-      "cell_type": "Markdown",
-      "source": "## But were they ever alive at the same time?\n\nFair challenge. In the cell above, `add_node` finished completely before `add_edge` started, so a skeptic could argue the two borrows never actually overlapped. So let us make them overlap. The `borrow` crate can split one borrow into two disjoint, *simultaneously live* mutable views, the struct-field analogue of `split_at_mut`. Below, `nodes` and `rest` are both alive on the same lines, both mutable, pointed at different fields. **No E0499.**",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_7",
-      "order": 7,
-      "label": "Two live &mut borrows, one struct",
-      "cell_type": "Code",
-      "source": "use borrow::partial as p;\nuse borrow::traits::*;\nuse shared::Graph;\n\nlet mut g = shared::sample_graph();\n\n// Split ONE borrow into two disjoint, simultaneously-live mutable views.\nlet whole: p!(&<mut *> Graph) = p!(&mut g);\nlet (mut nodes, mut rest) = whole.borrow_nodes_mut();\n// `nodes` reaches only the node list; `rest` reaches only the edges.\n\nnodes.push(\"D\".into());\nrest.edges.push((2, 3));\n// Two mutable borrows of one struct, live at the same instant. Legal.\n\nlet svg = shared::graph_svg(&g, \"two live &mut borrows, one struct\");\nSvg(svg)\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_8",
-      "order": 8,
-      "label": "Act 3: the language answers",
-      "cell_type": "Markdown",
-      "source": "## Act 3: what the language is actually building\n\nThe crate is a rehearsal. Here is the real cast.\n\n**[Maximally minimal view types](https://smallcultfollowing.com/babysteps/blog/2026/03/21/view-types-max-min/) (Niko Matsakis, March 21, 2026).** A deliberately *stripped-down* take on letting a function's signature name the fields it touches, something like `fn add_node(&mut self.nodes)`. The \"maximally minimal\" framing is the whole point: earlier view-type proposals tried to do everything and stalled, so this one tries to do the *least* that still solves the disjoint-borrow case, on the theory that a small feature that ships beats a general one that does not.\n\n**[Reborrow and CoerceShared traits](https://rust-lang.github.io/rust-project-goals/2026/reborrow-traits.html) (2026 project goal).** A different attack: give the language first-class `Reborrow` and `CoerceShared` traits so user types can opt into the same reborrowing magic that `&mut T` gets for free. The 2025H2 update reported a **working nightly implementation for types with a single lifetime and trivial layout**, now iterating on feedback. It is the furthest along in actual compiler code.\n\nOne honest note before you conflate things. Partial borrows are **specifically distinct from** field projections, the other \"reach into a struct\" feature people are excited about. Projection is about turning a `Pin<&mut Wrapper>` into a `Pin<&mut Field>`, projecting a wrapper through to one of its fields. Partial borrows are about holding *several disjoint field borrows at once*. Adjacent neighborhoods, different houses; do not let anyone tell you one subsumes the other.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_9",
-      "order": 9,
-      "label": "Sidebar: Polonius",
-      "cell_type": "Markdown",
-      "source": "## Sidebar: Polonius, the other modernization\n\nPartial borrows are about teaching the checker to see *disjoint fields*. [Polonius](https://rust-lang.github.io/rust-project-goals/2026/polonius.html) is about teaching it to see *time* more precisely. It is a from-scratch reformulation of the borrow checker that is **location-sensitive**: it tracks which loans are live at each point in the control-flow graph, instead of approximating with the coarser regions today's NLL checker uses.\n\nThe cleanest way to feel the difference is the canonical case NLL gets wrong, known affectionately as **\"NLL problem case 3.\"** Return a borrow on one branch, mutate on the other. You and I can both see the borrow from the early return cannot possibly be alive on the line that mutates, because the early return already left the function. Today's checker cannot see it. Watch.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_10",
-      "order": 10,
-      "label": "NLL problem case 3 (does not compile)",
-      "cell_type": "Code",
-      "source": "// ironpad-test: compile-fail (this cell is a deliberate teaching failure)\nuse std::collections::HashMap;\n\n// NLL Problem Case 3: return a borrow on one path, mutate on the other.\nfn get_or_insert(map: &mut HashMap<u32, String>, key: u32) -> &String {\n    if let Some(value) = map.get(&key) {\n        return value; // borrow of `map` \"escapes\" through this return...\n    }\n    map.insert(key, \"default\".to_string()); // ...and collides right here.\n    &map[&key]\n}\n\nlet mut m = HashMap::new();\nm.insert(1, \"one\".to_string());\nCellOutput::text(get_or_insert(&mut m, 1).clone())\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_11",
-      "order": 11,
-      "label": "What Polonius sees",
-      "cell_type": "Markdown",
-      "source": "## What Polonius sees that NLL cannot\n\nThe error lands on `map.insert`, and the reason it gives is the tell:\n\n> returning this value requires that `*map` is borrowed for `'1`\n\nBecause `get` can return a reference that escapes through `return value`, today's checker conservatively assumes the borrow from `get` lasts for the *entire* rest of the function, including the `else` path where you know it is already gone. So the later `map.insert` looks like a conflict and you get **E0502**. Polonius, being location-sensitive, sees that on the `else` path no loan from `get` is live, and **accepts this code unchanged**. Same source, no rewrite, no `entry`-API gymnastics.\n\nThe status is genuinely exciting. On [February 28, 2026, rust#150551 landed and the driver called Polonius \"stabilizable\"](https://github.com/rust-lang/rust/issues/150551). The remaining cost is performance: the location-sensitive analysis is more expensive, and the team has signaled it is willing to **eat a 10 to 20% borrow-check hit** in the typical case (worst case near 60% on a pathological function) to make code like the cell above *just work*. That is a remarkable trade to put on the table, and a good measure of how much this one paper cut has cost the ecosystem in aggregate.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_12",
-      "order": 12,
-      "label": "Which lands first?",
-      "cell_type": "Markdown",
-      "source": "## Which one lands first? (a friendly wager)\n\nThree answers, one paper cut. Here is my bet, offered as *directional rather than precise*.\n\n**Polonius ships first**, and it is not that close. It is a `-Z` flag today, it has a landed PR its own driver calls \"stabilizable,\" and it needs no new surface syntax, which is where language features go to spend two extra years bikeshedding. Second, **Reborrow traits**, because there is real nightly code and the single-lifetime case already works; traits are a smaller ask than new borrow syntax. Third, and I say this with affection, **view types**, the feature with the best story and the longest road, because \"name a subset of your fields in a signature\" is exactly the kind of small-looking syntax that turns out to touch everything.\n\nAnd a fourth thing quietly wins in the meantime: the [`borrow` crate](https://lib.rs/crates/borrow) is *usable this afternoon*. That is the recurring lesson of the modern Rust ecosystem. When the language takes the scenic route, someone ships a crate that fakes the destination well enough to use in production, and by the time the real feature arrives half of us have forgotten we were ever waiting.\n\nPrimary sources, if you want them: [view types](https://smallcultfollowing.com/babysteps/blog/2026/03/21/view-types-max-min/), the [Reborrow traits goal](https://rust-lang.github.io/rust-project-goals/2026/reborrow-traits.html), the [Polonius goal](https://rust-lang.github.io/rust-project-goals/2026/polonius.html), and the [internals thread on partial borrows](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020) that started much of it.",
-      "cargo_toml": null
-    }
-  ],
-  "description": "The borrow checker's oldest paper cut: why you still cannot mutably borrow two disjoint struct fields through methods, the `borrow` crate that ships the fix today on stable, and 2026's three language-side answers (view types, Reborrow traits, Polonius). Two cells fail to compile on purpose.",
-  "tags": [
-    "borrow-checker",
-    "partial-borrows",
-    "view-types",
-    "polonius",
-    "rust-2026"
-  ],
-  "expand_code": true
+ "version": 1,
+ "id": "5e493ea4-303c-423b-a9e7-cb1b49b58edc",
+ "title": "Partial Borrows: The Borrow Checker's Oldest Paper Cut",
+ "created_at": "2026-07-10T00:00:00Z",
+ "updated_at": "2026-07-12T00:00:00Z",
+ "shared_cargo_toml": "[dependencies]\nborrow = \"2\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+ "shared_source": "#![allow(unused_imports)] // borrow::Partial derive emits a self-import that is unused when a cell does not touch the graph\n// Add ONE derive and the wall in Act 1 disappears. Everything else is the\n// same plain struct: two Vecs, a couple of helpers.\n#[derive(Debug, borrow::Partial)]\n#[module(crate::shared)]\npub struct Graph {\n    pub nodes: Vec<String>,\n    pub edges: Vec<(usize, usize)>,\n}\n\n/// A three-node starting point: A -> B -> C.\npub fn sample_graph() -> Graph {\n    Graph {\n        nodes: vec![\"A\".into(), \"B\".into(), \"C\".into()],\n        edges: vec![(0, 1), (1, 2)],\n    }\n}\n\n/// Render the graph as an SVG (nodes on a circle, edges as arrows).\npub fn graph_svg(g: &Graph, title: &str) -> String {\n    let n = g.nodes.len().max(1);\n    let (cx, cy, r) = (200.0_f64, 175.0_f64, 95.0_f64);\n    let pos: Vec<(f64, f64)> = (0..g.nodes.len())\n        .map(|i| {\n            let a = std::f64::consts::TAU * (i as f64) / (n as f64)\n                - std::f64::consts::FRAC_PI_2;\n            (cx + r * a.cos(), cy + r * a.sin())\n        })\n        .collect();\n\n    let mut edges_svg = String::new();\n    for &(from, to) in &g.edges {\n        if let (Some(&(x1, y1)), Some(&(x2, y2))) = (pos.get(from), pos.get(to)) {\n            edges_svg.push_str(&format!(\n                r##\"<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" stroke=\"#8a8f98\" stroke-width=\"2\" marker-end=\"url(#a)\"/>\"##\n            ));\n        }\n    }\n\n    let mut nodes_svg = String::new();\n    for (i, label) in g.nodes.iter().enumerate() {\n        let (x, y) = pos[i];\n        nodes_svg.push_str(&format!(\n            r##\"<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"21\" fill=\"#ff5da2\" stroke=\"#12121e\" stroke-width=\"2\"/><text x=\"{x:.1}\" y=\"{y:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" fill=\"#12121e\" font-family=\"sans-serif\" font-weight=\"700\" font-size=\"15\">{label}</text>\"##\n        ));\n    }\n\n    format!(\n        r##\"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 360\" style=\"width:100%;max-width:400px;background:#12121e;border-radius:10px;display:block;\">\n  <defs>\n    <marker id=\"a\" viewBox=\"0 0 10 10\" refX=\"20\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\">\n      <path d=\"M 0 0 L 10 5 L 0 10 z\" fill=\"#8a8f98\"/>\n    </marker>\n  </defs>\n  <text x=\"200\" y=\"30\" text-anchor=\"middle\" fill=\"#e6e6f0\" font-family=\"sans-serif\" font-size=\"15\" font-weight=\"600\">{title}</text>\n  {edges_svg}\n  {nodes_svg}\n</svg>\"##\n    )\n}\n",
+ "cells": [
+  {
+   "id": "cell_0",
+   "order": 0,
+   "label": "The oldest paper cut",
+   "cell_type": "Markdown",
+   "source": "# Partial borrows: the borrow checker's oldest paper cut\n\nEvery Rust developer has personally lost this fight. You have a struct, it has two fields, and you want to hand one method the first field and another method the second field, mutably, at the same time. The compiler says no, some variant of:\n\n> error[E0499]: cannot borrow `*self` as mutable more than once at a time\n\nYou *know* the two methods touch disjoint fields. The borrow checker does not, because it never looks inside a method to find out. On a slice you get a pressure valve: [`split_at_mut`](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut) hands you two disjoint `&mut` halves and everyone goes home happy. On the *fields of a struct*, through methods, there has never been an equivalent. This is one of the oldest **paper cuts** in the language.\n\nHere is the fun part: in 2026 this paper cut finally has **three answers moving at once**.\n\n1. A crate, [`borrow` v2](https://lib.rs/crates/borrow), that ships the future syntax *today*, on stable.\n2. [Niko Matsakis' \"maximally minimal view types\"](https://smallcultfollowing.com/babysteps/blog/2026/03/21/view-types-max-min/) (March 21, 2026), the language-side proposal.\n3. The [Reborrow traits 2026 project goal](https://rust-lang.github.io/rust-project-goals/2026/reborrow-traits.html), already landing on nightly for the easy cases.\n\nWe are going to hit the wall on purpose, watch a crate walk straight through it, and read the tea leaves on which of the three lands first. There is a Polonius sidebar at the end too, because the *other* great borrow-checker modernization deserves a cameo.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_1",
+   "order": 1,
+   "label": "Act 1: the wall",
+   "cell_type": "Markdown",
+   "source": "## Act 1: the wall, live\n\nBelow is a `Graph` with two fields, `nodes` and `edges`, and two methods that each borrow exactly one of them. We grab a mutable handle to each, back to back, and try to use both. **This cell does not compile, and that is the whole point.** ironpad renders the compiler's diagnostic inline, right where rustc points.\n\n(Our borrow here is a local we named `g` rather than `self`, so the headline names `g` instead of `*self`: **cannot borrow g as mutable more than once**. Same E0499, same lesson.)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_2",
+   "order": 2,
+   "label": "The wall (does not compile)",
+   "cell_type": "Code",
+   "source": "// ironpad-test: compile-fail (this cell is a deliberate teaching failure)\nstruct Graph {\n    nodes: Vec<String>,\n    edges: Vec<(usize, usize)>,\n}\n\nimpl Graph {\n    fn nodes_mut(&mut self) -> &mut Vec<String> {\n        &mut self.nodes\n    }\n    fn edges_mut(&mut self) -> &mut Vec<(usize, usize)> {\n        &mut self.edges\n    }\n}\n\nlet mut g = Graph {\n    nodes: vec![\"A\".into(), \"B\".into()],\n    edges: vec![(0, 1)],\n};\n\n// Grab a mutable handle to each field, one method at a time...\nlet ns = g.nodes_mut();\nlet es = g.edges_mut(); // the compiler stops right here.\n\nns.push(\"C\".into());\nes.push((1, 2));\n\nCellOutput::text(\"unreachable: this cell never compiles\")\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_more_walls",
+   "order": 3,
+   "label": "The same wall, three more ways",
+   "cell_type": "Markdown",
+   "source": "## The same wall, three more ways\n\nThe two-getter demo above is the lab-conditions version. In real code the wall wears messier costumes; here are three, in markdown fences because none of them compile. The failure *is* the lesson.\n\n**Costume one: iterate one field, log through a method.** The one that gets everybody, usually mid-loop:\n\n```rust\nstruct Editor {\n    buffer: Vec<String>,\n    history: Vec<String>,\n}\n\nimpl Editor {\n    fn log(&mut self, msg: &str) {\n        self.history.push(msg.to_string());\n    }\n    fn shout(&mut self) {\n        for line in &mut self.buffer {\n            line.push('!');\n            self.log(\"shouted\"); // error[E0499]: cannot borrow `*self` as\n        }                        // mutable more than once at a time\n    }\n}\n```\n\nThe loop holds `&mut self.buffer` for its whole body; `self.log(...)` demands `&mut self`, all of it, because that is what the signature says. Two overlapping mutable borrows: E0499, even though the bodies touch disjoint fields.\n\n**Costume two: hold a reference from one field across a method call:**\n\n```rust\nimpl Editor {\n    fn commit(&mut self) {\n        let last = self.buffer.last().unwrap(); // & borrow of self.buffer\n        self.log(\"committing\");                 // error[E0502]: cannot borrow\n        assert!(!last.is_empty());              // `*self` as mutable because it\n    }                                           // is also borrowed as immutable\n}\n```\n\nE0502 instead of E0499, same disease. `log` only touches `history`, `last` only touches `buffer`, and the signature flattens both facts into \"all of self\".\n\n**Costume three: the refactor that breaks the build.** Inline code compiles; extract a method for hygiene and some call sites stop compiling:\n\n```rust\n// Inline: compiles. The checker sees two disjoint field borrows.\ngraph.nodes.push(\"D\".into());\ngraph.edges.push((2, 3));\n\n// Behind a method, the SAME mutation now claims all of graph:\nfn add_node(&mut self, label: &str) { self.nodes.push(label.into()); }\n```\n\nInline field access is checked place by place; behind `&mut self`, that precision collapses to the whole struct. A method is a *self-shaped hammer*: whatever the body does, the signature swings at the entire value. Extracting a method, the most basic act of hygiene in the language, can **shrink** what the checker accepts. That asymmetry is why this bug report never closes.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_3",
+   "order": 4,
+   "label": "The signature is the contract",
+   "cell_type": "Markdown",
+   "source": "## The signature is the contract\n\nRead `nodes_mut` again: `fn nodes_mut(&mut self) -> &mut Vec<String>`. At the call site, that signature is *all the compiler is allowed to know*. It says \"I borrow **all of `self`** mutably, and I hand you back a reference tied to that borrow.\" The body clearly only touches `self.nodes`, but the borrow checker refuses to read the body to find that out, and for good reason. If it did, every caller would be coupled to the *implementation* of every method, and changing a method body could break code three crates away. **Signatures are the operative boundary.** The checker reasons about the signature, and nothing past it.\n\nThat is also exactly why [`split_at_mut`](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut) works and your two methods do not. Its signature *promises* disjointness right in the return type, `(&mut [T], &mut [T])`, two independent borrows spelled out where the caller can see them. So the whole game is to give an ordinary struct a way to say that same thing in a signature. That is what all three of 2026's answers are really about.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_interprocedural",
+   "order": 5,
+   "label": "The load-bearing fact",
+   "cell_type": "Markdown",
+   "source": "## The load-bearing fact\n\nHere is the fact that makes all three 2026 answers, and every workaround, snap into one frame: **the borrow checker is intraprocedural**. It checks one function body at a time, and everything it knows about a callee is the callee's signature. It never inlines, never peeks, never runs whole-program analysis.\n\nThat is deliberate, and correct, for three compounding reasons. **Compile time**: per-function checking scales linearly with your crate, while body-sensitive inference would re-verify the world every time a leaf function changed. **Semver**: if callers could rely on what a body does, every body would be de facto public API, and widening a method's footprint from `nodes` to `nodes` plus `edges` would become an invisible breaking change. **Privacy**: an analysis reasoning about private fields from outside the module dissolves exactly the boundary privacy exists to draw.\n\nSo the checker reads signatures only, which localizes the actual language bug: **today's signature grammar cannot say \"I borrow only `self.nodes`\".** The vocabulary is `&self`, `&mut self`, and lifetimes; a borrow through a reference covers the whole referent. `&mut self` means all of self, at every call site, forever.\n\nEverything else in this notebook is one of two moves against that fact. Move one: *relocate the split to the call site*, where the checker already reasons precisely about places (three of the four workarounds below). Move two: *extend the signature grammar* so a function can promise disjointness (the `borrow` crate, view types, reborrow traits). Polonius, as the sidebar will show, is neither: it sharpens reasoning inside a body and leaves the signature contract untouched.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_workarounds_intro",
+   "order": 6,
+   "label": "Interlude: the folklore",
+   "cell_type": "Markdown",
+   "source": "## Interlude: eleven years of folklore\n\nBefore the shiny 2026 answers, honor the folklore. This problem was known before Rust 1.0 shipped in 2015, and production code did not sit around blocked: four workarounds cover essentially every case. Each gets a small runnable cell below, and each is a different way of smuggling disjointness past a signature that cannot spell it.\n\n**Workaround one: destructure.** If you can see the fields, one pattern splits them: `let Graph { nodes, edges } = &mut g;` produces two independent `&mut` bindings, because matching through a mutable reference borrows each named field *separately*. Zero runtime cost, zero new API, stable since 1.0. The catch: it requires field visibility, and it abandons method syntax entirely.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_split_destructure",
+   "order": 7,
+   "label": "Workaround 1: destructure",
+   "cell_type": "Code",
+   "source": "use shared::Graph;\n\nlet mut g = shared::sample_graph();\n\n// One pattern, two independent &mut borrows: the checker tracks each\n// named field as its own place, so there is no whole-struct borrow\n// left to conflict with.\nlet Graph { nodes, edges } = &mut g;\n\nnodes.push(\"D\".into());\nedges.push((2, 3));\n// Interleave the two to prove both borrows are live at the same time.\nnodes.push(\"E\".into());\nedges.push((3, 4));\n\nlet svg = shared::graph_svg(&g, \"destructured split: two &mut, one struct\");\n(\n    Svg(svg),\n    Md(format!(\n        \"**{} nodes**, **{} edges**: two live `&mut` bindings from one pattern.\",\n        g.nodes.len(),\n        g.edges.len()\n    )),\n)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_free_fns_md",
+   "order": 8,
+   "label": "Workaround 2: free functions",
+   "cell_type": "Markdown",
+   "source": "## Workaround two: free functions that name their fields\n\nIf `&mut self` is the problem, stop writing `self`. A free function takes `&mut Vec<String>` instead of `&mut Graph`, and now its signature *names its footprint*, which is the whole game. The call site lends `&mut g.nodes` and `&mut g.edges`, two disjoint places the checker verifies exactly, and everything composes again.\n\nThis is `split_at_mut` thinking applied by hand: push the disjointness proof into types the current grammar can already express. The cost is ergonomic, not technical. `graph.add_node(\"D\")` decays into `add_node(&mut g.nodes, \"D\")`, the parameter list grows with every field a helper touches, and the API drifts toward \"bag of functions\". Real codebases, including rustc itself in places, pay that price on purpose.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_free_fns",
+   "order": 9,
+   "label": "Free functions name their fields",
+   "cell_type": "Code",
+   "source": "// As methods these two would each demand &mut Graph. As free\n// functions, each signature names exactly one field.\nfn add_node(nodes: &mut Vec<String>, label: &str) -> usize {\n    nodes.push(label.to_string());\n    nodes.len() - 1\n}\nfn connect(edges: &mut Vec<(usize, usize)>, from: usize, to: usize) {\n    edges.push((from, to));\n}\n\nlet mut g = shared::sample_graph();\n\n// Hold both field borrows at once; the checker proves disjointness at\n// the call site, where it can see the places.\nlet ns = &mut g.nodes;\nlet es = &mut g.edges;\nlet d = add_node(ns, \"D\");\nconnect(es, 2, d);\n\nMd(format!(\n    \"Free functions: **{} nodes**, **{} edges**. The signature names the field, so the caller can split.\",\n    g.nodes.len(),\n    g.edges.len()\n))\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_mem_take_md",
+   "order": 10,
+   "label": "Workaround 3: mem::take",
+   "cell_type": "Markdown",
+   "source": "## Workaround three: `mem::take`, the ownership dodge\n\nThe first two workarounds relocate a borrow; this one *eliminates* it. `std::mem::take(&mut self.nodes)` moves the vector out of the struct and leaves a fresh empty one behind. The loop below then iterates a **local**, not a field, so no borrow of `self` spans the loop body, and `&self` or `&mut self` methods become freely callable mid-iteration.\n\nThe costs are specific. The field must implement `Default`, or you upgrade to `mem::replace` with a dummy value. The move is cheap for a `Vec`: three pointer-sized words, zero element copies. But between the take and the put-back, `self.nodes` is empty, and anything that observes `self` in that window (a callee, a panic unwind, a `Drop` impl) sees the lie. Skip the put-back and the compiler says nothing; the data is simply gone. This is the workaround that works through *any* API, and the one most likely to bite you six months later.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_mem_take",
+   "order": 11,
+   "label": "Take it out, put it back",
+   "cell_type": "Code",
+   "source": "struct Graph {\n    nodes: Vec<String>,\n    edges: Vec<(usize, usize)>,\n}\n\nimpl Graph {\n    fn degree(&self, node: usize) -> usize {\n        self.edges.iter().filter(|&&(f, t)| f == node || t == node).count()\n    }\n    // Iterating `&mut self.nodes` while calling `self.degree(i)` would\n    // be E0502. So: move `nodes` out, iterate the local, put it back.\n    fn label_degrees(&mut self) {\n        let mut nodes = std::mem::take(&mut self.nodes);\n        for (i, label) in nodes.iter_mut().enumerate() {\n            *label = format!(\"{label} (deg {})\", self.degree(i));\n        }\n        self.nodes = nodes; // forget this line and the graph is silently empty\n    }\n}\n\nlet mut g = Graph {\n    nodes: vec![\"A\".into(), \"B\".into(), \"C\".into()],\n    edges: vec![(0, 1), (1, 2)],\n};\ng.label_degrees();\n\nMd(format!(\"After the take/put-back round trip: **{}**\", g.nodes.join(\"**, **\")))\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_closure_md",
+   "order": 12,
+   "label": "Workaround 4: closures",
+   "cell_type": "Markdown",
+   "source": "## Workaround four: the inline-closure trick\n\nSince edition 2021, closures capture **individual fields**, not whole structs. `|| g.nodes.push(..)` captures exactly `g.nodes`; a sibling closure capturing `g.edges` does not conflict with it. So when you want two methods with disjoint footprints and cannot have them, write two closures. The capture set plays the role the signature cannot: a machine-checked record of exactly which fields each body touches, computed *from the body*. That is precisely the analysis the checker refuses to run across function boundaries, and closures get it because a closure is not a boundary; it lives inside the function being checked.\n\nThe limits follow directly: a closure pair is not an exportable API, storing the closures in a struct recreates the original problem one level up, and named methods are easier to discover than locals. As a local pressure valve, though, it is shockingly effective.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_closure_capture",
+   "order": 13,
+   "label": "Two closures, two captures",
+   "cell_type": "Code",
+   "source": "let mut g = shared::sample_graph();\n\n// Edition 2021 precise capture: each closure captures exactly ONE\n// field. `add_node` holds &mut g.nodes; `add_edge` holds &mut g.edges.\nlet mut add_node = |label: &str| g.nodes.push(label.to_string());\nlet mut add_edge = |from: usize, to: usize| g.edges.push((from, to));\n\n// Both closures alive at once, calls interleaved: two disjoint mutable\n// borrows of `g`, and the checker is fine with it.\nadd_node(\"D\");\nadd_edge(2, 3);\nadd_node(\"E\");\nadd_edge(3, 4);\n\nMd(format!(\n    \"Closure split: **{} nodes**, **{} edges** from two live closures with disjoint captures.\",\n    g.nodes.len(),\n    g.edges.len()\n))\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_workaround_scorecard",
+   "order": 14,
+   "label": "The scorecard",
+   "cell_type": "Markdown",
+   "source": "## The scorecard, and the common thread\n\nFour workarounds, one table:\n\n| Workaround | Where the split lives | Works through APIs? | Main cost |\n| --- | --- | --- | --- |\n| Destructuring | Call site | No, needs field access | Loses method syntax |\n| Free functions | Signature, via field types | Yes, if you own the API | Plumbing; bag-of-functions drift |\n| `mem::take` | Nowhere; ownership, not borrowing | Yes, any API | `Default` bound; empty-field window |\n| Closures | Capture set, one body only | No | Local only; not storable |\n\nEvery row shares one property: none lets a *method on your type* declare \"I only touch `nodes`\". Each either moves the split to the call site, where the checker already reasons precisely, or sidesteps borrowing altogether. The signature layer, the one place the fix belongs, stays mute. Which returns us to the main plot: what would it take for a signature to say the sentence?",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_4",
+   "order": 15,
+   "label": "Act 2: ship the future syntax",
+   "cell_type": "Markdown",
+   "source": "## Act 2: a crate that ships the future syntax\n\nThe [`borrow` crate](https://lib.rs/crates/borrow) (v2, October 2025) does something delightful: it lets you write a partial borrow *in the type* today, on stable Rust, with no nightly flag. You add `#[derive(borrow::Partial)]` to the struct, and then a function can ask for exactly the fields it needs:\n\n- `p!(&<mut nodes> Graph)` means \"a `Graph` whose `nodes` I may mutate, and nothing else.\"\n- `p!(&<mut edges> Graph)` means the same for `edges`.\n\nTwo functions with those two signatures can run against the same graph without a fight, because each one's *signature* now names its footprint, exactly the trick `split_at_mut` pulls. The `Graph` in this notebook's shared source carries the derive. Watch the two functions coexist.\n\n*(The kicker, and the reason this is worth your attention: `p!(&<mut nodes> Graph)` is roughly the **shape** the language feature might eventually take. This is a crate letting you rehearse a syntax that is still being designed.)*",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_5",
+   "order": 16,
+   "label": "Partial borrows, side by side",
+   "cell_type": "Code",
+   "source": "use borrow::partial as p;\nuse borrow::traits::*;\nuse shared::Graph;\n\n// Each function names EXACTLY the field it touches, and nothing else.\nfn add_node(g: p!(&<mut nodes> Graph), label: &str) {\n    g.nodes.push(label.to_string());\n}\nfn add_edge(g: p!(&<mut edges> Graph), from: usize, to: usize) {\n    g.edges.push((from, to));\n}\n\nlet mut g = shared::sample_graph();\n\n// Two \"&mut self through a method\" calls the checker is perfectly happy with.\nadd_node(p!(&mut g), \"D\");\nadd_edge(p!(&mut g), 2, 3);\n\nlet svg = shared::graph_svg(&g, \"add_node + add_edge, no fight\");\n(\n    Svg(svg),\n    Md(format!(\n        \"Now **{} nodes** and **{} edges**. Two mutations, zero `E0499`.\",\n        g.nodes.len(),\n        g.edges.len()\n    )),\n)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_6",
+   "order": 17,
+   "label": "Were they alive at once?",
+   "cell_type": "Markdown",
+   "source": "## But were they ever alive at the same time?\n\nFair challenge. In the cell above, `add_node` finished completely before `add_edge` started, so a skeptic could argue the two borrows never actually overlapped. So let us make them overlap. The `borrow` crate can split one borrow into two disjoint, *simultaneously live* mutable views, the struct-field analogue of `split_at_mut`. Below, `nodes` and `rest` are both alive on the same lines, both mutable, pointed at different fields. **No E0499.**",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_7",
+   "order": 18,
+   "label": "Two live &mut borrows, one struct",
+   "cell_type": "Code",
+   "source": "use borrow::partial as p;\nuse borrow::traits::*;\nuse shared::Graph;\n\nlet mut g = shared::sample_graph();\n\n// Split ONE borrow into two disjoint, simultaneously-live mutable views.\nlet whole: p!(&<mut *> Graph) = p!(&mut g);\nlet (mut nodes, mut rest) = whole.borrow_nodes_mut();\n// `nodes` reaches only the node list; `rest` reaches only the edges.\n\nnodes.push(\"D\".into());\nrest.edges.push((2, 3));\n// Two mutable borrows of one struct, live at the same instant. Legal.\n\nlet svg = shared::graph_svg(&g, \"two live &mut borrows, one struct\");\nSvg(svg)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_8",
+   "order": 19,
+   "label": "Act 3: the language answers",
+   "cell_type": "Markdown",
+   "source": "## Act 3: what the language is actually building\n\nThe crate is a rehearsal. Here is the real cast.\n\n**[Maximally minimal view types](https://smallcultfollowing.com/babysteps/blog/2026/03/21/view-types-max-min/) (Niko Matsakis, March 21, 2026).** A deliberately *stripped-down* take on letting a function's signature name the fields it touches, something like `fn add_node(&mut self.nodes)`. The \"maximally minimal\" framing is the whole point: earlier view-type proposals tried to do everything and stalled, so this one tries to do the *least* that still solves the disjoint-borrow case, on the theory that a small feature that ships beats a general one that does not.\n\n**[Reborrow and CoerceShared traits](https://rust-lang.github.io/rust-project-goals/2026/reborrow-traits.html) (2026 project goal).** A different attack: give the language first-class `Reborrow` and `CoerceShared` traits so user types can opt into the same reborrowing magic that `&mut T` gets for free. The 2025H2 update reported a **working nightly implementation for types with a single lifetime and trivial layout**, now iterating on feedback. It is the furthest along in actual compiler code.\n\nOne honest note before you conflate things. Partial borrows are **specifically distinct from** field projections, the other \"reach into a struct\" feature people are excited about. Projection is about turning a `Pin<&mut Wrapper>` into a `Pin<&mut Field>`, projecting a wrapper through to one of its fields. Partial borrows are about holding *several disjoint field borrows at once*. Adjacent neighborhoods, different houses; do not let anyone tell you one subsumes the other.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_view_sketch",
+   "order": 20,
+   "label": "View types on paper",
+   "cell_type": "Markdown",
+   "source": "## What view types look like on paper\n\nNone of this compiles anywhere today, which is why it lives in a fence instead of a cell. But the sketch has a definite shape, worth reading next to the crate syntax from Act 2. A method names the fields it touches, directly in the type of `self`:\n\n```rust\n// SKETCH ONLY: not valid Rust in July 2026, on any channel.\nimpl Graph {\n    fn add_node(&mut {nodes} self, label: String) {\n        self.nodes.push(label);\n    }\n    fn add_edge(&mut {edges} self, from: usize, to: usize) {\n        self.edges.push((from, to));\n    }\n}\n\nlet mut g = sample_graph();\ng.add_node(\"D\".into()); // borrows only g.nodes\ng.add_edge(2, 3);       // borrows only g.edges: no conflict possible\n```\n\nRead `&mut {nodes} self` as \"a mutable view of `self`, restricted to `nodes`\". Call sites then check exactly like the destructuring cell earlier: two borrows of two provably disjoint places. The Act 1 wall does not get a better error message; it stops being an error at all.\n\nThe **maximally minimal** part is everything the sketch refuses to do, and each refusal routes around a swamp that sank an earlier, more general proposal:\n\n- **Fields only, not arbitrary places.** You can name `nodes`, not `nodes[0]` or a computed projection. Arbitrary place expressions in types are a research program; field names are a lookup.\n- **No abstraction over field sets.** No generics over \"some set of fields\", no view aliases, no view bounds. First-class views need a theory of view subtyping, and that theory is where the earlier proposals went to die.\n- **Privacy stays intact.** A public signature naming private fields would leak implementation detail, so the conservative reading keeps views intra-crate: public API keeps saying `&mut self`, private helpers get exact footprints. That concedes the cross-crate problem, for now, on purpose.\n\nThe bet is explicit: a feature covering most of the disjoint-borrow pain that ships in one release beats a complete theory of views that ships never.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_9",
+   "order": 21,
+   "label": "Sidebar: Polonius",
+   "cell_type": "Markdown",
+   "source": "## Sidebar: Polonius, the other modernization\n\nPartial borrows are about teaching the checker to see *disjoint fields*. [Polonius](https://rust-lang.github.io/rust-project-goals/2026/polonius.html) is about teaching it to see *time* more precisely. It is a from-scratch reformulation of the borrow checker that is **location-sensitive**: it tracks which loans are live at each point in the control-flow graph, instead of approximating with the coarser regions today's NLL checker uses.\n\nThe cleanest way to feel the difference is the canonical case NLL gets wrong, known affectionately as **\"NLL problem case 3.\"** Return a borrow on one branch, mutate on the other. You and I can both see the borrow from the early return cannot possibly be alive on the line that mutates, because the early return already left the function. Today's checker cannot see it. Watch.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_10",
+   "order": 22,
+   "label": "NLL problem case 3 (does not compile)",
+   "cell_type": "Code",
+   "source": "// ironpad-test: compile-fail (this cell is a deliberate teaching failure)\nuse std::collections::HashMap;\n\n// NLL Problem Case 3: return a borrow on one path, mutate on the other.\nfn get_or_insert(map: &mut HashMap<u32, String>, key: u32) -> &String {\n    if let Some(value) = map.get(&key) {\n        return value; // borrow of `map` \"escapes\" through this return...\n    }\n    map.insert(key, \"default\".to_string()); // ...and collides right here.\n    &map[&key]\n}\n\nlet mut m = HashMap::new();\nm.insert(1, \"one\".to_string());\nCellOutput::text(get_or_insert(&mut m, 1).clone())\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_11",
+   "order": 23,
+   "label": "What Polonius sees",
+   "cell_type": "Markdown",
+   "source": "## What Polonius sees that NLL cannot\n\nThe error lands on `map.insert`, and the reason it gives is the tell:\n\n> returning this value requires that `*map` is borrowed for `'1`\n\nBecause `get` can return a reference that escapes through `return value`, today's checker conservatively assumes the borrow from `get` lasts for the *entire* rest of the function, including the `else` path where you know it is already gone. So the later `map.insert` looks like a conflict and you get **E0502**. Polonius, being location-sensitive, sees that on the `else` path no loan from `get` is live, and **accepts this code unchanged**. Same source, no rewrite, no `entry`-API gymnastics.\n\nThe status is genuinely exciting. On [February 28, 2026, rust#150551 landed and the driver called Polonius \"stabilizable\"](https://github.com/rust-lang/rust/issues/150551). The remaining cost is performance: the location-sensitive analysis is more expensive, and the team has signaled it is willing to **eat a 10 to 20% borrow-check hit** in the typical case (worst case near 60% on a pathological function) to make code like the cell above *just work*. That is a remarkable trade to put on the table, and a good measure of how much this one paper cut has cost the ecosystem in aggregate.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_polonius_limits",
+   "order": 24,
+   "label": "What Polonius does not fix",
+   "cell_type": "Markdown",
+   "source": "## What Polonius fixes, and what it deliberately does not\n\nKeep two axes straight, because conflating them is the most common mistake in borrow-checker discourse.\n\nPolonius sharpens **time**: which loans are live at which point of one function body. Its wins are flow-sensitive: the get-or-insert above, borrows returned from some branches and not others, loops carrying a loan only on certain iterations. In each, the body contains the proof of safety and NLL's coarser regions discard it; Polonius keeps it. Same source, zero annotations.\n\nPolonius does not touch **space**: which fields a callee may reach. It is still an intraprocedural analysis reading the same signatures. Run the Act 1 wall under `-Z polonius` and you get the same errors in the same places:\n\n```rust\n// Still rejected, Polonius or not:\nlet ns = g.nodes_mut(); // signature: borrows ALL of g\nlet es = g.edges_mut(); // E0499, exactly as before\nns.push(\"C\".into());\n```\n\n`nodes_mut`'s signature still claims the whole struct, and no amount of location-sensitivity changes what a signature says. The honest ledger: Polonius fixes real daily friction, ships with zero new syntax, and does **nothing** for partial borrows. The efforts are complementary: Polonius upgrades the checker's reasoning *inside* a function; view types and reborrow traits upgrade what functions can *say to each other*. You want both.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_state_2026",
+   "order": 25,
+   "label": "State of play, July 2026",
+   "cell_type": "Markdown",
+   "source": "## Where the discussion stands, July 2026\n\nA calibration snapshot, so you can tell shipped from aspirational:\n\n- **View types: pre-RFC.** The max-min post is a design sketch by a lang-team member, not an accepted RFC. It grew out of the long-running [notes-on-partial-borrows thread](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020); the open questions are surface syntax (the `{nodes}` notation is a placeholder), public-API visibility given the privacy tension, and traits. Nothing is implemented; measure progress in posts, not PRs.\n- **Reborrow traits: nightly, narrow.** A funded 2026 project goal with a working nightly implementation for the constrained case: one lifetime, trivial layout. Current work is widening the supported types and settling the trait signatures. The only language effort with code you can run tonight, behind a feature gate.\n- **Polonius: on the stabilization runway.** The February 28, 2026 landing of rust#150551 moved the conversation from design to stabilization criteria. The gate is the compile-time budget: the 10 to 20% typical-case overhead quoted earlier, and how much engineering can claw back before the default flips.\n- **The `borrow` crate: shipped.** v2 since October 2025, stable Rust, no flags, as the cells above demonstrated live. Quietly the strongest argument for building the language feature: a proc macro faking a type-system extension well enough for production is demand measured in downloads rather than forum posts.\n\nThe pattern is the usual Rust one: the checker's theory advances on one track, the signature grammar on another, and the ecosystem paves the cowpath years ahead of both.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_12",
+   "order": 26,
+   "label": "Which lands first?",
+   "cell_type": "Markdown",
+   "source": "## Which one lands first? (a friendly wager)\n\nThree answers, one paper cut. Here is my bet, offered as *directional rather than precise*.\n\n**Polonius ships first**, and it is not that close. It is a `-Z` flag today, it has a landed PR its own driver calls \"stabilizable,\" and it needs no new surface syntax, which is where language features go to spend two extra years bikeshedding. Second, **Reborrow traits**, because there is real nightly code and the single-lifetime case already works; traits are a smaller ask than new borrow syntax. Third, and I say this with affection, **view types**, the feature with the best story and the longest road, because \"name a subset of your fields in a signature\" is exactly the kind of small-looking syntax that turns out to touch everything.\n\nAnd a fourth thing quietly wins in the meantime: the [`borrow` crate](https://lib.rs/crates/borrow) is *usable this afternoon*. That is the recurring lesson of the modern Rust ecosystem. When the language takes the scenic route, someone ships a crate that fakes the destination well enough to use in production, and by the time the real feature arrives half of us have forgotten we were ever waiting.\n\nPrimary sources, if you want them: [view types](https://smallcultfollowing.com/babysteps/blog/2026/03/21/view-types-max-min/), the [Reborrow traits goal](https://rust-lang.github.io/rust-project-goals/2026/reborrow-traits.html), the [Polonius goal](https://rust-lang.github.io/rust-project-goals/2026/polonius.html), and the [internals thread on partial borrows](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020) that started much of it.",
+   "cargo_toml": null
+  }
+ ],
+ "description": "The borrow checker's oldest paper cut: why you still cannot mutably borrow two disjoint struct fields through methods, the `borrow` crate that ships the fix today on stable, and 2026's three language-side answers (view types, Reborrow traits, Polonius). Two cells fail to compile on purpose.",
+ "tags": [
+  "borrow-checker",
+  "partial-borrows",
+  "view-types",
+  "polonius",
+  "rust-2026",
+  "blog"
+ ],
+ "expand_code": true
 }

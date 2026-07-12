@@ -36,6 +36,19 @@ enum FilterMode {
     Public,
 }
 
+/// Whether a public notebook matches a lowercased search query. Matches
+/// title, description, or any tag, so tag-style queries like "blog" or
+/// "physics" surface the tagged set directly.
+fn public_notebook_matches(summary: &PublicNotebookSummary, query: &str) -> bool {
+    query.is_empty()
+        || summary.title.to_lowercase().contains(query)
+        || summary.description.to_lowercase().contains(query)
+        || summary
+            .tags
+            .iter()
+            .any(|t| t.to_lowercase().contains(query))
+}
+
 // ── Home page ───────────────────────────────────────────────────────────────
 
 /// Home page showing private (IndexedDB) and public notebooks with search and
@@ -215,7 +228,7 @@ fn NotebookGrid(
             // Public notebooks (sorted alphabetically by title).
             if matches!(mode, FilterMode::All | FilterMode::Public) {
                 for nb in &public_notebooks {
-                    if query.is_empty() || nb.title.to_lowercase().contains(&query) {
+                    if public_notebook_matches(nb, &query) {
                         items.push(NotebookListItem::Public {
                             title: nb.title.clone(),
                             description: nb.description.clone(),
@@ -566,4 +579,33 @@ fn import_notebook_from_file(
 
     // Trigger the file picker.
     input.click();
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::public_notebook_matches;
+    use ironpad_common::PublicNotebookSummary;
+
+    fn summary() -> PublicNotebookSummary {
+        PublicNotebookSummary {
+            id: "autodiff".into(),
+            title: "std::autodiff: Differentiation in the Compiler".into(),
+            description: "Exact derivatives without writing them.".into(),
+            filename: "autodiff.ironpad".into(),
+            cell_count: 12,
+            tags: vec!["blog".into(), "autodiff".into(), "machine-learning".into()],
+        }
+    }
+
+    #[test]
+    fn search_matches_title_description_and_tags() {
+        let nb = summary();
+        // Queries arrive pre-lowercased (the caller lowercases once).
+        assert!(public_notebook_matches(&nb, ""));
+        assert!(public_notebook_matches(&nb, "autodiff"));
+        assert!(public_notebook_matches(&nb, "derivatives"));
+        assert!(public_notebook_matches(&nb, "blog"));
+        assert!(public_notebook_matches(&nb, "machine-learning"));
+        assert!(!public_notebook_matches(&nb, "quaternions"));
+    }
 }

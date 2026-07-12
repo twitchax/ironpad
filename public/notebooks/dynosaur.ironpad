@@ -1,91 +1,156 @@
 {
-  "version": 1,
-  "id": "3f16c2e6-7943-4ed9-8f33-97d6ed96bcbc",
-  "title": "Async traits behind dyn: dynosaur and the stalled fix",
-  "created_at": "2026-07-10T00:00:00Z",
-  "updated_at": "2026-07-10T00:00:00Z",
-  "shared_cargo_toml": "[dependencies]\ndynosaur = \"0.3\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
-  "shared_source": "//! Notebook shared source: one async trait, one dynosaur wrapper, three sources.\n\n/// A pluggable async data source. The `async fn` is exactly what native `dyn`\n/// refuses to hold, so this whole trait is the thing we are trying to box.\n#[dynosaur::dynosaur(pub DynDataSource = dyn(box) DataSource)]\npub trait DataSource {\n    /// A short label. A plain sync method, perfectly vtable-friendly on its own.\n    fn name(&self) -> &str;\n    /// Fetch one reading. This is the async method dynosaur boxes on the dyn path.\n    async fn fetch(&self) -> String;\n}\n\n/// A steady clock that always answers the same tick.\npub struct Clock;\n\nimpl DataSource for Clock {\n    fn name(&self) -> &str {\n        \"clock\"\n    }\n    async fn fetch(&self) -> String {\n        \"12:00:00\".to_string()\n    }\n}\n\n/// A deterministic dice roll, seeded once at construction.\npub struct Dice {\n    pub seed: u64,\n}\n\nimpl DataSource for Dice {\n    fn name(&self) -> &str {\n        \"dice\"\n    }\n    async fn fetch(&self) -> String {\n        let face = (self.seed.wrapping_mul(2654435761) % 6) + 1;\n        format!(\"rolled a {face}\")\n    }\n}\n\n/// An echo source that hands back whatever string it was built with.\npub struct Echo {\n    pub msg: String,\n}\n\nimpl DataSource for Echo {\n    fn name(&self) -> &str {\n        \"echo\"\n    }\n    async fn fetch(&self) -> String {\n        format!(\"\\\"{}\\\"\", self.msg)\n    }\n}\n",
-  "cells": [
-    {
-      "id": "cell_0",
-      "order": 0,
-      "label": "The asterisk in the release notes",
-      "cell_type": "Markdown",
-      "source": "# async fn in traits, and the asterisk nobody reads\n\nOn [December 28, 2023](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html), Rust 1.75 shipped `async fn` in traits to real fanfare. Seven years of \"we cannot express this yet\" ended in one release, and the example everyone posted looked like the thing you had always wanted to write:\n\n```rust\ntrait DataSource {\n    async fn fetch(&self) -> String;\n}\n```\n\nIt compiles. It works. It even inlines. There is just one line further down the release notes that most of us skimmed past: *this does not work behind `dyn`*. You cannot store an `async fn` trait as a `Box<dyn Trait>`, and two and a half years later you still cannot.\n\nThis notebook is the story of that asterisk: **why** it is there, the crate that **routes around** it, and the stabilization that was supposed to finish the job and instead [closed unmerged in December 2025](https://github.com/rust-lang/rust/pull/138424). Run the cells top to bottom. The third one fails on purpose.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_1",
-      "order": 1,
-      "label": "Act 1: why dyn chokes",
-      "cell_type": "Markdown",
-      "source": "## Act 1: why `dyn` chokes on an async fn\n\nA `dyn Trait` is a **fat pointer**: one half points at the data, the other half points at a **vtable**, a small table of function pointers with fixed, known signatures. To build that table, the compiler must know the exact return type of every method, right down to its size.\n\nThat is precisely what `async fn` will not tell it. An `async fn` does not return a `String`; it returns an **anonymous** `impl Future<Output = String>`, a compiler-generated state machine whose type has no name you can write and whose size depends on the concrete implementor. `Clock` produces one future type, a database client produces a different one, and the two are not the same size. No single function pointer fits the vtable slot.\n\nSo the language offers two honest paths: monomorphize (`impl Trait`, which bakes in the concrete type and inlines beautifully) or erase the type behind `dyn` (which needs a fixed size the future cannot promise). Rust 1.75 shipped the first path and left the second as an open problem. The next cell walks straight into it.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_2",
-      "order": 2,
-      "label": "This cell fails, and that's the point",
-      "cell_type": "Code",
-      "source": "// ironpad-test: compile-fail (this cell is a deliberate teaching failure)\n// A trait with an async method: exactly what Rust 1.75 handed us in Dec 2023.\ntrait DataSource {\n    async fn fetch(&self) -> String;\n}\n\nstruct Clock;\nimpl DataSource for Clock {\n    async fn fetch(&self) -> String {\n        \"12:00:00\".to_string()\n    }\n}\n\n// Now hold it behind `dyn`, the way you would any other trait object...\nlet source: Box<dyn DataSource> = Box::new(Clock);\nlet reading = source.fetch().await;\n\nCellOutput::text(reading)\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_3",
-      "order": 3,
-      "label": "Act 2: enter dynosaur",
-      "cell_type": "Markdown",
-      "source": "## Act 2: enter `dynosaur`\n\nThe fix the language cannot yet give you, a proc macro can. [`dynosaur`](https://crates.io/crates/dynosaur) (by [Santiago Pastorino](https://github.com/spastorino), alongside Niko Matsakis, as the lang team's blessed prototype) takes your `async fn` trait and generates a companion type, `DynDataSource`, that *is* dyn-compatible. It does the one thing the vtable needed: it **boxes the future**, turning that unnameable `impl Future` into a `Pin<Box<dyn Future>>` with a fixed size that fits neatly in a function-pointer slot.\n\nIf you remember [`#[async_trait]`](https://crates.io/crates/async-trait), think of this as its successor with the sharp edge filed off. `async_trait` boxed **every** call, static or dynamic, because in 2019 that was the only trick going. dynosaur boxes **only on the `dyn` path** and leaves your monomorphized calls untouched and zero-cost. You pay for an allocation exactly when you opt into type erasure, and not one call sooner.\n\nThe rule the macro asks you to remember is small: anywhere you would have written `dyn Trait`, write `DynTrait` instead. Here is the declaration this notebook shares across its cells (the full source, with three implementors, lives in the shared panel):\n\n```rust\n#[dynosaur::dynosaur(pub DynDataSource = dyn(box) DataSource)]\npub trait DataSource {\n    fn name(&self) -> &str;\n    async fn fetch(&self) -> String;\n}\n```",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_4",
-      "order": 4,
-      "label": "A plugin registry, dispatched dynamically",
-      "cell_type": "Code",
-      "source": "use shared::{Clock, DataSource, Dice, DynDataSource, Echo};\n\n// Three different sources, all boxed under one type. This is the line that\n// refused to compile a moment ago; dynosaur is what makes it legal.\nlet registry: Vec<Box<DynDataSource>> = vec![\n    DynDataSource::new_box(Clock),\n    DynDataSource::new_box(Dice { seed: 42 }),\n    DynDataSource::new_box(Echo { msg: \"hello from a vtable\".to_string() }),\n];\n\n// Await every source through *dynamic* dispatch, one boxed future at a time.\nlet mut rows = Vec::new();\nfor source in &registry {\n    let name = source.name().to_string();\n    let reading = source.fetch().await;\n    rows.push(vec![name, reading]);\n}\n\nTable::new(vec![\"source\", \"fetch().await via dyn\"], rows)\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_5",
-      "order": 5,
-      "label": "What the macro actually wrote",
-      "cell_type": "Markdown",
-      "source": "## What the macro actually wrote\n\nGiven your trait, dynosaur emits a struct shaped roughly like `struct DynDataSource(Box<dyn ErasedDataSource>)` plus an `impl DataSource for DynDataSource` that forwards each method and boxes the returned future on its way out. `DynDataSource::new_box(value)` is the constructor; because the wrapper implements your trait, it drops straight into a `Box<DynDataSource>`, a `Vec` of them, or a `&mut DynDataSource` argument. That is the whole trick: a hand-written wrapper doing the boxing the compiler will not yet do for you.\n\nThe part that matters for performance is what dynosaur does **not** touch. Call the trait generically, with an `impl DataSource` argument or an `<S: DataSource>` bound, and there is no wrapper, no box, and no vtable in sight. The async fn inlines exactly as it did in Act 1. The next cell proves the fast path is still free.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_6",
-      "order": 6,
-      "label": "The static path is still free",
-      "cell_type": "Code",
-      "source": "use shared::{Clock, DataSource, Dice};\n\n// When you do NOT need a trait object, dynosaur charges you nothing. This\n// generic function monomorphizes per type, the async fn inlines, and no\n// future is ever boxed. That is the whole pitch over the old `#[async_trait]`.\nasync fn read<S: DataSource>(source: &S) -> String {\n    source.fetch().await\n}\n\nlet clock = read(&Clock).await;\nlet dice = read(&Dice { seed: 99 }).await;\n\nMd(format!(\n    \"Static dispatch, no box, no vtable:\\n\\n\\\n     - `Clock` returned **{clock}**\\n\\\n     - `Dice` returned **{dice}**\\n\\n\\\n     `#[async_trait]` would have heap-allocated a future for both of these. \\\n     dynosaur only reaches for a box on the `dyn` path you saw above.\"\n))\n",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_7",
-      "order": 7,
-      "label": "Act 3: the Send-bound saga",
-      "cell_type": "Markdown",
-      "source": "## Act 3: the `Send` bound that broke the stabilization\n\nBoxing the future buys you dynamic dispatch. It does not buy you **`Send`**, and `Send` is where this story turns dark. A multithreaded executor like Tokio moves a task's future between worker threads, so it demands `Fut: Send`. But an `async fn` in a trait hides its future type, which leaves nowhere obvious to write that bound. The answer the language designed is **Return Type Notation**, which names the future just enough to constrain it:\n\n```rust\nfn spawn_all<T>(sources: Vec<T>)\nwhere\n    T: DataSource<fetch(..): Send>,  // the future fetch() returns must be Send\n{ /* ... */ }\n```\n\nRTN has an accepted design in [RFC 3654](https://rust-lang.github.io/rfcs/3654-return-type-notation.html) and a working nightly implementation. Stabilization was tracked in [rust-lang/rust#138424](https://github.com/rust-lang/rust/pull/138424), and on **December 27, 2025** that PR closed **unmerged**. The reason was not technical. Its author, [Michael Goulet](https://github.com/compiler-errors) (`compiler-errors`), one of the most prolific contributors to the trait solver and async lowering, had stepped away from the project. The feature did not fail review. It lost its driver.\n\nThat is the uncomfortable subplot under async Rust's hardest features: a very small number of people carry them, and when one leaves, a nearly-finished feature can simply stop. Today's workaround is [`#[trait_variant::make]`](https://crates.io/crates/trait-variant), which generates a parallel `Send` flavor of your trait so callers can ask for `DataSource` or `SendDataSource` by name.\n\nAnd here is the wink this notebook owes you: **every cell above sidesteps `Send` entirely.** ironpad compiles cells to `wasm32-unknown-unknown`, which is single-threaded, so nothing here ever crosses a thread boundary. The single hardest open problem in dyn async traits is the one this environment gets to quietly ignore. Convenient, yes, and also *exactly* why \"just run it in wasm\" is not an answer for the multithreaded servers that motivated the feature in the first place.",
-      "cargo_toml": null
-    },
-    {
-      "id": "cell_8",
-      "order": 8,
-      "label": "Where the asterisk stands",
-      "cell_type": "Markdown",
-      "source": "## Where the asterisk actually stands, mid-2026\n\nSo where does that leave native `dyn` async traits, the real fix that would make this whole notebook unnecessary? Roughly here:\n\n- **`async fn` in traits**: stable since 1.75, static dispatch only. Solid.\n- **`dyn` async traits**: still unsolved in the language itself. `dynosaur` is the blessed prototype and the de facto answer, sitting at v0.3 and aiming at a 1.0 that doubles as the design's proof of concept.\n- **`dyn*`**, the experimental primitive meant to make boxed dispatch a first-class language feature: quiet. Niko's [\"Dyn you have an idea for `dyn`?\"](https://smallcultfollowing.com/babysteps/blog/2025/03/25/dyn-you-have-idea-for-dyn/) frames it as still needing design work, not implementation muscle.\n- **Return Type Notation and the `Send` story**: nightly-only, and [without its driver](https://github.com/rust-lang/rust/pull/138424) as of December 2025.\n\nTwo and a half years after the fanfare, the asterisk is still an asterisk. The consolation is that the workaround is genuinely good: dynosaur hands you the flexibility of a trait object and keeps the zero-cost static path, which is more than `#[async_trait]` ever managed. The rest of the story is a reminder that \"shipped\" and \"finished\" are different words.\n\n**Further reading**\n\n- Niko Matsakis, [the \"dyn async traits\" series](https://smallcultfollowing.com/babysteps/series/dyn-async-traits/)\n- [`dynosaur`](https://github.com/spastorino/dynosaur) source and examples\n- [RFC 3654: Return Type Notation](https://rust-lang.github.io/rfcs/3654-return-type-notation.html)\n- [The stabilization PR that closed unmerged](https://github.com/rust-lang/rust/pull/138424)",
-      "cargo_toml": null
-    }
-  ],
-  "description": "async fn shipped in Rust 1.75 but still cannot go behind dyn. A cell that fails on purpose, the dynosaur workaround that boxes the future, and the Send-bound stabilization that lost its author in December 2025.",
-  "tags": [
-    "async",
-    "traits",
-    "dynosaur",
-    "dyn-compatibility"
-  ],
-  "expand_code": true
+ "version": 1,
+ "id": "3f16c2e6-7943-4ed9-8f33-97d6ed96bcbc",
+ "title": "Async traits behind dyn: dynosaur and the stalled fix",
+ "created_at": "2026-07-10T00:00:00Z",
+ "updated_at": "2026-07-12T00:00:00Z",
+ "shared_cargo_toml": "[dependencies]\ndynosaur = \"0.3\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+ "shared_source": "//! Notebook shared source: one async trait, one dynosaur wrapper, three sources.\n\n/// A pluggable async data source. The `async fn` is exactly what native `dyn`\n/// refuses to hold, so this whole trait is the thing we are trying to box.\n#[dynosaur::dynosaur(pub DynDataSource = dyn(box) DataSource)]\npub trait DataSource {\n    /// A short label. A plain sync method, perfectly vtable-friendly on its own.\n    fn name(&self) -> &str;\n    /// Fetch one reading. This is the async method dynosaur boxes on the dyn path.\n    async fn fetch(&self) -> String;\n}\n\n/// A steady clock that always answers the same tick.\npub struct Clock;\n\nimpl DataSource for Clock {\n    fn name(&self) -> &str {\n        \"clock\"\n    }\n    async fn fetch(&self) -> String {\n        \"12:00:00\".to_string()\n    }\n}\n\n/// A deterministic dice roll, seeded once at construction.\npub struct Dice {\n    pub seed: u64,\n}\n\nimpl DataSource for Dice {\n    fn name(&self) -> &str {\n        \"dice\"\n    }\n    async fn fetch(&self) -> String {\n        let face = (self.seed.wrapping_mul(2654435761) % 6) + 1;\n        format!(\"rolled a {face}\")\n    }\n}\n\n/// An echo source that hands back whatever string it was built with.\npub struct Echo {\n    pub msg: String,\n}\n\nimpl DataSource for Echo {\n    fn name(&self) -> &str {\n        \"echo\"\n    }\n    async fn fetch(&self) -> String {\n        format!(\"\\\"{}\\\"\", self.msg)\n    }\n}\n",
+ "cells": [
+  {
+   "id": "cell_0",
+   "order": 0,
+   "label": "The asterisk in the release notes",
+   "cell_type": "Markdown",
+   "source": "# async fn in traits, and the asterisk nobody reads\n\nOn [December 28, 2023](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html), Rust 1.75 shipped `async fn` in traits to real fanfare. Seven years of \"we cannot express this yet\" ended in one release, and the example everyone posted looked like the thing you had always wanted to write:\n\n```rust\ntrait DataSource {\n    async fn fetch(&self) -> String;\n}\n```\n\nIt compiles. It works. It even inlines. There is just one line further down the release notes that most of us skimmed past: *this does not work behind `dyn`*. You cannot store an `async fn` trait as a `Box<dyn Trait>`, and two and a half years later you still cannot.\n\nThis notebook is the story of that asterisk: **why** it is there, the crate that **routes around** it, and the stabilization that was supposed to finish the job and instead [closed unmerged in December 2025](https://github.com/rust-lang/rust/pull/138424). Run the cells top to bottom. The third one fails on purpose.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_1",
+   "order": 1,
+   "label": "Act 1: why dyn chokes",
+   "cell_type": "Markdown",
+   "source": "## Act 1: why `dyn` chokes on an async fn\n\nA `dyn Trait` is a **fat pointer**: one half points at the data, the other half points at a **vtable**, a small table of function pointers with fixed, known signatures. To build that table, the compiler must know the exact return type of every method, right down to its size.\n\nThat is precisely what `async fn` will not tell it. An `async fn` does not return a `String`; it returns an **anonymous** `impl Future<Output = String>`, a compiler-generated state machine whose type has no name you can write and whose size depends on the concrete implementor. `Clock` produces one future type, a database client produces a different one, and the two are not the same size. No single function pointer fits the vtable slot.\n\nSo the language offers two honest paths: monomorphize (`impl Trait`, which bakes in the concrete type and inlines beautifully) or erase the type behind `dyn` (which needs a fixed size the future cannot promise). Rust 1.75 shipped the first path and left the second as an open problem. The next cell walks straight into it.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_2",
+   "order": 2,
+   "label": "This cell fails, and that's the point",
+   "cell_type": "Code",
+   "source": "// ironpad-test: compile-fail (this cell is a deliberate teaching failure)\n// A trait with an async method: exactly what Rust 1.75 handed us in Dec 2023.\ntrait DataSource {\n    async fn fetch(&self) -> String;\n}\n\nstruct Clock;\nimpl DataSource for Clock {\n    async fn fetch(&self) -> String {\n        \"12:00:00\".to_string()\n    }\n}\n\n// Now hold it behind `dyn`, the way you would any other trait object...\nlet source: Box<dyn DataSource> = Box::new(Clock);\nlet reading = source.fetch().await;\n\nCellOutput::text(reading)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_dyn_rules",
+   "order": 3,
+   "label": "The rulebook dyn enforces",
+   "cell_type": "Markdown",
+   "source": "## The rulebook: what `dyn` actually demands\n\nThe error you just hit is `E0038`. The compiler even names the concept for you: `DataSource` is not *dyn compatible* (the 2024 rename of what a decade of Rust developers learned as *object safety*). Dyn compatibility is a short list of rules, and every rule is the same rule wearing a different coat: **the vtable is built once, at compile time, and each slot holds exactly one function pointer with one fixed signature.**\n\nThe list, compressed:\n\n- **No `Self: Sized` bound on the trait.** A trait object is unsized by definition; requiring `Sized` is a contradiction in terms.\n- **Every method needs a dispatchable receiver.** `&self`, `&mut self`, `Box<Self>`, `Rc<Self>`, `Arc<Self>`, or `Pin` of those. The generated code has to find the data pointer somewhere predictable.\n- **No generic methods.** `fn parse<T: FromStr>(&self)` would need one vtable slot per `T`, and the set of `T`s is open. Which instantiation goes in the table?\n- **No `Self` by value in signatures.** The caller does not know the concrete size, so it cannot pass or return `Self` on the stack.\n- **No `impl Trait` in return position.** The return type is anonymous and different for every implementor.\n\nThat last rule is the one `async fn` trips, because `async fn` is nothing but sugar for RPITIT, return-position `impl Trait` in traits:\n\n```rust\n// What you wrote:\ntrait DataSource {\n    async fn fetch(&self) -> String;\n}\n\n// What the compiler actually sees:\ntrait DataSource {\n    fn fetch(&self) -> impl Future<Output = String> + '_;\n}\n```\n\n`Clock::fetch` returns one state machine type. A Postgres client's `fetch` returns a completely different one, plausibly 100x larger, because it holds connection state across its await points. A vtable slot needs **one** return type with **one** size and **one** ABI. There is no single size, so there is no slot, so there is no table. That is the entire asterisk, mechanically.\n\nTwo experiments make this concrete. First, proof that the vtable machinery itself is fine; sync traits dispatch dynamically all day without complaint. Second, a direct measurement of how badly futures violate the one-size rule.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_vtable_anatomy",
+   "order": 4,
+   "label": "A vtable, working as intended",
+   "cell_type": "Code",
+   "source": "// A plain sync trait: every method has a fixed, known return type, so the\n// compiler happily builds a vtable. This is the world before async fn.\ntrait Named {\n    fn name(&self) -> &'static str;\n}\n\nstruct Clock;\nstruct Dice;\n\nimpl Named for Clock {\n    fn name(&self) -> &'static str {\n        \"clock\"\n    }\n}\n\nimpl Named for Dice {\n    fn name(&self) -> &'static str {\n        \"dice\"\n    }\n}\n\n// Type-erased, heterogeneous, dispatched at runtime. Totally legal.\nlet registry: Vec<Box<dyn Named>> = vec![Box::new(Clock), Box::new(Dice)];\nlet dispatched: Vec<String> = registry.iter().map(|n| n.name().to_string()).collect();\n\nTable::new(\n    vec![\"what\", \"value\"],\n    vec![\n        vec![\"called through the vtable\".to_string(), dispatched.join(\", \")],\n        vec![\n            \"size_of::<Box<Clock>>\".to_string(),\n            format!(\"{} bytes (thin pointer)\", std::mem::size_of::<Box<Clock>>()),\n        ],\n        vec![\n            \"size_of::<Box<dyn Named>>\".to_string(),\n            format!(\"{} bytes (data pointer + vtable pointer)\", std::mem::size_of::<Box<dyn Named>>()),\n        ],\n    ],\n)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_future_sizes",
+   "order": 5,
+   "label": "Futures come in every size",
+   "cell_type": "Code",
+   "source": "use std::future::Future;\nuse std::mem::{size_of, size_of_val};\nuse std::pin::Pin;\n\n// Same signature, wildly different state machines. `chunky` keeps a 512-byte\n// buffer alive across an await point, so the buffer must live INSIDE the\n// future; the compiler grows the state machine to hold it.\nasync fn tiny() -> u32 {\n    7\n}\n\nasync fn chunky() -> u32 {\n    let buf = [7u8; 512];\n    std::future::ready(()).await;\n    buf.iter().map(|b| u32::from(*b)).sum::<u32>() / 512\n}\n\nlet t = tiny();\nlet c = chunky();\n\nlet rows = vec![\n    vec![\"tiny()\".to_string(), format!(\"{} bytes\", size_of_val(&t))],\n    vec![\"chunky()\".to_string(), format!(\"{} bytes\", size_of_val(&c))],\n    vec![\n        \"Pin<Box<dyn Future<Output = u32>>>\".to_string(),\n        format!(\"{} bytes, no matter the future\", size_of::<Pin<Box<dyn Future<Output = u32>>>>()),\n    ],\n];\n\n// Both compute the same answer; only their sizes differ.\nassert_eq!(t.await, c.await);\n\nTable::new(vec![\"future\", \"size\"], rows)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_3",
+   "order": 6,
+   "label": "Act 2: enter dynosaur",
+   "cell_type": "Markdown",
+   "source": "## Act 2: enter `dynosaur`\n\nThe fix the language cannot yet give you, a proc macro can. [`dynosaur`](https://crates.io/crates/dynosaur) (by [Santiago Pastorino](https://github.com/spastorino), alongside Niko Matsakis, as the lang team's blessed prototype) takes your `async fn` trait and generates a companion type, `DynDataSource`, that *is* dyn-compatible. It does the one thing the vtable needed: it **boxes the future**, turning that unnameable `impl Future` into a `Pin<Box<dyn Future>>` with a fixed size that fits neatly in a function-pointer slot.\n\nIf you remember [`#[async_trait]`](https://crates.io/crates/async-trait), think of this as its successor with the sharp edge filed off. `async_trait` boxed **every** call, static or dynamic, because in 2019 that was the only trick going. dynosaur boxes **only on the `dyn` path** and leaves your monomorphized calls untouched and zero-cost. You pay for an allocation exactly when you opt into type erasure, and not one call sooner.\n\nThe rule the macro asks you to remember is small: anywhere you would have written `dyn Trait`, write `DynTrait` instead. Here is the declaration this notebook shares across its cells (the full source, with three implementors, lives in the shared panel):\n\n```rust\n#[dynosaur::dynosaur(pub DynDataSource = dyn(box) DataSource)]\npub trait DataSource {\n    fn name(&self) -> &str;\n    async fn fetch(&self) -> String;\n}\n```",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_4",
+   "order": 7,
+   "label": "A plugin registry, dispatched dynamically",
+   "cell_type": "Code",
+   "source": "use shared::{Clock, DataSource, Dice, DynDataSource, Echo};\n\n// Three different sources, all boxed under one type. This is the line that\n// refused to compile a moment ago; dynosaur is what makes it legal.\nlet registry: Vec<Box<DynDataSource>> = vec![\n    DynDataSource::new_box(Clock),\n    DynDataSource::new_box(Dice { seed: 42 }),\n    DynDataSource::new_box(Echo { msg: \"hello from a vtable\".to_string() }),\n];\n\n// Await every source through *dynamic* dispatch, one boxed future at a time.\nlet mut rows = Vec::new();\nfor source in &registry {\n    let name = source.name().to_string();\n    let reading = source.fetch().await;\n    rows.push(vec![name, reading]);\n}\n\nTable::new(vec![\"source\", \"fetch().await via dyn\"], rows)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_5",
+   "order": 8,
+   "label": "What the macro actually wrote",
+   "cell_type": "Markdown",
+   "source": "## What the macro actually wrote\n\nGiven your trait, dynosaur emits three things: a dyn-compatible *erased* twin of the trait, a blanket impl that adapts every real implementor to that twin, and a wrapper struct that implements your original trait by forwarding through the erased one. `DynDataSource::new_box(value)` is the constructor; because the wrapper implements your trait, it drops straight into a `Box<DynDataSource>`, a `Vec` of them, or a `&mut DynDataSource` argument.\n\nHere is the expansion, simplified. The real output uses an unsized `#[repr(transparent)]` wrapper so `&DynDataSource` and `Box<DynDataSource>` avoid a double indirection, and it handles lifetimes and `&mut` receivers; this version keeps the idea and drops the pointer tricks:\n\n```rust\n// 1. The dyn-compatible twin: same methods, but the future is boxed,\n//    so every return type has one fixed size. A vtable slot fits.\ntrait ErasedDataSource {\n    fn name(&self) -> &str;\n    fn fetch<'a>(&'a self) -> Pin<Box<dyn Future<Output = String> + 'a>>;\n}\n\n// 2. Every DataSource is automatically an ErasedDataSource.\n//    Box::pin here is the single allocation this whole story is about.\nimpl<T: DataSource> ErasedDataSource for T {\n    fn name(&self) -> &str {\n        <Self as DataSource>::name(self)\n    }\n    fn fetch<'a>(&'a self) -> Pin<Box<dyn Future<Output = String> + 'a>> {\n        Box::pin(<Self as DataSource>::fetch(self))\n    }\n}\n\n// 3. The wrapper you actually touch. It IS a DataSource, so it drops into\n//    any API that wants one.\npub struct DynDataSource {\n    inner: Box<dyn ErasedDataSource>,\n}\n\nimpl DynDataSource {\n    pub fn new_box(value: impl DataSource + 'static) -> Box<DynDataSource> {\n        Box::new(DynDataSource { inner: Box::new(value) })\n    }\n}\n\nimpl DataSource for DynDataSource {\n    fn name(&self) -> &str {\n        self.inner.name()\n    }\n    async fn fetch(&self) -> String {\n        self.inner.fetch().await\n    }\n}\n```\n\nRead the blanket impl twice, because those are the **load-bearing** nine lines. `Box::pin(<Self as DataSource>::fetch(self))` takes the anonymous, implementor-specific future and moves it behind one pointer type, `Pin<Box<dyn Future>>`, that is the same size for everyone. That is the whole fix. Everything else is plumbing so you never have to look at it.\n\nThe part that matters for performance is what dynosaur does **not** touch. Call the trait generically, with an `impl DataSource` argument or an `<S: DataSource>` bound, and there is no wrapper, no box, and no vtable in sight. The async fn inlines exactly as it did in Act 1. And because the expansion above is ordinary Rust, nothing stops you from building it yourself. The next cell does exactly that: the same trick, hand-rolled, no macro.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_manual_erasure",
+   "order": 9,
+   "label": "The macro, by hand",
+   "cell_type": "Code",
+   "source": "use std::future::Future;\nuse std::pin::Pin;\n\n// The trait you want to write. async fn makes it dyn-incompatible.\ntrait Greeter {\n    async fn greet(&self) -> String;\n}\n\n// The erased twin dynosaur would write for you: same shape, but the future\n// hides behind one fixed-size pointer. THIS trait is dyn-compatible.\ntrait ErasedGreeter {\n    fn greet<'a>(&'a self) -> Pin<Box<dyn Future<Output = String> + 'a>>;\n}\n\n// One blanket impl erases every Greeter. Box::pin is the entire trick.\nimpl<T: Greeter> ErasedGreeter for T {\n    fn greet<'a>(&'a self) -> Pin<Box<dyn Future<Output = String> + 'a>> {\n        Box::pin(<Self as Greeter>::greet(self))\n    }\n}\n\nstruct English;\nstruct Pirate;\n\nimpl Greeter for English {\n    async fn greet(&self) -> String {\n        \"hello\".to_string()\n    }\n}\nimpl Greeter for Pirate {\n    async fn greet(&self) -> String {\n        \"ahoy\".to_string()\n    }\n}\n\n// The shape the compiler rejected in Act 1, now perfectly legal.\nlet greeters: Vec<Box<dyn ErasedGreeter>> = vec![Box::new(English), Box::new(Pirate)];\n\nlet mut out = Vec::new();\nfor g in &greeters {\n    out.push(g.greet().await);\n}\n\nCellOutput::text(out.join(\", \"))\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_async_trait",
+   "order": 10,
+   "label": "Where async_trait differs",
+   "cell_type": "Markdown",
+   "source": "## `#[async_trait]`: same box, different address\n\nThe old workaround deserves a precise comparison, because \"dynosaur is `async_trait` but better\" hides the actual mechanism. Both crates end at the same place: a `Pin<Box<dyn Future>>` where an anonymous future used to be. The difference is **where the allocation lives**, and that placement decides who pays.\n\n`#[async_trait]` rewrites *the trait itself*. After expansion there is no `async fn` left anywhere:\n\n```rust\n// #[async_trait] turns the trait into this. Every impl must return a\n// boxed future, so every call site, static or dynamic, allocates:\ntrait DataSource {\n    fn fetch<'a>(&'a self) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>\n    where\n        Self: 'a;\n}\n```\n\nThe box is baked into the trait's signature. A fully generic caller, `fn read<S: DataSource>(s: &S)`, allocates on every call even though monomorphization knows the concrete type and could have inlined everything. You pay the dyn tax on the static path, forever, for every implementor. Note the `+ Send` too: `async_trait` bolts it onto every future by default (there is a `#[async_trait(?Send)]` opt-out), which quietly forecloses single-threaded implementors.\n\ndynosaur leaves your trait exactly as you wrote it and moves the box into the companion type. Your trait's `fetch` still returns the raw, unboxed, implementor-specific future; only `DynDataSource`'s forwarding impl calls `Box::pin`. The allocation lives in the adapter, so you pay it precisely when you hold the adapter, and never when you hold the real type.\n\nTo be fair to 2019: the `async_trait` design was the only option then. The language could not express an async fn in a trait at all, so the crate had to replace the signature wholesale. Post-1.75, the trait can stay honest and the erasure can be opt-in. The next cell shows the receipts: the static path through our shared `DataSource`, with no box anywhere in sight.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_6",
+   "order": 11,
+   "label": "The static path is still free",
+   "cell_type": "Code",
+   "source": "use shared::{Clock, DataSource, Dice};\n\n// When you do NOT need a trait object, dynosaur charges you nothing. This\n// generic function monomorphizes per type, the async fn inlines, and no\n// future is ever boxed. That is the whole pitch over the old `#[async_trait]`.\nasync fn read<S: DataSource>(source: &S) -> String {\n    source.fetch().await\n}\n\nlet clock = read(&Clock).await;\nlet dice = read(&Dice { seed: 99 }).await;\n\nMd(format!(\n    \"Static dispatch, no box, no vtable:\\n\\n\\\n     - `Clock` returned **{clock}**\\n\\\n     - `Dice` returned **{dice}**\\n\\n\\\n     `#[async_trait]` would have heap-allocated a future for both of these. \\\n     dynosaur only reaches for a box on the `dyn` path you saw above.\"\n))\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_cost_model",
+   "order": 12,
+   "label": "What the box costs",
+   "cell_type": "Markdown",
+   "source": "## The cost model: one box per dyn call\n\nBe precise about what the dyn path costs, because \"it allocates\" scares people out of proportion to the nanoseconds involved. Each call to `fetch` through `DynDataSource` costs three things: one heap allocation for the future, one indirect call through the vtable, and one deallocation when the future completes and drops. Plus the quiet fourth cost: an indirect call is an **inlining barrier**, so the optimizer cannot fuse the future's body into its caller the way it does on the static path you just ran.\n\nNumbers, directional rather than precise: a small allocation on a warm modern allocator runs 20-40 ns, and the indirect call adds single-digit nanoseconds on a warm branch predictor. Now put that against the work the call actually does:\n\n- **Per request: irrelevant.** A network round trip is 100 microseconds on a very good day and single-digit milliseconds normally. Forty nanoseconds against 100 microseconds is 0.04%. If your trait method does I/O, dyn dispatch is free for every practical purpose. Box the future, ship the plugin API, move on with your life.\n- **Per byte: catastrophic.** A dyn async `read` called once per byte pays the box a million times per megabyte, roughly 30 ms of pure allocator overhead per MB, before counting the lost inlining. That is disastrous next to a memcpy that moves the same megabyte in well under a millisecond.\n- **In between: measure.** The inlining loss is workload-shaped and can dominate the malloc itself, so microbenchmarking the allocation alone undercounts the damage.\n\nThe fix for the hot-loop case is not \"avoid dyn\"; it is **granularity**. Box at the chunk level, not the item level: a buffered reader that fetches 8 KB per call amortizes one allocation across 8192 bytes, and the overhead drops by four orders of magnitude. For a mental model: the box is a stack frame that moved to the heap because the caller could not know its size at compile time. Pay that rent per connection or per batch, never per element.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_7",
+   "order": 13,
+   "label": "Act 3: the Send-bound saga",
+   "cell_type": "Markdown",
+   "source": "## Act 3: the `Send` bound that broke the stabilization\n\nBoxing the future buys you dynamic dispatch. It does not buy you **`Send`**, and `Send` is where this story turns dark. A multithreaded executor like Tokio moves a task's future between worker threads, so it demands `Fut: Send`. But an `async fn` in a trait hides its future type, which leaves nowhere obvious to write that bound. The answer the language designed is **Return Type Notation**, which names the future just enough to constrain it:\n\n```rust\nfn spawn_all<T>(sources: Vec<T>)\nwhere\n    T: DataSource<fetch(..): Send>,  // the future fetch() returns must be Send\n{ /* ... */ }\n```\n\nRTN has an accepted design in [RFC 3654](https://rust-lang.github.io/rfcs/3654-return-type-notation.html) and a working nightly implementation. Stabilization was tracked in [rust-lang/rust#138424](https://github.com/rust-lang/rust/pull/138424), and on **December 27, 2025** that PR closed **unmerged**. The reason was not technical. Its author, [Michael Goulet](https://github.com/compiler-errors) (`compiler-errors`), one of the most prolific contributors to the trait solver and async lowering, had stepped away from the project. The feature did not fail review. It lost its driver.\n\nThat is the uncomfortable subplot under async Rust's hardest features: a very small number of people carry them, and when one leaves, a nearly-finished feature can simply stop. Today's workaround is [`trait-variant`](https://crates.io/crates/trait-variant), which generates a parallel `Send` flavor of your trait so callers can ask for it by name; the next section takes that pattern apart.\n\nAnd here is the wink this notebook owes you: **every cell above sidesteps `Send` entirely.** ironpad compiles cells to `wasm32-unknown-unknown`, which is single-threaded, so nothing here ever crosses a thread boundary. The single hardest open problem in dyn async traits is the one this environment gets to quietly ignore. Convenient, yes, and also *exactly* why \"just run it in wasm\" is not an answer for the multithreaded servers that motivated the feature in the first place.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_trait_variant",
+   "order": 14,
+   "label": "The companion-trait pattern",
+   "cell_type": "Markdown",
+   "source": "## `trait-variant`: the companion pattern, applied to `Send`\n\nUntil RTN stabilizes (see above for how that is going), the officially recommended answer for the `Send` problem, straight from the 1.75 announcement, is [`trait-variant`](https://crates.io/crates/trait-variant). One attribute:\n\n```rust\n#[trait_variant::make(SendDataSource: Send)]\npub trait DataSource {\n    fn name(&self) -> &str;\n    async fn fetch(&self) -> String;\n}\n```\n\nexpands into two traits. Yours, untouched. And a second one where the sugar is unrolled with `Send` bolted on:\n\n```rust\npub trait SendDataSource: Send {\n    fn name(&self) -> &str;\n    fn fetch(&self) -> impl Future<Output = String> + Send;\n}\n```\n\nplus a blanket impl bridging back, so anything implementing the `Send` variant works where the plain trait is expected. Callers now choose by name: a Tokio `spawn` path bounds on `T: SendDataSource`; a single-threaded path takes `T: DataSource` and stays open to `!Send` implementors like `Rc`-holding caches.\n\nSquint and you will notice this is the *same move* dynosaur makes. The language cannot yet express a constraint on a hidden type, so a macro mints a second, more explicit item and lets callers pick: dynosaur mints a companion **type** for the dyn hole, trait-variant mints a companion **trait** for the Send hole. Both are maintained under the same rust-lang umbrella that is designing the real fixes, which is the tell: these are acknowledged polyfills over known gaps, not community hacks the lang team wishes would go away.\n\nThe trade-off is API surface. Your one concept now exports two trait names, rustdoc shows both, and downstream code has to know which one to bound on. Livable, but it is exactly the friction RTN exists to remove: `T: DataSource<fetch(..): Send>` says the same thing with zero extra items.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_afit_timeline",
+   "order": 15,
+   "label": "The whole arc, in seven dates",
+   "cell_type": "Markdown",
+   "source": "## The whole arc, in seven dates\n\nWorth seeing the timeline in one place, because the pacing *is* the story:\n\n- **August 2019**: dtolnay publishes [`async-trait`](https://crates.io/crates/async-trait). The ecosystem needed async traits so badly that the workaround shipped before the language feature it works around.\n- **November 2019**: Rust 1.39 stabilizes `async/await`. Traits are excluded from day one; the desugaring produces an anonymous type the trait system cannot yet hold.\n- **December 2021**: [RFC 3185](https://rust-lang.github.io/rfcs/3185-static-async-fn-in-trait.html) is accepted: `async fn` in traits, static dispatch only, `dyn` explicitly deferred.\n- **November 2022**: the MVP lands on nightly.\n- **December 28, 2023**: Rust 1.75 stabilizes AFIT and RPITIT together. The release notes carry the asterisk and point at `trait-variant` for the `Send` gap.\n- **2024**: [RFC 3654](https://rust-lang.github.io/rfcs/3654-return-type-notation.html), Return Type Notation, is accepted; dynosaur becomes the blessed prototype for the dyn side.\n- **December 27, 2025**: the RTN stabilization PR [closes unmerged](https://github.com/rust-lang/rust/pull/138424).\n\nFour years from the first workaround to a partial stabilization. Two and a half more, and counting, for the second half of the feature. The lesson to internalize: in Rust, \"stable\" is not a moment, it is a frontier, and the frontier moves at the speed of the two or three people pushing on it.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_8",
+   "order": 16,
+   "label": "Where the asterisk stands",
+   "cell_type": "Markdown",
+   "source": "## Where the asterisk actually stands, mid-2026\n\nSo where does that leave native `dyn` async traits, the real fix that would make this whole notebook unnecessary? Roughly here:\n\n- **`async fn` in traits**: stable since 1.75, static dispatch only. Solid.\n- **`dyn` async traits**: still unsolved in the language itself. `dynosaur` is the blessed prototype and the de facto answer, sitting at v0.3 and aiming at a 1.0 that doubles as the design's proof of concept.\n- **`dyn*`**, the experimental primitive meant to make boxed dispatch a first-class language feature: quiet. Niko's [\"Dyn you have an idea for `dyn`?\"](https://smallcultfollowing.com/babysteps/blog/2025/03/25/dyn-you-have-idea-for-dyn/) frames it as still needing design work, not implementation muscle.\n- **Return Type Notation and the `Send` story**: nightly-only, and [without its driver](https://github.com/rust-lang/rust/pull/138424) as of December 2025.\n\nTwo and a half years after the fanfare, the asterisk is still an asterisk. The consolation is that the workaround is genuinely good: dynosaur hands you the flexibility of a trait object and keeps the zero-cost static path, which is more than `#[async_trait]` ever managed. The rest of the story is a reminder that \"shipped\" and \"finished\" are different words.\n\n**Further reading**\n\n- Niko Matsakis, [the \"dyn async traits\" series](https://smallcultfollowing.com/babysteps/series/dyn-async-traits/)\n- [`dynosaur`](https://github.com/spastorino/dynosaur) source and examples\n- [RFC 3654: Return Type Notation](https://rust-lang.github.io/rfcs/3654-return-type-notation.html)\n- [The stabilization PR that closed unmerged](https://github.com/rust-lang/rust/pull/138424)",
+   "cargo_toml": null
+  }
+ ],
+ "description": "async fn shipped in Rust 1.75 but still cannot go behind dyn. A cell that fails on purpose, the dynosaur workaround that boxes the future, and the Send-bound stabilization that lost its author in December 2025.",
+ "tags": [
+  "async",
+  "traits",
+  "dynosaur",
+  "dyn-compatibility",
+  "blog"
+ ],
+ "expand_code": true
 }

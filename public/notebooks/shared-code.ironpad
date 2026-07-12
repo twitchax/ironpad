@@ -3,7 +3,7 @@
  "id": "00000000-0000-0000-0000-000000000007",
  "title": "Shared Code",
  "created_at": "2026-03-11T00:00:00Z",
- "updated_at": "2026-07-11T00:00:00Z",
+ "updated_at": "2026-07-12T00:00:00Z",
  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
  "shared_source": null,
  "cells": [
@@ -12,7 +12,15 @@
    "order": 0,
    "label": "Introduction",
    "cell_type": "Markdown",
-   "source": "# Shared Code\n\nEvery cell in a notebook can call into a common `shared` module. There are two ways to put code there, and this notebook uses both kinds of visibility deliberately:\n\n- **Shared cells** (the amber ones below) sit inline with the narrative. They never run on their own; their contents are appended to `shared.rs` and every cell can call them as `shared::...`. Use them when the shared code *is* part of the story.\n- The **notebook-level shared source** (the collapsed appendix at the bottom of view mode, or the pencil panel in the editor) holds plumbing that readers don't need to see.\n\nBelow, two amber shared cells define `format_greeting` and `fibonacci`, and the ordinary cells after them consume both.",
+   "source": "# Shared Code\n\nEvery cell in a notebook can call into a common `shared` module. There are two ways to put code there, and this notebook uses both kinds of visibility deliberately:\n\n- **Shared cells** (the amber ones below) sit inline with the narrative. They never run on their own; their contents are appended to `shared.rs` and every cell can call them as `shared::...`. Use them when the shared code *is* part of the story.\n- The **notebook-level shared source** (the collapsed appendix at the bottom of view mode, or the pencil panel in the editor) holds plumbing that readers don't need to see.\n\nBelow, two amber shared cells define `format_greeting` and `fibonacci`, and the ordinary cells after them consume both. Along the way: what shared cells do at compile time, the assembly order, and one sharp edge around feature detection.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_md_why",
+   "order": 1,
+   "label": "Why shared cells exist",
+   "cell_type": "Markdown",
+   "source": "## Why shared cells exist\n\nThe notebook-level shared source came first, and it has one failure mode: everything you share disappears into a single collapsed blob at the bottom of the page. Fine for plumbing; terrible for teaching. A notebook that says \"call `shared::simulate_step`\" while hiding `simulate_step` in an appendix pulls the reader away from the argument right when the code matters most.\n\nShared cells fix that. When a helper is *load-bearing* for the narrative, promote it to a shared cell and it sits inline, amber, right where the story needs it. `format_greeting` below is 3 lines; `fibonacci` is 15. Hiding either would cost more comprehension than it saves in scroll height.",
    "cargo_toml": null
   },
   {
@@ -20,7 +28,7 @@
    "cell_type": "Code",
    "label": "format_greeting (shared)",
    "source": "pub fn format_greeting(name: &str) -> String {\n    format!(\"Hello, {name}! Welcome to ironpad.\")\n}",
-   "order": 1,
+   "order": 2,
    "cargo_toml": null,
    "shared": true
   },
@@ -29,13 +37,21 @@
    "cell_type": "Code",
    "label": "fibonacci (shared)",
    "source": "pub fn fibonacci(n: u64) -> u64 {\n    match n {\n        0 => 0,\n        1 => 1,\n        _ => {\n            let (mut a, mut b) = (0u64, 1u64);\n            for _ in 2..=n {\n                let next = a + b;\n                a = b;\n                b = next;\n            }\n            b\n        }\n    }\n}",
-   "order": 2,
+   "order": 3,
    "cargo_toml": null,
    "shared": true
   },
   {
+   "id": "cell_md_semantics",
+   "order": 4,
+   "label": "Shared cell semantics",
+   "cell_type": "Markdown",
+   "source": "## What a shared cell actually is\n\nThree rules pin down the semantics, and all three fall out of one fact: a shared cell is **source text, not an execution unit**.\n\n1. **Shared cells never execute.** No run button, no output; the source is appended to `shared.rs` and compiled into every other cell.\n2. **They hold an empty piping slot.** Cells consume upstream outputs positionally (`cell0`, `cell1`, ...), and every cell, shared or markdown included, occupies one index in that numbering. A shared cell's slot is simply empty. The flip side: inserting *any* cell above a producer shifts the indices its consumers reference, so add narrative cells below the piping chains they discuss.\n3. **Editing one stales every code cell.** The shared source is part of each cell's blake3 cache key, so one changed character invalidates every compiled blob in the notebook. Correct, but it makes a keystroke in shared code cost a full recompile pass.\n\nFor a mental model: shared cells are header files that happen to live in the essay. Now the consumers.",
+   "cargo_toml": null
+  },
+  {
    "id": "cell_1",
-   "order": 3,
+   "order": 5,
    "label": "Greeting",
    "cell_type": "Code",
    "source": "let greeting = shared::format_greeting(\"World\");\n\nCellOutput::text(greeting)\n",
@@ -43,15 +59,47 @@
   },
   {
    "id": "cell_2",
-   "order": 4,
+   "order": 6,
    "label": "Fibonacci",
    "cell_type": "Code",
    "source": "let fib_10 = shared::fibonacci(10);\n\nCellOutput::text(format!(\"fibonacci(10) = {fib_10}\"))\n",
    "cargo_toml": null
   },
   {
+   "id": "cell_md_assembly",
+   "order": 7,
+   "label": "Assembly order",
+   "cell_type": "Markdown",
+   "source": "## Assembly order\n\nThe notebook builds one `shared.rs`, and the recipe is deterministic: the **notebook-level shared source first**, then every shared cell **top to bottom in notebook order**, joined by blank lines. This notebook has no notebook-level shared source, so the generated file is exactly the two amber cells:\n\n```rust\n// shared.rs, as generated for this notebook\npub fn format_greeting(name: &str) -> String { /* amber cell 1 */ }\n\npub fn fibonacci(n: u64) -> u64 { /* amber cell 2 */ }\n```\n\n- **One namespace inside, one prefix outside.** Shared cells and the notebook-level shared source share a single module and call each other with no prefix; ordinary cells reach in through `shared::`.\n- **Order is cosmetic to rustc.** Item order in a Rust file is irrelevant, so moving a shared cell changes only the readability of the generated `shared.rs`.\n\nA `shared_cargo_toml` rides along too (here, a small `[profile.release]` tweak); its dependencies merge into every cell's build the same way.\n\nThe next cell leans on `shared::fibonacci` harder: consecutive Fibonacci ratios converge on the golden ratio, 1.618, within 10 terms.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_fib_ratio_table",
+   "order": 8,
+   "label": "Golden ratio convergence",
+   "cell_type": "Code",
+   "source": "let rows: Vec<Vec<String>> = (1..=10)\n    .map(|n| {\n        let f = shared::fibonacci(n);\n        let ratio = if n >= 2 {\n            format!(\"{:.4}\", f as f64 / shared::fibonacci(n - 1) as f64)\n        } else {\n            \"-\".into()\n        };\n        vec![n.to_string(), f.to_string(), ratio]\n    })\n    .collect();\n\nTable::new(vec![\"n\", \"fib(n)\", \"fib(n) / fib(n-1)\"], rows)\n",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_md_features",
+   "order": 9,
+   "label": "Feature detection caveat",
+   "cell_type": "Markdown",
+   "source": "## The feature-detection caveat\n\nThis is the sharp edge. ironpad picks heavyweight build features by **substring scanning** the text it compiles: the cell's own source plus the entire shared source. `std::simd` or `core::simd` anywhere in that text opts the cell into SIMD codegen; `rayon` in the merged dependencies triggers an atomics build with a full std rebuild; the autodiff intrinsics pull in the Enzyme toolchain.\n\nBecause shared text is appended to *every* cell's compile input, one trigger substring in a shared cell opts **every cell in the notebook** in. The scan is textual, so a comment counts:\n\n```rust\n// A shared cell containing only this comment:\n//   \"We could vectorize this with std::simd later.\"\n// ...now builds EVERY cell with -C target-feature=+simd128.\n```\n\nThat one is mostly harmless (simd128 is cheap and universal in modern browsers); the same slip with rayon in `shared_cargo_toml` forces a far slower `-Zbuild-std` atomics rebuild on every cell. The rule: **keep heavyweight triggers out of shared code**; if one cell needs SIMD, mention SIMD in that cell. Markdown is never scanned, which is why this cell gets to say all of this freely.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_md_when",
+   "order": 10,
+   "label": "Which to use",
+   "cell_type": "Markdown",
+   "source": "## Global shared source or shared cell?\n\nThe mechanics are identical (same module, same cache behavior, same feature-detection blast radius), so the choice is purely editorial:\n\n- **Shared cell** when the code is part of the argument. If a reader who skips it will misunderstand the cells that follow, it belongs inline and amber.\n- **Notebook-level shared source** when the code is plumbing: serde structs, constants, the 60 lines of setup nobody needs to read. The collapsed appendix is the right visibility for code whose only job is to exist.\n\nEither way, one keystroke in shared code recompiles the whole notebook, so shared code is the right home for code that has *stopped changing*. Draft in a normal cell; promote once it settles.\n\nOne last cell pulls both helpers together.",
+   "cargo_toml": null
+  },
+  {
    "id": "cell_3",
-   "order": 5,
+   "order": 11,
    "label": "Combined",
    "cell_type": "Code",
    "source": "let fibs: Vec<u64> = (0..=10).map(shared::fibonacci).collect();\nlet list = fibs\n    .iter()\n    .enumerate()\n    .map(|(i, v)| format!(\"fib({i}) = {v}\"))\n    .collect::<Vec<_>>()\n    .join(\", \");\n\nlet greeting = shared::format_greeting(\"Rustacean\");\n\nMd(format!(\n    \"## Results\\n\\n\\\n     {greeting}\\n\\n\\\n     **First 11 Fibonacci numbers:** {list}\"\n))\n",
@@ -62,6 +110,7 @@
  "tags": [
   "shared-source",
   "modules",
-  "reuse"
+  "reuse",
+  "blog"
  ]
 }

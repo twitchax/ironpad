@@ -3,7 +3,7 @@
  "id": "f43b5f22-f627-483b-b5f2-f5e37937d080",
  "title": "Teaching the Compiler to Aim a Cannon",
  "created_at": "2026-07-10T00:00:00Z",
- "updated_at": "2026-07-11T00:00:00Z",
+ "updated_at": "2026-07-12T00:00:00Z",
  "shared_cargo_toml": "[dependencies]\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
  "shared_source": "// \u2500\u2500 Plotting support \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n//\n// The physics lives in the shared cell at the top of the notebook; these\n// helpers only draw it.\n\n/// Full flight path for plotting (not differentiated).\npub fn trajectory(angle: f64) -> Vec<(f64, f64)> {\n    let (mut x, mut y) = (0.0_f64, 0.0_f64);\n    let (mut vx, mut vy) = (V0 * angle.cos(), V0 * angle.sin());\n    let mut pts = vec![(x, y)];\n    while y >= 0.0 {\n        let speed = (vx * vx + vy * vy).sqrt();\n        vx -= DRAG * speed * vx * DT;\n        vy -= (G + DRAG * speed * vy) * DT;\n        x += vx * DT;\n        y += vy * DT;\n        pts.push((x, y.max(0.0)));\n    }\n    pts\n}\n\n// \u2500\u2500 SVG helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n/// Render a set of trajectories (each with a stroke color) plus a target\n/// marker into a self-contained SVG.\npub fn plot_trajectories(curves: &[(Vec<(f64, f64)>, String)], target_x: f64) -> String {\n    let (w, h, max_x, max_y) = (760.0, 320.0, 200.0, 70.0);\n    let sx = |x: f64| 30.0 + x / max_x * (w - 50.0);\n    let sy = |y: f64| (h - 25.0) - y / max_y * (h - 45.0);\n    let mut svg = format!(\n        r##\"<svg viewBox=\"0 0 {w} {h}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;background:#14141e;border-radius:6px\">\n<line x1=\"{ax0}\" y1=\"{ay}\" x2=\"{ax1}\" y2=\"{ay}\" stroke=\"#3a3a4e\" stroke-width=\"1\"/>\n<line x1=\"{tx}\" y1=\"{ay}\" x2=\"{tx}\" y2=\"{ty}\" stroke=\"#f0c040\" stroke-width=\"2\" stroke-dasharray=\"5,4\"/>\n<text x=\"{tx}\" y=\"{tl}\" fill=\"#f0c040\" font-size=\"12\" text-anchor=\"middle\">target</text>\n\"##,\n        ax0 = sx(0.0),\n        ax1 = sx(max_x),\n        ay = sy(0.0),\n        tx = sx(target_x),\n        ty = sy(55.0),\n        tl = sy(58.0),\n    );\n    for (pts, color) in curves {\n        let path: Vec<String> = pts\n            .iter()\n            .step_by(4)\n            .map(|(x, y)| format!(\"{:.1},{:.1}\", sx(*x), sy(*y)))\n            .collect();\n        svg.push_str(&format!(\n            r##\"<polyline points=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>\"##,\n            path.join(\" \")\n        ));\n        svg.push('\\n');\n    }\n    svg.push_str(\"</svg>\");\n    svg\n}\n",
  "expand_code": true,
@@ -17,11 +17,19 @@
    "cargo_toml": null
   },
   {
+   "id": "cell_drag_kills_formula",
+   "order": 1,
+   "label": "Why drag kills the formula",
+   "cell_type": "Markdown",
+   "source": "## Why drag kills the formula\n\nIn a vacuum the cannonball is a homework one-liner. Gravity is the only force, the horizontal and vertical motions separate cleanly, and two integrations hand you the parabola: $R = v_0^2 \\sin(2\\theta)/g$, optimum at 45\u00b0. Closed form: plug in an angle, get a range, differentiate with a pencil.\n\nNow add air. Drag on a fast projectile is roughly quadratic in speed and acts against the velocity vector:\n\n```text\ndvx/dt = -k * |v| * vx        where |v| = sqrt(vx^2 + vy^2)\ndvy/dt = -g - k * |v| * vy\n```\n\nThat `|v|` term welds the two equations together: the horizontal deceleration now depends on the *vertical* speed, and vice versa, through a square root. Every standard trick dead-ends immediately:\n\n```text\ndvx / vx = -k * sqrt(vx^2 + vy^2) * dt    // separation fails: vy is trapped inside\n```\n\nThis is not a gap in your calculus; it is a hole in mathematics. The two-dimensional quadratic-drag problem has **no elementary closed-form solution** (purely vertical motion has one; the full trajectory does not). It is why armies published hand-computed range tables, and why computing more of them was ENIAC's first job.\n\nAnd drag is not a small correction here: the ball leaves the muzzle at 50 m/s with $k = 0.002$, so the initial drag deceleration is $k v^2 =$ **5 m/s\u00b2, half of gravity**. Ignoring it is a different problem, not an approximation.\n\nSo we do what the range-table computers did: integrate, step by step. The simulator below is the entire physics engine, and the one attribute on it is the reason this notebook exists.",
+   "cargo_toml": null
+  },
+  {
    "id": "cell_sim_shared",
    "cell_type": "Code",
    "label": "The simulator (shared)",
    "source": "use std::autodiff::autodiff_reverse;\n\n// \u2500\u2500 The simulator \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n//\n// A cannonball with quadratic air drag, integrated in 10 ms steps. There is\n// no closed-form range formula once drag enters the picture: the only way to\n// know where the ball lands is to run the simulation.\n\npub const V0: f64 = 50.0; // muzzle speed, m/s\npub const DRAG: f64 = 0.002; // quadratic drag coefficient\npub const G: f64 = 9.81; // gravity, m/s^2\npub const DT: f64 = 0.01; // timestep, s\n\n/// Where the ball lands, as a function of launch angle (radians).\n///\n/// The `#[autodiff_reverse]` attribute is the whole show: Enzyme differentiates\n/// this function, loop and all, at the LLVM-IR level and generates `d_range`,\n/// which returns `(range, d_range/d_angle)` in a single reverse pass.\n#[autodiff_reverse(d_range, Active, Active)]\npub fn range(angle: f64) -> f64 {\n    let (mut x, mut y) = (0.0_f64, 0.0_f64);\n    let (mut vx, mut vy) = (V0 * angle.cos(), V0 * angle.sin());\n    loop {\n        let speed = (vx * vx + vy * vy).sqrt();\n        vx -= DRAG * speed * vx * DT;\n        vy -= (G + DRAG * speed * vy) * DT;\n        let (x_new, y_new) = (x + vx * DT, y + vy * DT);\n        if y_new < 0.0 {\n            // Land smoothly: interpolate the final partial step to y = 0.\n            // Stopping on a whole timestep makes range(angle) a microscopic\n            // sawtooth whose local slope contradicts the physics; the\n            // interpolation restores a differentiable landing point.\n            let frac = y / (y - y_new);\n            return x + vx * DT * frac;\n        }\n        x = x_new;\n        y = y_new;\n    }\n}",
-   "order": 1,
+   "order": 2,
    "cargo_toml": null,
    "shared": true
   },
@@ -29,53 +37,141 @@
    "id": "cell_sim_md",
    "cell_type": "Markdown",
    "label": "One attribute, one derivative",
-   "source": "The attribute is the entire integration surface. `#[autodiff_reverse(d_range, Active, Active)]` asks the compiler to generate a second function, `d_range`, that returns `(range, d(range)/d(angle))` in one reverse pass through the **compiled** loop. No formula was consulted, because none exists.\n\nTwo lines are worth a second look before we fire it: the `loop` has a data-dependent trip count (the ball lands when it lands), and the landing branch **interpolates the final partial step** instead of stopping on a whole timestep. That second one earns its own section further down.",
-   "order": 2,
+   "source": "The attribute is the entire integration surface. `#[autodiff_reverse(d_range, Active, Active)]` asks the compiler to generate a second function, `d_range`, that returns `(range, d(range)/d(angle))` in one reverse pass through the **compiled** loop. No formula was consulted, because none exists.\n\nTwo lines are worth a second look before we fire it: the `loop` has a data-dependent trip count (the ball lands when it lands), and the landing branch **interpolates the final partial step** instead of stopping on a whole timestep. That second one earns its own section further down. The integrator itself is explicit Euler on 10 ms steps, the plainest available; what that plainness costs, we will measure a few cells down.",
+   "order": 3,
    "cargo_toml": null
   },
   {
    "id": "cell_fan",
-   "order": 3,
+   "order": 4,
    "label": "The simulator, firing",
    "cell_type": "Code",
    "source": "// Fire the cannon across a fan of launch angles and draw the family.\nlet angles = [0.2_f64, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];\nlet colors = [\"#4fc3f7\", \"#5fd0c0\", \"#7fdc90\", \"#b0e070\", \"#e0d060\", \"#f0a850\", \"#e97050\"];\n\nlet mut rows = Vec::new();\nlet mut curves = Vec::new();\nfor (a, c) in angles.iter().zip(colors) {\n    rows.push(vec![format!(\"{a:.1} rad\"), format!(\"{:.1} m\", shared::range(*a))]);\n    curves.push((shared::trajectory(*a), c.to_string()));\n}\n\n(\n    Svg(shared::plot_trajectories(&curves, 150.0)),\n    Table::new(vec![\"launch angle\", \"range (simulated)\"], rows),\n)",
    "cargo_toml": null
   },
   {
+   "id": "cell_gap_md",
+   "order": 5,
+   "label": "How wrong is the formula?",
+   "cell_type": "Markdown",
+   "source": "## How wrong is the formula, exactly?\n\nThe fan already whispers it: with drag, range tops out near **0.744 rad (42.6\u00b0) at 185.8 m**, not at the vacuum-blessed 45\u00b0. But the honest comparison is head-to-head, same muzzle speed, formula vs simulation. The gap is not a rounding error, and it is not even constant: it grows with hang time, because a longer flight gives drag more seconds to chew on the ball.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_vacuum_gap",
+   "order": 6,
+   "label": "Formula vs simulation",
+   "cell_type": "Code",
+   "source": "// The vacuum formula vs the simulator: same muzzle speed, same angles.\nlet mut rows = Vec::new();\nfor a in [0.2_f64, 0.35, 0.5, 0.65, 0.8] {\n    let vacuum = shared::V0 * shared::V0 * (2.0 * a).sin() / shared::G;\n    let sim = shared::range(a);\n    rows.push(vec![\n        format!(\"{a:.2}\"),\n        format!(\"{vacuum:.1} m\"),\n        format!(\"{sim:.1} m\"),\n        format!(\"{:.1} m\", vacuum - sim),\n        format!(\"{:.1}%\", (vacuum - sim) / vacuum * 100.0),\n    ]);\n}\n\nTable::new(\n    vec![\"angle (rad)\", \"vacuum formula\", \"simulated with drag\", \"overshoot\", \"overshoot %\"],\n    rows,\n)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_euler_md",
+   "order": 7,
+   "label": "Euler and the step-size bill",
+   "cell_type": "Markdown",
+   "source": "## Euler integration: renting a trajectory by the timestep\n\nThe table puts numbers on it: the formula overshoots by 12% on a flat shot and almost **28% on a lofted one**. The simulator is the only truth we have, which makes it fair to ask how truthful it is.\n\nThe integrator inside `range` is explicit Euler, the bluntest tool in numerical analysis: freeze the forces for one timestep, coast in a straight line, recompute. Each step commits an $O(dt^2)$ local error; over the roughly 500 steps of a flight these accumulate into an $O(dt)$ **global** error. First order: halve the step, halve the error.\n\nThe sweep below re-integrates one shot at step sizes from 160 ms down to 5 ms against a 0.1 ms reference. The error column reads 7.7 m, 3.8 m, 1.9 m, 0.95 m: each row half the one above, the first-order signature visible in raw digits.\n\nThe trade-off is the classic one: accuracy costs steps (30 at dt = 0.16, 989 at dt = 0.005). But there is a second bill that matters here: the reverse pass we are building toward walks **every step backwards**, and its stored state scales with the trip count. Your step size is also your derivative's memory budget. (RK4 would buy fourth-order error; Euler keeps the adjoint legible, the right trade for a demo.)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_dt_sweep",
+   "order": 8,
+   "label": "The step-size sweep",
+   "cell_type": "Code",
+   "source": "// Re-integrate the same shot at coarser and finer steps. Explicit Euler is\n// first-order: the error column should halve every time dt does.\nfn euler_range(angle: f64, dt: f64) -> (f64, u32) {\n    let (mut x, mut y) = (0.0_f64, 0.0_f64);\n    let (mut vx, mut vy) = (shared::V0 * angle.cos(), shared::V0 * angle.sin());\n    let mut steps = 0_u32;\n    loop {\n        let speed = (vx * vx + vy * vy).sqrt();\n        vx -= shared::DRAG * speed * vx * dt;\n        vy -= (shared::G + shared::DRAG * speed * vy) * dt;\n        let (nx, ny) = (x + vx * dt, y + vy * dt);\n        steps += 1;\n        if ny < 0.0 {\n            return (x + vx * dt * (y / (y - ny)), steps);\n        }\n        x = nx;\n        y = ny;\n    }\n}\n\nlet angle = 0.55_f64;\nlet (reference, _) = euler_range(angle, 0.0001);\n\nlet mut rows = Vec::new();\nfor dt in [0.16_f64, 0.08, 0.04, 0.02, 0.01, 0.005] {\n    let (r, steps) = euler_range(angle, dt);\n    rows.push(vec![\n        format!(\"{dt} s\"),\n        format!(\"{steps}\"),\n        format!(\"{r:.3} m\"),\n        format!(\"{:+.3} m\", r - reference),\n    ]);\n}\n\nTable::new(vec![\"dt\", \"steps\", \"range\", \"error vs dt = 0.0001\"], rows)",
+   "cargo_toml": null
+  },
+  {
    "id": "cell_wall",
-   "order": 4,
+   "order": 9,
    "label": "No formula, no problem",
    "cell_type": "Markdown",
-   "source": "## No formula for the range, but the compiler doesn't care\n\nIn a vacuum, every physics student knows $R = v_0^2 \\sin(2\\theta)/g$ and the optimum is 45\u00b0. Add drag proportional to $v^2$ and that formula dies: the range above tops out around **0.74 rad (~42\u00b0)** and there's nothing closed-form to differentiate.\n\nThe classical workaround is finite differences: nudge the angle, re-run the sim, divide. It works, but you pay a full simulation per probe and you inherit the [step-size error valley](/notebook/public/autodiff.ironpad) (truncation error fighting roundoff, best case ~1e-11).\n\nEnzyme's move is different: it takes the **compiled** simulator, loop and all, and emits a second function that runs it *backwards*, accumulating exact adjoints. The next cell puts the two side by side.",
+   "source": "## No formula, no problem: two ways to get a derivative\n\n`range(angle)` exists only as a loop, and Newton's method (where this is headed) will demand $dR/d\\theta$. So where does a derivative come from when there is nothing to differentiate by hand?\n\nThe classical workaround is finite differences: nudge the angle, re-run the sim, divide. It works, but you pay a full simulation per probe and you inherit the [step-size error valley](/notebook/public/autodiff.ironpad): truncation error fighting roundoff, best case ~1e-11, and a step size $h$ you must pick blind.\n\nEnzyme's move is different: it takes the **compiled** simulator, loop and all, and emits a second function that runs it *backwards*, accumulating exact adjoints. No $h$ to pick, no truncation term, no extra simulations per probe. The next cell puts the two side by side.",
    "cargo_toml": null
   },
   {
    "id": "cell_grad",
-   "order": 5,
+   "order": 10,
    "label": "Enzyme vs finite differences",
    "cell_type": "Code",
    "source": "// d_range comes from the compiler: one attribute in the shared source.\nlet mut rows = Vec::new();\nfor a in [0.2_f64, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] {\n    let (r, enzyme) = shared::d_range(a, 1.0);\n    let h = 1e-5;\n    let fd = (shared::range(a + h) - shared::range(a - h)) / (2.0 * h);\n    rows.push(vec![\n        format!(\"{a:.1}\"),\n        format!(\"{r:.3}\"),\n        format!(\"{enzyme:.4}\"),\n        format!(\"{fd:.4}\"),\n        format!(\"{:.1e}\", (enzyme - fd).abs()),\n    ]);\n}\n\nTable::new(\n    vec![\"angle (rad)\", \"range (m)\", \"dR/d\u03b8 (Enzyme)\", \"dR/d\u03b8 (finite diff)\", \"|\u0394|\"],\n    rows,\n)",
    "cargo_toml": null
   },
   {
+   "id": "cell_adjoint_md",
+   "order": 11,
+   "label": "The trajectory, backwards",
+   "cell_type": "Markdown",
+   "source": "## The adjoint: your trajectory, played backwards\n\nHere is the part worth slowing down for, because it is genuinely strange the first time you see it. `d_range` does no symbolic algebra and nudges nothing. Reverse-mode AD generates a program with two halves. The **forward pass** runs the simulation exactly as written, recording what the second half will need (here, each step's velocities). The **reverse pass** starts at the landing point, seeds the sensitivity of the answer with respect to itself (exactly 1.0), and walks the loop *in reverse iteration order*, applying the transposed chain rule at every step.\n\nFor a mental model: the cannonball flies twice. The first flight is the physics, muzzle to crater. The second runs crater back to muzzle, and what flows along it is not position but **influence**: at each timestep it carries the answer to \"if this velocity were perturbed, how much would the landing point move?\" When the reverse flight arrives at $t = 0$, all of that influence has landed on the launch angle, and that number *is* $dR/d\\theta$.\n\nTwo details sharpen the trick. The loop's trip count is decided at runtime; the reverse pass simply replays however many steps the tape recorded, 494 for this shot. And one reverse sweep prices the gradient for **any number of inputs**, which is why reverse mode underlies every neural network you have ever trained.\n\nNone of this has to stay abstract: the next cell hand-rolls the scheme in about 35 lines and checks it against the compiler-generated `d_range`. If the adjoint picture is right, the two columns should agree far past anything finite differences can reach.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_adjoint_hand",
+   "order": 12,
+   "label": "Hand-rolling the adjoint",
+   "cell_type": "Code",
+   "source": "// Enzyme's trick, hand-rolled once: tape the flight forward, then sweep the\n// tape BACKWARDS, dragging sensitivity from the crater to the muzzle.\nfn pull_back(vx: f64, vy: f64, s: f64, bvx: f64, bvy: f64) -> (f64, f64) {\n    // Transposed Jacobian of one velocity update (the chain rule, reversed).\n    let (k, dt) = (shared::DRAG, shared::DT);\n    let avx = bvx * (1.0 - k * dt * (s + vx * vx / s)) - bvy * k * dt * vy * vx / s;\n    let avy = bvy * (1.0 - k * dt * (s + vy * vy / s)) - bvx * k * dt * vx * vy / s;\n    (avx, avy)\n}\n\nlet theta = 0.55_f64;\nlet dt = shared::DT;\n\n// Forward pass: fly the ball, recording each step's incoming velocities.\nlet (mut x, mut y) = (0.0_f64, 0.0_f64);\nlet (mut vx, mut vy) = (shared::V0 * theta.cos(), shared::V0 * theta.sin());\nlet mut tape = Vec::new();\nlet (fy, fvx, fvy, hand_range) = loop {\n    let s = (vx * vx + vy * vy).sqrt();\n    tape.push((vx, vy, s));\n    let nvx = vx - shared::DRAG * s * vx * dt;\n    let nvy = vy - (shared::G + shared::DRAG * s * vy) * dt;\n    if y + nvy * dt < 0.0 {\n        // Landing interpolation simplifies to r = x - vx * y / vy.\n        break (y, nvx, nvy, x - nvx * y / nvy);\n    }\n    vx = nvx;\n    vy = nvy;\n    x += vx * dt;\n    y += vy * dt;\n};\n\n// Seed adjoints at the landing point, then pull the final (partial) step.\nlet (ax, ay) = (1.0_f64, -fvx / fvy);\nlet (lvx, lvy, ls) = tape.pop().unwrap();\nlet (mut avx, mut avy) = pull_back(lvx, lvy, ls, -fy / fvy, fvx * fy / (fvy * fvy));\n\n// Reverse pass: the whole trajectory, backwards, one adjoint per step.\nfor (pvx, pvy, ps) in tape.iter().rev() {\n    let (nx, ny) = pull_back(*pvx, *pvy, *ps, avx + ax * dt, avy + ay * dt);\n    avx = nx;\n    avy = ny;\n}\n\n// Influence has arrived at t = 0; rotate it onto the launch angle.\nlet hand_grad = avx * (-shared::V0 * theta.sin()) + avy * (shared::V0 * theta.cos());\nlet (r, enzyme) = shared::d_range(theta, 1.0);\n\nTable::new(\n    vec![\"quantity\", \"hand-rolled tape\", \"compiler (d_range)\", \"|\u0394|\"],\n    vec![\n        vec![\n            \"range (m)\".to_string(),\n            format!(\"{hand_range:.9}\"),\n            format!(\"{r:.9}\"),\n            format!(\"{:.1e}\", (hand_range - r).abs()),\n        ],\n        vec![\n            \"dR/d\u03b8 (m/rad)\".to_string(),\n            format!(\"{hand_grad:.9}\"),\n            format!(\"{enzyme:.9}\"),\n            format!(\"{:.1e}\", (hand_grad - enzyme).abs()),\n        ],\n    ],\n)",
+   "cargo_toml": null
+  },
+  {
    "id": "cell_gotcha",
-   "order": 6,
+   "order": 13,
    "label": "The pothole worth knowing about",
    "cell_type": "Markdown",
    "source": "## The one pothole: differentiating *events*\n\nFull disclosure: the first version of this simulator produced gradients that were **exactly right and completely useless**. Enzyme and finite differences agreed to four decimals, and both said the range was *decreasing* at angles where it was plainly increasing. Newton's method promptly launched the cannon into orbit.\n\nThe culprit wasn't the derivative; it was the simulator. The loop originally stopped at the **first whole timestep below ground**, so as the angle varied, the landing point jumped in 10 ms quanta. `range(angle)` was a microscopic sawtooth: globally rising, locally falling, and every derivative method faithfully reported the slope of the *teeth*.\n\nThe fix is one line, and it's the line to remember whenever you differentiate through a simulation with a stopping condition: **smooth the event**. Interpolate the final partial step to $y = 0$ (see the landing branch in the simulator cell up top) and the sawtooth collapses into the piecewise-smooth function the physics always described. Differentiable simulation isn't just an attribute; it's a contract that your events are smooth too.",
    "cargo_toml": null
   },
   {
+   "id": "cell_newton_md",
+   "order": 14,
+   "label": "Aiming as root-finding",
+   "cell_type": "Markdown",
+   "source": "## Aiming as root-finding\n\nTime to spend the derivative. We want the angle that drops the ball on a target at 150 m, which is a root-finding problem: define $\\text{miss}(\\theta) = \\text{range}(\\theta) - 150$ and drive it to zero.\n\nNewton's method linearizes at the current guess and jumps to where the tangent line crosses zero: $\\theta \\leftarrow \\theta - \\text{miss}(\\theta)/\\text{miss}'(\\theta)$. Each iteration costs one forward flight plus one reverse flight (a single `d_range` call), so the whole aiming procedure below runs in about the budget of **eight plain simulations**. Because the derivative is exact, Newton delivers its famous **quadratic convergence**: near the root the error is squared every iteration, so the count of correct digits roughly doubles per step. A finite-difference slope would also converge here, but at two simulations per probe for a noisier slope; exactness is what makes the tables below so clean.",
+   "cargo_toml": null
+  },
+  {
    "id": "cell_newton",
-   "order": 7,
+   "order": 15,
    "label": "Newton aims the cannon",
    "cell_type": "Code",
    "source": "// Aim for a target at 150 m: Newton's method on range(angle) = target,\n// with the exact derivative supplied by the compiler.\nlet target = 150.0_f64;\nlet mut angle = 0.3_f64;\n\nlet mut rows = Vec::new();\nlet mut curves = Vec::new();\nlet fades = [\"#55607a\", \"#7a89b0\", \"#a9b8e0\", \"#ff5da2\"];\n\nfor i in 0..8 {\n    let (r, dr) = shared::d_range(angle, 1.0);\n    rows.push(vec![\n        format!(\"{i}\"),\n        format!(\"{angle:.6}\"),\n        format!(\"{r:.4}\"),\n        format!(\"{:+.5}\", r - target),\n    ]);\n    curves.push((\n        shared::trajectory(angle),\n        fades[i.min(fades.len() - 1)].to_string(),\n    ));\n    if (r - target).abs() < 1e-4 {\n        break;\n    }\n    angle -= (r - target) / dr;\n}\n\n(\n    Svg(shared::plot_trajectories(&curves, target)),\n    Table::new(vec![\"iteration\", \"angle (rad)\", \"range (m)\", \"error (m)\"], rows),\n)",
    "cargo_toml": null
   },
   {
+   "id": "cell_digits_md",
+   "order": 16,
+   "label": "Read the digits",
+   "cell_type": "Markdown",
+   "source": "## Read the digits\n\nThe table above stops when the miss drops under 0.1 mm, which undersells how violent the convergence is. Below is the same iteration with the miss in scientific notation, plus the ratio $|\\text{miss}_n| / |\\text{miss}_{n-1}|^2$. Quadratic convergence predicts that ratio is roughly *constant* (it is the curvature-to-slope ratio at the root), and the exponent staircase is textbook: **1e+1, 1e+0, 1e-2, 1e-5, 1e-11**, correct digits doubling once the iteration gets close, with the ratio column parked in the 0.004\u20130.007 band the whole way down.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_newton_digits",
+   "order": 17,
+   "label": "Quadratic convergence table",
+   "cell_type": "Code",
+   "source": "// The same Newton iteration, instrumented for its convergence RATE. If the\n// convergence is quadratic, |miss_n| / |miss_(n-1)|^2 is roughly constant.\nlet target = 150.0_f64;\nlet mut angle = 0.3_f64;\nlet mut prev: Option<f64> = None;\nlet mut rows = Vec::new();\n\nfor i in 0..6 {\n    let (r, dr) = shared::d_range(angle, 1.0);\n    let miss = (r - target).abs();\n    let ratio = prev.map_or(\"-\".to_string(), |p| format!(\"{:.4}\", miss / (p * p)));\n    rows.push(vec![format!(\"{i}\"), format!(\"{miss:.3e}\"), ratio]);\n    if miss < 1e-10 {\n        break;\n    }\n    prev = Some(miss);\n    angle -= (r - target) / dr;\n}\n\nTable::new(vec![\"iteration\", \"|miss| (m)\", \"|miss| / previous\u00b2\"], rows)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_two_md",
+   "order": 18,
+   "label": "Two solutions",
+   "cell_type": "Markdown",
+   "source": "## Two ways to hit the same target\n\nOne more insight hides in the derivative's sign. `range(\u03b8)` climbs to its 185.8 m maximum at 0.744 rad and then falls, so every reachable target is crossed **twice**: once on the way up (a flat shot) and once on the way down (a lofted one). For the 150 m target the roots sit near 23.7\u00b0 and 62.2\u00b0.\n\nNewton is a local algorithm: it converges to whichever root's basin you start in. Start at 0.3 rad and you get the flat shot. Start at 1.2 rad, where $dR/d\\theta$ is negative, and the identical update rule marches the other way and finds the mortar solution. Same crater, wildly different flights: apex 18 m vs 81 m, hang time 3.9 s vs 8.1 s. Artillery doctrine has names for the two (direct and indirect fire); the optimizer rediscovers the distinction from nothing but a sign.\n\nOne honest caveat: on the crest $dR/d\\theta$ passes through zero (about 2 m/rad at 0.744 and falling), so a start there makes Newton divide by almost nothing and catapult the guess far away; that is where you would add a bracket or a line search. From sensible starts, four iterations land either shot.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_two_solutions",
+   "order": 19,
+   "label": "Flat shot vs mortar shot",
+   "cell_type": "Code",
+   "source": "// Two roots, one target: start Newton in different basins and it finds\n// different shots. Everything here flows from the derivative's sign.\nfn aim(mut angle: f64, target: f64) -> (f64, usize) {\n    for i in 0..12 {\n        let (r, dr) = shared::d_range(angle, 1.0);\n        if (r - target).abs() < 1e-9 {\n            return (angle, i);\n        }\n        angle -= (r - target) / dr;\n    }\n    (angle, 12)\n}\n\nlet target = 150.0_f64;\nlet (flat, flat_iters) = aim(0.3, target);\nlet (lofted, lofted_iters) = aim(1.2, target);\n\nlet mut rows = Vec::new();\nfor (name, a, iters) in [(\"flat\", flat, flat_iters), (\"lofted\", lofted, lofted_iters)] {\n    let pts = shared::trajectory(a);\n    let apex = pts.iter().map(|p| p.1).fold(0.0_f64, f64::max);\n    let hang = (pts.len() - 1) as f64 * shared::DT;\n    rows.push(vec![\n        name.to_string(),\n        format!(\"{a:.4} rad ({:.1}\u00b0)\", a.to_degrees()),\n        format!(\"{:.3} m\", shared::range(a)),\n        format!(\"{apex:.1} m\"),\n        format!(\"{hang:.2} s\"),\n        format!(\"{iters}\"),\n    ]);\n}\n\nTable::new(\n    vec![\"shot\", \"angle\", \"range\", \"apex\", \"hang time\", \"Newton iterations\"],\n    rows,\n)",
+   "cargo_toml": null
+  },
+  {
    "id": "cell_outro",
-   "order": 8,
+   "order": 20,
    "label": "Exact derivatives, one attribute",
    "cell_type": "Markdown",
    "source": "## Exact derivatives, one attribute\n\nThat last cell converged to the target in **3 iterations** because Newton's method had the one thing it craves: an exact derivative. The cost was a single attribute on an ordinary Rust function. Enzyme differentiates the *optimized* IR, loop and all, which is why the gradient sails straight through a timestepped simulation that has no closed form anywhere in it.\n\nThe feature itself is still nightly and moving: [tracking issue #124509](https://github.com/rust-lang/rust/issues/124509), driven by [Manuel Drehwald](https://github.com/ZuseZ4) with LLNL and the University of Toronto behind it, with **batching** and [`std::offload`](https://github.com/rust-lang/rust-project-goals/issues/109) (GPU) queued up behind autodiff. Compose those and this notebook's punchline gets an upgrade: differentiated simulations running on the GPU, with the compiler doing the calculus end to end.\n\n*For the theory under the hood, the* [companion notebook](/notebook/public/autodiff.ironpad) *builds dual numbers and a reverse-mode tape from scratch, then benchmarks them against exactly the machinery Enzyme just used.*",
@@ -88,6 +184,7 @@
   "enzyme",
   "simulation",
   "physics",
-  "newton"
+  "newton",
+  "blog"
  ]
 }
