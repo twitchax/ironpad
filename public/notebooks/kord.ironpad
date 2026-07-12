@@ -1,0 +1,117 @@
+{
+ "version": 1,
+ "id": "b4a3ed6c-966c-486e-a604-8fb26e2838f5",
+ "title": "The Algebra of Chords",
+ "created_at": "2026-07-12T00:00:00Z",
+ "updated_at": "2026-07-12T00:00:00Z",
+ "shared_cargo_toml": "[dependencies]\nkord = { git = \"https://github.com/twitchax/kord\", rev = \"2652f2fa4e1d7d7276a559475dbf55ab94ddb589\", default-features = false }\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+ "shared_source": null,
+ "cells": [
+  {
+   "id": "cell_intro",
+   "order": 0,
+   "label": "The pitch",
+   "cell_type": "Markdown",
+   "source": "# The algebra of chords\n\n**`Cm7b5` is a five-character sentence with four clauses.** The `C` names a root, the `m` bends the third down a half step, the `7` stacks a minor seventh on top, and the `b5` flattens the fifth. Chord symbols are a tiny formal language, dense and unambiguous, and like any language they can be parsed, evaluated, and reasoned about mechanically.\n\nThat is what [kord](https://github.com/twitchax/kord) does, and this one is near and dear: I wrote it years ago to learn music theory *properly*, by forcing myself to encode the rules instead of half-remembering them. A few hundred GitHub stars and something like twenty-four thousand downloads later, it still starts every explanation the same way, by turning a symbol into the exact notes it stands for.\n\nThe fun part for a notebook like this: **every code cell below runs the real crate.** Not a reimplementation, not a transcript of output captured somewhere else. kord is compiled to WebAssembly and executed in your browser, the same library compiled to the same target that powers [its own playground](https://kord.twitchax.com/). Parse a chord, stack some intervals, enumerate the modes of a scale, hand it a fistful of notes and make it name them, then chase equal temperament down to the fraction of a cent where it stops being exact. All of it, live.\n\n*The library crate is named `klib`, a historical accident I have made peace with. Everything starts with `Chord::parse`.*"
+  },
+  {
+   "id": "cell_parse",
+   "order": 1,
+   "label": "Parsing a family of chords",
+   "cell_type": "Code",
+   "source": "// \u2500\u2500 Parsing chord symbols with kord \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n//\n// kord's library crate is `klib`. `Chord::parse` turns a symbol string into a\n// fully realized chord: a canonical name, the actual tones, and a plain-English\n// description. Everything below is the real crate, compiled to wasm.\nuse klib::core::base::{HasDescription, HasName, Parsable};\nuse klib::core::chord::{Chord, HasChord};\n\nlet symbols = [\"C\", \"Cm7\", \"Cm7b5\", \"C7#9\", \"Cmaj7#11\"];\n\nlet rows: Vec<Vec<String>> = symbols\n    .iter()\n    .map(|sym| {\n        let chord = Chord::parse(sym).unwrap();\n        let tones: Vec<String> = chord.chord().iter().map(ToString::to_string).collect();\n        vec![\n            (*sym).to_string(),\n            chord.name(),\n            tones.join(\" \"),\n            chord.description().to_string(),\n        ]\n    })\n    .collect();\n\nTable::new(vec![\"symbol\", \"kord's name\", \"tones\", \"what it is\"], rows)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_intervals_md",
+   "order": 2,
+   "label": "Intervals as arithmetic",
+   "cell_type": "Markdown",
+   "source": "## A chord is intervals, an interval is arithmetic\n\nPull on the thread and the whole subject unravels into counting. **An interval is a number of semitones**, and a semitone is one step of the twelve the octave is divided into. A minor third is 3 semitones, a major third is 4, a tritone is 6. That is the entire definition; everything else is names we hang on the counts so we can talk about them.\n\nWestern harmony is built by *stacking thirds*, which is why chords look the way they do. Take a root, go up a third, up another third, up another, and you have a triad and then a seventh chord. Which thirds you stack, major (4 semitones) or minor (3), is what makes a chord bright or dark. A half-diminished chord, our `Cm7b5`, is the clearest case: **two minor thirds stacked, then a major third on top.** Minor, minor, major; 3 + 3 + 4.\n\nThe next cell proves it without trusting a single one of my labels. It takes the tones kord produced for `Cm7b5` and recovers each interval straight from the frequencies, because the ratio of two frequencies *is* the interval between them: twelve times the base-2 logarithm of `f_high / f_low` counts the equal-tempered steps. Each note knows its own frequency, so the arithmetic is exact."
+  },
+  {
+   "id": "cell_interval_stack",
+   "order": 3,
+   "label": "The stack inside Cm7b5",
+   "cell_type": "Code",
+   "source": "// \u2500\u2500 Intervals are semitone arithmetic \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n//\n// Every interval is a count of semitones, and we can recover them straight from\n// the chord tones: 12 * log2(f_hi / f_lo) is the number of equal-tempered steps\n// between two frequencies, and kord hands us the exact frequency of each note.\nuse klib::core::base::Parsable;\nuse klib::core::chord::{Chord, HasChord};\nuse klib::core::note::Note;\nuse klib::core::pitch::HasFrequency;\n\nfn semitones(from: Note, to: Note) -> i64 {\n    (12.0 * (to.frequency() as f64 / from.frequency() as f64).log2()).round() as i64\n}\n\nfn interval_name(semis: i64) -> &'static str {\n    match semis {\n        0 => \"unison\",\n        1 => \"minor 2nd\",\n        2 => \"major 2nd\",\n        3 => \"minor 3rd\",\n        4 => \"major 3rd\",\n        5 => \"perfect 4th\",\n        6 => \"tritone\",\n        7 => \"perfect 5th\",\n        8 => \"minor 6th\",\n        9 => \"major 6th\",\n        10 => \"minor 7th\",\n        11 => \"major 7th\",\n        12 => \"octave\",\n        _ => \"compound\",\n    }\n}\n\nlet tones = Chord::parse(\"Cm7b5\").unwrap().chord();\nlet root = tones[0];\n\nlet mut rows = Vec::new();\nlet mut prev: Option<Note> = None;\nfor n in &tones {\n    let from_root = semitones(root, *n);\n    let step = match prev {\n        Some(p) => {\n            let g = semitones(p, *n);\n            format!(\"+{g}  ({})\", interval_name(g))\n        }\n        None => \"root\".to_string(),\n    };\n    rows.push(vec![\n        n.to_string(),\n        format!(\"{from_root}\"),\n        interval_name(from_root).to_string(),\n        step,\n    ]);\n    prev = Some(*n);\n}\n\nTable::new(vec![\"tone\", \"semitones over root\", \"interval\", \"step from previous\"], rows)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_scales_md",
+   "order": 4,
+   "label": "Scales and modes",
+   "cell_type": "Markdown",
+   "source": "## Scales and modes: the same trick, one level up\n\nA scale is the same construction as a chord, just a larger interval set over a root. The **major scale** is a fixed pattern of seven intervals; root it anywhere and you get that key. The interesting move is what happens when you keep the seven notes but *start on a different one*.\n\nThose are the **modes**. Play the white keys from C and you get C major, familiar and resolved. Play the exact same white keys starting from D and the character changes completely: same notes, different center of gravity, and suddenly it reads as a minor scale with an oddly bright sixth. That is D Dorian. Start on E and it turns dark and Spanish (Phrygian); start on F and it turns bright and floating (Lydian, where the raised fourth is the tell); start on B and it can barely stand up (Locrian, built over a diminished fifth).\n\nkord stores each mode's intervals *explicitly* rather than deriving them by rotating a scale, which is a deliberate correctness choice: it keeps the enharmonic spelling honest, so D Dorian comes back spelled with the right letters and never a stray double flat. The next cell walks all seven modes of C major and asks each one for its notes and its one-line character."
+  },
+  {
+   "id": "cell_modes",
+   "order": 5,
+   "label": "The modes of C major",
+   "cell_type": "Code",
+   "source": "// \u2500\u2500 The seven modes of C major \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n//\n// One parent scale, seven starting points. Each mode is the same seven pitch\n// classes rooted on a different degree, and kord spells each one correctly\n// because it stores every mode's intervals explicitly instead of rotating.\nuse klib::core::base::{HasDescription, HasName, HasStaticName};\nuse klib::core::mode::Mode;\nuse klib::core::mode_kind::ModeKind;\nuse klib::core::note::{A, B, C, D, E, F, G};\n\nlet modes = [\n    (C, ModeKind::Ionian),\n    (D, ModeKind::Dorian),\n    (E, ModeKind::Phrygian),\n    (F, ModeKind::Lydian),\n    (G, ModeKind::Mixolydian),\n    (A, ModeKind::Aeolian),\n    (B, ModeKind::Locrian),\n];\n\nlet rows: Vec<Vec<String>> = modes\n    .iter()\n    .map(|(root, kind)| {\n        let m = Mode::new(*root, *kind);\n        let notes: Vec<String> =\n            m.notes().iter().map(|n| n.static_name().to_string()).collect();\n        vec![\n            m.name(),\n            format!(\"{}\", kind.parent_degree()),\n            notes.join(\" \"),\n            m.description().to_string(),\n        ]\n    })\n    .collect();\n\nTable::new(vec![\"mode\", \"degree\", \"notes\", \"character\"], rows)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_infer_md",
+   "order": 6,
+   "label": "Name that chord",
+   "cell_type": "Markdown",
+   "source": "## The party trick: name that chord\n\nEverything so far ran one direction, symbol to notes. The trick that makes people lean in runs the other way. **Hand kord a bag of notes and it tells you what chords they are**, ranked simplest first.\n\nThis is genuinely harder than parsing, because the answer is not unique. The same three or four pitches can be spelled as several different chords depending on which note you call the root, whether you allow an inversion, whether one of them is a slash bass. So `try_from_notes` does the obvious thing thoroughly: it tries plausible roots and voicings across octaves, keeps every candidate whose tones match your notes exactly, and sorts them by *simplicity*, fewest modifiers, fewest extensions, no needless slash. The cleanest reading floats to the top.\n\nIt is the same routine behind kord's `guess` command, and behind the microphone mode that listens to you play and prints the chord back. The next cell feeds it three note sets, from a plain triad to a spicier one, and shows the top three readings for each. The first column is what you played; the second is kord thinking out loud."
+  },
+  {
+   "id": "cell_infer",
+   "order": 7,
+   "label": "Chord inference from notes",
+   "cell_type": "Code",
+   "source": "// \u2500\u2500 Naming a chord from its notes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n//\n// The inverse of parsing. `try_from_notes` takes a bag of notes and returns the\n// chords that fit, ranked simplest first. This is kord's `guess` command, the\n// same one that names chords picked up from a microphone.\nuse klib::core::base::HasName;\nuse klib::core::chord::Chord;\nuse klib::core::note::{BFlat, C, E, EFlat, G, GFlat, Note};\n\nlet sets: Vec<(&str, Vec<Note>)> = vec![\n    (\"C E G\", vec![C, E, G]),\n    (\"C Eb G Bb\", vec![C, EFlat, G, BFlat]),\n    (\"C E Gb Bb\", vec![C, E, GFlat, BFlat]),\n];\n\nlet mut rows = Vec::new();\nfor (label, notes) in &sets {\n    let candidates = Chord::try_from_notes(notes).unwrap();\n    let top: Vec<String> = candidates.iter().take(3).map(HasName::name).collect();\n    rows.push(vec![(*label).to_string(), top.join(\",   \")]);\n}\n\nTable::new(vec![\"notes you play\", \"kord's ranked guesses (simplest first)\"], rows)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_temperament_md",
+   "order": 8,
+   "label": "The compromise of equal temperament",
+   "cell_type": "Markdown",
+   "source": "## The mathematical heart: everyone is playing slightly out of tune\n\nHere is the part that surprised me most when I encoded it. **The frequencies kord reports are a compromise nobody quite tells you about.** `note.frequency()` returns twelve-tone equal temperament: the octave sliced into twelve *identical* ratios, each a factor of 2^(1/12), with A4 nailed to 440 Hz. Clean, uniform, and slightly wrong almost everywhere.\n\nWrong compared to what? To the intervals physics actually prefers. The consonances your ear locks onto are small whole-number frequency ratios: the octave is exactly 2/1, the perfect fifth wants to be 3/2, the major third wants 5/4. These are not conventions, they fall straight out of the overtone series (the next section). Equal temperament hits *none* of them except the octave. It cannot: no power of 2^(1/12) equals 3/2. So it misses every one of them by a little, on purpose.\n\nThe point of missing on purpose is that it misses *evenly*. Tune a keyboard to pure ratios in C and it will sound glorious in C and sour three keys away, because the errors that cancel in one key pile up in another. Equal temperament spreads the error uniformly so **every key is equally usable and equally, tolerably wrong**. You can modulate anywhere and never retune.\n\nNow the numbers, because \"slightly wrong\" deserves quantifying (a *cent* is 1/100 of a semitone, so 1200 to the octave). The equal-tempered major third lands about **13.7 cents sharp** of the pure 5/4, roughly an eighth of a semitone, enough to hear as a faint buzz under a sustained major chord. The fifth gets off nearly free, under 2 cents flat. And the *harmonic seventh*, the pure 7/4 the overtone series really produces, sits a gaping **31 cents** below the tempered minor seventh, which is why a barbershop quartet, free to bend into the pure ratio, can make a dominant seventh ring in a way a piano simply cannot. The next cell computes all of it from kord's own frequencies."
+  },
+  {
+   "id": "cell_temperament",
+   "order": 9,
+   "label": "Cents of error, tempered vs pure",
+   "cell_type": "Code",
+   "source": "// \u2500\u2500 Equal temperament vs the pure ratios \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n//\n// kord's note.frequency() is twelve-tone equal temperament (A4 = 440, every\n// semitone a factor of 2^(1/12)). The \"pure\" version of each interval is a\n// small whole-number ratio from the overtone series. A cent is 1/100 of a\n// semitone; we measure how far tempered sits from pure with\n// 1200 * log2(f_tempered / f_pure).\nuse klib::core::note::{BFlat, C, CFive, E, G, Note};\nuse klib::core::pitch::HasFrequency;\n\nlet root = C; // C4\n\n// (interval, note reached in 12-TET, pure-ratio numerator, denominator)\nlet rows_spec: Vec<(&str, Note, f64, f64)> = vec![\n    (\"unison\", C, 1.0, 1.0),\n    (\"major third\", E, 5.0, 4.0),\n    (\"perfect fifth\", G, 3.0, 2.0),\n    (\"harmonic 7th\", BFlat, 7.0, 4.0),\n    (\"octave\", CFive, 2.0, 1.0),\n];\n\nlet mut rows = Vec::new();\nfor (name, note, num, den) in &rows_spec {\n    let tempered = note.frequency() as f64;\n    let pure = root.frequency() as f64 * num / den;\n    let cents = 1200.0 * (tempered / pure).log2();\n    rows.push(vec![\n        (*name).to_string(),\n        format!(\"{}/{}\", *num as i64, *den as i64),\n        format!(\"{pure:.2} Hz\"),\n        format!(\"{tempered:.2} Hz\"),\n        format!(\"{cents:+.2}\"),\n    ]);\n}\n\nTable::new(\n    vec![\"interval\", \"pure ratio\", \"pure\", \"tempered (kord)\", \"error (cents)\"],\n    rows,\n)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_overtones_md",
+   "order": 10,
+   "label": "The overtone series",
+   "cell_type": "Markdown",
+   "source": "## Where the pure ratios come from\n\nThe whole-number ratios are not arbitrary targets; they are what a physical string hands you for free. Pluck one and it vibrates at a fundamental frequency plus, simultaneously, every integer multiple of it: 2x, 3x, 4x, 5x, on up. Those overtones are the **harmonic series**, and their ratios to the fundamental *are* the pure intervals. The 2nd harmonic (2x) is the octave, 2/1. The 3rd (3x) is an octave plus a pure fifth. The 5th is two octaves plus a pure major third, the 5/4 from the last section.\n\nSo the pure intervals are just the first few harmonics folded back into a single octave, and equal temperament is our best twelve-note approximation of that natural set. The plot below sounds the first eight harmonics of C and places each one in *cents above the fundamental*. The equal-tempered grid sits at exact multiples of 100; watch the harmonics drift off it as they climb, the 5th and 7th missing their nearest tempered step by the amounts we just measured."
+  },
+  {
+   "id": "cell_harmonics",
+   "order": 11,
+   "label": "Harmonics of C, plotted",
+   "cell_type": "Code",
+   "source": "// \u2500\u2500 The overtone series, in cents \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n//\n// A vibrating string sounds its fundamental plus integer multiples: 2x, 3x, 4x,\n// and so on. Those harmonics ARE the pure intervals. Plotted in cents above the\n// fundamental (C), they drift off the equal-tempered grid, whose steps land on\n// exact multiples of 100 cents.\nuse klib::core::note::C;\nuse klib::core::pitch::HasFrequency;\n\nlet base = C.frequency() as f64;\nlet points: Vec<(f64, f64)> = (1..=8)\n    .map(|k| {\n        let f = base * k as f64;\n        (k as f64, 1200.0 * (f / base).log2())\n    })\n    .collect();\n\nPlot::scatter(&points)\n    .title(\"Harmonics of C in cents above the fundamental\")\n    .x_label(\"harmonic number\")\n    .y_label(\"cents above C\")\n    .size(760, 380)\n    .point_labels(true)",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_outro",
+   "order": 12,
+   "label": "Beyond these cells",
+   "cell_type": "Markdown",
+   "source": "## What kord is, past these cells\n\nThe slice you just ran is the deterministic core, and it is the smallest part. The full crate is a command-line tool that will `describe`, `play`, `guess`, and `loop` through chord changes out loud; a JavaScript and WebAssembly package ([`kordweb` on npm](https://www.npmjs.com/package/kordweb)) that drives the browser playground; and, behind feature flags, the genuinely fun stuff: **audio analysis** that pulls notes out of a microphone, and an **ML model** that infers a chord from raw sound when the deterministic guesser is not enough. None of that fit in a notebook cell, but all of it hangs off the same `Note`, `Chord`, and `Interval` types you have been poking at.\n\nOne honest footnote on the plumbing. This notebook pins a specific git revision of kord rather than a crates.io release, because the published version (0.7.1) predates a nightly feature removal and no longer builds on the toolchain these cells use. The fix rides in 0.8.0, which these cells compile against and which is on its way to release.\n\nIf any of this scratched an itch, the [repository](https://github.com/twitchax/kord) is the place to start, the [playground](https://kord.twitchax.com/) is the place to play, and the [docs](https://docs.rs/kord) are the place to go deeper. I wrote it to understand music theory by building it. Turns out that is also a decent way to *explain* it."
+  }
+ ],
+ "description": "Chord symbols are a tiny formal language; this notebook parses them with kord, my music-theory crate, compiled to WebAssembly and run live in your browser.",
+ "tags": [
+  "blog",
+  "music",
+  "kord",
+  "music-theory",
+  "wasm"
+ ],
+ "expand_code": true
+}
