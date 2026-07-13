@@ -33,3 +33,4 @@ playwright-report/
 # Coverage
 coverage.lcov
 *.lcov
+.playwright-mcp/
