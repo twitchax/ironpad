@@ -23,6 +23,108 @@ console.error = function () {
   _origConsoleError.apply(console, arguments);
 };
 
+// ── DOM shim for wasm text measurement ──────────────────────────────────────
+//
+// plotters (and anything else compiled for wasm32-unknown-unknown) measures
+// text through the DOM: web_sys::window() → document → append a styled <span>,
+// read its offsetWidth/offsetHeight (plotters src/style/font/web.rs — the only
+// font backend plotters offers on wasm32). Workers have no DOM, so that path
+// panics and every text-bearing plot cell used to bounce to the slow
+// main-thread fallback. Provide exactly the surface that measurement path
+// touches, backed by OffscreenCanvas.measureText (which workers DO have).
+//
+// web_sys::window() is js_sys::global().dyn_into::<Window>(), and the glue's
+// instanceof check consults the global `Window` constructor (inside try/catch,
+// so "undefined" reads as false). Pointing `Window` at the worker global's own
+// constructor makes the check pass, and "window" becomes this worker scope —
+// whose fetch/setTimeout/etc. are the real functions, so crates like reqwest
+// that prefer the Window branch keep working unchanged.
+
+(function () {
+  var measureCtx = null;
+
+  function context2d() {
+    if (measureCtx === null) {
+      measureCtx = new OffscreenCanvas(1, 1).getContext("2d");
+    }
+    return measureCtx;
+  }
+
+  function MeasureSpan() {
+    this._text = "";
+    this._family = "sans-serif";
+    this._style = "normal";
+    this._size = 16;
+  }
+
+  Object.defineProperty(MeasureSpan.prototype, "textContent", {
+    get: function () {
+      return this._text;
+    },
+    set: function (value) {
+      this._text = value == null ? "" : String(value);
+    },
+  });
+
+  MeasureSpan.prototype.setAttribute = function (name, value) {
+    if (name !== "style") return;
+    // plotters emits: "display: inline-block; font-family:{f}; font-style:{s};
+    // font-size: {n}px; position: fixed; top: 100%".
+    var family = /font-family:\s*([^;]+)/.exec(value);
+    var style = /font-style:\s*([^;]+)/.exec(value);
+    var size = /font-size:\s*([0-9.]+)px/.exec(value);
+    if (family) this._family = family[1].trim();
+    if (style) this._style = style[1].trim();
+    if (size) this._size = parseFloat(size[1]);
+  };
+
+  MeasureSpan.prototype._measure = function () {
+    var ctx = context2d();
+    // Canvas font shorthand: [style|weight] size family. plotters reuses
+    // font-style for its Bold variant, which CSS calls a weight — both are
+    // valid in the leading slot, so pass it through unless it's "normal".
+    var prefix = this._style !== "normal" ? this._style + " " : "";
+    ctx.font = prefix + this._size + "px " + this._family;
+    // A DOM span collapses newlines to spaces; mirror that.
+    return ctx.measureText(this._text.replace(/\n/g, " "));
+  };
+
+  Object.defineProperty(MeasureSpan.prototype, "offsetWidth", {
+    get: function () {
+      return Math.ceil(this._measure().width);
+    },
+  });
+
+  Object.defineProperty(MeasureSpan.prototype, "offsetHeight", {
+    get: function () {
+      var metrics = this._measure();
+      var ascent = metrics.fontBoundingBoxAscent;
+      var descent = metrics.fontBoundingBoxDescent;
+      if (typeof ascent === "number" && typeof descent === "number") {
+        return Math.ceil(ascent + descent);
+      }
+      return Math.ceil(this._size * 1.2);
+    },
+  });
+
+  MeasureSpan.prototype.remove = function () {};
+
+  // dyn_into::<Window>() / dyn_into::<HtmlElement>() instanceof targets.
+  self.Window = self.constructor;
+  self.HTMLElement = MeasureSpan;
+
+  self.document = {
+    body: {
+      // body.append_with_node_1(&span) → body.append(span): attach is a no-op,
+      // the span measures itself lazily via the offset getters.
+      append: function () {},
+    },
+    createElement: function () {
+      return new MeasureSpan();
+    },
+  };
+})();
+
 // ── Load core executor logic ────────────────────────────────────────────────
 
 importScripts("/worker-executor.js");

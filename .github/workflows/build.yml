@@ -18,6 +18,14 @@ jobs:
           toolchain: nightly-2025-12-22
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy, rust-src
+      # Cell builds pin their own toolchain (CELL_TOOLCHAIN in ironpad-app's lib.rs;
+      # keep in sync here and in docker/Dockerfile) — the integration tests compile
+      # real cells, so the runner needs that toolchain too, with the wasm32 target,
+      # rust-src (-Zbuild-std combinations), and enzyme (the std::autodiff e2e test).
+      - run: |
+          rustup toolchain install nightly-2026-06-01 --profile minimal \
+            --target wasm32-unknown-unknown \
+            --component rust-src --component enzyme
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
