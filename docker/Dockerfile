@@ -59,6 +59,16 @@ RUN cargo build --release -p ironpad-proxy
 
 FROM rust:1.93.0-slim AS runtime
 
+# Native-build essentials for cell dependencies' HOST build scripts: cargo
+# build scripts compile for the host even when the cell targets wasm32, and
+# crates like openssl-sys (reqwest via native-tls, e.g. in rtz-build) probe
+# pkg-config for OpenSSL headers at that stage. Dev boxes have these; the slim
+# image didn't, which made cells compile locally and fail only on prod.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Cell compilation runs on exactly two pinned toolchains — never the host
 # default (see CELL_TOOLCHAIN in crates/ironpad-app/src/lib.rs and
 # ATOMICS_TOOLCHAIN in compiler/build.rs; keep both in sync here):
