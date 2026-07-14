@@ -208,6 +208,20 @@ mod tests {
     }
 
     #[test]
+    fn fenced_code_keeps_language_class_for_prism() {
+        // pulldown-cmark emits `<pre><code class="language-rust">` for a fenced
+        // block with an info string, and the language class MUST survive
+        // sanitization — the Prism bridge (public/prism/highlight-code.js)
+        // finds blocks via `code[class*="language-"]`, so losing the class
+        // silently disables syntax highlighting.
+        let html = render_markdown("```rust\nlet x = 42;\n```");
+        assert!(
+            html.contains(r#"class="language-rust""#),
+            "kept language class for Prism: {html}"
+        );
+    }
+
+    #[test]
     fn strips_raw_html_in_markdown_source() {
         // pulldown_cmark passes raw HTML through; sanitization must strip the
         // active parts so a shared/public markdown cell can't XSS a viewer.

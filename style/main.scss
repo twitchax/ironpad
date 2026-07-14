@@ -27,6 +27,17 @@
     --ip-purple: #b080f0;
     --ip-code-string: #e8e0d0;
     --ip-code-comment: #b0a090;
+    // Prism syntax-highlighting token palette (dark). Warm-leaning to match the
+    // app, with enough distinct hues to read as highlighting. See the
+    // `code[class*="language-"] .token` rules below.
+    --ip-tok-comment: #8f8778;
+    --ip-tok-keyword: #e56b86;
+    --ip-tok-string: #7cc08e;
+    --ip-tok-number: #c79bf0;
+    --ip-tok-function: #f0c257;
+    --ip-tok-type: #5cb3e8;
+    --ip-tok-attr: #f0a840;
+    --ip-tok-punct: #9a9ab0;
     --ip-outline-dashed: #4a4a6a;
     --ip-menu-disabled: #555;
     --ip-interactive-static: #b0b0cc;
@@ -72,6 +83,16 @@
     --ip-purple: #8050d0;
     --ip-code-string: #2a2a1e;
     --ip-code-comment: #706050;
+    // Prism token palette (light) — darker variants of the dark set for contrast
+    // on the light code-block background.
+    --ip-tok-comment: #7a7060;
+    --ip-tok-keyword: #c0304a;
+    --ip-tok-string: #2a7a4a;
+    --ip-tok-number: #6a38a8;
+    --ip-tok-function: #9a6a10;
+    --ip-tok-type: #1f6aa8;
+    --ip-tok-attr: #9a6410;
+    --ip-tok-punct: #555577;
     --ip-outline-dashed: #b0b8c8;
     --ip-menu-disabled: #aaa;
     --ip-interactive-static: #444466;
@@ -1585,6 +1606,73 @@ samp,
 .ironpad-output-hex-dump,
 .ironpad-output-display-text {
     font-family: var(--ip-font-mono);
+}
+
+/* ── Prism syntax highlighting ───────────────────────────────────────────── */
+/* Colors for the `<span class="token …">` markup Prism injects into fenced
+   code blocks in rendered markdown. Scoped to `code[class*="language-"]` so it
+   lands wherever markdown renders (cell preview, view-only, output panels)
+   without touching Monaco or plain code. Both themes via the token palette. */
+
+code[class*="language-"] {
+    .token.comment,
+    .token.prolog,
+    .token.doctype,
+    .token.cdata {
+        color: var(--ip-tok-comment);
+        font-style: italic;
+    }
+
+    .token.punctuation,
+    .token.operator {
+        color: var(--ip-tok-punct);
+    }
+
+    .token.keyword,
+    .token.atrule,
+    .token.selector,
+    .token.important {
+        color: var(--ip-tok-keyword);
+    }
+
+    .token.string,
+    .token.char,
+    .token.attr-value,
+    .token.regex,
+    .token.inserted {
+        color: var(--ip-tok-string);
+    }
+
+    .token.number,
+    .token.boolean {
+        color: var(--ip-tok-number);
+    }
+
+    .token.function {
+        color: var(--ip-tok-function);
+    }
+
+    .token.class-name,
+    .token.builtin {
+        color: var(--ip-tok-type);
+    }
+
+    .token.property,
+    .token.tag,
+    .token.constant,
+    .token.symbol,
+    .token.attr-name,
+    .token.namespace {
+        color: var(--ip-tok-attr);
+    }
+
+    .token.bold {
+        font-weight: 600;
+    }
+
+    .token.italic {
+        font-style: italic;
+    }
 }
 
 /* ── Responsive — desktop-first ──────────────────────────────────────────── */

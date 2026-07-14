@@ -78,6 +78,11 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <script src=versioned("/katex/katex.min.js")></script>
                 <script src=versioned("/katex/render-math.js")></script>
 
+                // Prism syntax highlighting for rendered markdown code blocks —
+                // also before Monaco's loader, for the same AMD `define` reason.
+                <script src=versioned("/prism/prism.js")></script>
+                <script src=versioned("/prism/highlight-code.js")></script>
+
                 // Monaco editor: AMD loader + worker configuration + languages + Rust bridge.
                 <script src=versioned("/monaco/vs/loader.js")></script>
                 <script src=versioned("/monaco/init.js")></script>

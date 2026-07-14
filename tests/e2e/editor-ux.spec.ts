@@ -65,6 +65,42 @@ test.describe("Editor UX (PRD-0032)", () => {
     await expect(cell.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
   });
 
+  // Rendered markdown fenced code blocks are syntax-highlighted by Prism
+  // (public/prism/highlight-code.js), not just Monaco-highlighted while editing.
+  test("rendered code block is syntax-highlighted by Prism", async ({
+    page,
+  }) => {
+    await newNotebook(page);
+
+    // Add a markdown cell, edit it, and give it a fenced Rust block.
+    await page.locator("button", { hasText: "+ Markdown" }).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell).toBeVisible();
+    await cell.locator(".ironpad-markdown-cell-preview").dblclick();
+    await expect(cell.locator(".ironpad-markdown-cell-editor")).toBeVisible();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cell, "```rust\nlet x: u32 = 42;\n```");
+
+    // Render it (view mode commits + renders, per uat-003).
+    await page.locator('button[title="View mode"]').click();
+
+    // The fence keeps its language class...
+    const code = cell.locator(
+      ".ironpad-markdown-cell-preview code.language-rust"
+    );
+    await expect(code).toBeVisible({ timeout: 10_000 });
+
+    // ...and Prism has rewritten it into token spans — the `let` keyword is the
+    // regression anchor. Monaco's editor highlighting is a separate DOM; this
+    // asserts the RENDERED output is highlighted.
+    await expect(code.locator(".token.keyword", { hasText: "let" })).toHaveCount(
+      1,
+      { timeout: 10_000 }
+    );
+  });
+
   // uat-001: adding a cell preserves an already-run cell's output.
   // Requires a real compile → generous timeout.
   test("uat-001: adding a cell preserves other cells' output", async ({
