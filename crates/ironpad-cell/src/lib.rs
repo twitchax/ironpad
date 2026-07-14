@@ -648,7 +648,12 @@ impl From<SimulationMeta> for CellOutput {
         Self {
             bytes: vec![],
             panels,
-            type_tag: Some("Simulation".into()),
+            // A simulation produces a display panel, not a data value (bytes are
+            // empty). Advertising a type tag makes a *downstream* code cell try to
+            // declare `let cellN: Simulation` — but `Simulation` is a trait, not a
+            // type, so the cell fails to compile ("expected a type, found a
+            // trait"). No tag means downstream cells skip it in piping.
+            type_tag: None,
         }
     }
 }
@@ -668,7 +673,11 @@ impl From<LiveViewMeta> for CellOutput {
         Self {
             bytes: vec![],
             panels,
-            type_tag: Some("LiveView".into()),
+            // Same as `Simulation` above: a live view is a display panel, not a
+            // data value, and `LiveView` is a trait. A tag here makes downstream
+            // code cells emit `let cellN: LiveView` and fail to compile. None
+            // means they skip it in piping.
+            type_tag: None,
         }
     }
 }
@@ -2700,7 +2709,9 @@ mod tests {
             sliders: vec![],
         };
         let output = CellOutput::from(meta);
-        assert_eq!(output.type_tag.as_deref(), Some("Simulation"));
+        // No type tag: a simulation is display-only, and a `Simulation` tag would
+        // make a downstream code cell declare `let cellN: Simulation` (a trait).
+        assert!(output.type_tag.is_none());
         assert!(output.bytes.is_empty());
         assert_eq!(output.panels.len(), 1);
         match &output.panels[0] {
@@ -2745,7 +2756,9 @@ mod tests {
             initial_content: LiveContent::Html("<b>hello</b>".into()),
         };
         let output = CellOutput::from(meta);
-        assert_eq!(output.type_tag.as_deref(), Some("LiveView"));
+        // No type tag: a live view is display-only, and a `LiveView` tag would
+        // make a downstream code cell declare `let cellN: LiveView` (a trait).
+        assert!(output.type_tag.is_none());
         assert!(output.bytes.is_empty());
         assert_eq!(output.panels.len(), 1);
         match &output.panels[0] {
