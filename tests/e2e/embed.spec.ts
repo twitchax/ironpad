@@ -116,6 +116,31 @@ test.describe("Notebook embedding", () => {
     expect(new Set(ids).size).toBe(2);
   });
 
+  test("toolbar action buttons share one corner radius", async ({ page }) => {
+    // Run All, Fork, and Embed sit together in the view-only toolbar and must
+    // round identically. Fork/Embed once hardcoded 4px while Run All used the
+    // --ip-radius-md token (6px), so they read as subtly mismatched pills.
+    await page.goto("/notebook/public/welcome.ironpad");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const runAll = page.locator(".run-all-button");
+    const fork = page.locator(".fork-button");
+    const embed = page.locator(".embed-button");
+    await expect(runAll).toBeVisible();
+    await expect(fork).toBeVisible();
+    await expect(embed).toBeVisible();
+
+    // Anchor on Run All's computed radius, then require the other two to match.
+    const radius = await runAll.evaluate(
+      (el) => getComputedStyle(el).borderRadius
+    );
+    expect(radius).toBe("6px");
+    await expect(fork).toHaveCSS("border-radius", radius);
+    await expect(embed).toHaveCSS("border-radius", radius);
+  });
+
   test("view page snippet popover copies both embed snippets", async ({
     page,
     context,
