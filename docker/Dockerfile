@@ -69,28 +69,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Cell compilation runs on exactly two pinned toolchains — never the host
-# default (see CELL_TOOLCHAIN in crates/ironpad-app/src/lib.rs and
-# ATOMICS_TOOLCHAIN in compiler/build.rs; keep both in sync here):
+# Cell compilation runs on three pinned toolchains — never the host default
+# (keep in sync with `cell_toolchain` in crates/ironpad-app/src/compiler/build.rs:
+# CELL_TOOLCHAIN in lib.rs, AUTODIFF_TOOLCHAIN + ATOMICS_TOOLCHAIN in build.rs):
 #
-#   nightly-2026-06-01  every cell except rayon ones. Carries `enzyme`
-#                       (matched libEnzyme/LLVM for std::autodiff), rust-src
-#                       (for -Zbuild-std when autodiff+rayon combine), and the
-#                       wasm32 target. Also the image's rustup default, so any
-#                       stray bare cargo/rustc invocation matches cell builds.
-#   nightly-2025-12-22  rayon/atomics cells (wasm-bindgen-rayon's atomics
-#                       guard breaks on newer nightlies).
+#   nightly-2026-07-14  normal + SIMD cells (CELL_TOOLCHAIN). The common case,
+#                       tracked fresh. Needs rust-src + the wasm32 target. Also
+#                       the image's rustup default, so a stray bare cargo/rustc
+#                       matches the common cell build.
+#   nightly-2026-06-01  std::autodiff cells (AUTODIFF_TOOLCHAIN). Carries
+#                       `enzyme` (matched libEnzyme/LLVM) + rust-src (for
+#                       -Zbuild-std when autodiff+rayon combine); July 2026
+#                       nightlies ICE on autodiff, so it stays back here.
+#   nightly-2025-12-22  rayon/atomics cells (ATOMICS_TOOLCHAIN). wasm-bindgen-
+#                       rayon's atomics guard breaks on newer nightlies.
 #
 # The base image's stable toolchain is uninstalled at the end: nothing uses it,
 # and it costs ~1 GB of image.
-RUN rustup toolchain install nightly-2026-06-01 --profile minimal \
+RUN rustup toolchain install nightly-2026-07-14 --profile minimal \
+    && rustup target add wasm32-unknown-unknown --toolchain nightly-2026-07-14 \
+    && rustup component add rust-src --toolchain nightly-2026-07-14 \
+    && rustup toolchain install nightly-2026-06-01 --profile minimal \
     && rustup target add wasm32-unknown-unknown --toolchain nightly-2026-06-01 \
     && rustup component add rust-src --toolchain nightly-2026-06-01 \
     && rustup component add enzyme --toolchain nightly-2026-06-01 \
     && rustup toolchain install nightly-2025-12-22 --profile minimal \
     && rustup target add wasm32-unknown-unknown --toolchain nightly-2025-12-22 \
     && rustup component add rust-src --toolchain nightly-2025-12-22 \
-    && rustup default nightly-2026-06-01
+    && rustup default nightly-2026-07-14
 
 # Best-effort (own RUN so a failure can't mask the toolchain installs above):
 # drop the base image's stable toolchain — nothing uses it after the default
@@ -102,21 +108,25 @@ COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-
 COPY --from=builder /usr/bin/wasm-opt /usr/bin/wasm-opt
 
 # Pre-warm the cargo registry cache AND the default cell target dir with the
-# ironpad-cell dependency tree: `build` artifacts make the first cell compile
-# fast, `check` artifacts (distinct from build's) make live check-on-type
-# warm from server boot (PRD-0045) — the warmth policy's "default deps are
-# always warm" guarantee rests on this seed. The entrypoint copies it into
-# the volume like the atomics sysroot. Warmups fail the image build LOUDLY —
-# a `|| true` here once hid a manifest error for months, shipping images with
-# no warmed cache and (via the entrypoint seed) crashing fresh deployments.
+# ironpad-cell dependency tree, on CELL_TOOLCHAIN (normal + SIMD cells, the
+# common case): `build` artifacts make the first cell compile fast, `check`
+# artifacts (distinct from build's) make live check-on-type warm from server
+# boot (PRD-0045) — the warmth policy's "default deps are always warm" guarantee
+# rests on this seed. The entrypoint copies it into the volume like the atomics
+# sysroot. Autodiff cells carry their own toolchain (AUTODIFF_TOOLCHAIN) AND
+# distinct RUSTFLAGS/profile, so this plain warmup never covered them — they are
+# warmed post-deploy by the runtime cache warmer instead. Warmups fail the image
+# build LOUDLY — a `|| true` here once hid a manifest error for months, shipping
+# images with no warmed cache and (via the entrypoint seed) crashing fresh
+# deployments.
 COPY crates/ironpad-cell /tmp/warmup/crates/ironpad-cell
 COPY docker/warmup-Cargo.toml /tmp/warmup/Cargo.toml
 RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
     && cd /tmp/warmup \
     && CARGO_TARGET_DIR=/warmup-cache/targets/default \
-       cargo +nightly-2026-06-01 build --target wasm32-unknown-unknown --release \
+       cargo +nightly-2026-07-14 build --target wasm32-unknown-unknown --release \
     && CARGO_TARGET_DIR=/warmup-cache/targets/default \
-       cargo +nightly-2026-06-01 check --target wasm32-unknown-unknown --release \
+       cargo +nightly-2026-07-14 check --target wasm32-unknown-unknown --release \
     && rm -rf /tmp/warmup \
     && rm -rf /usr/local/cargo/registry/src
 

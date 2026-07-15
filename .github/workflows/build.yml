@@ -18,11 +18,16 @@ jobs:
           toolchain: nightly-2025-12-22
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy, rust-src
-      # Cell builds pin their own toolchain (CELL_TOOLCHAIN in ironpad-app's lib.rs;
-      # keep in sync here and in docker/Dockerfile) — the integration tests compile
-      # real cells, so the runner needs that toolchain too, with the wasm32 target,
-      # rust-src (-Zbuild-std combinations), and enzyme (the std::autodiff e2e test).
+      # Cell builds pin their own toolchains (cell_toolchain in ironpad-app's
+      # compiler/build.rs; keep in sync here and in docker/Dockerfile). The
+      # integration tests compile real cells, so the runner needs both:
+      #   nightly-2026-07-14 — normal + SIMD cells (CELL_TOOLCHAIN)
+      #   nightly-2026-06-01 — std::autodiff cells (AUTODIFF_TOOLCHAIN), + enzyme
+      # Rayon cells use nightly-2025-12-22, already installed above.
       - run: |
+          rustup toolchain install nightly-2026-07-14 --profile minimal \
+            --target wasm32-unknown-unknown \
+            --component rust-src
           rustup toolchain install nightly-2026-06-01 --profile minimal \
             --target wasm32-unknown-unknown \
             --component rust-src --component enzyme

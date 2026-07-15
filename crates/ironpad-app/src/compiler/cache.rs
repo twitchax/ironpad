@@ -28,6 +28,12 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// the key (see [`toolchain_fingerprint`]) should invalidate all pre-existing
 /// blobs once, since their toolchain provenance is unknown.
 ///
+/// Caveat: [`toolchain_fingerprint`] tracks only `CELL_TOOLCHAIN`, so bumping
+/// `CELL_TOOLCHAIN` invalidates every blob automatically, but bumping the
+/// split-out pins (`AUTODIFF_TOOLCHAIN` or `ATOMICS_TOOLCHAIN` in
+/// `compiler/build.rs`) does NOT — bump this epoch when you change one of those
+/// so their cells rebuild against the new toolchain.
+///
 /// Bumped 2 -> 3 for PRD-0036 T-008: `ironpad-cell`'s `CellInputs::from_raw`
 /// gained bounds checking, so cached cells should rebuild against the safer
 /// runtime.

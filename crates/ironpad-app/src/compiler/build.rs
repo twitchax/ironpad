@@ -51,8 +51,47 @@ const SIMD_TARGET_FEATURES: &str = "+simd128";
 /// `rust-src` and the `wasm32-unknown-unknown` target.
 const ATOMICS_TOOLCHAIN: &str = "nightly-2025-12-22";
 
+/// Toolchain for `std::autodiff` (Enzyme) cells.
+///
+/// Held back from [`crate::CELL_TOOLCHAIN`] on purpose: this is the nightly
+/// carrying the matched `enzyme` rustup component (libEnzyme/LLVM pair), and
+/// July 2026 nightlies ICE on autodiff typetrees for slices (PRD-0041). It also
+/// ships `rust-src` for `-Zbuild-std` when autodiff and rayon combine. Bumping
+/// it forward needs a fresh enzyme build plus an autodiff compile smoke-test.
+///
+/// Like [`ATOMICS_TOOLCHAIN`], this pin is NOT part of the cache fingerprint
+/// (which tracks only `CELL_TOOLCHAIN`), so changing it requires a `CACHE_EPOCH`
+/// bump in `cache.rs` to invalidate stale autodiff blobs. The deploy image must
+/// install it with `enzyme`, `rust-src`, and the `wasm32-unknown-unknown`
+/// target.
+const AUTODIFF_TOOLCHAIN: &str = "nightly-2026-06-01";
+
 /// RUSTFLAGS enabling Enzyme autodiff (`std::autodiff`) for a cell build.
 const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
+
+/// Pick the pinned toolchain for a cell build from its feature flags.
+///
+/// Three separate pins, each held at a nightly known-good for its feature so the
+/// common case can track a fresh [`crate::CELL_TOOLCHAIN`] without dragging the
+/// finicky ones along:
+/// - autodiff → [`AUTODIFF_TOOLCHAIN`] (has `enzyme`; wins over atomics because
+///   it also carries `rust-src` for the autodiff+rayon `-Zbuild-std` combo),
+/// - rayon/atomics without autodiff → [`ATOMICS_TOOLCHAIN`],
+/// - everything else (normal + SIMD cells) → [`crate::CELL_TOOLCHAIN`].
+///
+/// Autodiff and normal cells therefore build on different rustc versions; they
+/// share the `targets/default` dir but cargo fingerprints them apart (autodiff
+/// also carries distinct RUSTFLAGS and a fat-LTO profile), so both stay warm
+/// side by side without churn.
+fn cell_toolchain(needs_atomics: bool, needs_autodiff: bool) -> &'static str {
+    if needs_autodiff {
+        AUTODIFF_TOOLCHAIN
+    } else if needs_atomics {
+        ATOMICS_TOOLCHAIN
+    } else {
+        CELL_TOOLCHAIN
+    }
+}
 
 // The default toolchain for cell builds is [`crate::CELL_TOOLCHAIN`] — every
 // cell except rayon/atomics ones compiles on that pin (autodiff cells
@@ -293,15 +332,8 @@ fn configure_cargo_cmd(
 ) {
     // Every cell build pins its toolchain explicitly — never the host default,
     // which differs between dev (nightly) and the deploy image, and once let
-    // nightly-only cells validate green locally and fail on prod. Atomics
-    // (rayon) cells keep their own pin (wasm-bindgen-rayon breaks on newer
-    // nightlies) — unless autodiff is also requested, where CELL_TOOLCHAIN
-    // wins (it carries enzyme AND rust-src for -Zbuild-std).
-    let toolchain = if needs_atomics && !needs_autodiff {
-        ATOMICS_TOOLCHAIN
-    } else {
-        CELL_TOOLCHAIN
-    };
+    // nightly-only cells validate green locally and fail on prod.
+    let toolchain = cell_toolchain(needs_atomics, needs_autodiff);
     cmd.arg(format!("+{toolchain}"));
     // Ensure the rustup shim respects our +toolchain over any inherited
     // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
@@ -562,22 +594,52 @@ mod tests {
     fn every_cell_build_pins_a_toolchain_explicitly() {
         // Never the host default: dev hosts run nightly, the deploy image ran
         // stable, and the divergence once let nightly-only cells (the injected
-        // portable_simd gate) validate green locally and fail on prod.
-        let cell = format!("+{CELL_TOOLCHAIN}");
+        // portable_simd gate) validate green locally and fail on prod. Whatever
+        // the feature flags, a pinned `+nightly-...` is always present.
         for (atomics, autodiff, simd) in [
-            (false, false, false), // plain
-            (false, false, true),  // simd
-            (false, true, false),  // autodiff
-            (false, true, true),   // autodiff + simd
-            (true, true, true),    // everything: CELL_TOOLCHAIN wins (enzyme + rust-src)
+            (false, false, false),
+            (false, false, true),
+            (false, true, false),
+            (false, true, true),
+            (true, false, false),
+            (true, true, true),
         ] {
-            assert_eq!(
-                selected_toolchain_arg(atomics, autodiff, simd).as_deref(),
-                Some(cell.as_str()),
-                "({atomics}, {autodiff}, {simd})",
+            let arg = selected_toolchain_arg(atomics, autodiff, simd);
+            assert!(
+                matches!(arg.as_deref(), Some(a) if a.starts_with("+nightly")),
+                "({atomics}, {autodiff}, {simd}) → {arg:?}",
             );
         }
-        assert!(CELL_TOOLCHAIN.starts_with("nightly"));
+    }
+
+    #[test]
+    fn normal_and_simd_cells_use_the_latest_cell_pin() {
+        let cell = format!("+{CELL_TOOLCHAIN}");
+        assert_eq!(
+            selected_toolchain_arg(false, false, false).as_deref(),
+            Some(cell.as_str()),
+        );
+        assert_eq!(
+            selected_toolchain_arg(false, false, true).as_deref(),
+            Some(cell.as_str()),
+        );
+    }
+
+    #[test]
+    fn autodiff_cells_use_the_enzyme_pin() {
+        // Autodiff rides its own pin (enzyme + no July slice-typetree ICE), and
+        // it wins over atomics for the rare autodiff+rayon combo.
+        let autodiff = format!("+{AUTODIFF_TOOLCHAIN}");
+        for simd in [false, true] {
+            assert_eq!(
+                selected_toolchain_arg(false, true, simd).as_deref(),
+                Some(autodiff.as_str()),
+            );
+        }
+        assert_eq!(
+            selected_toolchain_arg(true, true, true).as_deref(),
+            Some(autodiff.as_str()),
+        );
     }
 
     #[test]
@@ -593,6 +655,16 @@ mod tests {
             selected_toolchain_arg(true, false, true).as_deref(),
             Some(atomics.as_str()),
         );
+    }
+
+    #[test]
+    fn cell_toolchain_routing() {
+        assert_eq!(cell_toolchain(false, false), CELL_TOOLCHAIN);
+        assert_eq!(cell_toolchain(false, true), AUTODIFF_TOOLCHAIN);
+        assert_eq!(cell_toolchain(true, false), ATOMICS_TOOLCHAIN);
+        assert_eq!(cell_toolchain(true, true), AUTODIFF_TOOLCHAIN); // autodiff wins
+        assert_ne!(CELL_TOOLCHAIN, AUTODIFF_TOOLCHAIN);
+        assert_ne!(CELL_TOOLCHAIN, ATOMICS_TOOLCHAIN);
     }
 
     // ── cargo_home_dir ──────────────────────────────────────────────────

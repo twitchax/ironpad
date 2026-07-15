@@ -1,25 +1,28 @@
 #[cfg(feature = "ssr")]
 pub mod compiler;
 
-/// Pinned toolchain for ALL cell builds except rayon/atomics cells (which keep
-/// their own pin — see `ATOMICS_TOOLCHAIN` in `compiler/build.rs`).
+/// Toolchain for normal and SIMD cell builds — the common case, tracked at a
+/// recent nightly. The finicky feature cells keep their own pins so this one can
+/// stay fresh without dragging them along: `AUTODIFF_TOOLCHAIN` and
+/// `ATOMICS_TOOLCHAIN` in `compiler/build.rs`, selected by `cell_toolchain`.
 ///
-/// One toolchain everywhere is the point: dev hosts, CI, and the deploy image
-/// previously compiled plain cells on whatever their DEFAULT toolchain was
-/// (nightly on dev, stable in the image), so nightly-only code validated green
-/// locally and failed on prod. Pinning per-invocation removes the divergence.
+/// Pinning per-invocation (rather than the host default) is the point: dev
+/// hosts, CI, and the deploy image previously compiled plain cells on whatever
+/// their DEFAULT toolchain was (nightly on dev, stable in the image), so
+/// nightly-only code validated green locally and failed on prod.
 ///
 /// **Pinned** rather than floating for the PRD-0041 reason: rolling nightlies
-/// drift into breakage (the 2026-07 nightly ICEs on autodiff typetrees for
-/// slices). This nightly carries the `enzyme` rustup component (a matched
-/// libEnzyme/LLVM pair for `std::autodiff` cells), `rust-src` (for
-/// `-Zbuild-std` when autodiff+rayon combine), the wasm32 target, and
-/// `portable_simd` for SIMD cells. The deploy image and dev hosts must install
-/// it with those components; keep `docker/Dockerfile` in sync.
+/// drift into breakage. This one is verified to build a wasm-bindgen +
+/// `portable_simd` cell, and needs only the `wasm32-unknown-unknown` target and
+/// `rust-src`. The heavier requirements live on the split-out pins: `enzyme` on
+/// `AUTODIFF_TOOLCHAIN` (July 2026 nightlies ICE on autodiff typetrees for
+/// slices, so autodiff stays back on 2026-06-01), and the atomics sysroot on
+/// `ATOMICS_TOOLCHAIN`. Keep `docker/Dockerfile` and the CI workflow in sync
+/// when bumping this.
 ///
 /// Ungated (not `ssr`-only) because the client footer displays it too — one
-/// source of truth for what compiles cells.
-pub const CELL_TOOLCHAIN: &str = "nightly-2026-06-01";
+/// source of truth for the toolchain most cells compile on.
+pub const CELL_TOOLCHAIN: &str = "nightly-2026-07-14";
 
 pub mod components;
 pub(crate) mod model;

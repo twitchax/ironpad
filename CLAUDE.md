@@ -538,12 +538,17 @@ Cells opt into heavier build modes just by using a feature; detection is substri
 
 | Feature | Trigger substrings | Build effect | Runtime effect |
 | --- | --- | --- | --- |
-| rayon (atomics) | `rayon` in merged deps | pinned `nightly-2025-12-22`, `-Zbuild-std`, atomics target features + shared-memory link flags | wasm-bindgen-rayon worker pool |
-| autodiff (Enzyme) | `autodiff_forward` / `autodiff_reverse` / `std::autodiff` | pinned `nightly-2026-06-01` + `enzyme` component, `-Zautodiff=Enable`, forced fat-LTO profile, crate-root `#![feature(autodiff)]` | none |
+| rayon (atomics) | `rayon` in merged deps | `ATOMICS_TOOLCHAIN` (`nightly-2025-12-22`), `-Zbuild-std`, atomics target features + shared-memory link flags | wasm-bindgen-rayon worker pool |
+| autodiff (Enzyme) | `autodiff_forward` / `autodiff_reverse` / `std::autodiff` | `AUTODIFF_TOOLCHAIN` (`nightly-2026-06-01`) + `enzyme` component, `-Zautodiff=Enable`, forced fat-LTO profile, crate-root `#![feature(autodiff)]` | none |
 | SIMD (PRD-0042) | `std::simd` / `core::simd` / `std::arch::wasm32` (comments count) | `-C target-feature=+simd128`, crate-root `#![feature(portable_simd)]`; no std rebuild | none (all modern browsers) |
 | blocking/JSPI (PRD-0043) | imports `ironpad_blocking_*` (via `ironpad_cell::blocking`) | none (plain imports) | executor wraps imports in `WebAssembly.Suspending`, enters raw `cell_main` via `WebAssembly.promising`; Chrome/Edge 137+ only, friendly gate elsewhere |
 
-**Toolchains**: every cell build pins its toolchain explicitly — `CELL_TOOLCHAIN` (`nightly-2026-06-01`, defined ungated in `crates/ironpad-app/src/lib.rs`, displayed in the footer) for everything except rayon cells, which use `ATOMICS_TOOLCHAIN` (`nightly-2025-12-22`). Never rely on the host default: dev boxes, CI, and the deploy image all differ, and that divergence once shipped cells that compiled locally and failed on prod. The cache fingerprint queries the pinned rustc, and `docker/Dockerfile` must install both pins (it drops stable entirely).
+**Toolchains**: cell builds pin their toolchain explicitly via `cell_toolchain` (in `compiler/build.rs`), never the host default (dev boxes, CI, and the deploy image all differ, and that divergence once shipped cells that compiled locally and failed on prod). Three pins:
+- **`CELL_TOOLCHAIN`** (`nightly-2026-07-14`) — normal + SIMD cells, the common case, tracked fresh. Defined ungated in `crates/ironpad-app/src/lib.rs` and displayed in the footer.
+- **`AUTODIFF_TOOLCHAIN`** (`nightly-2026-06-01` + `enzyme`) — `std::autodiff` cells. Held back because July 2026 nightlies ICE on autodiff typetrees for slices; also carries `rust-src` for the autodiff+rayon `-Zbuild-std` combo.
+- **`ATOMICS_TOOLCHAIN`** (`nightly-2025-12-22`) — rayon cells (wasm-bindgen-rayon's atomics guard breaks on newer nightlies).
+
+`AUTODIFF_TOOLCHAIN` wins over `ATOMICS_TOOLCHAIN` when both apply. The cache fingerprint queries only `CELL_TOOLCHAIN`'s rustc, so bumping `CELL_TOOLCHAIN` invalidates all blobs automatically — but bumping `AUTODIFF_TOOLCHAIN`/`ATOMICS_TOOLCHAIN` needs a `CACHE_EPOCH` bump. `docker/Dockerfile` and `.github/workflows/build.yml` must install all three pins (the image drops stable entirely). Autodiff cells carry distinct RUSTFLAGS + a fat-LTO profile, so they never shared the Docker default-target warmup; they're warmed post-deploy by the runtime cache warmer.
 
 Sharp edges: target features from independent concerns must merge into ONE `-C target-feature=` flag (rustc keeps only the last; see `compose_rustflags` in `build.rs`); each injected crate-root gate bumps `preamble_lines` by one for diagnostics mapping; all detection booleans are part of the blake3 cache key; a cell whose text contains the literal `.await` substring anywhere (even in a string) compiles to an async wrapper, which the JSPI promising path cannot enter — keep `blocking::*` cells free of it.
 
