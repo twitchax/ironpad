@@ -1,3 +1,10 @@
+// The cell card is a plain <div> rather than a Thaw <Card> (a Thaw component
+// with a reactive class panics on the disposed signal during cell teardown).
+// Components act as type-erasure boundaries, so inlining that one collapsed the
+// cell's view into a single deep tachys type and tripped the default limit:
+// "queries overflow the depth limit!" when computing the hydrate_async layout.
+#![recursion_limit = "512"]
+
 #[cfg(feature = "ssr")]
 pub mod compiler;
 

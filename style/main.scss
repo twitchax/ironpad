@@ -821,6 +821,25 @@ a:focus-visible {
     border: 1px solid var(--ip-border);
     border-radius: 8px;
     transition: border-color 0.2s;
+
+    // The cell card used to be a Thaw <Card>, but handing a Thaw component a
+    // reactive class makes its class_list effect panic on the disposed signal
+    // when the cell is deleted (thaw_utils class_list.rs). It is now a plain
+    // div, so the chrome Thaw's card.css used to contribute lives here.
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 12px;
+    row-gap: 12px;
+    box-shadow: var(--shadow4);
+}
+
+// Replaces Thaw's <CardHeader> (.thaw-card-header).
+.ironpad-cell-card-header {
+    display: flex;
+    align-items: center;
 }
 
 .ironpad-cell-card:hover {

@@ -2,7 +2,7 @@ use ironpad_common::{
     CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult, Severity,
 };
 use leptos::prelude::*;
-use thaw::{Card, CardHeader, Tab, TabList, Tag, TagSize};
+use thaw::{Tab, TabList, Tag, TagSize};
 
 use crate::components::markdown_cell::MarkdownCell;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
@@ -620,6 +620,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
             let result = compile_cell(request).await;
 
+            // If the cell (or the whole page) was disposed while the compile was
+            // in flight, its signals are gone — drop the result rather than panic
+            // on a reclaimed reactive slot (PRD-0045 async lifecycle).
+            if cell_status.try_get_untracked().is_none() {
+                return;
+            }
+
             #[cfg(feature = "hydrate")]
             compile_time_ms.set(Some(js_sys::Date::now() - start));
             #[cfg(not(feature = "hydrate"))]
@@ -677,6 +684,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                                 type_tag,
                                                 ran_on_main_thread,
                                             )) => {
+                                                // Disposed during load/exec — bail
+                                                // before touching cell/page signals.
+                                                if cell_status.try_get_untracked().is_none() {
+                                                    return;
+                                                }
                                                 // Store output for downstream cells.
                                                 state.cell_outputs.update(|map| {
                                                     map.insert(
@@ -736,6 +748,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                     }
                                     Err(e) => Some(format!("WASM load error: {e}")),
                                 };
+
+                            // Disposed during load/exec (error path) — bail before
+                            // writing status onto a reclaimed reactive slot.
+                            if cell_status.try_get_untracked().is_none() {
+                                return;
+                            }
 
                             if let Some(err_msg) = exec_err {
                                 // AbortError means the user cancelled via terminate().
@@ -853,7 +871,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let cell_id_for_keys = StoredValue::new(cell.id.clone());
 
         Effect::new(move || {
-            let Some(handle) = source_handle.get() else {
+            // `try_get` (not `get`): this effect can be queued and then run
+            // during the cell's disposal teardown, when the signal's arena slot
+            // is already reclaimed — bail instead of panicking on it.
+            let Some(handle) = source_handle.try_get().flatten() else {
                 return;
             };
 
@@ -963,7 +984,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let cell_id_for_ctx = StoredValue::new(cell.id.clone());
 
         Effect::new(move || {
-            let Some(handle) = source_handle.get() else {
+            // `try_get` (not `get`): this effect can be queued and then run
+            // during the cell's disposal teardown, when the signal's arena slot
+            // is already reclaimed — bail instead of panicking on it.
+            let Some(handle) = source_handle.try_get().flatten() else {
                 return;
             };
 
@@ -1064,7 +1088,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     #[cfg(feature = "hydrate")]
     {
         Effect::new(move || {
-            let compile = last_compile.get();
+            // `try_get` (not `get`): this marker effect can be queued by a
+            // compile result and then run during the cell's disposal teardown,
+            // when the signal's arena slot is already reclaimed. Bail on the
+            // disposed slot rather than panic (traits.rs "already been disposed").
+            let Some(compile) = last_compile.try_get() else {
+                return;
+            };
             let Some(handle) = source_handle.get_untracked() else {
                 return;
             };
@@ -1082,7 +1112,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         // share the marker surface; whichever finished last wins, which is
         // also the freshest information.
         Effect::new(move || {
-            let check = last_check.get();
+            // `try_get`: same disposal-race guard as the compile marker effect
+            // above — a check result can queue this effect after the cell is gone.
+            let Some(check) = last_check.try_get() else {
+                return;
+            };
             let Some(handle) = source_handle.get_untracked() else {
                 return;
             };
@@ -1326,22 +1360,29 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── CSS classes ─────────────────────────────────────────────────────
 
-    let cell_class = Signal::derive(move || {
+    // NOTE: this reactive class must land on a plain element, never on a Thaw
+    // component. A Thaw component with a reactive class runs its class_list
+    // effect (thaw_utils class_list.rs) during this cell's disposal teardown and
+    // `.get()`s the already-disposed signal, which panics. `try_get` keeps the
+    // reads safe even if the closure is flushed after the cell is gone.
+    let cell_class = move || {
         let mut class = "ironpad-cell-card".to_string();
         if is_markdown {
             class.push_str(" ironpad-cell-card--markdown");
         }
-        if is_shared.get() {
+        if is_shared.try_get().unwrap_or(false) {
             class.push_str(" ironpad-cell-card--shared");
         }
+        // `is_active` reads state.active_cell, which is page-owned and outlives
+        // this cell, so it needs no disposal guard.
         if is_active() {
             class.push_str(" ironpad-cell-card--active");
         }
-        if state.is_view_mode.get() {
+        if state.is_view_mode.try_get().unwrap_or(false) {
             class.push_str(" ironpad-cell--view-mode");
         }
         class
-    });
+    };
 
     let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
 
@@ -1409,11 +1450,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     view! {
         <div node_ref=cell_wrapper_ref class="ironpad-cell-row">
-        <Card
+        <div
             class=cell_class
             on:click=on_click
         >
-            <CardHeader>
+            <div class="ironpad-cell-card-header">
                 <div class="ironpad-cell-header">
                     <button
                         class="ironpad-cell-collapse-btn"
@@ -1478,10 +1519,17 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             } else {
                                 view! { <span /> }.into_any()
                             }}
-                            <Tag
-                                size=TagSize::ExtraSmall
-                                class=Signal::derive(move || {
-                                    let suffix = match cell_status.get() {
+                            // A plain <span>, deliberately not a Thaw <Tag>: handing a
+                            // Thaw component a *reactive* class makes its class_list
+                            // effect (thaw_utils class_list.rs) run during this cell's
+                            // disposal teardown and `.get()` the already-disposed
+                            // signal, which panics. The badge's chrome lives entirely
+                            // in `.ironpad-cell-status`, so a span renders identically.
+                            // `try_get` keeps the reads safe if these closures are
+                            // flushed after the cell is gone.
+                            <span
+                                class=move || {
+                                    let suffix = match cell_status.try_get().unwrap_or(CellStatus::Idle) {
                                         CellStatus::Idle => "idle",
                                         CellStatus::Queued => "queued",
                                         CellStatus::Compiling => "compiling",
@@ -1490,16 +1538,16 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Error => "error",
                                         CellStatus::Blocked => "blocked",
                                     };
-                                    let hidden = if is_shared.get() {
+                                    let hidden = if is_shared.try_get().unwrap_or(false) {
                                         " ironpad-cell-status--hidden"
                                     } else {
                                         ""
                                     };
                                     format!("ironpad-cell-status ironpad-cell-status--{suffix}{hidden}")
-                                })
+                                }
                             >
                                 {move || {
-                                    match cell_status.get() {
+                                    match cell_status.try_get().unwrap_or(CellStatus::Idle) {
                                         CellStatus::Idle => "● idle".to_string(),
                                         CellStatus::Queued => "◎ queued".to_string(),
                                         CellStatus::Compiling => "◐ compiling…".to_string(),
@@ -1507,7 +1555,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Success => {
                                             // Show compile time only; runtime is shown in the
                                             // Output panel meta (the "c+r" form read as one number).
-                                            match compile_time_ms.get() {
+                                            match compile_time_ms.try_get().flatten() {
                                                 Some(c) => format!("✓ {c:.0} ms"),
                                                 None => "✓ done".to_string(),
                                             }
@@ -1516,11 +1564,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         CellStatus::Blocked => "⛔ blocked".to_string(),
                                     }
                                 }}
-                            </Tag>
+                            </span>
                         }.into_any()
                     }}
                 </div>
-            </CardHeader>
+            </div>
 
             {if is_markdown {
                 // ── Markdown cell body ──────────────────────────────────
@@ -1596,7 +1644,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     />
                 }.into_any()
             }}
-        </Card>
+        </div>
 
         // ── Side action buttons ─────────────────────────────────────────
         <div class="ironpad-cell-side-actions">
@@ -1950,8 +1998,13 @@ fn dispatch_live_check(
             // Transport/infra failure: leave existing markers alone.
             return;
         };
-        // A newer dispatch supersedes this one.
-        if check_generation.get_untracked() != generation {
+        // If the cell (or the whole page) was disposed while the check was in
+        // flight, its signals are gone — drop the result rather than panic on a
+        // reclaimed reactive slot. A newer dispatch supersedes this one too.
+        let Some(current_generation) = check_generation.try_get_untracked() else {
+            return;
+        };
+        if current_generation != generation {
             return;
         }
         match response.status {
