@@ -723,14 +723,15 @@ a:focus-visible {
     }
 }
 
-/* ── Shared dependencies panel ───────────────────────────────────────── */
+/* ── Shared source / dependencies appendix (editor) ─────────────────── */
 
-.ironpad-shared-deps,
-.ironpad-shared-source-panel {
-    margin-bottom: 16px;
-    background: var(--ip-bg-elevated);
-    border: 1px solid var(--ip-border);
-    border-radius: var(--ip-radius-md);
+// Collapsible sections below the cell list; the section chrome itself reuses
+// the view-only appendix classes (.view-only-shared-*) for a matching look.
+.ironpad-editor-shared-appendix {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 24px;
 }
 
 // Interactive "button" widget emitted by cells (was unstyled → raw native button).
@@ -758,17 +759,16 @@ a:focus-visible {
     color: var(--ip-text-tertiary);
 }
 
-.ironpad-shared-deps-header {
+.ironpad-shared-editor-body {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
 }
 
-.ironpad-shared-deps-title {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--ip-text-secondary);
+.ironpad-shared-editor-actions {
+    display: flex;
+    justify-content: flex-end;
 }
 
 .ironpad-shared-deps-editor-wrapper {
@@ -1037,6 +1037,9 @@ a:focus-visible {
     border-radius: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    // Status text is an indicator, not content: no text caret, no selection.
+    user-select: none;
+    cursor: default;
 }
 
 .ironpad-cell-status--idle {
@@ -2344,13 +2347,11 @@ code[class*="language-"] {
 
 /* ── Cell view-mode overrides ───────────────────────────────────────── */
 
-.ironpad-cell--view-mode .ironpad-cell-collapse-btn {
+/* Code cells keep the collapse toggle in view mode (expand/collapse code,
+   same as the public pages); markdown cells hide it — the rendered preview
+   is the content, there's nothing to reveal. */
+.ironpad-cell-card--markdown.ironpad-cell--view-mode .ironpad-cell-collapse-btn {
     display: none;
-}
-
-/* View-only cells keep the collapse toggle visible for code expand/collapse. */
-.view-only-cell.ironpad-cell--view-mode .ironpad-cell-collapse-btn {
-    display: inline-block;
 }
 
 .ironpad-cell--view-mode .ironpad-cell-label-input {

@@ -89,19 +89,31 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     let collapsed = RwSignal::new(false);
     let saved_collapsed = RwSignal::new(false);
+    // Tracks the previous mode so the effect below only saves/restores on
+    // actual transitions — it also re-runs when expand_code is toggled.
+    let was_view_mode = RwSignal::new(false);
 
     // Save/restore collapse state when toggling view mode.
     // Only collapse Code cells; Markdown cells keep their body visible
-    // so the rendered preview remains on screen.
+    // so the rendered preview remains on screen. In view mode the
+    // notebook's expand_code setting decides whether code starts visible
+    // (matching the public/shared pages), and the chevron can still open
+    // an individual cell.
     Effect::new(move || {
-        if state.is_view_mode.get() {
-            saved_collapsed.set(collapsed.get_untracked());
-            if !is_markdown {
-                collapsed.set(true);
+        let view = state.is_view_mode.get();
+        let expand = state.expand_code.get();
+        let was_view = was_view_mode.get_untracked();
+        if view {
+            if !was_view {
+                saved_collapsed.set(collapsed.get_untracked());
             }
-        } else {
+            if !is_markdown {
+                collapsed.set(!expand);
+            }
+        } else if was_view {
             collapsed.set(saved_collapsed.get_untracked());
         }
+        was_view_mode.set(view);
     });
 
     // ── Tab state ───────────────────────────────────────────────────────
@@ -112,6 +124,21 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     let source_handle: RwSignal<Option<MonacoEditorHandle>> = RwSignal::new(None);
     let cargo_toml_handle: RwSignal<Option<MonacoEditorHandle>> = RwSignal::new(None);
+
+    // Keep the cell's editors read-only in view mode: the body can be
+    // expanded there (expand_code / the chevron), so a visible editor must
+    // not accept edits. Tracking the handles covers editors that mount while
+    // already in view mode; `try_get` keeps the reads safe if this effect is
+    // flushed after the cell is disposed.
+    Effect::new(move || {
+        let read_only = state.is_view_mode.get();
+        if let Some(handle) = source_handle.try_get().flatten() {
+            handle.set_read_only(read_only);
+        }
+        if let Some(handle) = cargo_toml_handle.try_get().flatten() {
+            handle.set_read_only(read_only);
+        }
+    });
 
     // ── Reactive source / cargo_toml state ──────────────────────────────
 
@@ -1387,11 +1414,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
 
     let body_class = Signal::derive(move || {
-        // In view mode, collapse the body only for Code cells (hides tabs
-        // and editors while output panels remain visible outside the body).
-        // Markdown cells keep the body open so the rendered preview shows.
-        let should_collapse = collapsed.get() || (state.is_view_mode.get() && !is_markdown);
-        if should_collapse {
+        // `collapsed` is the single source of truth: the view-mode effect
+        // above collapses Code cells on entry (honoring expand_code), and the
+        // chevron can re-open one — so no forced view-mode collapse here.
+        if collapsed.get() {
             "ironpad-cell-body ironpad-cell-body--collapsed"
         } else {
             "ironpad-cell-body"

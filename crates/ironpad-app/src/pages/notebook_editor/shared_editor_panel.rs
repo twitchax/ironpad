@@ -1,14 +1,12 @@
 use leptos::prelude::*;
-use thaw::{
-    Button, ButtonAppearance, Card, CardHeader, Toast, ToastBody, ToastTitle, ToasterInjection,
-};
+use thaw::{Button, ButtonAppearance, Toast, ToastBody, ToastTitle, ToasterInjection};
 
 use crate::components::monaco_editor::MonacoEditor;
 use crate::model::NotebookModel;
 
 use super::state::{persist_notebook, NotebookState};
 
-// ── Shared editor panel (generic) ───────────────────────────────────────────
+// ── Shared editor appendix (generic) ────────────────────────────────────────
 
 /// Which notebook-level shared field this panel edits.
 #[derive(Clone, Copy)]
@@ -17,25 +15,75 @@ pub(super) enum SharedEditorKind {
     Source,
 }
 
-/// A reusable panel for editing a notebook-level shared text field
-/// (shared Cargo.toml or shared Rust source) with a Monaco editor.
+/// One collapsed-by-default appendix section for a notebook-level shared text
+/// field, rendered below the cell list — the cells are the story, the shared
+/// code is the footnotes (mirroring the view-only pages). Expanding lazily
+/// mounts the editor panel; in view mode the section is read-only and hidden
+/// entirely when the field is empty, matching the public/shared appendix.
 #[component]
-pub(super) fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
-    let (default_content, card_class, title_label, toast_title, language) = match kind {
+pub(super) fn SharedEditorSection(kind: SharedEditorKind) -> impl IntoView {
+    let state = expect_context::<NotebookState>();
+
+    let (label, content_signal) = match kind {
         SharedEditorKind::Dependencies => (
-            SHARED_DEPS_DEFAULT,
-            "ironpad-shared-deps",
             "\u{2b21} Shared Dependencies (Cargo.toml)",
-            "Shared dependencies saved",
-            "toml",
+            state.shared_cargo_toml,
         ),
-        SharedEditorKind::Source => (
-            SHARED_SOURCE_DEFAULT,
-            "ironpad-shared-source-panel",
-            "\u{270e} Shared Source (shared.rs)",
-            "Shared source saved",
-            "rust",
-        ),
+        SharedEditorKind::Source => ("\u{270e} Shared Source (shared.rs)", state.shared_source),
+    };
+
+    let collapsed = RwSignal::new(true);
+    let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
+
+    // Edit mode always shows the section (it's how shared code gets added in
+    // the first place); view mode only shows it when there is content.
+    let visible = move || {
+        !state.is_view_mode.get()
+            || content_signal
+                .get()
+                .is_some_and(|content| !content.trim().is_empty())
+    };
+
+    view! {
+        <Show when=visible>
+            <div class="view-only-shared-section">
+                <button
+                    class="view-only-shared-header"
+                    on:click=move |_| collapsed.update(|c| *c = !*c)
+                >
+                    <span class="ironpad-output-toggle">{toggle_icon}</span>
+                    <span>{label}</span>
+                </button>
+                // Reading is_view_mode here re-mounts the panel on mode
+                // switches, so it picks up the right read-only state and the
+                // freshest content in one place.
+                {move || {
+                    (!collapsed.get())
+                        .then(|| {
+                            view! {
+                                <div class="view-only-shared-body">
+                                    <SharedEditorPanel
+                                        kind=kind
+                                        read_only=state.is_view_mode.get()
+                                    />
+                                </div>
+                            }
+                        })
+                }}
+            </div>
+        </Show>
+    }
+}
+
+/// The editor body of a shared appendix section: a Monaco editor plus (in
+/// edit mode) a Save action.
+#[component]
+fn SharedEditorPanel(kind: SharedEditorKind, read_only: bool) -> impl IntoView {
+    let (default_content, toast_title, language) = match kind {
+        SharedEditorKind::Dependencies => {
+            (SHARED_DEPS_DEFAULT, "Shared dependencies saved", "toml")
+        }
+        SharedEditorKind::Source => (SHARED_SOURCE_DEFAULT, "Shared source saved", "rust"),
     };
 
     let state = expect_context::<NotebookState>();
@@ -96,19 +144,7 @@ pub(super) fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
     };
 
     view! {
-        <Card class=card_class>
-            <CardHeader>
-                <div class="ironpad-shared-deps-header">
-                    <span class="ironpad-shared-deps-title">{title_label}</span>
-                    <Button
-                        appearance=ButtonAppearance::Primary
-                        on_click=on_save
-                        disabled=Signal::derive(move || saving.get())
-                    >
-                        {move || if saving.get() { "Saving\u{2026}" } else { "Save" }}
-                    </Button>
-                </div>
-            </CardHeader>
+        <div class="ironpad-shared-editor-body">
             <div class="ironpad-shared-deps-editor-wrapper">
                 <MonacoEditor
                     initial_value=editor_text.get_untracked()
@@ -116,9 +152,24 @@ pub(super) fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
                     on_change=Callback::new(move |val: String| {
                         editor_text.set(val);
                     })
+                    read_only=read_only
                 />
             </div>
-        </Card>
+            {(!read_only)
+                .then(|| {
+                    view! {
+                        <div class="ironpad-shared-editor-actions">
+                            <Button
+                                appearance=ButtonAppearance::Primary
+                                on_click=on_save
+                                disabled=Signal::derive(move || saving.get())
+                            >
+                                {move || if saving.get() { "Saving\u{2026}" } else { "Save" }}
+                            </Button>
+                        </div>
+                    }
+                })}
+        </div>
     }
 }
 

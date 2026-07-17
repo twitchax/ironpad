@@ -101,6 +101,57 @@ test.describe("Editor UX (PRD-0032)", () => {
     );
   });
 
+  // View mode collapses code cells by default, the chevron can still open an
+  // individual cell (public-page parity), and the notebook's "Expand Code in
+  // View" setting keeps code open — previously the editor's view mode ignored
+  // that setting entirely and force-collapsed everything.
+  test("expand code in view is honored by the editor's view mode", async ({
+    page,
+  }) => {
+    await newNotebook(page);
+
+    // Add a code cell.
+    await page.locator("button", { hasText: "+ Code" }).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell).toBeVisible();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Default: view mode collapses the code body...
+    await page.locator('button[title="View mode"]').click();
+    const body = cell.locator(".ironpad-cell-body");
+    await expect(body).toHaveClass(/ironpad-cell-body--collapsed/);
+
+    // ...but the chevron opens this one cell.
+    await cell.locator(".ironpad-cell-collapse-btn").click();
+    await expect(body).not.toHaveClass(/ironpad-cell-body--collapsed/);
+
+    // Back to edit mode, then opt the notebook into expand-code.
+    await page.locator('button[title="Edit mode"]').click();
+    await page.locator('button[title="Notebook settings"]').click();
+    await page
+      .locator(".ironpad-toolbar-dropdown-item", {
+        hasText: "Expand Code in View",
+      })
+      .click();
+
+    // Now view mode keeps the code visible...
+    await page.locator('button[title="View mode"]').click();
+    await expect(body).not.toHaveClass(/ironpad-cell-body--collapsed/);
+
+    // ...and the visible editor is read-only.
+    const readOnly = await page.evaluate(() => {
+      const monaco = (window as any).monaco;
+      const el = document.querySelector(".ironpad-cell-card");
+      const editor = monaco.editor
+        .getEditors()
+        .find((e: any) => el!.contains(e.getDomNode()));
+      return editor.getOption(monaco.editor.EditorOption.readOnly);
+    });
+    expect(readOnly).toBe(true);
+  });
+
   // uat-001: adding a cell preserves an already-run cell's output.
   // Requires a real compile → generous timeout.
   test("uat-001: adding a cell preserves other cells' output", async ({

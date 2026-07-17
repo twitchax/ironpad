@@ -1,9 +1,7 @@
 mod cell_item;
 mod cell_output;
 mod export;
-mod shared_deps;
 mod shared_editor_panel;
-mod shared_source;
 mod skeleton;
 pub(crate) mod state;
 
@@ -23,11 +21,10 @@ use crate::session::SessionState;
 use crate::components::session_panel::SessionButton;
 
 use self::cell_item::CellItem;
-use self::shared_deps::SharedDepsPanel;
+use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
 
 /// Delay (ms) before resetting the save status indicator back to idle.
 const SAVE_STATUS_RESET_MS: i32 = 2_000;
-use self::shared_source::SharedSourcePanel;
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
 use self::state::{persist_notebook, NotebookState};
 
@@ -458,11 +455,6 @@ fn NotebookContent() -> impl IntoView {
     #[cfg(feature = "hydrate")]
     let layout = expect_context::<LayoutContext>();
 
-    // ── Shared deps panel toggle ────────────────────────────────────────
-
-    let shared_deps_open = RwSignal::new(false);
-    let shared_source_open = RwSignal::new(false);
-
     // ── Add cell callback ───────────────────────────────────────────────
 
     let add_cell_cb = Callback::new(move |(after, cell_type): (Option<String>, CellType)| {
@@ -887,36 +879,6 @@ fn NotebookContent() -> impl IntoView {
                                     <button
                                         class="ironpad-toolbar-dropdown-item"
                                         on:click=move |_| {
-                                            gear_open.set(false);
-                                            shared_deps_open.update(|v| *v = !*v);
-                                        }
-                                    >
-                                        {move || {
-                                            if shared_deps_open.get() {
-                                                "⬡ Hide Shared Deps"
-                                            } else {
-                                                "⬡ Shared Deps"
-                                            }
-                                        }}
-                                    </button>
-                                    <button
-                                        class="ironpad-toolbar-dropdown-item"
-                                        on:click=move |_| {
-                                            gear_open.set(false);
-                                            shared_source_open.update(|v| *v = !*v);
-                                        }
-                                    >
-                                        {move || {
-                                            if shared_source_open.get() {
-                                                "✎ Hide Shared Source"
-                                            } else {
-                                                "✎ Shared Source"
-                                            }
-                                        }}
-                                    </button>
-                                    <button
-                                        class="ironpad-toolbar-dropdown-item"
-                                        on:click=move |_| {
                                             state.force_recompile.update(|v| *v = !*v);
                                         }
                                     >
@@ -1013,22 +975,6 @@ fn NotebookContent() -> impl IntoView {
             </div>
         </div>
 
-        {move || {
-            if shared_deps_open.get() {
-                view! { <SharedDepsPanel /> }.into_any()
-            } else {
-                view! { <div /> }.into_any()
-            }
-        }}
-
-        {move || {
-            if shared_source_open.get() {
-                view! { <SharedSourcePanel /> }.into_any()
-            } else {
-                view! { <div /> }.into_any()
-            }
-        }}
-
         <div class="ironpad-cell-list ironpad-cells-container" node_ref=cells_container_ref>
             <Show when=move || !state.is_view_mode.get()>
                 <AddCellButton after_cell_id=None on_add=add_cell_cb />
@@ -1053,6 +999,17 @@ fn NotebookContent() -> impl IntoView {
                     <AddCellButton after_cell_id=Some(cell.id.clone()) on_add=add_cell_cb />
                 </Show>
             </For>
+        </div>
+
+        // ── Shared source / dependencies appendix ───────────────────────
+        //
+        // Notebook-level shared code lives below the cells as collapsed
+        // sections, mirroring the view-only pages: the cells are the story,
+        // the shared code is the footnotes. Outside the sortable container so
+        // drag-reorder indices stay cell-only.
+        <div class="ironpad-editor-shared-appendix">
+            <SharedEditorSection kind=SharedEditorKind::Source />
+            <SharedEditorSection kind=SharedEditorKind::Dependencies />
         </div>
 
         // ── Edit / View mode toggle (fixed bottom-left) ────────────────
