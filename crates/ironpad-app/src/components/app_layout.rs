@@ -208,53 +208,63 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
         </div>
 
         <div class="ironpad-header-center">
-            {move || {
-                match (ctx.notebook_title.get(), editing.get()) {
-                    (Some(_title), true) => {
-                        view! {
-                            <input
-                                class="ironpad-header-title-input"
-                                type="text"
-                                prop:value=move || ctx.notebook_title.get().unwrap_or_default()
-                                on:input=move |ev| {
-                                    let val = event_target_value(&ev);
-                                    ctx.notebook_title.set(Some(val));
-                                }
-                                on:blur=on_title_blur
-                                on:keydown=on_title_keydown
-                                autofocus=true
-                                node_ref={
-                                    let input_ref = NodeRef::<leptos::html::Input>::new();
-                                    // Focus the input after it renders.
-                                    Effect::new(move || {
-                                        if let Some(el) = input_ref.get() {
-                                            let _ = el.focus();
-                                            el.select();
-                                        }
-                                    });
-                                    input_ref
-                                }
-                            />
-                        }.into_any()
-                    }
-                    (Some(title), false) => {
-                        view! {
-                            <span
-                                class="ironpad-notebook-title ironpad-notebook-title--editable"
-                                on:click=move |_| {
-                                    edit_start_title.set(ctx.notebook_title.get_untracked());
-                                    editing.set(true);
-                                }
-                            >
-                                {title}
-                            </span>
-                        }.into_any()
-                    }
-                    _ => {
-                        view! { <span /> }.into_any()
+            // The branch closure must NOT track the title's *content*: every
+            // keystroke sets ctx.notebook_title, and tracking it here remounted
+            // the <input> per keystroke — whose focus effect then select()ed
+            // everything, so the next key replaced the whole field with one
+            // character. The memo only fires on presence changes, and the
+            // input is uncontrolled (initial value at mount; it mounts fresh
+            // each time editing starts).
+            {
+                let has_title = Memo::new(move |_| ctx.notebook_title.with(Option::is_some));
+                move || {
+                    match (has_title.get(), editing.get()) {
+                        (true, true) => {
+                            view! {
+                                <input
+                                    class="ironpad-header-title-input"
+                                    type="text"
+                                    prop:value=ctx.notebook_title.get_untracked().unwrap_or_default()
+                                    on:input=move |ev| {
+                                        let val = event_target_value(&ev);
+                                        ctx.notebook_title.set(Some(val));
+                                    }
+                                    on:blur=on_title_blur
+                                    on:keydown=on_title_keydown
+                                    autofocus=true
+                                    node_ref={
+                                        let input_ref = NodeRef::<leptos::html::Input>::new();
+                                        // Focus the input after it renders.
+                                        Effect::new(move || {
+                                            if let Some(el) = input_ref.get() {
+                                                let _ = el.focus();
+                                                el.select();
+                                            }
+                                        });
+                                        input_ref
+                                    }
+                                />
+                            }.into_any()
+                        }
+                        (true, false) => {
+                            view! {
+                                <span
+                                    class="ironpad-notebook-title ironpad-notebook-title--editable"
+                                    on:click=move |_| {
+                                        edit_start_title.set(ctx.notebook_title.get_untracked());
+                                        editing.set(true);
+                                    }
+                                >
+                                    {move || ctx.notebook_title.get().unwrap_or_default()}
+                                </span>
+                            }.into_any()
+                        }
+                        _ => {
+                            view! { <span /> }.into_any()
+                        }
                     }
                 }
-            }}
+            }
         </div>
 
         <div class="ironpad-header-right">
