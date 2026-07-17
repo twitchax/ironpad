@@ -890,6 +890,80 @@ pub fn range(angle: f64) -> f64 {
         }
     }
 
+    /// The shared module is the notebook's library, but rustc only ever compiles
+    /// ONE cell's crate at a time. Every shared helper that *this* cell does not
+    /// call therefore looked like `dead_code` ("never used") even though a
+    /// sibling cell uses it — a false positive on every cell of a notebook with
+    /// shared helpers. The scaffold allows `dead_code` on the shared mod, so a
+    /// clean build must carry no such warning.
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn shared_helpers_unused_by_this_cell_produce_no_dead_code_warnings() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "shared-dead-code";
+
+        // Only `used_here` is called below; the rest stand in for helpers a
+        // sibling cell would use.
+        let shared_source = r"pub fn used_here() -> i32 { 41 }
+
+pub fn used_by_another_cell() -> i32 { 99 }
+
+pub const UNUSED_BY_THIS_CELL: i32 = 7;
+
+pub struct AlsoUnusedHere {
+    pub field: i32,
+}
+";
+        let source = "    let _ = shared::used_here();\n    CellOutput::empty()";
+        let cargo_toml = "[dependencies]";
+
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            Some(shared_source),
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { stdout, .. } => {
+                let diagnostics = parse_diagnostics(&stdout, preamble_lines);
+                let dead_code: Vec<_> = diagnostics
+                    .iter()
+                    .filter(|d| {
+                        d.message.contains("never used")
+                            || d.message.contains("never read")
+                            || d.message.contains("never constructed")
+                    })
+                    .collect();
+                assert!(
+                    dead_code.is_empty(),
+                    "shared helpers used by OTHER cells must not warn here, got: {dead_code:?}",
+                );
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "cell calling a shared helper should build.\nstdout(tail): {}\nstderr(tail): {}",
+                    &stdout[stdout.len().saturating_sub(2000)..],
+                    &stderr[stderr.len().saturating_sub(1500)..],
+                );
+            }
+        }
+    }
+
     // ── Full pipeline: compile → cache → cache hit ─────────────────────
 
     #[tokio::test]

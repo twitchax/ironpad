@@ -51,7 +51,13 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// Bumped 5 -> 6: `IntoPanels for Canvas` switched from an Html panel (whose
 /// data: URI the sanitizer strips — tuple outputs rendered an empty image) to
 /// the structured `BlobImage` panel; cached blobs bake the old behavior in.
-const CACHE_EPOCH: u32 = 6;
+///
+/// Bumped 6 -> 7: the scaffold now emits `#[allow(dead_code)] mod shared;`, so
+/// shared helpers a cell does not call no longer report the false "never used"
+/// warning. The scaffold is not part of the hash input, and the cache stores
+/// DIAGNOSTICS next to the blob, so without this bump every already-cached cell
+/// would keep replaying the stale warnings forever.
+const CACHE_EPOCH: u32 = 7;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 

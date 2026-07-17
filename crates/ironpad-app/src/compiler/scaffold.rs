@@ -553,7 +553,12 @@ pub fn generate_lib_rs(
     };
 
     let shared_mod = if has_shared_source {
-        "mod shared;\n"
+        // `allow(dead_code)`: the shared module is the notebook's library, but
+        // rustc only ever sees ONE cell's crate, so every helper this cell does
+        // not happen to call reports "never used" — a false positive, since it
+        // IS used, by another cell. Kept on one line so `preamble_lines` (and
+        // therefore diagnostic mapping) is unaffected.
+        "#[allow(dead_code)] mod shared;\n"
     } else {
         ""
     };
@@ -633,7 +638,12 @@ fn generate_simulation_lib_rs(
     has_shared_source: bool,
 ) -> (String, u32, bool, bool) {
     let shared_mod = if has_shared_source {
-        "mod shared;\n"
+        // `allow(dead_code)`: the shared module is the notebook's library, but
+        // rustc only ever sees ONE cell's crate, so every helper this cell does
+        // not happen to call reports "never used" — a false positive, since it
+        // IS used, by another cell. Kept on one line so `preamble_lines` (and
+        // therefore diagnostic mapping) is unaffected.
+        "#[allow(dead_code)] mod shared;\n"
     } else {
         ""
     };
@@ -693,7 +703,12 @@ fn generate_live_view_lib_rs(
     has_shared_source: bool,
 ) -> (String, u32, bool, bool) {
     let shared_mod = if has_shared_source {
-        "mod shared;\n"
+        // `allow(dead_code)`: the shared module is the notebook's library, but
+        // rustc only ever sees ONE cell's crate, so every helper this cell does
+        // not happen to call reports "never used" — a false positive, since it
+        // IS used, by another cell. Kept on one line so `preamble_lines` (and
+        // therefore diagnostic mapping) is unaffected.
+        "#[allow(dead_code)] mod shared;\n"
     } else {
         ""
     };
@@ -1474,6 +1489,39 @@ serde = \"1\"
         // Verify user code starts at expected line.
         let lines: Vec<&str> = lib_rs.lines().collect();
         assert_eq!(lines[preamble as usize].trim(), "// user code here");
+    }
+
+    /// rustc only ever sees one cell's crate, so every shared helper THIS cell
+    /// does not call would report `dead_code` even though another cell uses it.
+    /// The shared mod carries `allow(dead_code)` to kill that false positive,
+    /// and it must stay on a single line so `preamble_lines` (and diagnostic
+    /// mapping) are unaffected.
+    #[test]
+    fn shared_mod_allows_dead_code_without_shifting_preamble() {
+        for (label, (lib_rs, preamble)) in [
+            ("plain", {
+                let (l, p, ..) = generate_lib_rs("    // user code here", &[], true);
+                (l, p)
+            }),
+            ("simulation", {
+                let (l, p, ..) = generate_simulation_lib_rs("// user", "Sim", true);
+                (l, p)
+            }),
+            ("live_view", {
+                let (l, p, ..) = generate_live_view_lib_rs("// user", "View", true);
+                (l, p)
+            }),
+        ] {
+            assert!(
+                lib_rs.contains("#[allow(dead_code)] mod shared;"),
+                "{label}: shared mod must allow dead_code (helpers used by OTHER cells)"
+            );
+            // The allow rides on the same line as the mod, so the declaration
+            // still costs exactly one preamble line.
+            let shared_lines = lib_rs.lines().filter(|l| l.contains("mod shared;")).count();
+            assert_eq!(shared_lines, 1, "{label}: shared mod must be one line");
+            assert!(preamble > 0, "{label}: preamble should be counted");
+        }
     }
 
     #[test]
