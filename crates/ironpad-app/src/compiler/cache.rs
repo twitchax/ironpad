@@ -57,7 +57,12 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// warning. The scaffold is not part of the hash input, and the cache stores
 /// DIAGNOSTICS next to the blob, so without this bump every already-cached cell
 /// would keep replaying the stale warnings forever.
-const CACHE_EPOCH: u32 = 7;
+///
+/// Bumped 7 -> 8: the injected `cellN` / `last` input bindings now carry
+/// `#[allow(unused_variables)]`, so cells that use only some (or none) of
+/// their upstream outputs no longer warn. Same rationale as 6 -> 7: cached
+/// diagnostics would replay the stale warnings without the bump.
+const CACHE_EPOCH: u32 = 8;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 

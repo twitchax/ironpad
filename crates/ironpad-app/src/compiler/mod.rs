@@ -964,6 +964,67 @@ pub struct AlsoUnusedHere {
         }
     }
 
+    /// Every typed upstream output is bound into the cell as `cellN` (plus
+    /// `last`) whether or not the cell reads it, so a cell that uses only some
+    /// (or none) of its inputs sprayed "unused variable: `cellN`" warnings.
+    /// The scaffold allows `unused_variables` on the injected bindings, so a
+    /// clean build must carry no such warning — while unused variables in the
+    /// user's own code still warn.
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn unused_injected_input_bindings_produce_no_warnings() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "unused-inputs";
+
+        // Two typed upstream cells; this cell reads NEITHER cell0/cell1 nor
+        // `last`, which without the allow warns on all three bindings.
+        let previous_cell_types: Vec<String> = vec!["u32".into(), "String".into()];
+        let source = "    CellOutput::text(\"ignores its inputs\")";
+        let cargo_toml = "[dependencies]";
+
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &previous_cell_types,
+            None,
+            None,
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { stdout, .. } => {
+                let diagnostics = parse_diagnostics(&stdout, preamble_lines);
+                let unused: Vec<_> = diagnostics
+                    .iter()
+                    .filter(|d| d.message.contains("unused variable"))
+                    .collect();
+                assert!(
+                    unused.is_empty(),
+                    "injected cellN/last bindings must not warn when unread, got: {unused:?}",
+                );
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "cell ignoring its inputs should build.\nstdout(tail): {}\nstderr(tail): {}",
+                    &stdout[stdout.len().saturating_sub(2000)..],
+                    &stderr[stderr.len().saturating_sub(1500)..],
+                );
+            }
+        }
+    }
+
     // ── Full pipeline: compile → cache → cache hit ─────────────────────
 
     #[tokio::test]

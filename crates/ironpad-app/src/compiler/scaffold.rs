@@ -577,16 +577,25 @@ console_error_panic_hook::set_once();\n",
         code.push_str("let input_len = input_len as usize;\n");
         code.push_str("let __ironpad_inputs__ = CellInputs::from_raw(unsafe { std::slice::from_raw_parts(input_ptr, input_len) });\n");
 
+        // `allow(unused_variables)`: every typed upstream output is bound
+        // whether or not this cell reads it, so unguarded bindings spray
+        // "unused variable: `cellN`" on cells that only use some (or none) of
+        // their inputs. The allow rides on each binding's line so
+        // `preamble_lines` (and therefore diagnostic mapping) is unaffected,
+        // and unused variables in the user's own code still warn.
         for &(i, tag) in &typed_cells {
             let _ = writeln!(
                 code,
-                "let cell{i}: {tag} = __ironpad_inputs__.get({i}).deserialize().unwrap_or_else(|e| panic!(\"failed to deserialize cell{i} as `{tag}` (input {{}} bytes): {{e}}\", __ironpad_inputs__.get({i}).raw().len()));"
+                "#[allow(unused_variables)] let cell{i}: {tag} = __ironpad_inputs__.get({i}).deserialize().unwrap_or_else(|e| panic!(\"failed to deserialize cell{i} as `{tag}` (input {{}} bytes): {{e}}\", __ironpad_inputs__.get({i}).raw().len()));"
             );
         }
 
         // `last` references the last cell with a type tag.
         if let Some(&(last_idx, _)) = typed_cells.last() {
-            let _ = writeln!(code, "let last = &cell{last_idx};");
+            let _ = writeln!(
+                code,
+                "#[allow(unused_variables)] let last = &cell{last_idx};"
+            );
         }
     }
 
@@ -1522,6 +1531,35 @@ serde = \"1\"
             assert_eq!(shared_lines, 1, "{label}: shared mod must be one line");
             assert!(preamble > 0, "{label}: preamble should be counted");
         }
+    }
+
+    /// Every typed upstream output is bound whether or not this cell reads
+    /// it, so the injected `cellN` / `last` bindings carry
+    /// `allow(unused_variables)` — a cell that uses only some (or none) of
+    /// its inputs must not warn. The allows ride on each binding's line so
+    /// `preamble_lines` (and diagnostic mapping) are unaffected.
+    #[test]
+    fn injected_bindings_allow_unused_without_shifting_preamble() {
+        let types: Vec<String> = vec!["u32".into(), "String".into()];
+        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
+
+        for needle in [
+            "#[allow(unused_variables)] let cell0: u32 =",
+            "#[allow(unused_variables)] let cell1: String =",
+            "#[allow(unused_variables)] let last = &cell1;",
+        ] {
+            assert!(
+                lib_rs.contains(needle),
+                "injected binding must allow unused_variables: {needle}"
+            );
+        }
+
+        // Each allow rides on its binding's line, so the preamble count is
+        // exactly what it was without the attributes: 6 base + 3 inputs +
+        // 2 typed + 1 last = 12, with user code starting right after.
+        assert_eq!(preamble, 12);
+        let lines: Vec<&str> = lib_rs.lines().collect();
+        assert_eq!(lines[preamble as usize].trim(), "// user code here");
     }
 
     #[test]
