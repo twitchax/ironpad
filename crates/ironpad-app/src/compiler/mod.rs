@@ -1168,7 +1168,9 @@ impl Simulation for BusSim {
         .expect("build_micro_crate should not return an infra error");
 
         match result {
-            BuildResult::Success { wasm_path, .. } => {
+            BuildResult::Success {
+                wasm_path, stdout, ..
+            } => {
                 assert!(wasm_path.exists(), "WASM blob should exist on disk");
                 let wasm_bytes = std::fs::read(&wasm_path).unwrap();
                 assert_eq!(
@@ -1176,6 +1178,10 @@ impl Simulation for BusSim {
                     b"\x00asm",
                     "WASM blob should start with the WASM magic number",
                 );
+                // The tick wrapper accesses the simulation static through a
+                // raw pointer; a direct `&mut` would surface a
+                // `static_mut_refs` warning attributed past the user's code.
+                assert_no_static_mut_warning(&stdout);
             }
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
@@ -1183,6 +1189,24 @@ impl Simulation for BusSim {
                 );
             }
         }
+    }
+
+    /// Fails the calling test if the build output carries a `static_mut_refs`
+    /// warning. The sim/live-view tick wrappers hold their state in a
+    /// `static mut`; taking `&mut` to it directly warns on current
+    /// toolchains, and the diagnostic maps to a line PAST the end of the
+    /// user's source (the wrapper sits below it) — exactly how it surfaced
+    /// in the cannon notebook's "Newton, drawn" cell.
+    fn assert_no_static_mut_warning(stdout: &str) {
+        let diagnostics = parse_diagnostics(stdout, 0);
+        let offenders: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("mutable static"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "tick wrapper must not warn about mutable-static references, got: {offenders:?}",
+        );
     }
 
     // ── LiveView compilation ────────────────────────────────────────────
@@ -1257,8 +1281,13 @@ impl LiveView for Counter {
         .expect("build_micro_crate should not return an infra error");
 
         match result {
-            BuildResult::Success { wasm_path, .. } => {
+            BuildResult::Success {
+                wasm_path, stdout, ..
+            } => {
                 assert!(wasm_path.exists(), "WASM blob should exist on disk");
+                // Same raw-pointer discipline as the simulation wrapper — the
+                // cannon "Newton, drawn" cell surfaced this warning live.
+                assert_no_static_mut_warning(&stdout);
                 let wasm_bytes = std::fs::read(&wasm_path).unwrap();
                 assert_eq!(
                     &wasm_bytes[..4],

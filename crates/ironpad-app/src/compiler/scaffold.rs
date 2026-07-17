@@ -685,7 +685,10 @@ Box::into_raw(Box::new(result)) as u32
 
 #[wasm_bindgen]
 pub fn cell_tick() -> u32 {{
-let sim = unsafe {{ __IRONPAD_SIM__.as_mut().unwrap() }};
+// Raw-pointer access: a direct `&mut` to the static warns (static_mut_refs)
+// and the diagnostic maps past the end of the user's source. Sound here:
+// wasm is single-threaded and ticks never overlap.
+let sim = unsafe {{ (*&raw mut __IRONPAD_SIM__).as_mut().unwrap() }};
 let frame = sim.tick();
 let result: TickResult = frame.into();
 Box::into_raw(Box::new(result)) as u32
@@ -747,7 +750,10 @@ Box::into_raw(Box::new(result)) as u32
 
 #[wasm_bindgen]
 pub fn cell_tick() -> u32 {{
-let view = unsafe {{ __IRONPAD_LIVE_VIEW__.as_mut().unwrap() }};
+// Raw-pointer access: a direct `&mut` to the static warns (static_mut_refs)
+// and the diagnostic maps past the end of the user's source. Sound here:
+// wasm is single-threaded and ticks never overlap.
+let view = unsafe {{ (*&raw mut __IRONPAD_LIVE_VIEW__).as_mut().unwrap() }};
 let content = view.tick();
 let result: LiveTickResult = content.into();
 Box::into_raw(Box::new(result)) as u32
@@ -1702,6 +1708,12 @@ impl Simulation for Pendulum {
         assert!(lib_rs.contains("SimulationMeta"));
         assert!(lib_rs.contains("TickResult"));
 
+        // The tick wrapper must reach the static through a raw pointer: a
+        // direct `&mut` warns (static_mut_refs) with a span mapped past the
+        // end of the user's source.
+        assert!(lib_rs.contains("(*&raw mut __IRONPAD_SIM__).as_mut()"));
+        assert!(!lib_rs.contains(" __IRONPAD_SIM__.as_mut()"));
+
         // User source present in generated code.
         assert!(lib_rs.contains("struct Pendulum"));
         assert!(lib_rs.contains("impl Simulation for Pendulum"));
@@ -1815,6 +1827,13 @@ impl LiveView for Dashboard {
         assert!(lib_rs.contains("Dashboard::fps()"));
         assert!(lib_rs.contains("LiveViewMeta"));
         assert!(lib_rs.contains("LiveTickResult"));
+
+        // The tick wrapper must reach the static through a raw pointer: a
+        // direct `&mut` warns (static_mut_refs) with a span mapped past the
+        // end of the user's source — how this surfaced in cannon's
+        // "Newton, drawn" cell.
+        assert!(lib_rs.contains("(*&raw mut __IRONPAD_LIVE_VIEW__).as_mut()"));
+        assert!(!lib_rs.contains(" __IRONPAD_LIVE_VIEW__.as_mut()"));
 
         // User source present in generated code.
         assert!(lib_rs.contains("struct Dashboard"));
