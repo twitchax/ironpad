@@ -78,9 +78,6 @@ pub(crate) struct NotebookState {
     pub(super) force_recompile: RwSignal<bool>,
     /// When `true`, editing a cell auto-triggers downstream re-execution after debounce.
     pub(super) reactive_mode: RwSignal<bool>,
-    /// Mirror of the notebook's `expand_code` flag (view-only pages render
-    /// code cells expanded). Toggled from the gear menu and persisted.
-    pub(super) expand_code: RwSignal<bool>,
     /// Handle for the pending reactive debounce timer. `None` when no timer is active.
     pub(super) reactive_timer: RwSignal<Option<i32>>,
     /// Maps cell ID → the ID of the upstream cell whose error blocked it (cascade halt).

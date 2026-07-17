@@ -21,7 +21,8 @@
       "label": "Simulate",
       "cell_type": "Code",
       "source": "// Run the fountain simulation and display a summary.\nlet snapshots = shared::simulate(42, 300, 6, -0.003, 20);\n\nlet final_count = snapshots.last().map_or(0, |s| s.len());\nCellOutput::text(format!(\n    \"Simulation complete: {} snapshots captured, {} particles in final frame\",\n    snapshots.len(),\n    final_count,\n))\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_2",
@@ -29,7 +30,8 @@
       "label": "Final Frame",
       "cell_type": "Code",
       "source": "use ironpad_cell::prelude::*;\n\n// Run the simulation and render the final frame as a Canvas.\nlet snapshots = shared::simulate(42, 300, 6, -0.003, 20);\nlet frame = snapshots.last().unwrap();\n\nlet canvas_w = 800u32;\nlet canvas_h = 600u32;\nlet (x_min, x_max) = (-50.0_f64, 50.0);\nlet (y_min, y_max) = (-10.0_f64, 80.0);\n\nlet mut canvas = Canvas::new(canvas_w, canvas_h);\ncanvas.fill((15, 15, 25));\n\nfor &(x, y, life, _speed) in frame {\n    let px_f = (x - x_min) / (x_max - x_min) * canvas_w as f64;\n    let py_f = (1.0 - (y - y_min) / (y_max - y_min)) * canvas_h as f64;\n    if px_f >= 0.0 && px_f < canvas_w as f64 && py_f >= 0.0 && py_f < canvas_h as f64 {\n        let r = (255.0 * (1.0 - life * 0.5)) as u8;\n        let g = (200.0 * life) as u8;\n        let b = (255.0 * life) as u8;\n        let px = px_f as u32;\n        let py = py_f as u32;\n        // Draw 2x2 pixel for visibility\n        for dy in 0..2u32 {\n            for dx in 0..2u32 {\n                if px + dx < canvas_w && py + dy < canvas_h {\n                    canvas.set_pixel(px + dx, py + dy, (r, g, b));\n                }\n            }\n        }\n    }\n}\n\nCellOutput::from(canvas)\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_3",
@@ -37,7 +39,8 @@
       "label": "Filmstrip",
       "cell_type": "Code",
       "source": "use ironpad_cell::prelude::*;\n\n// Render a 2x2 filmstrip showing the fountain evolving over time.\nlet snapshots = shared::simulate(42, 300, 6, -0.003, 20);\nlet total = snapshots.len();\nlet indices = [0, total / 3, 2 * total / 3, total - 1];\n\nlet frame_w = 400u32;\nlet frame_h = 300u32;\nlet gap = 4u32;\nlet canvas_w = frame_w * 2 + gap;\nlet canvas_h = frame_h * 2 + gap;\n\nlet (x_min, x_max) = (-50.0_f64, 50.0);\nlet (y_min, y_max) = (-10.0_f64, 80.0);\n\nlet mut canvas = Canvas::new(canvas_w, canvas_h);\ncanvas.fill((15, 15, 25));\n\nfor (panel_idx, &frame_idx) in indices.iter().enumerate() {\n    let frame = &snapshots[frame_idx];\n    let col = (panel_idx % 2) as u32;\n    let row = (panel_idx / 2) as u32;\n    let ox = col * (frame_w + gap);\n    let oy = row * (frame_h + gap);\n\n    for &(x, y, life, _) in frame {\n        let px_f = (x - x_min) / (x_max - x_min) * frame_w as f64;\n        let py_f = (1.0 - (y - y_min) / (y_max - y_min)) * frame_h as f64;\n        if px_f >= 0.0 && px_f < frame_w as f64 && py_f >= 0.0 && py_f < frame_h as f64 {\n            let r = (255.0 * (1.0 - life * 0.5)) as u8;\n            let g = (200.0 * life) as u8;\n            let b = (255.0 * life) as u8;\n            let px = ox + px_f as u32;\n            let py = oy + py_f as u32;\n            if px < canvas_w && py < canvas_h {\n                canvas.set_pixel(px, py, (r, g, b));\n            }\n        }\n    }\n}\n\nCellOutput::from(canvas)\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_4",

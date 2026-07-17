@@ -6,7 +6,6 @@
  "updated_at": "2026-07-12T00:00:00Z",
  "shared_cargo_toml": null,
  "shared_source": null,
- "expand_code": true,
  "description": "One dot product, three gears: a scalar baseline, the autovectorizer (spoiler: it refuses floats), and explicit std::simd, all timed live in your browser. Then a Mandelbrot rendered four pixels per instruction.",
  "tags": [
   "simd",

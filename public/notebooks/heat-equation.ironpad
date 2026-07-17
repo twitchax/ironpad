@@ -20,7 +20,8 @@
       "cargo_toml": null,
       "order": 1,
       "label": "Heat Diffusion",
-      "cell_type": "Code"
+      "cell_type": "Code",
+      "collapsed": true
     }
   ],
   "description": "Watch heat diffuse across a 2D surface in real time using the Simulation trait.",

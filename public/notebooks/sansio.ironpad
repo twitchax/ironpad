@@ -169,6 +169,5 @@
    "source": "## Who is carrying this\n\nSans-IO is not a fringe experiment; it is how a growing slice of the Rust networking ecosystem is actually built, and the roster is worth knowing.\n\n- **[str0m](https://github.com/algesten/str0m)** (Martin Algesten): a fully synchronous, sans-IO WebRTC stack, and since January 2026 the new home of **[sctp-proto](https://github.com/algesten/sctp-proto)** as well.\n- **[quinn-proto](https://docs.rs/quinn-proto)**: the QUIC state machine underneath Quinn, and the pattern's most-cited proof that it scales all the way up to a real, complicated protocol.\n- **[Firezone](https://www.firezone.dev/blog/sans-io)**: the team whose explainer handed everyone the shared vocabulary, four methods and an injected clock, that this notebook borrows wholesale.\n\nThe pattern is *old* (it is just a state machine, the thing we have been teaching in school forever) and *newly fashionable*, because Rust's `async` story made the cost of **not** separating I/O from logic impossible to ignore. The punchline is the one you just watched run: a protocol that never touches a socket will run anywhere you can call four functions, a notebook cell included.\n\nGo open the Shared Source and change the loss rate. The state machine underneath is about eighty lines, and every run replays exactly. Break it, replay it, fix it.",
    "cargo_toml": null
   }
- ],
- "expand_code": true
+ ]
 }

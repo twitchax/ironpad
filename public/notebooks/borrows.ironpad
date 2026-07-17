@@ -232,6 +232,5 @@
   "polonius",
   "rust-2026",
   "blog"
- ],
- "expand_code": true
+ ]
 }

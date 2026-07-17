@@ -117,6 +117,11 @@ pub(super) fn CellOutputPanel(
     /// Run-all queue (downstream cell IDs are pushed here for execution).
     #[prop(optional)]
     run_all_queue: Option<RwSignal<Vec<String>>>,
+    /// Live collapse state, owned by the cell so the header's default-collapse
+    /// toggle can snap it. Falls back to a panel-local signal when absent
+    /// (the read-only viewer's usage).
+    #[prop(optional)]
+    collapsed: Option<RwSignal<bool>>,
 ) -> impl IntoView {
     // Build the widget side-effect sink if all required signals are present.
     // The editor supplies `cell_stale` so a widget change marks downstream cells
@@ -139,7 +144,7 @@ pub(super) fn CellOutputPanel(
         _ => None,
     };
 
-    let output_collapsed = RwSignal::new(false);
+    let output_collapsed = collapsed.unwrap_or_else(|| RwSignal::new(false));
 
     view! {
         {move || {

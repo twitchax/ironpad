@@ -103,10 +103,6 @@ pub fn ViewOnlyNotebook(
         threaded_cells_blocked = mentions_rayon && !isolated;
     }
 
-    // Code-forward notebooks (blog-style posts about the code itself) render
-    // code cells expanded by default in view mode.
-    let expand_code = notebook.expand_code.unwrap_or(false);
-
     let notebook = StoredValue::new(notebook);
 
     // Shared state: execution outputs keyed by cell ID (for piping between cells).
@@ -350,7 +346,6 @@ pub fn ViewOnlyNotebook(
                                 cell_outputs=cell_outputs
                                 run_all_queue=run_all_queue
                                 force_recompile=force_recompile
-                                expand_code=expand_code
                             />
                         }
                     }).collect_view()
@@ -436,13 +431,12 @@ fn ViewOnlyCell(
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
     force_recompile: RwSignal<bool>,
-    expand_code: bool,
 ) -> impl IntoView {
     if cell.shared {
         // Shared cells never execute: their source rides in every other
         // cell's shared.rs. Render read-only with the shared chrome.
         return view! {
-            <ViewOnlySharedCell cell=cell expand_code=expand_code />
+            <ViewOnlySharedCell cell=cell />
         }
         .into_any();
     }
@@ -457,7 +451,6 @@ fn ViewOnlyCell(
                 cell_outputs=cell_outputs
                 run_all_queue=run_all_queue
                 force_recompile=force_recompile
-                expand_code=expand_code
             />
         }
         .into_any(),
@@ -483,7 +476,6 @@ fn ViewOnlyCodeCell(
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
     force_recompile: RwSignal<bool>,
-    expand_code: bool,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let all_cells = StoredValue::new(all_cells);
@@ -709,10 +701,11 @@ fn ViewOnlyCodeCell(
     #[cfg(not(feature = "hydrate"))]
     let _ = &run_cell;
 
-    // Code is collapsed by default to match editor view mode, unless the
-    // notebook opts into expanded code (expand_code) because the code is the
-    // content.
-    let collapsed = RwSignal::new(!expand_code);
+    // Code and output load in the cell's saved default state (the editor's
+    // per-cell header toggles); the chevron and the output reveal are
+    // transient reader affordances on top.
+    let collapsed = RwSignal::new(cell.with_value(|c| c.collapsed));
+    let output_collapsed = RwSignal::new(cell.with_value(|c| c.output_collapsed));
     let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
     let body_class = Signal::derive(move || {
         if collapsed.get() {
@@ -783,9 +776,20 @@ fn ViewOnlyCodeCell(
                 </div>
             })}
             {move || execution_result.get().map(|result| {
+                if output_collapsed.get() {
+                    return view! {
+                        <button
+                            class="view-only-output-reveal"
+                            on:click=move |_| output_collapsed.set(false)
+                        >
+                            <span class="ironpad-output-toggle">"\u{25b8}"</span>
+                            <span>"Output"</span>
+                        </button>
+                    }.into_any();
+                }
                 let cell_id = cell.with_value(|c| c.id.clone());
                 let all_cells_vec = all_cells.get_value();
-                view! { <ViewOnlyOutput result=result cell_id=cell_id all_cells=all_cells_vec run_all_queue=run_all_queue cell_outputs=cell_outputs /> }
+                view! { <ViewOnlyOutput result=result cell_id=cell_id all_cells=all_cells_vec run_all_queue=run_all_queue cell_outputs=cell_outputs /> }.into_any()
             })}
         </div>
     }
@@ -797,8 +801,8 @@ fn ViewOnlyCodeCell(
 /// chrome, no run button and no output — the code compiles as part of every
 /// other cell's `shared.rs`, never on its own.
 #[component]
-fn ViewOnlySharedCell(cell: IronpadCell, expand_code: bool) -> impl IntoView {
-    let collapsed = RwSignal::new(!expand_code);
+fn ViewOnlySharedCell(cell: IronpadCell) -> impl IntoView {
+    let collapsed = RwSignal::new(cell.collapsed);
     let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
     let body_class = Signal::derive(move || {
         if collapsed.get() {

@@ -902,6 +902,70 @@ a:focus-visible {
     width: 100%;
 }
 
+/* ── Default-collapse toggles ────────────────────────────────────────── */
+
+// Per-cell authoring controls (edit mode only) that set how the cell LOADS
+// everywhere. Icon pill styled after the theme toggle; a dimmed segment
+// means "loads collapsed".
+.ironpad-collapse-defaults {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md);
+    background: var(--ip-bg-surface);
+    overflow: hidden;
+}
+
+.ironpad-collapse-default-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 7px;
+    background: transparent;
+    border: none;
+    color: var(--ip-text-secondary);
+    cursor: pointer;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    transition: color 0.2s, background 0.2s, opacity 0.2s;
+
+    &:hover {
+        background: var(--ip-hover-overlay);
+        color: var(--ip-text-primary);
+    }
+
+    & + & {
+        border-left: 1px solid var(--ip-border);
+    }
+}
+
+.ironpad-collapse-default-btn--collapsed {
+    opacity: 0.35;
+}
+
+// Collapsed-by-default output on view-only pages: a small reveal control in
+// place of the output panel.
+.view-only-output-reveal {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 8px;
+    padding: 0.4rem 0.75rem;
+    width: 100%;
+    background: var(--ip-bg-elevated);
+    color: var(--ip-text-secondary);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-sm);
+    cursor: pointer;
+    font-size: 0.85rem;
+    text-align: left;
+
+    &:hover {
+        color: var(--ip-text-primary);
+    }
+}
+
 .ironpad-cell-collapse-btn {
     flex-shrink: 0;
     background: transparent;

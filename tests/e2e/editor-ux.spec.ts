@@ -45,6 +45,27 @@ test.describe("Editor UX (PRD-0032)", () => {
     );
   });
 
+  // Typing into the title must accumulate characters. The edit input used to
+  // remount on every keystroke (the branch closure tracked the title's
+  // content), and the remount's focus effect select()ed the text — so each
+  // key replaced the whole field with one character. fill() sets the value in
+  // one shot and masked this; type character by character instead.
+  test("title input accumulates keystrokes", async ({ page }) => {
+    await newNotebook(page);
+
+    await page.locator(".ironpad-notebook-title").click();
+    const input = page.locator(".ironpad-header-title-input");
+    await expect(input).toBeVisible();
+
+    // Clear first: entering edit mode select()s the existing title on a
+    // queued effect, and racing that makes the final value depend on timing.
+    // With the field empty, per-keystroke accumulation is the whole signal —
+    // the pre-fix remount+select left only the LAST typed character here.
+    await input.fill("");
+    await input.pressSequentially("My Great Notebook", { delay: 20 });
+    await expect(input).toHaveValue("My Great Notebook");
+  });
+
   // uat-003: switching to view mode renders an in-edit markdown cell
   // (previously it stayed a raw Monaco editor).
   test("uat-003: view mode forces an in-edit markdown cell to render", async ({
@@ -101,46 +122,55 @@ test.describe("Editor UX (PRD-0032)", () => {
     );
   });
 
-  // View mode collapses code cells by default, the chevron can still open an
-  // individual cell (public-page parity), and the notebook's "Expand Code in
-  // View" setting keeps code open — previously the editor's view mode ignored
-  // that setting entirely and force-collapsed everything.
-  test("expand code in view is honored by the editor's view mode", async ({
+  // Per-cell collapse defaults: the header toggle collapses the code live,
+  // persists on the cell (IndexedDB), and every mode loads the cell in that
+  // state. The chevron stays a transient affordance on top.
+  test("cell collapse toggle persists and drives edit and view modes", async ({
     page,
   }) => {
     await newNotebook(page);
+    const url = page.url();
 
-    // Add a code cell.
+    // Add a code cell — open by default.
     await page.locator("button", { hasText: "+ Code" }).first().click();
     const cell = page.locator(".ironpad-cell-card").first();
-    await expect(cell).toBeVisible();
     await expect(cell.locator(".monaco-editor").first()).toBeVisible({
       timeout: 15_000,
     });
-
-    // Default: view mode collapses the code body...
-    await page.locator('button[title="View mode"]').click();
     const body = cell.locator(".ironpad-cell-body");
+    await expect(body).not.toHaveClass(/ironpad-cell-body--collapsed/);
+
+    // The code toggle collapses the body live...
+    await cell.locator(".ironpad-collapse-default-btn").first().click();
     await expect(body).toHaveClass(/ironpad-cell-body--collapsed/);
 
-    // ...but the chevron opens this one cell.
-    await cell.locator(".ironpad-cell-collapse-btn").click();
-    await expect(body).not.toHaveClass(/ironpad-cell-body--collapsed/);
+    // ...and persists (poll the durable store; persist_notebook is
+    // fire-and-forget, so a straight reload races the write).
+    const notebookId = url.match(/\/notebook\/([a-f0-9-]+)/)![1];
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async (id) => {
+            const nb = await (window as any).IronpadStorage.getNotebook(id);
+            return nb?.cells?.[0]?.collapsed ?? false;
+          }, notebookId),
+        { timeout: 10_000 }
+      )
+      .toBe(true);
 
-    // Back to edit mode, then opt the notebook into expand-code.
-    await page.locator('button[title="Edit mode"]').click();
-    await page.locator('button[title="Notebook settings"]').click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", {
-        hasText: "Expand Code in View",
-      })
-      .click();
+    // Reload: the cell loads collapsed in edit mode.
+    await page.goto(url);
+    const reloadedCell = page.locator(".ironpad-cell-card").first();
+    await expect(reloadedCell).toBeVisible({ timeout: 15_000 });
+    const reloadedBody = reloadedCell.locator(".ironpad-cell-body");
+    await expect(reloadedBody).toHaveClass(/ironpad-cell-body--collapsed/);
 
-    // Now view mode keeps the code visible...
+    // View mode loads it collapsed too; the chevron still opens it
+    // transiently, and the revealed editor is read-only.
     await page.locator('button[title="View mode"]').click();
-    await expect(body).not.toHaveClass(/ironpad-cell-body--collapsed/);
-
-    // ...and the visible editor is read-only.
+    await expect(reloadedBody).toHaveClass(/ironpad-cell-body--collapsed/);
+    await reloadedCell.locator(".ironpad-cell-collapse-btn").click();
+    await expect(reloadedBody).not.toHaveClass(/ironpad-cell-body--collapsed/);
     const readOnly = await page.evaluate(() => {
       const monaco = (window as any).monaco;
       const el = document.querySelector(".ironpad-cell-card");
@@ -150,6 +180,54 @@ test.describe("Editor UX (PRD-0032)", () => {
       return editor.getOption(monaco.editor.EditorOption.readOnly);
     });
     expect(readOnly).toBe(true);
+
+    // The authoring toggles are edit-mode chrome — hidden in view mode.
+    await expect(
+      reloadedCell.locator(".ironpad-collapse-defaults")
+    ).toHaveCount(0);
+  });
+
+  // The output toggle: collapses the output panel live and persists the flag.
+  test("output collapse toggle collapses the panel and persists", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    await newNotebook(page);
+    const url = page.url();
+
+    // Run a trivial cell so the output panel exists ("42" is warm from the
+    // other specs' compiles).
+    await page.locator("button", { hasText: "+ Code" }).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.locator('button[title="Run cell"]').first().click();
+    await expect(cell.locator(".ironpad-output-panel")).toBeVisible({
+      timeout: 240_000,
+    });
+    await expect(cell.locator(".ironpad-output-panel")).not.toHaveClass(
+      /--collapsed/
+    );
+
+    // The output toggle (second button in the pill) collapses it live...
+    await cell.locator(".ironpad-collapse-default-btn").nth(1).click();
+    await expect(cell.locator(".ironpad-output-panel")).toHaveClass(
+      /ironpad-output-panel--collapsed/
+    );
+
+    // ...and the flag lands in the durable store.
+    const notebookId = url.match(/\/notebook\/([a-f0-9-]+)/)![1];
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async (id) => {
+            const nb = await (window as any).IronpadStorage.getNotebook(id);
+            return nb?.cells?.[0]?.output_collapsed ?? false;
+          }, notebookId),
+        { timeout: 10_000 }
+      )
+      .toBe(true);
   });
 
   // uat-001: adding a cell preserves an already-run cell's output.

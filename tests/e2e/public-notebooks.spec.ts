@@ -180,12 +180,13 @@ test.describe("Stylesheet token hygiene", () => {
   });
 });
 
-test.describe("Expand code setting", () => {
-  test("expand_code notebooks render code cells expanded", async ({
+test.describe("Per-cell collapse state", () => {
+  test("cells without collapse flags render code expanded", async ({
     page,
   }) => {
-    // The blog-style notebooks are ABOUT the code, so they ship
-    // expand_code: true — sources visible without any clicks.
+    // The blog-style notebooks are ABOUT the code: their cells carry no
+    // collapsed flags, so sources are visible without any clicks (open is
+    // the default).
     await page.goto("/notebook/public/dynosaur.ironpad");
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,
@@ -199,9 +200,11 @@ test.describe("Expand code setting", () => {
     ).toBeVisible({ timeout: 15_000 });
   });
 
-  test("notebooks without expand_code keep code collapsed", async ({
+  test("cells saved with collapsed: true load collapsed", async ({
     page,
   }) => {
+    // Story-style notebooks mark their code cells collapsed per cell (the
+    // migration from the old notebook-level expand_code setting).
     await page.goto("/notebook/public/welcome.ironpad");
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,

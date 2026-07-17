@@ -190,6 +190,5 @@
   "compiler",
   "machine-learning",
   "plotters"
- ],
- "expand_code": true
+ ]
 }

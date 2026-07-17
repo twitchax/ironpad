@@ -50,6 +50,21 @@ pub(crate) struct NotebookModel {
     external_content_generation: RwSignal<u64>,
 }
 
+/// Field bundle for [`NotebookModel::cell_update`] — mirrors
+/// [`Mutation::CellUpdate`] so the handler stays readable as per-cell
+/// attributes grow instead of accreting positional arguments.
+#[allow(clippy::option_option)] // None = unchanged, Some(None) = clear, Some(Some(v)) = set.
+struct CellUpdateFields {
+    cell_id: String,
+    source: Option<String>,
+    cargo_toml: Option<Option<String>>,
+    label: Option<String>,
+    shared: Option<bool>,
+    collapsed: Option<bool>,
+    output_collapsed: Option<bool>,
+    version: u64,
+}
+
 impl NotebookModel {
     /// Create a model backed by the given reactive signals.
     pub(crate) fn new(
@@ -96,8 +111,19 @@ impl NotebookModel {
                 cargo_toml,
                 label,
                 shared,
+                collapsed,
+                output_collapsed,
                 version,
-            } => self.cell_update(cell_id, source, cargo_toml, label, shared, version)?,
+            } => self.cell_update(CellUpdateFields {
+                cell_id,
+                source,
+                cargo_toml,
+                label,
+                shared,
+                collapsed,
+                output_collapsed,
+                version,
+            })?,
             Mutation::CellDelete { cell_id, version } => self.cell_delete(cell_id, version)?,
             Mutation::CellReorder { cell_ids } => self.cell_reorder(cell_ids)?,
             Mutation::NotebookUpdateMeta {
@@ -105,14 +131,9 @@ impl NotebookModel {
                 shared_cargo_toml,
                 shared_source,
                 reactive_mode,
-                expand_code,
-            } => self.notebook_update_meta(
-                title,
-                shared_cargo_toml,
-                shared_source,
-                reactive_mode,
-                expand_code,
-            )?,
+            } => {
+                self.notebook_update_meta(title, shared_cargo_toml, shared_source, reactive_mode)?
+            }
             // A mutation from a newer peer this build doesn't recognise. It
             // can't be applied — surface an error rather than silently acting.
             Mutation::Unknown => {
@@ -222,6 +243,8 @@ impl NotebookModel {
                         label: c.label.clone(),
                         cell_type: c.cell_type.clone(),
                         shared: c.shared,
+                        collapsed: c.collapsed,
+                        output_collapsed: c.output_collapsed,
                     })
                     .collect(),
             );
@@ -297,6 +320,8 @@ impl NotebookModel {
             source: new_cell.source,
             cargo_toml,
             shared: is_shared,
+            collapsed: false,
+            output_collapsed: false,
             version: 0,
         };
 
@@ -335,16 +360,17 @@ impl NotebookModel {
         ))
     }
 
-    #[allow(clippy::option_option)] // None = unchanged, Some(None) = clear, Some(Some(v)) = set.
-    fn cell_update(
-        &self,
-        cell_id: String,
-        source: Option<String>,
-        cargo_toml: Option<Option<String>>,
-        label: Option<String>,
-        shared: Option<bool>,
-        version: u64,
-    ) -> Result<(MutationResult, Event), ModelError> {
+    fn cell_update(&self, fields: CellUpdateFields) -> Result<(MutationResult, Event), ModelError> {
+        let CellUpdateFields {
+            cell_id,
+            source,
+            cargo_toml,
+            label,
+            shared,
+            collapsed,
+            output_collapsed,
+            version,
+        } = fields;
         // OCC check.
         let current = self.cell_version(&cell_id);
         if version != current {
@@ -400,6 +426,12 @@ impl NotebookModel {
             if let Some(sh) = shared {
                 cell.shared = sh;
             }
+            if let Some(c) = collapsed {
+                cell.collapsed = c;
+            }
+            if let Some(oc) = output_collapsed {
+                cell.output_collapsed = oc;
+            }
             cell.version = new_version;
         });
 
@@ -430,6 +462,8 @@ impl NotebookModel {
                 cargo_toml,
                 label,
                 shared,
+                collapsed,
+                output_collapsed,
                 version: new_version,
             },
         ))
@@ -504,7 +538,6 @@ impl NotebookModel {
         shared_cargo_toml: Option<Option<String>>,
         shared_source: Option<Option<String>>,
         reactive_mode: Option<bool>,
-        expand_code: Option<bool>,
     ) -> Result<(MutationResult, Event), ModelError> {
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
@@ -520,9 +553,6 @@ impl NotebookModel {
             if let Some(rm) = reactive_mode {
                 nb.reactive_mode = if rm { Some(true) } else { None };
             }
-            if let Some(ec) = expand_code {
-                nb.expand_code = if ec { Some(true) } else { None };
-            }
         });
 
         if shared_cargo_toml.is_some() || shared_source.is_some() {
@@ -536,7 +566,6 @@ impl NotebookModel {
                 shared_cargo_toml,
                 shared_source,
                 reactive_mode,
-                expand_code,
             },
         ))
     }
@@ -603,6 +632,8 @@ mod tests {
             cargo_toml: None,
             label: label.map(Into::into),
             shared: None,
+            collapsed: None,
+            output_collapsed: None,
             version: 0,
         }
     }
@@ -623,6 +654,8 @@ mod tests {
             cargo_toml: Some(Some("[package]".into())),
             label: None,
             shared: None,
+            collapsed: None,
+            output_collapsed: None,
             version: 0,
         };
         assert!(is_remote_content_edit(&ClientId::agent("a"), &m));
@@ -654,6 +687,80 @@ mod tests {
     }
 }
 
+// ── cell_update collapse defaults ────────────────────────────────────────────
+
+#[cfg(test)]
+mod collapse_tests {
+    use super::*;
+    use leptos::reactive::owner::Owner;
+
+    fn notebook_with_one_cell() -> IronpadNotebook {
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells.push(IronpadCell {
+            id: "c1".into(),
+            order: 0,
+            label: "Cell".into(),
+            cell_type: CellType::Code,
+            source: "42".into(),
+            cargo_toml: None,
+            shared: false,
+            collapsed: false,
+            output_collapsed: false,
+            version: 0,
+        });
+        nb
+    }
+
+    /// The header toggles persist through `CellUpdate`: the flags land on the
+    /// cell, the version bumps, and the event carries the change so remote
+    /// peers (agents) stay in sync.
+    #[test]
+    fn cell_update_persists_collapse_defaults() {
+        Owner::new().with(|| {
+            let nb_signal = RwSignal::new(Some(notebook_with_one_cell()));
+            let model = NotebookModel::new(
+                nb_signal,
+                RwSignal::new(Vec::new()),
+                RwSignal::new(HashMap::new()),
+                RwSignal::new(0),
+            );
+
+            let (result, event) = model
+                .apply(
+                    Mutation::CellUpdate {
+                        cell_id: "c1".into(),
+                        source: None,
+                        cargo_toml: None,
+                        label: None,
+                        shared: None,
+                        collapsed: Some(true),
+                        output_collapsed: Some(true),
+                        version: 0,
+                    },
+                    ClientId::browser(),
+                )
+                .expect("collapse update should apply");
+
+            let nb = nb_signal.get_untracked().unwrap();
+            assert!(nb.cells[0].collapsed, "collapsed flag must persist");
+            assert!(nb.cells[0].output_collapsed, "output flag must persist");
+            assert_eq!(nb.cells[0].version, 1);
+            assert!(matches!(result, MutationResult::CellUpdated { .. }));
+            match event.event {
+                Event::CellUpdated {
+                    collapsed,
+                    output_collapsed,
+                    ..
+                } => {
+                    assert_eq!(collapsed, Some(true));
+                    assert_eq!(output_collapsed, Some(true));
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        });
+    }
+}
+
 // ── mark_downstream_stale ────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -668,6 +775,8 @@ mod stale_tests {
             label: String::new(),
             cell_type: CellType::Code,
             shared: false,
+            collapsed: false,
+            output_collapsed: false,
         }
     }
 

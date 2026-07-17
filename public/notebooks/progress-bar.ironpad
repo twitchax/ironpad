@@ -20,7 +20,8 @@
       "label": "Progress Bar",
       "cell_type": "Code",
       "source": "ui::progress_bar()\n    .label(\"Download Progress\")\n    .initial(25.0)\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_2",
@@ -28,7 +29,8 @@
       "label": "Update Progress",
       "cell_type": "Code",
       "source": "// cell1 is the progress bar ID (String) from the previous code cell.\nlet handle = ProgressHandle::new(cell1);\nhandle.update(75.0);\n\nui::button(\"Run Task \\u{25b6}\")\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_3",

@@ -112,6 +112,5 @@
   "kord",
   "music-theory",
   "wasm"
- ],
- "expand_code": true
+ ]
 }

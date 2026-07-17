@@ -30,7 +30,8 @@
    "source": "pub fn format_greeting(name: &str) -> String {\n    format!(\"Hello, {name}! Welcome to ironpad.\")\n}",
    "order": 2,
    "cargo_toml": null,
-   "shared": true
+   "shared": true,
+   "collapsed": true
   },
   {
    "id": "cell_shared_fib",
@@ -39,7 +40,8 @@
    "source": "pub fn fibonacci(n: u64) -> u64 {\n    match n {\n        0 => 0,\n        1 => 1,\n        _ => {\n            let (mut a, mut b) = (0u64, 1u64);\n            for _ in 2..=n {\n                let next = a + b;\n                a = b;\n                b = next;\n            }\n            b\n        }\n    }\n}",
    "order": 3,
    "cargo_toml": null,
-   "shared": true
+   "shared": true,
+   "collapsed": true
   },
   {
    "id": "cell_md_semantics",
@@ -55,7 +57,8 @@
    "label": "Greeting",
    "cell_type": "Code",
    "source": "let greeting = shared::format_greeting(\"World\");\n\nCellOutput::text(greeting)\n",
-   "cargo_toml": null
+   "cargo_toml": null,
+   "collapsed": true
   },
   {
    "id": "cell_2",
@@ -63,7 +66,8 @@
    "label": "Fibonacci",
    "cell_type": "Code",
    "source": "let fib_10 = shared::fibonacci(10);\n\nCellOutput::text(format!(\"fibonacci(10) = {fib_10}\"))\n",
-   "cargo_toml": null
+   "cargo_toml": null,
+   "collapsed": true
   },
   {
    "id": "cell_md_assembly",
@@ -79,7 +83,8 @@
    "label": "Golden ratio convergence",
    "cell_type": "Code",
    "source": "let rows: Vec<Vec<String>> = (1..=10)\n    .map(|n| {\n        let f = shared::fibonacci(n);\n        let ratio = if n >= 2 {\n            format!(\"{:.4}\", f as f64 / shared::fibonacci(n - 1) as f64)\n        } else {\n            \"-\".into()\n        };\n        vec![n.to_string(), f.to_string(), ratio]\n    })\n    .collect();\n\nTable::new(vec![\"n\", \"fib(n)\", \"fib(n) / fib(n-1)\"], rows)\n",
-   "cargo_toml": null
+   "cargo_toml": null,
+   "collapsed": true
   },
   {
    "id": "cell_md_features",
@@ -103,7 +108,8 @@
    "label": "Combined",
    "cell_type": "Code",
    "source": "let fibs: Vec<u64> = (0..=10).map(shared::fibonacci).collect();\nlet list = fibs\n    .iter()\n    .enumerate()\n    .map(|(i, v)| format!(\"fib({i}) = {v}\"))\n    .collect::<Vec<_>>()\n    .join(\", \");\n\nlet greeting = shared::format_greeting(\"Rustacean\");\n\nMd(format!(\n    \"## Results\\n\\n\\\n     {greeting}\\n\\n\\\n     **First 11 Fibonacci numbers:** {list}\"\n))\n",
-   "cargo_toml": null
+   "cargo_toml": null,
+   "collapsed": true
   }
  ],
  "description": "Reusable helpers in the shared module, two ways: amber shared cells inline with the story, and the hidden notebook-level shared source for plumbing.",

@@ -119,6 +119,13 @@ pub enum Mutation {
         /// Toggle the shared-cell flag (PRD-0044). `None` leaves it unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shared: Option<bool>,
+        /// Default collapse state for the code body (set from the cell's
+        /// header toggle). `None` leaves it unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collapsed: Option<bool>,
+        /// Output panel starts collapsed. `None` leaves it unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_collapsed: Option<bool>,
         /// Expected current version (optimistic concurrency control).
         version: u64,
     },
@@ -140,8 +147,6 @@ pub enum Mutation {
         shared_source: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reactive_mode: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        expand_code: Option<bool>,
     },
     /// An unrecognised mutation from a newer peer (see the [`Message`] forward-compat docs).
     #[serde(other)]
@@ -213,6 +218,11 @@ pub enum Event {
         /// Shared-cell flag change (PRD-0044). `None` = unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shared: Option<bool>,
+        /// Default collapse-state changes. `None` = unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collapsed: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_collapsed: Option<bool>,
         version: u64,
     },
     CellDeleted {
@@ -244,8 +254,6 @@ pub enum Event {
         shared_source: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reactive_mode: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        expand_code: Option<bool>,
     },
     Error {
         code: ErrorCode,
@@ -410,6 +418,8 @@ mod tests {
                 cargo_toml: None,
                 label: None,
                 shared: None,
+                collapsed: None,
+                output_collapsed: None,
                 version: 3,
             }),
         };
@@ -448,7 +458,6 @@ mod tests {
                 shared_cargo_toml: Some(Some("toml content".into())),
                 shared_source: None,
                 reactive_mode: None,
-                expand_code: None,
             }),
         };
         round_trip(&msg);
@@ -486,6 +495,8 @@ mod tests {
                     cargo_toml: None,
                     label: None,
                     shared: None,
+                    collapsed: None,
+                    output_collapsed: None,
                     version: 4,
                 },
             }),
@@ -552,6 +563,8 @@ mod tests {
                     label: "First".into(),
                     cell_type: CellType::Code,
                     shared: false,
+                    collapsed: false,
+                    output_collapsed: false,
                 }],
             }),
         };
@@ -663,24 +676,50 @@ mod tests {
         assert!(cell.cargo_toml.is_none());
     }
 
-    // ── expand_code in protocol messages ────────────────────────────────
+    // ── per-cell collapse flags in protocol messages ────────────────────
 
     #[test]
-    fn mutation_notebook_update_meta_with_expand_code() {
+    fn mutation_cell_update_with_collapse_flags() {
         let msg = Message {
-            id: "req-expand".into(),
-            kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
-                title: None,
-                shared_cargo_toml: None,
-                shared_source: None,
-                reactive_mode: None,
-                expand_code: Some(true),
+            id: "req-collapse".into(),
+            kind: MessageKind::Mutation(Mutation::CellUpdate {
+                cell_id: "cell-1".into(),
+                source: None,
+                cargo_toml: None,
+                label: None,
+                shared: None,
+                collapsed: Some(true),
+                output_collapsed: Some(false),
+                version: 3,
             }),
         };
         round_trip(&msg);
 
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"expand_code\":true"));
+        assert!(json.contains("\"collapsed\":true"));
+        assert!(json.contains("\"output_collapsed\":false"));
+    }
+
+    #[test]
+    fn mutation_cell_update_without_collapse_flags_omits_them() {
+        // Old peers that never send the flags round-trip unchanged, and
+        // unset flags stay out of the wire format.
+        let msg = Message {
+            id: "req-plain".into(),
+            kind: MessageKind::Mutation(Mutation::CellUpdate {
+                cell_id: "cell-1".into(),
+                source: Some("42".into()),
+                cargo_toml: None,
+                label: None,
+                shared: None,
+                collapsed: None,
+                output_collapsed: None,
+                version: 1,
+            }),
+        };
+        round_trip(&msg);
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("collapsed"));
     }
 
     // ── reactive_mode in protocol messages ──────────────────────────────
@@ -694,7 +733,6 @@ mod tests {
                 shared_cargo_toml: None,
                 shared_source: None,
                 reactive_mode: Some(true),
-                expand_code: None,
             }),
         };
         round_trip(&msg);
@@ -712,7 +750,6 @@ mod tests {
                 shared_cargo_toml: None,
                 shared_source: None,
                 reactive_mode: None,
-                expand_code: None,
             }),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -734,7 +771,6 @@ mod tests {
                     shared_cargo_toml: None,
                     shared_source: None,
                     reactive_mode: Some(false),
-                    expand_code: None,
                 },
             }),
         };
@@ -838,7 +874,6 @@ mod tests {
                     shared_cargo_toml: None,
                     shared_source: None,
                     reactive_mode: None,
-                    expand_code: None,
                 },
             }),
         };

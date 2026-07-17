@@ -200,6 +200,15 @@ pub struct CellManifest {
     /// Shared cell (PRD-0044); surfaces the flag to manifest consumers (CLI).
     #[serde(default)]
     pub shared: bool,
+    /// Saved default-collapse state for the code body (mirrors
+    /// [`IronpadCell::collapsed`]) so the editor's cell list can mount cells
+    /// in their load state.
+    #[serde(default)]
+    pub collapsed: bool,
+    /// Saved default-collapse state for the output panel (mirrors
+    /// [`IronpadCell::output_collapsed`]).
+    #[serde(default)]
+    pub output_collapsed: bool,
 }
 
 // ── Self-contained Notebook Types ───────────────────────────────────────────
@@ -226,11 +235,10 @@ pub struct IronpadNotebook {
     /// When `true`, editing a cell auto-re-executes downstream cells after a debounce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactive_mode: Option<bool>,
-    /// When `true`, view-only pages render code cells expanded (source
-    /// visible) instead of collapsed — for notebooks where the code is the
-    /// story, not just the machinery behind an output.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expand_code: Option<bool>,
+    // NOTE: a notebook-level `expand_code: Option<bool>` used to live here.
+    // Collapse state is per-cell now (`IronpadCell::collapsed`), WYSIWYG from
+    // the editor; old JSON carrying the field still parses (serde ignores
+    // unknown fields).
     pub cells: Vec<IronpadCell>,
 }
 
@@ -260,7 +268,6 @@ impl IronpadNotebook {
             shared_cargo_toml: Some(DEFAULT_SHARED_CARGO_TOML.to_string()),
             shared_source: None,
             reactive_mode: None,
-            expand_code: None,
             cells: Vec::new(),
         }
     }
@@ -369,6 +376,15 @@ pub struct IronpadCell {
     /// Defaults to `false` so every pre-existing notebook parses unchanged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shared: bool,
+    /// Code body starts collapsed. WYSIWYG: the collapse state the author
+    /// leaves a cell in while editing is the state every surface (edit mode,
+    /// view mode, public/shared/embed pages) loads it in. Defaults to `false`
+    /// (open) so existing notebooks parse unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
+    /// Output panel starts collapsed. Same WYSIWYG semantics as `collapsed`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output_collapsed: bool,
     /// Optimistic concurrency control version. Incremented on each mutation.
     /// Defaults to 0 for backward compatibility with existing notebooks.
     #[serde(default)]
@@ -440,6 +456,8 @@ mod tests {
             source: src.into(),
             cargo_toml: None,
             shared,
+            collapsed: false,
+            output_collapsed: false,
             version: 0,
         };
         // Out-of-order Vec on purpose: assembly must follow `order`, not
@@ -476,6 +494,8 @@ mod tests {
             source: src.into(),
             cargo_toml: None,
             shared,
+            collapsed: false,
+            output_collapsed: false,
             version: 0,
         };
         // Multi-line sources, out-of-order Vec: offsets must follow `order`.
@@ -535,6 +555,8 @@ mod tests {
             source: "42".into(),
             cargo_toml: None,
             shared: false,
+            collapsed: false,
+            output_collapsed: false,
             version: 7,
         };
         let json = serde_json::to_string(&cell).unwrap();
@@ -552,6 +574,8 @@ mod tests {
             source: "42".into(),
             cargo_toml: None,
             shared: false,
+            collapsed: false,
+            output_collapsed: false,
             version: 0,
         };
         let json = serde_json::to_string(&cell).unwrap();
@@ -605,40 +629,60 @@ mod tests {
         );
     }
 
-    // ── expand_code field ──────────────────────────────────────────────
+    // ── per-cell collapse flags ────────────────────────────────────────
 
     #[test]
-    fn notebook_without_expand_code_defaults_to_none() {
+    fn cell_collapse_flags_default_open_and_are_omitted_from_json() {
+        // Old cell JSON (no flags) parses as open, and open cells serialize
+        // without the fields — existing notebooks are byte-identical.
+        let json = r#"{
+            "id": "cell-1",
+            "order": 0,
+            "label": "Cell",
+            "cell_type": "Code",
+            "source": "42"
+        }"#;
+        let cell: IronpadCell = serde_json::from_str(json).unwrap();
+        assert!(!cell.collapsed);
+        assert!(!cell.output_collapsed);
+
+        let out = serde_json::to_string(&cell).unwrap();
+        assert!(!out.contains("collapsed"), "false flags should be skipped");
+    }
+
+    #[test]
+    fn cell_collapse_flags_round_trip_when_set() {
+        let mut cell: IronpadCell = serde_json::from_str(
+            r#"{"id":"c","order":0,"label":"L","cell_type":"Code","source":"42"}"#,
+        )
+        .unwrap();
+        cell.collapsed = true;
+        cell.output_collapsed = true;
+        let json = serde_json::to_string(&cell).unwrap();
+        assert!(json.contains("\"collapsed\":true"));
+        assert!(json.contains("\"output_collapsed\":true"));
+        let back: IronpadCell = serde_json::from_str(&json).unwrap();
+        assert!(back.collapsed);
+        assert!(back.output_collapsed);
+    }
+
+    #[test]
+    fn notebook_with_legacy_expand_code_field_still_parses() {
+        // The notebook-level expand_code setting was replaced by per-cell
+        // collapse state; old JSON carrying it must keep parsing (serde
+        // ignores unknown fields) and the field simply drops on re-save.
         let json = r#"{
             "version": 1,
             "id": "00000000-0000-0000-0000-000000000001",
-            "title": "Test",
+            "title": "Legacy",
             "created_at": "2025-01-01T00:00:00Z",
             "updated_at": "2025-01-01T00:00:00Z",
+            "expand_code": true,
             "cells": []
         }"#;
         let nb: IronpadNotebook = serde_json::from_str(json).unwrap();
-        assert_eq!(nb.expand_code, None);
-    }
-
-    #[test]
-    fn notebook_with_expand_code_true_round_trips() {
-        let mut nb = IronpadNotebook::new("Code-Forward");
-        nb.expand_code = Some(true);
-        let json = serde_json::to_string(&nb).unwrap();
-        assert!(json.contains("\"expand_code\":true"));
-        let back: IronpadNotebook = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.expand_code, Some(true));
-    }
-
-    #[test]
-    fn notebook_expand_code_none_is_omitted_from_json() {
-        let nb = IronpadNotebook::new("Default");
-        let json = serde_json::to_string(&nb).unwrap();
-        assert!(
-            !json.contains("expand_code"),
-            "expand_code=None should be skipped"
-        );
+        let out = serde_json::to_string(&nb).unwrap();
+        assert!(!out.contains("expand_code"));
     }
 
     #[test]

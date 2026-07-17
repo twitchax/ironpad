@@ -86,35 +86,18 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
 
     // ── Collapse state ──────────────────────────────────────────────────
+    //
+    // Two layers: the cell's PERSISTED defaults (`default_*`, set by the
+    // header toggles and stored on the cell, so every surface loads the cell
+    // in that state) and the LIVE state (`collapsed` / `output_collapsed`,
+    // which the transient chevrons also flip without persisting anything).
+    // Mode switches don't touch collapse at all — the saved default is the
+    // load state, full stop.
 
-    let collapsed = RwSignal::new(false);
-    let saved_collapsed = RwSignal::new(false);
-    // Tracks the previous mode so the effect below only saves/restores on
-    // actual transitions — it also re-runs when expand_code is toggled.
-    let was_view_mode = RwSignal::new(false);
-
-    // Save/restore collapse state when toggling view mode.
-    // Only collapse Code cells; Markdown cells keep their body visible
-    // so the rendered preview remains on screen. In view mode the
-    // notebook's expand_code setting decides whether code starts visible
-    // (matching the public/shared pages), and the chevron can still open
-    // an individual cell.
-    Effect::new(move || {
-        let view = state.is_view_mode.get();
-        let expand = state.expand_code.get();
-        let was_view = was_view_mode.get_untracked();
-        if view {
-            if !was_view {
-                saved_collapsed.set(collapsed.get_untracked());
-            }
-            if !is_markdown {
-                collapsed.set(!expand);
-            }
-        } else if was_view {
-            collapsed.set(saved_collapsed.get_untracked());
-        }
-        was_view_mode.set(view);
-    });
+    let collapsed = RwSignal::new(cell.collapsed);
+    let output_collapsed = RwSignal::new(cell.output_collapsed);
+    let default_collapsed = RwSignal::new(cell.collapsed);
+    let default_output_collapsed = RwSignal::new(cell.output_collapsed);
 
     // ── Tab state ───────────────────────────────────────────────────────
 
@@ -126,7 +109,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cargo_toml_handle: RwSignal<Option<MonacoEditorHandle>> = RwSignal::new(None);
 
     // Keep the cell's editors read-only in view mode: the body can be
-    // expanded there (expand_code / the chevron), so a visible editor must
+    // expanded there (saved default / the chevron), so a visible editor must
     // not accept edits. Tracking the handles covers editors that mount while
     // already in view mode; `try_get` keeps the reads safe if this effect is
     // flushed after the cell is disposed.
@@ -220,6 +203,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     cargo_toml: None,
                     label: Some(current),
                     shared: None,
+                    collapsed: None,
+                    output_collapsed: None,
                     version,
                 },
                 ironpad_common::protocol::ClientId::browser(),
@@ -228,6 +213,49 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         {
             persist_notebook(&state);
         }
+    };
+
+    // ── Default-collapse toggles (persisted per cell) ───────────────────
+    //
+    // Explicit authoring controls, distinct from the transient chevrons:
+    // they set the cell's saved load-state, snap the live state to match,
+    // and ride CellUpdate so agents and every surface see the same default.
+    let cell_id_for_collapse = StoredValue::new(cell.id.clone());
+    let persist_collapse_default = move |code: Option<bool>, output: Option<bool>| {
+        let cid = cell_id_for_collapse.get_value();
+        let version = model.cell_version(&cid);
+        if model
+            .apply(
+                ironpad_common::protocol::Mutation::CellUpdate {
+                    cell_id: cid,
+                    source: None,
+                    cargo_toml: None,
+                    label: None,
+                    shared: None,
+                    collapsed: code,
+                    output_collapsed: output,
+                    version,
+                },
+                ironpad_common::protocol::ClientId::browser(),
+            )
+            .is_ok()
+        {
+            persist_notebook(&state);
+        }
+    };
+    let on_toggle_default_collapsed = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        let new_val = !default_collapsed.get_untracked();
+        default_collapsed.set(new_val);
+        collapsed.set(new_val);
+        persist_collapse_default(Some(new_val), None);
+    };
+    let on_toggle_default_output_collapsed = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        let new_val = !default_output_collapsed.get_untracked();
+        default_output_collapsed.set(new_val);
+        output_collapsed.set(new_val);
+        persist_collapse_default(None, Some(new_val));
     };
 
     // ── Menu state ──────────────────────────────────────────────────────
@@ -452,6 +480,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     cargo_toml: None,
                     label: None,
                     shared: Some(next),
+                    collapsed: None,
+                    output_collapsed: None,
                     version,
                 },
                 ironpad_common::protocol::ClientId::browser(),
@@ -1183,6 +1213,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         cargo_toml: None,
                         label: None,
                         shared: None,
+                        collapsed: None,
+                        output_collapsed: None,
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),
@@ -1266,6 +1298,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         cargo_toml: Some(Some(val)),
                         label: None,
                         shared: None,
+                        collapsed: None,
+                        output_collapsed: None,
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),
@@ -1345,6 +1379,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         cargo_toml: Some(Some(toml)),
                         label: None,
                         shared: None,
+                        collapsed: None,
+                        output_collapsed: None,
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),
@@ -1414,9 +1450,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
 
     let body_class = Signal::derive(move || {
-        // `collapsed` is the single source of truth: the view-mode effect
-        // above collapses Code cells on entry (honoring expand_code), and the
-        // chevron can re-open one — so no forced view-mode collapse here.
+        // `collapsed` is the single source of truth: it loads from the cell's
+        // saved default, the header toggle snaps it when the default changes,
+        // and the chevron flips it transiently — no per-mode overrides.
         if collapsed.get() {
             "ironpad-cell-body ironpad-cell-body--collapsed"
         } else {
@@ -1593,6 +1629,34 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             </span>
                         }.into_any()
                     }}
+
+                    // Default-collapse toggles: authoring controls (edit mode
+                    // only) that set how the cell LOADS everywhere — distinct
+                    // from the transient chevron. Icon-driven; the dimmed
+                    // state means "loads collapsed". Shared cells have no
+                    // output, markdown cells have neither toggle.
+                    {(!is_markdown).then(|| view! {
+                        <Show when=move || !state.is_view_mode.get()>
+                            <div class="ironpad-collapse-defaults">
+                                <button
+                                    class=move || if default_collapsed.get() { "ironpad-collapse-default-btn ironpad-collapse-default-btn--collapsed" } else { "ironpad-collapse-default-btn" }
+                                    title=move || if default_collapsed.get() { "Code loads collapsed. Click to load it open." } else { "Code loads open. Click to load it collapsed." }
+                                    on:click=on_toggle_default_collapsed
+                                >
+                                    "▤"
+                                </button>
+                                <Show when=move || !is_shared.get()>
+                                    <button
+                                        class=move || if default_output_collapsed.get() { "ironpad-collapse-default-btn ironpad-collapse-default-btn--collapsed" } else { "ironpad-collapse-default-btn" }
+                                        title=move || if default_output_collapsed.get() { "Output loads collapsed. Click to load it open." } else { "Output loads open. Click to load it collapsed." }
+                                        on:click=on_toggle_default_output_collapsed
+                                    >
+                                        "⊡"
+                                    </button>
+                                </Show>
+                            </div>
+                        </Show>
+                    })}
                 </div>
             </div>
 
@@ -1667,6 +1731,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         cell_stale=state.cell_stale
                         cells=state.cells
                         run_all_queue=state.run_all_queue
+                        collapsed=output_collapsed
                     />
                 }.into_any()
             }}

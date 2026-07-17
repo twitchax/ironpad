@@ -20,7 +20,8 @@
       "label": "Input Value",
       "cell_type": "Code",
       "source": "ui::slider(\"repeat_count\", 1.0, 100.0)\n    .step(1.0)\n    .label(\"Input Value\")\n    .default_value(42.0)\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_2",
@@ -28,7 +29,8 @@
       "label": "Calculate",
       "cell_type": "Code",
       "source": "ui::button(\"Calculate \\u{25b6}\")\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_3",
@@ -36,7 +38,8 @@
       "label": "Result",
       "cell_type": "Code",
       "source": "let value = cell1;\nlet squared = value * value;\nlet cubed = value * value * value;\n\nMd(format!(\n    \"## Results for {value:.0}\\n\\n\\\n     | Operation | Result |\\n\\\n     |---|---:|\\n\\\n     | **Square** | {squared:.0} |\\n\\\n     | **Cube** | {cubed:.0} |\\n\\\n     | **Square root** | {sr:.4} |\",\n    sr = value.sqrt(),\n))\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     }
   ],
   "description": "Use a button widget to trigger downstream computation on demand with a slider input.",

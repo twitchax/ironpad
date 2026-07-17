@@ -20,7 +20,8 @@
       "label": "Simple Expression",
       "cell_type": "Code",
       "source": "// Just type an expression \u2014 it becomes the cell's output!\n// This cell outputs a Vec<i32>.\nvec![1, 1, 2, 3, 5, 8, 13, 21]\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_2",
@@ -36,7 +37,8 @@
       "label": "Using Variables",
       "cell_type": "Code",
       "source": "// `cell1` is automatically available as Vec<i32>\nlet sum: i32 = cell1.iter().sum();\nlet count = cell1.len();\n\nformat!(\"The {} Fibonacci numbers sum to {}\", count, sum)\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_4",
@@ -52,7 +54,8 @@
       "label": "HTML Output",
       "cell_type": "Code",
       "source": "Html(format!(\n    \"<div style='padding:1rem; background:linear-gradient(135deg, #1a1a2e, #16213e); border-radius:8px; text-align:center;'>\n        <h2 style='color:#e94560; margin:0;'>Hello from ironpad!</h2>\n        <p style='color:#eaeaea;'>This is <strong>rich HTML</strong> output \ud83c\udfa8</p>\n        <p style='color:#8888aa; font-size:0.9em;'>Sum from previous cell: <code style='color:#e94560;'>{}</code></p>\n    </div>\",\n    last\n))\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     }
   ],
   "description": "A step-by-step introduction to ironpad features.",

@@ -197,7 +197,6 @@ pub fn NotebookEditorPage() -> impl IntoView {
         is_view_mode: RwSignal::new(false),
         force_recompile: RwSignal::new(false),
         reactive_mode: RwSignal::new(false),
-        expand_code: RwSignal::new(false),
         reactive_timer: RwSignal::new(None),
         cell_blocked_by: RwSignal::new(HashMap::new()),
         external_content_generation: RwSignal::new(0),
@@ -246,7 +245,6 @@ pub fn NotebookEditorPage() -> impl IntoView {
             state.shared_cargo_toml.set(nb.shared_cargo_toml.clone());
             state.shared_source.set(nb.shared_source.clone());
             state.reactive_mode.set(nb.reactive_mode.unwrap_or(false));
-            state.expand_code.set(nb.expand_code.unwrap_or(false));
         }
     });
 
@@ -380,7 +378,6 @@ pub fn NotebookEditorPage() -> impl IntoView {
                     shared_cargo_toml: None,
                     shared_source: None,
                     reactive_mode: None,
-                    expand_code: None,
                 },
                 ironpad_common::protocol::ClientId::browser(),
             );
@@ -904,7 +901,6 @@ fn NotebookContent() -> impl IntoView {
                                                         shared_cargo_toml: None,
                                                         shared_source: None,
                                                         reactive_mode: Some(on),
-                                                        expand_code: None,
                                                     },
                                                     ironpad_common::protocol::ClientId::browser(),
                                                 )
@@ -919,36 +915,6 @@ fn NotebookContent() -> impl IntoView {
                                                 "⚡ Reactive Mode (On)"
                                             } else {
                                                 "⚡ Reactive Mode"
-                                            }
-                                        }}
-                                    </button>
-                                    <button
-                                        class="ironpad-toolbar-dropdown-item"
-                                        on:click=move |_| {
-                                            let on = !state.expand_code.get_untracked();
-                                            state.expand_code.set(on);
-                                            if model
-                                                .apply(
-                                                    ironpad_common::protocol::Mutation::NotebookUpdateMeta {
-                                                        title: None,
-                                                        shared_cargo_toml: None,
-                                                        shared_source: None,
-                                                        reactive_mode: None,
-                                                        expand_code: Some(on),
-                                                    },
-                                                    ironpad_common::protocol::ClientId::browser(),
-                                                )
-                                                .is_ok()
-                                            {
-                                                persist_notebook(&state);
-                                            }
-                                        }
-                                    >
-                                        {move || {
-                                            if state.expand_code.get() {
-                                                "▤ Expand Code in View (On)"
-                                            } else {
-                                                "▤ Expand Code in View"
                                             }
                                         }}
                                     </button>

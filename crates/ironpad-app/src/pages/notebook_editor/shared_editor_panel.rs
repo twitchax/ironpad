@@ -108,7 +108,6 @@ fn SharedEditorPanel(kind: SharedEditorKind, read_only: bool) -> impl IntoView {
                     shared_cargo_toml: Some(Some(content)),
                     shared_source: None,
                     reactive_mode: None,
-                    expand_code: None,
                 }
             }
             SharedEditorKind::Source => ironpad_common::protocol::Mutation::NotebookUpdateMeta {
@@ -116,7 +115,6 @@ fn SharedEditorPanel(kind: SharedEditorKind, read_only: bool) -> impl IntoView {
                 shared_cargo_toml: None,
                 shared_source: Some(Some(content)),
                 reactive_mode: None,
-                expand_code: None,
             },
         };
 

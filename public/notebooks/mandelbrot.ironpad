@@ -20,7 +20,8 @@
       "label": "Full Mandelbrot View",
       "cell_type": "Code",
       "source": "use ironpad_cell::prelude::*;\n\nlet (width, height) = (800u32, 600u32);\nlet max_iter = 100u32;\n\n// Classic full view: x \u2208 [-2.5, 1.0], y \u2208 [-1.25, 1.25]\nlet (x_min, x_max) = (-2.5_f64, 1.0);\nlet (y_min, y_max) = (-1.25_f64, 1.25);\n\n// Bernstein-polynomial color map: black interior,\n// smooth blue \u2192 teal \u2192 orange gradient outside\nfn color_map(n: u32, max_n: u32) -> (u8, u8, u8) {\n    if n == max_n {\n        return (0, 0, 0);\n    }\n    let t = n as f64 / max_n as f64;\n    (\n        (9.0 * (1.0 - t) * t * t * t * 255.0) as u8,\n        (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8,\n        (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8,\n    )\n}\n\n// Compute all pixels in parallel using rayon.\nlet pixels: Vec<(u8, u8, u8)> = (0..height)\n    .into_par_iter()\n    .flat_map_iter(|y| {\n        (0..width).map(move |x| {\n            let cx = x_min + (x as f64 + 0.5) / width as f64 * (x_max - x_min);\n            let cy = y_min + (y as f64 + 0.5) / height as f64 * (y_max - y_min);\n\n            let (mut zx, mut zy) = (0.0_f64, 0.0_f64);\n            let mut n = 0u32;\n            while zx * zx + zy * zy <= 4.0 && n < max_iter {\n                let tmp = zx * zx - zy * zy + cx;\n                zy = 2.0 * zx * zy + cy;\n                zx = tmp;\n                n += 1;\n            }\n\n            color_map(n, max_iter)\n        })\n    })\n    .collect();\n\nlet canvas = Canvas::from_pixels(width, height, pixels);\n\nCellOutput::from(canvas)\n",
-      "cargo_toml": "[dependencies]\nrayon = \"1\""
+      "cargo_toml": "[dependencies]\nrayon = \"1\"",
+      "collapsed": true
     },
     {
       "id": "cell_4",
@@ -28,7 +29,8 @@
       "label": "Full Mandelbrot View (Single-Threaded)",
       "cell_type": "Code",
       "source": "use ironpad_cell::prelude::*;\n\nlet (width, height) = (800u32, 600u32);\nlet max_iter = 100u32;\n\n// Same view as the parallel cell: x \u2208 [-2.5, 1.0], y \u2208 [-1.25, 1.25]\nlet (x_min, x_max) = (-2.5_f64, 1.0);\nlet (y_min, y_max) = (-1.25_f64, 1.25);\n\nfn color_map(n: u32, max_n: u32) -> (u8, u8, u8) {\n    if n == max_n {\n        return (0, 0, 0);\n    }\n    let t = n as f64 / max_n as f64;\n    (\n        (9.0 * (1.0 - t) * t * t * t * 255.0) as u8,\n        (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8,\n        (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8,\n    )\n}\n\n// Compute all pixels on a single thread for comparison.\nlet pixels: Vec<(u8, u8, u8)> = (0..height)\n    .flat_map(|y| {\n        (0..width).map(move |x| {\n            let cx = x_min + (x as f64 + 0.5) / width as f64 * (x_max - x_min);\n            let cy = y_min + (y as f64 + 0.5) / height as f64 * (y_max - y_min);\n\n            let (mut zx, mut zy) = (0.0_f64, 0.0_f64);\n            let mut n = 0u32;\n            while zx * zx + zy * zy <= 4.0 && n < max_iter {\n                let tmp = zx * zx - zy * zy + cx;\n                zy = 2.0 * zx * zy + cy;\n                zx = tmp;\n                n += 1;\n            }\n\n            color_map(n, max_iter)\n        })\n    })\n    .collect();\n\nlet canvas = Canvas::from_pixels(width, height, pixels);\n\nCellOutput::from(canvas)\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_2",
@@ -36,7 +38,8 @@
       "label": "Seahorse Valley Zoom",
       "cell_type": "Code",
       "source": "use ironpad_cell::prelude::*;\n\nlet (width, height) = (800u32, 600u32);\nlet max_iter = 200u32; // Higher limit reveals finer detail\n\n// Seahorse valley \u2014 a region of beautiful spirals\nlet (x_min, x_max) = (-0.77_f64, -0.73);\nlet (y_min, y_max) = (0.08_f64, 0.12);\n\nfn color_map(n: u32, max_n: u32) -> (u8, u8, u8) {\n    if n == max_n {\n        return (0, 0, 0);\n    }\n    let t = n as f64 / max_n as f64;\n    (\n        (9.0 * (1.0 - t) * t * t * t * 255.0) as u8,\n        (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8,\n        (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8,\n    )\n}\n\n// Compute all pixels in parallel using rayon.\nlet pixels: Vec<(u8, u8, u8)> = (0..height)\n    .into_par_iter()\n    .flat_map_iter(|y| {\n        (0..width).map(move |x| {\n            let cx = x_min + (x as f64 + 0.5) / width as f64 * (x_max - x_min);\n            let cy = y_min + (y as f64 + 0.5) / height as f64 * (y_max - y_min);\n\n            let (mut zx, mut zy) = (0.0_f64, 0.0_f64);\n            let mut n = 0u32;\n            while zx * zx + zy * zy <= 4.0 && n < max_iter {\n                let tmp = zx * zx - zy * zy + cx;\n                zy = 2.0 * zx * zy + cy;\n                zx = tmp;\n                n += 1;\n            }\n\n            color_map(n, max_iter)\n        })\n    })\n    .collect();\n\nlet canvas = Canvas::from_pixels(width, height, pixels);\n\nCellOutput::from(canvas)\n",
-      "cargo_toml": "[dependencies]\nrayon = \"1\""
+      "cargo_toml": "[dependencies]\nrayon = \"1\"",
+      "collapsed": true
     },
     {
       "id": "cell_3",

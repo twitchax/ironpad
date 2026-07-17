@@ -325,14 +325,20 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             cargo_toml,
             label,
             shared,
+            collapsed,
+            output_collapsed,
             version,
         } => apply_cell_updated(
             nb,
             cell_id,
-            source.as_ref(),
-            cargo_toml.as_ref(),
-            label.as_ref(),
-            *shared,
+            &CellFieldChanges {
+                source: source.as_ref(),
+                cargo_toml: cargo_toml.as_ref(),
+                label: label.as_ref(),
+                shared: *shared,
+                collapsed: *collapsed,
+                output_collapsed: *output_collapsed,
+            },
             *version,
         ),
         protocol::Event::CellDeleted { cell_id } => apply_cell_deleted(nb, cell_id),
@@ -342,14 +348,12 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             shared_cargo_toml,
             shared_source,
             reactive_mode,
-            expand_code,
         } => apply_notebook_meta_updated(
             nb,
             title.as_ref(),
             shared_cargo_toml.as_ref(),
             shared_source.as_ref(),
             *reactive_mode,
-            *expand_code,
         ),
         // Compilation/execution events don't affect the notebook structure; an
         // unknown event from a newer peer is likewise ignored here.
@@ -380,27 +384,42 @@ fn apply_cell_added(
     renumber(&mut nb.cells);
 }
 
+/// Changed-field bundle for [`apply_cell_updated`] — mirrors
+/// `Event::CellUpdated` so the applier stays readable as per-cell
+/// attributes grow.
+struct CellFieldChanges<'a> {
+    source: Option<&'a String>,
+    cargo_toml: Option<&'a Option<String>>,
+    label: Option<&'a String>,
+    shared: Option<bool>,
+    collapsed: Option<bool>,
+    output_collapsed: Option<bool>,
+}
+
 fn apply_cell_updated(
     nb: &mut IronpadNotebook,
     cell_id: &str,
-    source: Option<&String>,
-    cargo_toml: Option<&Option<String>>,
-    label: Option<&String>,
-    shared: Option<bool>,
+    changes: &CellFieldChanges,
     version: u64,
 ) {
     if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cell_id) {
-        if let Some(src) = source {
+        if let Some(src) = changes.source {
             cell.source.clone_from(src);
         }
-        if let Some(ct) = cargo_toml {
+        if let Some(ct) = changes.cargo_toml {
             cell.cargo_toml.clone_from(ct);
         }
-        if let Some(lbl) = label {
+        if let Some(lbl) = changes.label {
             cell.label.clone_from(lbl);
         }
-        if let Some(sh) = shared {
+        if let Some(sh) = changes.shared {
             cell.shared = sh;
+        }
+        if let Some(c) = changes.collapsed {
+            cell.collapsed = c;
+        }
+        if let Some(oc) = changes.output_collapsed {
+            cell.output_collapsed = oc;
         }
         cell.version = version;
     }
@@ -429,7 +448,6 @@ fn apply_notebook_meta_updated(
     shared_cargo_toml: Option<&Option<String>>,
     shared_source: Option<&Option<String>>,
     reactive_mode: Option<bool>,
-    expand_code: Option<bool>,
 ) {
     if let Some(t) = title {
         nb.title.clone_from(t);
@@ -442,9 +460,6 @@ fn apply_notebook_meta_updated(
     }
     if let Some(rm) = reactive_mode {
         nb.reactive_mode = if rm { Some(true) } else { None };
-    }
-    if let Some(ec) = expand_code {
-        nb.expand_code = if ec { Some(true) } else { None };
     }
 }
 
@@ -683,6 +698,14 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let shared = req.args.get("shared").and_then(serde_json::Value::as_bool);
+            let collapsed = req
+                .args
+                .get("collapsed")
+                .and_then(serde_json::Value::as_bool);
+            let output_collapsed = req
+                .args
+                .get("output_collapsed")
+                .and_then(serde_json::Value::as_bool);
             let version = req
                 .args
                 .get("version")
@@ -695,6 +718,8 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 cargo_toml,
                 label,
                 shared,
+                collapsed,
+                output_collapsed,
                 version,
             }))
         }
@@ -790,6 +815,8 @@ mod tests {
             source: String::new(),
             cargo_toml: None,
             shared: false,
+            collapsed: false,
+            output_collapsed: false,
             version: 1,
         }
     }
@@ -864,6 +891,8 @@ mod tests {
                 cargo_toml,
                 label,
                 shared,
+                collapsed,
+                output_collapsed,
                 version,
             }) => {
                 assert_eq!(cell_id, "c1");
@@ -871,6 +900,8 @@ mod tests {
                 assert!(cargo_toml.is_none());
                 assert!(label.is_none());
                 assert!(shared.is_none());
+                assert!(collapsed.is_none());
+                assert!(output_collapsed.is_none());
                 assert_eq!(version, 3);
             }
             other => panic!("expected CellUpdate, got {other:?}"),
@@ -993,6 +1024,8 @@ mod tests {
             label: "First".into(),
             cell_type: CellType::Code,
             shared: false,
+            collapsed: false,
+            output_collapsed: false,
         }];
         let resp = translate_response(wrap(MessageKind::Response(Response::CellsList { cells })));
         assert!(resp.ok);

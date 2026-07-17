@@ -20,7 +20,8 @@
       "label": "Chaos Game",
       "cell_type": "Code",
       "source": "// Vertices of an equilateral triangle (apex at top in Cartesian coords)\nlet h = 3.0_f64.sqrt() / 2.0;\nlet vertices: [(f64, f64); 3] = [\n    (0.5, h),   // top\n    (0.0, 0.0), // bottom-left\n    (1.0, 0.0), // bottom-right\n];\n\n// Deterministic PRNG (LCG) \u2014 no external crate needed\nstruct Rng(u64);\nimpl Rng {\n    fn next_vertex(&mut self) -> usize {\n        self.0 = self.0\n            .wrapping_mul(6_364_136_223_846_793_005)\n            .wrapping_add(1_442_695_040_888_963_407);\n        ((self.0 >> 33) % 3) as usize\n    }\n}\nlet mut rng = Rng(42);\n\n// Start at the centroid\nlet mut x = (vertices[0].0 + vertices[1].0 + vertices[2].0) / 3.0;\nlet mut y = (vertices[0].1 + vertices[1].1 + vertices[2].1) / 3.0;\n\n// Run the chaos game: pick a random vertex, move halfway toward it\nlet num_points = 50_000_usize;\nlet mut points = Vec::with_capacity(num_points);\nfor _ in 0..num_points {\n    let v = vertices[rng.next_vertex()];\n    x = (x + v.0) / 2.0;\n    y = (y + v.1) / 2.0;\n    points.push((x, y));\n}\n\npoints\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_2",
@@ -28,7 +29,8 @@
       "label": "Render Fractal",
       "cell_type": "Code",
       "source": "use ironpad_cell::prelude::*;\n\n// Receive the chaos game points from the previous cell\nlet points: Vec<(f64, f64)> = cell1;\nlet y_max = 3.0_f64.sqrt() / 2.0;\n\nlet canvas_w = 800u32;\nlet canvas_h = 600u32;\nlet margin = 0.05_f64;\nlet x_range = 1.0 + 2.0 * margin;\nlet y_range = y_max + 2.0 * margin;\n\nlet mut canvas = Canvas::new(canvas_w, canvas_h);\ncanvas.fill((10, 10, 20));\n\nfor &(x, y) in &points {\n    let px_f = (x + margin) / x_range * canvas_w as f64;\n    let py_f = (1.0 - (y + margin) / y_range) * canvas_h as f64;\n    if px_f >= 0.0 && px_f < canvas_w as f64 && py_f >= 0.0 && py_f < canvas_h as f64 {\n        canvas.set_pixel(px_f as u32, py_f as u32, (50, 205, 50));\n    }\n}\n\nCellOutput::from(canvas)\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "collapsed": true
     },
     {
       "id": "cell_3",

@@ -127,6 +127,5 @@
   "timezones",
   "geo",
   "wasm"
- ],
- "expand_code": true
+ ]
 }
