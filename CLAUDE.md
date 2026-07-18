@@ -560,5 +560,5 @@ Sharp edges: target features from independent concerns must merge into ONE `-C t
 
 ---
 
-**Last Updated**: 2026-07-12 — live check-on-type + completions (PRD-0045, v0.9.0); shared cells; unified toolchains
+**Last Updated**: 2026-07-17 — per-cell collapse defaults (replaces notebook-level expand_code) + shared code appendix below cells (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
 **Target Audience**: AI agents, developers contributing to ironpad
