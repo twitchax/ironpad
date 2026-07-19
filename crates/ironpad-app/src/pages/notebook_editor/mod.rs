@@ -912,7 +912,7 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         {move || {
                                             if state.reactive_mode.get() {
-                                                "⚡ Reactive Mode (On)"
+                                                "⚡ Reactive Mode ✓"
                                             } else {
                                                 "⚡ Reactive Mode"
                                             }
