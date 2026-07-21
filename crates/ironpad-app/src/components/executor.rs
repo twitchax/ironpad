@@ -101,8 +101,8 @@ pub type CellExecResult = (Vec<u8>, Option<String>, Option<String>, bool);
 
 /// Execute a previously-loaded cell with the given input bytes.
 ///
-/// Returns `(output_bytes, display_text, type_tag)`.  The cell must have been
-/// loaded via [`load_blob`] first; otherwise the executor throws.
+/// Returns a [`CellExecResult`]. The cell must have been loaded via
+/// [`load_blob`] first; otherwise the executor throws.
 ///
 /// Async because the JS executor always returns a Promise (wasm-bindgen cells
 /// may have an async `cell_main`).
@@ -244,4 +244,46 @@ pub async fn tick_live_cell(cell_id: &str) -> Result<LiveTickResult, String> {
 #[allow(clippy::unused_async)]
 pub async fn tick_live_cell(_cell_id: &str) -> Result<LiveTickResult, String> {
     Err("tick_live_cell is only available in hydrate mode".into())
+}
+
+/// Encode upstream cell outputs in the `CellInputs` wire format:
+/// `[count: u32 LE][len0: u32 LE][bytes0]...` — one entry per preceding
+/// cell, empty for markdown/failed cells so indices stay positional.
+///
+/// The decoder counterpart is `CellInputs::from_raw` in `ironpad-cell`
+/// (`input.rs`); the two must stay in sync.
+#[allow(clippy::cast_possible_truncation)] // Cell counts/sizes fit u32 by construction.
+pub fn encode_cell_inputs<T: AsRef<[u8]>>(outputs: &[T]) -> Vec<u8> {
+    let total: usize = outputs.iter().map(|o| o.as_ref().len() + 4).sum();
+    let mut buf = Vec::with_capacity(4 + total);
+    buf.extend_from_slice(&(outputs.len() as u32).to_le_bytes());
+    for output in outputs {
+        let output = output.as_ref();
+        buf.extend_from_slice(&(output.len() as u32).to_le_bytes());
+        buf.extend_from_slice(output);
+    }
+    buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_cell_inputs;
+
+    #[test]
+    fn encodes_length_prefixed_entries() {
+        let buf = encode_cell_inputs(&[b"ab".as_slice(), b"".as_slice(), b"xyz".as_slice()]);
+        let mut expect = Vec::new();
+        expect.extend_from_slice(&3u32.to_le_bytes());
+        expect.extend_from_slice(&2u32.to_le_bytes());
+        expect.extend_from_slice(b"ab");
+        expect.extend_from_slice(&0u32.to_le_bytes());
+        expect.extend_from_slice(&3u32.to_le_bytes());
+        expect.extend_from_slice(b"xyz");
+        assert_eq!(buf, expect);
+    }
+
+    #[test]
+    fn encodes_empty_input_list() {
+        assert_eq!(encode_cell_inputs::<&[u8]>(&[]), 0u32.to_le_bytes());
+    }
 }

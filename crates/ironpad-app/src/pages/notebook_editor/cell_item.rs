@@ -502,7 +502,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
         let queue: Vec<String> = cells[my_idx..]
             .iter()
-            .filter(|c| c.cell_type == CellType::Code && !c.shared)
+            .filter(|c| c.is_runnable())
             .map(|c| c.id.clone())
             .collect();
         if !queue.is_empty() {
@@ -545,9 +545,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             let outputs = state.cell_outputs.get_untracked();
             let unexecuted: Vec<String> = cells[..my_idx]
                 .iter()
-                .filter(|c| {
-                    c.cell_type == CellType::Code && !c.shared && !outputs.contains_key(&c.id)
-                })
+                .filter(|c| c.is_runnable() && !outputs.contains_key(&c.id))
                 .map(|c| c.id.clone())
                 .collect();
 
@@ -588,24 +586,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     }
                 }
 
-                // Serialize using CellInputs wire format (length-prefixed):
-                // [u32 LE: count][u32 LE: len0][bytes0...][u32 LE: len1][bytes1...]...
-                let mut buf = Vec::new();
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "cell count and output sizes are safely within u32 range"
-                )]
-                buf.extend_from_slice(&(all_outputs.len() as u32).to_le_bytes());
-                for output in &all_outputs {
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        reason = "cell output sizes are safely within u32 range"
-                    )]
-                    buf.extend_from_slice(&(output.len() as u32).to_le_bytes());
-                    buf.extend_from_slice(output);
-                }
-
-                (buf, types)
+                (
+                    crate::components::executor::encode_cell_inputs(&all_outputs),
+                    types,
+                )
             }
         };
 

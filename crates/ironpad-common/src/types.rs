@@ -95,9 +95,9 @@ pub struct Span {
 
 /// Result of executing a compiled WASM cell.
 ///
-/// Populated after the WASM executor runs `cell_main`.  Until execution is
-/// wired up (T-036/T-037), the UI can still render this type when it becomes
-/// available via the `CellOutputPanel`.
+/// Populated by the executor bridge after `cell_main` runs; rendered by the
+/// editor's output panel and the view-only pages, and its `output_bytes`
+/// feed downstream cells as typed inputs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionResult {
     /// JSON-serialized `Vec<DisplayPanel>` from the cell's output panels.
@@ -209,6 +209,16 @@ pub struct CellManifest {
     /// [`IronpadCell::output_collapsed`]).
     #[serde(default)]
     pub output_collapsed: bool,
+}
+
+impl CellManifest {
+    /// Whether Run All executes this cell: a Code cell that is not shared
+    /// (shared cells never execute — their source rides in every other
+    /// cell's `shared.rs`). The single definition of "runnable".
+    #[must_use]
+    pub fn is_runnable(&self) -> bool {
+        self.cell_type == CellType::Code && !self.shared
+    }
 }
 
 // ── Self-contained Notebook Types ───────────────────────────────────────────
@@ -389,6 +399,14 @@ pub struct IronpadCell {
     /// Defaults to 0 for backward compatibility with existing notebooks.
     #[serde(default)]
     pub version: u64,
+}
+
+impl IronpadCell {
+    /// Whether Run All executes this cell — see [`CellManifest::is_runnable`].
+    #[must_use]
+    pub fn is_runnable(&self) -> bool {
+        self.cell_type == CellType::Code && !self.shared
+    }
 }
 
 // ── Public Notebook Types ───────────────────────────────────────────────────

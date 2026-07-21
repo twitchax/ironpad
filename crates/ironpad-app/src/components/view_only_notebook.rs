@@ -136,7 +136,7 @@ pub fn ViewOnlyNotebook(
                 let cell_ids: Vec<String> = notebook.with_value(|nb| {
                     nb.cells
                         .iter()
-                        .filter(|c| c.cell_type == CellType::Code && !c.shared)
+                        .filter(|c| c.is_runnable())
                         .map(|c| c.id.clone())
                         .collect()
                 });
@@ -155,7 +155,7 @@ pub fn ViewOnlyNotebook(
         let cell_ids: Vec<String> = notebook.with_value(|nb| {
             nb.cells
                 .iter()
-                .filter(|c| c.cell_type == CellType::Code && !c.shared)
+                .filter(|c| c.is_runnable())
                 .map(|c| c.id.clone())
                 .collect()
         });
@@ -567,15 +567,7 @@ fn ViewOnlyCodeCell(
                     }
                 }
 
-                // CellInputs wire format: [count: u32 LE][len0: u32 LE][bytes0]...
-                let mut input_buf = Vec::new();
-                #[allow(clippy::cast_possible_truncation)]
-                input_buf.extend_from_slice(&(all_output_bytes.len() as u32).to_le_bytes());
-                for output in &all_output_bytes {
-                    #[allow(clippy::cast_possible_truncation)]
-                    input_buf.extend_from_slice(&(output.len() as u32).to_le_bytes());
-                    input_buf.extend_from_slice(output);
-                }
+                let input_buf = crate::components::executor::encode_cell_inputs(&all_output_bytes);
 
                 let request = CompileRequest {
                     notebook_id: stored_notebook_id.get_value(),

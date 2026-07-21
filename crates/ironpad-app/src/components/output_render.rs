@@ -432,6 +432,16 @@ fn InteractiveWidget(
     }
 }
 
+/// The optional leading label span every interactive widget renders — one
+/// definition instead of four copies in the widget builders.
+fn widget_label(label_text: String) -> AnyView {
+    if label_text.is_empty() {
+        view! { <span /> }.into_any()
+    } else {
+        view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn render_slider(
     cfg: &serde_json::Value,
@@ -497,11 +507,7 @@ fn render_slider(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if label_text.is_empty() {
-                view! { <span /> }.into_any()
-            } else {
-                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
-            }}
+            {widget_label(label_text)}
             <input
                 type="range"
                 min=min.to_string()
@@ -588,11 +594,7 @@ fn render_dropdown(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if label_text.is_empty() {
-                view! { <span /> }.into_any()
-            } else {
-                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
-            }}
+            {widget_label(label_text)}
             <select
                 prop:value=move || value.get()
                 on:change=on_change
@@ -717,11 +719,7 @@ fn render_text_input(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if label_text.is_empty() {
-                view! { <span /> }.into_any()
-            } else {
-                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
-            }}
+            {widget_label(label_text)}
             <input
                 type="text"
                 placeholder=placeholder
@@ -796,11 +794,7 @@ fn render_number(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if label_text.is_empty() {
-                view! { <span /> }.into_any()
-            } else {
-                view! { <span class="ironpad-widget-label">{label_text}</span> }.into_any()
-            }}
+            {widget_label(label_text)}
             <input
                 type="number"
                 min=min.to_string()

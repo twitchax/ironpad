@@ -26,9 +26,6 @@ extern "C" {
 ///
 /// This is the generic channel for cell-to-host communication. Messages
 /// are JSON strings dispatched by the executor based on the `"type"` field.
-///
-/// # Panics
-/// Panics if `msg` length exceeds `u32::MAX`.
 pub fn host_message(msg: &str) {
     #[cfg(target_arch = "wasm32")]
     {

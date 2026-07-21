@@ -9,7 +9,7 @@
 //! ```ignore
 //! let mut c = Canvas::new(800, 600);
 //! c.set_pixel(10, 20, (255, 0, 0));
-//! c  // returns CellOutput with an <img> tag
+//! c  // returns CellOutput with a structured image panel
 //! ```
 //!
 //! Or use the functional constructor:
@@ -24,8 +24,11 @@
 /// A 2D pixel buffer that renders as a bitmap `<img>` tag.
 ///
 /// Pixels are stored as a flat `Vec<u8>` of RGB triplets in row-major order.
-/// On conversion to [`CellOutput`](crate::CellOutput), the buffer is BMP-encoded,
-/// base64-encoded, and wrapped in an `<img>` tag with a data URL.
+/// On conversion to [`CellOutput`](crate::CellOutput), the buffer is
+/// BMP-encoded and emitted as a structured image panel (the renderer builds
+/// the blob URL itself — an inline `<img>` data URL would be stripped by the
+/// HTML sanitizer). [`Canvas::to_html`] is the separate path that produces a
+/// literal `<img>` tag for embedding in custom HTML.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Canvas {
     width: u32,

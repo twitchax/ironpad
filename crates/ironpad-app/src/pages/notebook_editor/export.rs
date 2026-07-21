@@ -9,7 +9,7 @@ use ironpad_common::{CellType, IronpadNotebook};
 #[cfg(feature = "hydrate")]
 use crate::components::markdown_cell::render_markdown;
 #[cfg(feature = "hydrate")]
-use crate::components::output_render::{html_escape, DisplayPanel};
+use crate::components::output_render::{html_escape, render_table_html, DisplayPanel};
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
 
@@ -157,21 +157,8 @@ pub(super) fn build_export_html(
                                     );
                                 }
                                 DisplayPanel::Table { headers, rows } => {
-                                    html.push_str(
-                                        "<table class=\"ironpad-output-table\"><thead><tr>",
-                                    );
-                                    for h in headers {
-                                        let _ = write!(html, "<th>{}</th>", html_escape(h));
-                                    }
-                                    html.push_str("</tr></thead><tbody>");
-                                    for row in rows {
-                                        html.push_str("<tr>");
-                                        for cell in row {
-                                            let _ = write!(html, "<td>{}</td>", html_escape(cell));
-                                        }
-                                        html.push_str("</tr>");
-                                    }
-                                    html.push_str("</tbody></table>\n");
+                                    html.push_str(&render_table_html(headers, rows));
+                                    html.push('\n');
                                 }
                                 DisplayPanel::Interactive { kind, config } => {
                                     render_interactive_static(&mut html, kind, config);

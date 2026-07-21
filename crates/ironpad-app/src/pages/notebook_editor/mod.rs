@@ -272,7 +272,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
                         .cells
                         .get_untracked()
                         .iter()
-                        .filter(|c| c.cell_type == CellType::Code && !c.shared)
+                        .filter(|c| c.is_runnable())
                         .map(|c| c.id.clone())
                         .collect();
                     if !cell_ids.is_empty() {
@@ -638,7 +638,7 @@ fn NotebookContent() -> impl IntoView {
                 .cells
                 .get_untracked()
                 .iter()
-                .filter(|c| c.cell_type == CellType::Code && !c.shared)
+                .filter(|c| c.is_runnable())
                 .map(|c| c.id.clone())
                 .collect();
             if !cell_ids.is_empty() {
@@ -671,7 +671,7 @@ fn NotebookContent() -> impl IntoView {
                         .cells
                         .get_untracked()
                         .iter()
-                        .filter(|c| c.cell_type == CellType::Code && !c.shared)
+                        .filter(|c| c.is_runnable())
                         .map(|c| c.id.clone())
                         .collect();
                     if !cell_ids.is_empty() {
