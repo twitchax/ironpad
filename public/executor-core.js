@@ -1,6 +1,6 @@
 // Shared CellExecutor core for ironpad cells.
 // Contains all constants, helpers, GPU state, and CellExecutor prototype methods.
-// Loaded by both executor.js (main-thread) and worker-executor.js (Worker).
+// Loaded by both executor.js (main-thread) and executor-worker-core.js (Worker).
 //
 // Supports two loading modes:
 //   1. **wasm-bindgen** (preferred): JS glue module + transformed WASM.
@@ -700,11 +700,11 @@
         "ironpad_blocking_sleep_ms: (typeof WebAssembly.Suspending === 'function') " +
         "? new WebAssembly.Suspending(function(ms) { " +
         "return new Promise(function(res) { setTimeout(res, ms); }); }) " +
-        ": function() { throw new Error('blocking host calls need WebAssembly JSPI (Chrome/Edge 137+)'); }, " +
+        ": function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); }, " +
         "ironpad_blocking_fetch: (typeof WebAssembly.Suspending === 'function') " +
         "? new WebAssembly.Suspending(function(p, l) { " +
         "return " + globalRef + "._blockingFetch(" + escapedCellId + ", p, l); }) " +
-        ": function() { throw new Error('blocking host calls need WebAssembly JSPI (Chrome/Edge 137+)'); }, " +
+        ": function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); }, " +
         "ironpad_blocking_fetch_ok: function() { " +
         "return " + globalRef + " ? " + globalRef + "._blockingFetchOk(" + escapedCellId + ") : 0; }, " +
         "ironpad_blocking_read: function(p, l) { " +
@@ -849,12 +849,12 @@
         "      ? new WebAssembly.Suspending(function(ms) {\n" +
         "          return new Promise(function(res) { setTimeout(res, ms); });\n" +
         "        })\n" +
-        "      : function() { throw new Error('blocking host calls need WebAssembly JSPI (Chrome/Edge 137+)'); };\n" +
+        "      : function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); };\n" +
         "    imports.env.ironpad_blocking_fetch = (typeof WebAssembly.Suspending === 'function')\n" +
         "      ? new WebAssembly.Suspending(function(p, l) {\n" +
         "          return " + globalRef + "._blockingFetch(__ironpad_cell_id, p, l);\n" +
         "        })\n" +
-        "      : function() { throw new Error('blocking host calls need WebAssembly JSPI (Chrome/Edge 137+)'); };\n" +
+        "      : function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); };\n" +
         "    imports.env.ironpad_blocking_fetch_ok = function() {\n" +
         "      return " + globalRef + " ? " + globalRef + "._blockingFetchOk(__ironpad_cell_id) : 0;\n" +
         "    };\n" +

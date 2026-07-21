@@ -24,6 +24,10 @@
     --ip-info-hover: #70c0ff;
     --ip-error: #e94560;
     --ip-error-rgb: 233, 69, 96;
+    --ip-success-rgb: 64, 192, 128;
+    --ip-warning-rgb: 240, 192, 64;
+    --ip-info-rgb: 64, 160, 240;
+    --ip-purple-rgb: 176, 128, 240;
     --ip-purple: #b080f0;
     --ip-code-string: #e8e0d0;
     --ip-code-comment: #b0a090;
@@ -80,6 +84,10 @@
     --ip-info-hover: #2060b0;
     --ip-error: #d63851;
     --ip-error-rgb: 214, 56, 81;
+    --ip-success-rgb: 42, 144, 96;
+    --ip-warning-rgb: 192, 144, 48;
+    --ip-info-rgb: 48, 128, 208;
+    --ip-purple-rgb: 128, 80, 208;
     --ip-purple: #8050d0;
     --ip-code-string: #2a2a1e;
     --ip-code-comment: #706050;
@@ -662,7 +670,7 @@ a:focus-visible {
 .ironpad-delete-btn:hover {
     color: var(--ip-error);
     border-color: var(--ip-error);
-    background: rgba(233, 69, 96, 0.1);
+    background: rgba(var(--ip-error-rgb), 0.1);
 }
 
 .ironpad-error {
@@ -1069,7 +1077,7 @@ a:focus-visible {
 }
 
 .ironpad-cell-menu-item--danger:hover:not(:disabled) {
-    background: rgba(233, 69, 96, 0.15);
+    background: rgba(var(--ip-error-rgb), 0.15);
 }
 
 .ironpad-cell-menu-divider {
@@ -1113,25 +1121,25 @@ a:focus-visible {
 
 .ironpad-cell-status--queued {
     color: var(--ip-purple);
-    background: rgba(176, 128, 240, 0.15);
+    background: rgba(var(--ip-purple-rgb), 0.15);
     animation: ironpad-status-pulse 1.2s ease-in-out infinite;
 }
 
 .ironpad-cell-status--compiling {
     color: var(--ip-warning);
-    background: rgba(240, 192, 64, 0.15);
+    background: rgba(var(--ip-warning-rgb), 0.15);
     animation: ironpad-status-pulse 1.2s ease-in-out infinite;
 }
 
 .ironpad-cell-status--running {
     color: var(--ip-info);
-    background: rgba(64, 160, 240, 0.15);
+    background: rgba(var(--ip-info-rgb), 0.15);
     animation: ironpad-status-pulse 1.2s ease-in-out infinite;
 }
 
 .ironpad-cell-status--success {
     color: var(--ip-success);
-    background: rgba(64, 192, 128, 0.15);
+    background: rgba(var(--ip-success-rgb), 0.15);
 }
 
 .ironpad-cell-status--error {
@@ -1192,29 +1200,6 @@ a:focus-visible {
 
 .ironpad-cell-card--active~.ironpad-cell-side-actions {
     opacity: 1;
-}
-
-.ironpad-drag-handle {
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--ip-text-tertiary);
-    cursor: grab;
-    font-size: 1rem;
-    border-radius: 50%;
-    transition: color var(--ip-transition-fast), background var(--ip-transition-fast);
-    user-select: none;
-
-    &:hover {
-        color: var(--ip-text-primary);
-        background: var(--ip-hover-overlay);
-    }
-
-    &:active {
-        cursor: grabbing;
-    }
 }
 
 .ironpad-side-btn {
@@ -1409,12 +1394,12 @@ a:focus-visible {
 
 .ironpad-error-diag--warning .ironpad-error-diag-severity {
     color: var(--ip-warning);
-    background: rgba(240, 192, 64, 0.12);
+    background: rgba(var(--ip-warning-rgb), 0.12);
 }
 
 .ironpad-error-diag--note .ironpad-error-diag-severity {
     color: var(--ip-info);
-    background: rgba(64, 160, 240, 0.12);
+    background: rgba(var(--ip-info-rgb), 0.12);
 }
 
 .ironpad-error-diag-code {
@@ -1508,13 +1493,19 @@ a:focus-visible {
     color: var(--ip-success);
 }
 
-.ironpad-output-meta {
-    margin-left: auto;
-    font-size: 0.7rem;
+// Green timing pill shared by the editor output header and the view-only
+// cell header.
+%timing-pill {
     color: var(--ip-text-tertiary);
-    background: rgba(64, 192, 128, 0.15);
+    background: rgba(var(--ip-success-rgb), 0.15);
     padding: 2px 8px;
     border-radius: 10px;
+}
+
+.ironpad-output-meta {
+    @extend %timing-pill;
+    margin-left: auto;
+    font-size: 0.7rem;
 }
 
 .ironpad-output-fallback-badge {
@@ -1542,7 +1533,7 @@ a:focus-visible {
 .ironpad-output-display-text {
     margin: 0;
     padding: 6px 8px;
-    background: rgba(64, 192, 128, 0.06);
+    background: rgba(var(--ip-success-rgb), 0.06);
     border-radius: 4px;
     color: var(--ip-text-primary);
     white-space: pre-wrap;
@@ -1552,32 +1543,36 @@ a:focus-visible {
     overflow-y: auto;
 }
 
+// Plot interactivity shared by the editor and view-only output SVGs:
+// hover effects on data marks plus the tooltip overlay circles.
+@mixin plot-svg-hover {
+    circle,
+    rect:not(:first-child) {
+        transition: opacity 0.15s ease, filter 0.15s ease;
+
+        &:hover {
+            opacity: 0.8;
+            filter: brightness(1.3) drop-shadow(0 0 4px var(--ip-accent));
+            cursor: crosshair;
+        }
+    }
+
+    .ironpad-tooltips {
+        pointer-events: all;
+
+        circle:hover {
+            opacity: 0.3 !important;
+            fill: var(--ip-accent);
+        }
+    }
+}
+
 .ironpad-output-svg {
     svg {
         max-width: 100%;
         height: auto;
 
-        // Plot interactivity — hover effects on data elements.
-        circle,
-        rect:not(:first-child) {
-            transition: opacity 0.15s ease, filter 0.15s ease;
-
-            &:hover {
-                opacity: 0.8;
-                filter: brightness(1.3) drop-shadow(0 0 4px var(--ip-accent));
-                cursor: crosshair;
-            }
-        }
-
-        // Tooltip overlay circles.
-        .ironpad-tooltips {
-            pointer-events: all;
-
-            circle:hover {
-                opacity: 0.3 !important;
-                fill: var(--ip-accent);
-            }
-        }
+        @include plot-svg-hover;
     }
 }
 
@@ -2222,11 +2217,8 @@ code[class*="language-"] {
 }
 
 .view-only-timing-badge {
+    @extend %timing-pill;
     font-size: 0.75rem;
-    color: var(--ip-text-tertiary);
-    background: rgba(64, 192, 128, 0.15);
-    padding: 2px 8px;
-    border-radius: 10px;
     white-space: nowrap;
 }
 
@@ -2301,26 +2293,7 @@ code[class*="language-"] {
 }
 
 .view-only-output-svg svg {
-
-    circle,
-    rect:not(:first-child) {
-        transition: opacity 0.15s ease, filter 0.15s ease;
-
-        &:hover {
-            opacity: 0.8;
-            filter: brightness(1.3) drop-shadow(0 0 4px var(--ip-accent));
-            cursor: crosshair;
-        }
-    }
-
-    .ironpad-tooltips {
-        pointer-events: all;
-
-        circle:hover {
-            opacity: 0.3 !important;
-            fill: var(--ip-accent);
-        }
-    }
+    @include plot-svg-hover;
 }
 
 /* ── Copy-to-clipboard button ────────────────────────────────────────────── */
@@ -2719,7 +2692,7 @@ code[class*="language-"] {
     }
 
     input:checked+.ironpad-switch-slider {
-        background: rgba(233, 69, 96, 0.25);
+        background: rgba(var(--ip-error-rgb), 0.25);
         border-color: var(--ip-accent);
 
         &::after {
@@ -2761,6 +2734,7 @@ code[class*="language-"] {
     // `.ironpad-cell-card:hover .ironpad-drag-handle` reveal selector never
     // matched and left the handle permanently invisible).
     transition: color var(--ip-transition-fast);
+    user-select: none;
 
     &:active {
         cursor: grabbing;

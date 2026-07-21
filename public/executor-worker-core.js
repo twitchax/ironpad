@@ -7,7 +7,7 @@
 
 "use strict";
 
-importScripts("/executor-core.js");
+importScripts("/executor-core.js" + (self.location.search || ""));
 
 var _CoreCellExecutor = self.__IronpadExecutorCore.CellExecutor;
 

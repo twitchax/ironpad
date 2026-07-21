@@ -14,6 +14,25 @@
 (function () {
   "use strict";
 
+  // The shell loads this script with a ?v={release} cache-buster (versioned()
+  // in lib.rs). Propagate that version to every script this bridge loads
+  // lazily (worker entry, main-thread fallback executor) so the whole
+  // executor chain busts caches together — the no-cache middleware is the
+  // safety net, this makes stale mixes structurally impossible.
+  var SCRIPT_VERSION = (function () {
+    try {
+      var src = document.currentScript && document.currentScript.src;
+      var m = src && src.match(/[?&]v=([^&]+)/);
+      return m ? m[1] : null;
+    } catch (e) {
+      return null;
+    }
+  })();
+
+  function versionedPath(path) {
+    return SCRIPT_VERSION ? path + "?v=" + SCRIPT_VERSION : path;
+  }
+
   // ── BridgeExecutor ────────────────────────────────────────────────────────
 
   // Standalone copy of CellExecutor.updateSimBus (executor-core.js). The bridge
@@ -51,7 +70,7 @@
 
   BridgeExecutor.prototype._spawnWorker = function () {
     var self = this;
-    this._worker = new Worker("/executor-worker.js");
+    this._worker = new Worker(versionedPath("/executor-worker.js"));
 
     this._worker.onmessage = function (e) {
       self._onWorkerMessage(e.data);
@@ -75,20 +94,15 @@
   };
 
   BridgeExecutor.prototype._onWorkerMessage = function (msg) {
-    if (msg.type === "result") {
+    if (msg.type === "result" || msg.type === "error") {
       var entry = this._pending.get(msg.id);
       if (entry) {
         this._pending.delete(msg.id);
-        entry.resolve(msg.value);
-      }
-      return;
-    }
-
-    if (msg.type === "error") {
-      var entry = this._pending.get(msg.id);
-      if (entry) {
-        this._pending.delete(msg.id);
-        entry.reject(new Error(msg.error));
+        if (msg.type === "result") {
+          entry.resolve(msg.value);
+        } else {
+          entry.reject(new Error(msg.error));
+        }
       }
       return;
     }
@@ -113,14 +127,14 @@
       // executor.js depends on executor-core.js (reads self.__IronpadExecutorCore),
       // so we must load core first.
       var coreScript = document.createElement("script");
-      coreScript.src = "/executor-core.js";
+      coreScript.src = versionedPath("/executor-core.js");
       coreScript.onload = function () {
         var script = document.createElement("script");
         // executor.js sets window.IronpadExecutor, but we already own that
         // global.  We load it, grab the CellExecutor from the temporary
         // overwrite, then restore our bridge instance.
         var prev = window.IronpadExecutor;
-        script.src = "/executor.js";
+        script.src = versionedPath("/executor.js");
         script.onload = function () {
           self._mainExecutor = window.IronpadExecutor;
           window.IronpadExecutor = prev;

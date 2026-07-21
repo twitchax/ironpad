@@ -1,7 +1,7 @@
 // Web Worker entry point for ironpad cell execution.
 //
 // Loaded via `new Worker("/executor-worker.js")` from the main-thread bridge.
-// Imports the core executor logic from worker-executor.js, wires up host
+// Imports the core executor logic from executor-worker-core.js, wires up host
 // message forwarding, and translates postMessage commands into executor calls.
 
 "use strict";
@@ -127,7 +127,9 @@ console.error = function () {
 
 // ── Load core executor logic ────────────────────────────────────────────────
 
-importScripts("/worker-executor.js");
+// Propagate this worker's own ?v={release} (see executor-bridge.js) so the
+// imported core scripts ride the same cache-busted version.
+importScripts("/executor-worker-core.js" + (self.location.search || ""));
 
 var executor = new self.CellExecutor();
 var _updateSimBus = self.__IronpadExecutorCore.CellExecutor.updateSimBus;
