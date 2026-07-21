@@ -56,7 +56,7 @@ const CELL_FLUSH_PERSIST_YIELD_MS: i32 = 200;
 /// delays are a pragmatic yield for the effect queue, not a correctness
 /// guarantee — see `CELL_FLUSH_YIELD_MS`/`CELL_FLUSH_PERSIST_YIELD_MS` docs.
 #[cfg(feature = "hydrate")]
-async fn yield_for_cell_flush(ms: i32) {
+pub(super) async fn yield_for_cell_flush(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         if let Some(window) = web_sys::window() {
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);

@@ -184,21 +184,32 @@ impl NotebookState {
 
 // ── Notebook state helpers ──────────────────────────────────────────────────
 
-/// Persists the current notebook to `IndexedDB` (client-only).
+/// Persists the current notebook to `IndexedDB` (client-only),
+/// fire-and-forget. Callers that need to know when the write actually
+/// lands (e.g. a Saving… indicator) use [`persist_notebook_durable`].
 #[allow(unused_variables)]
 pub(crate) fn persist_notebook(state: &NotebookState) {
     #[cfg(feature = "hydrate")]
     {
-        if let Some(mut nb) = state.notebook.get_untracked() {
-            nb.updated_at = chrono::Utc::now();
-            state
-                .notebook
-                .update_untracked(|existing| *existing = Some(nb.clone()));
-            leptos::task::spawn_local(async move {
-                if let Err(e) = crate::storage::client::save_notebook(&nb).await {
-                    leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
-                }
-            });
+        let state = *state;
+        leptos::task::spawn_local(async move {
+            persist_notebook_durable(&state).await;
+        });
+    }
+}
+
+/// Awaitable persist: resolves after the `IndexedDB` write completes
+/// (failures are logged, not surfaced — same policy as the
+/// fire-and-forget path).
+#[cfg(feature = "hydrate")]
+pub(super) async fn persist_notebook_durable(state: &NotebookState) {
+    if let Some(mut nb) = state.notebook.get_untracked() {
+        nb.updated_at = chrono::Utc::now();
+        state
+            .notebook
+            .update_untracked(|existing| *existing = Some(nb.clone()));
+        if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+            leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
         }
     }
 }

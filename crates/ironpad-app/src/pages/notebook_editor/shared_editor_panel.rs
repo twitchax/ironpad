@@ -4,7 +4,15 @@ use thaw::{Button, ButtonAppearance, Toast, ToastBody, ToastTitle, ToasterInject
 use crate::components::monaco_editor::MonacoEditor;
 use crate::model::NotebookModel;
 
-use super::state::{persist_notebook, NotebookState};
+#[cfg(not(feature = "hydrate"))]
+use super::state::persist_notebook;
+use super::state::NotebookState;
+
+/// Minimum time (ms) the Saving… state stays visible: the `IndexedDB` write
+/// usually completes imperceptibly fast, so the indicator is floored at
+/// the longer of the actual write or this.
+#[cfg(feature = "hydrate")]
+const MIN_SAVING_MS: i32 = 500;
 
 // ── Shared editor appendix (generic) ────────────────────────────────────────
 
@@ -99,6 +107,11 @@ fn SharedEditorPanel(kind: SharedEditorKind, read_only: bool) -> impl IntoView {
     let saving = RwSignal::new(false);
 
     let on_save = move |_| {
+        // A save is already in flight; the button is disabled, but guard
+        // against programmatic double-fires too.
+        if saving.get_untracked() {
+            return;
+        }
         let content = editor_text.get_untracked();
 
         let mutation = match kind {
@@ -120,25 +133,55 @@ fn SharedEditorPanel(kind: SharedEditorKind, read_only: bool) -> impl IntoView {
 
         if model
             .apply(mutation, ironpad_common::protocol::ClientId::browser())
-            .is_ok()
+            .is_err()
         {
-            persist_notebook(&state);
+            return;
         }
 
-        let toaster = toaster;
-        toaster.dispatch_toast(
-            move || {
-                view! {
-                    <Toast>
-                        <ToastTitle>{toast_title}</ToastTitle>
-                        <ToastBody>"Changes will apply on next cell compile."</ToastBody>
-                    </Toast>
+        let dispatch_saved_toast = move || {
+            toaster.dispatch_toast(
+                move || {
+                    view! {
+                        <Toast>
+                            <ToastTitle>{toast_title}</ToastTitle>
+                            <ToastBody>"Changes will apply on next cell compile."</ToastBody>
+                        </Toast>
+                    }
+                },
+                thaw::ToastOptions::default()
+                    .with_intent(thaw::ToastIntent::Success)
+                    .with_timeout(std::time::Duration::from_secs(3)),
+            );
+        };
+
+        // Await the actual IndexedDB write (so the toast means "durably
+        // saved", not "save dispatched"), and floor the Saving… indicator
+        // at MIN_SAVING_MS so the feedback is perceptible — the write is
+        // usually far faster than a blink.
+        #[cfg(feature = "hydrate")]
+        {
+            saving.set(true);
+            leptos::task::spawn_local(async move {
+                let started = js_sys::Date::now();
+                super::state::persist_notebook_durable(&state).await;
+                #[allow(clippy::cast_possible_truncation)]
+                let remaining = MIN_SAVING_MS - (js_sys::Date::now() - started) as i32;
+                if remaining > 0 {
+                    super::yield_for_cell_flush(remaining).await;
                 }
-            },
-            thaw::ToastOptions::default()
-                .with_intent(thaw::ToastIntent::Success)
-                .with_timeout(std::time::Duration::from_secs(3)),
-        );
+                // The panel may have been disposed mid-save (navigation,
+                // section collapse); try_set keeps this continuation
+                // panic-free. The toaster is app-level and outlives us,
+                // and the save DID land, so the toast stays truthful.
+                let _ = saving.try_set(false);
+                dispatch_saved_toast();
+            });
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            persist_notebook(&state);
+            dispatch_saved_toast();
+        }
     };
 
     view! {

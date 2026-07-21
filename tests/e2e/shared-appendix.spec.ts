@@ -61,6 +61,12 @@ test.describe("Shared appendix (editor)", () => {
       "pub fn from_appendix() -> i32 { 7 }"
     );
     await sourceSection.locator("button", { hasText: "Save" }).click();
+
+    // The Saving… state is floored at 500ms (the IndexedDB write alone is
+    // imperceptibly fast), so it must be observable before the toast.
+    await expect(
+      sourceSection.locator("button", { hasText: "Saving…" })
+    ).toBeVisible();
     await expect(
       page.locator("text=Shared source saved").first()
     ).toBeVisible({ timeout: 10_000 });
