@@ -19,6 +19,7 @@ use crate::server_fns::share_notebook;
 use crate::session::SessionState;
 
 use crate::components::session_panel::SessionButton;
+use crate::components::view_only_notebook::ViewOnlyNotebook;
 
 use self::cell_item::CellItem;
 use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
@@ -472,8 +473,10 @@ fn NotebookContent() -> impl IntoView {
 
     // ── Close button navigation ─────────────────────────────────────────
 
-    let navigate = use_navigate();
-    let navigate_close = navigate.clone();
+    // Held as a StoredValue: the render tree below sits inside a re-runnable
+    // <Show>, whose children closure must be Fn — moving the navigator into
+    // per-call closures would make it FnOnce. get_value() clones per use.
+    let navigate = StoredValue::new_local(use_navigate());
 
     // ── Outside-click handler to close dropdowns ────────────────────────
 
@@ -545,13 +548,10 @@ fn NotebookContent() -> impl IntoView {
             // its closure is replaced below.
             destroy_sortable(sortable_instance);
 
+            // The container only renders in edit mode (view mode swaps in the
+            // ViewOnlyNotebook renderer), so a Some ref implies edit mode.
             let Some(el) = cells_ref.get() else { return };
             let el: JsValue = JsValue::from(el);
-
-            // Only init in edit mode.
-            if state.is_view_mode.get_untracked() {
-                return;
-            }
 
             let sortable_class =
                 js_sys::Reflect::get(&web_sys::window().unwrap(), &"Sortable".into()).ok();
@@ -630,23 +630,6 @@ fn NotebookContent() -> impl IntoView {
         on_cleanup(move || destroy_sortable(sortable_instance));
     }
 
-    // ── Auto-run all Code cells when entering view mode ────────────────
-
-    Effect::new(move || {
-        if state.is_view_mode.get() {
-            let cell_ids: Vec<String> = state
-                .cells
-                .get_untracked()
-                .iter()
-                .filter(|c| c.is_runnable())
-                .map(|c| c.id.clone())
-                .collect();
-            if !cell_ids.is_empty() {
-                state.run_all_queue.set(cell_ids);
-            }
-        }
-    });
-
     // ── Reactive dataflow: schedule re-execution when cells go stale ────
 
     Effect::new(move || {
@@ -661,6 +644,11 @@ fn NotebookContent() -> impl IntoView {
     // ── Render ──────────────────────────────────────────────────────────
 
     view! {
+        // Edit mode renders the editing scaffold; view mode swaps in the SAME
+        // renderer the public/shared/embed pages use, so the preview cannot
+        // drift from the published look. The swap remounts per entry with a
+        // fresh snapshot (agent edits mid-view appear on re-toggle).
+        <Show when=move || !state.is_view_mode.get()>
         <div class="ironpad-notebook-toolbar">
             // ── Run All button ──────────────────────────────────────────
             <button
@@ -699,8 +687,6 @@ fn NotebookContent() -> impl IntoView {
                         "☰"
                     </button>
                     {move || {
-                        let navigate = navigate.clone();
-                        let _ = &navigate; // Used inside #[cfg(feature = "hydrate")] below.
                         if hamburger_open.get() {
                             view! {
                                 <div class="ironpad-toolbar-dropdown-menu">
@@ -811,7 +797,7 @@ fn NotebookContent() -> impl IntoView {
                                                     )
                                                     .unwrap_or(false);
                                                 if confirmed {
-                                                    let navigate = navigate.clone();
+                                                    let navigate = navigate.get_value();
                                                     leptos::task::spawn_local(async move {
                                                         crate::storage::client::delete_notebook(&id)
                                                             .await;
@@ -908,8 +894,7 @@ fn NotebookContent() -> impl IntoView {
                     class="ironpad-toolbar-close"
                     title="Back to notebook list"
                     on:click=move |_| {
-                        let navigate_close = navigate_close.clone();
-                        navigate_close("/", NavigateOptions::default());
+                        navigate.get_value()("/", NavigateOptions::default());
                     }
                 >
                     "✕"
@@ -918,11 +903,9 @@ fn NotebookContent() -> impl IntoView {
         </div>
 
         <div class="ironpad-cell-list ironpad-cells-container" node_ref=cells_container_ref>
-            <Show when=move || !state.is_view_mode.get()>
-                <AddCellButton after_cell_id=None on_add=add_cell_cb />
-            </Show>
+            <AddCellButton after_cell_id=None on_add=add_cell_cb />
 
-            <Show when=move || state.cells.get().is_empty() && !state.is_view_mode.get()>
+            <Show when=move || state.cells.get().is_empty()>
                 <div class="ironpad-empty-notebook">
                     <p class="ironpad-empty-notebook-title">"This notebook is empty"</p>
                     <p class="ironpad-empty-notebook-hint">
@@ -937,9 +920,7 @@ fn NotebookContent() -> impl IntoView {
                 let:cell
             >
                 <CellItem cell=cell.clone() />
-                <Show when=move || !state.is_view_mode.get()>
-                    <AddCellButton after_cell_id=Some(cell.id.clone()) on_add=add_cell_cb />
-                </Show>
+                <AddCellButton after_cell_id=Some(cell.id.clone()) on_add=add_cell_cb />
             </For>
         </div>
 
@@ -953,6 +934,25 @@ fn NotebookContent() -> impl IntoView {
             <SharedEditorSection kind=SharedEditorKind::Source />
             <SharedEditorSection kind=SharedEditorKind::Dependencies />
         </div>
+        </Show>
+
+        // ── View mode: the canonical public renderer ────────────────────
+        {move || {
+            state.is_view_mode.get().then(|| {
+                // Untracked snapshot: the preview is a still image of the
+                // model at entry (the toggle handler flushes edits first).
+                state.notebook.get_untracked().map(|nb| {
+                    view! {
+                        <ViewOnlyNotebook
+                            notebook=nb
+                            hide_fork=true
+                            autorun=true
+                            cell_outputs=state.cell_outputs
+                        />
+                    }
+                })
+            })
+        }}
 
         // ── Edit / View mode toggle (fixed bottom-left) ────────────────
         <div class="ironpad-mode-toggle">
@@ -966,7 +966,27 @@ fn NotebookContent() -> impl IntoView {
             <button
                 class=move || if state.is_view_mode.get() { "ironpad-mode-toggle-segment ironpad-mode-toggle-segment--active" } else { "ironpad-mode-toggle-segment" }
                 title="View mode"
-                on:click=move |_| state.is_view_mode.set(true)
+                on:click=move |_| {
+                    // Flush in-progress editor content into the model before
+                    // the view branch snapshots it (PRD-0032 T-007
+                    // discipline). TWO rounds: an open markdown editor
+                    // commits on the first bump, but effect order within a
+                    // round is unspecified, so the cell flush may read the
+                    // pre-commit source; the second round re-reads it
+                    // post-commit.
+                    #[cfg(feature = "hydrate")]
+                    {
+                        state.save_generation.update(|g| *g += 1);
+                        leptos::task::spawn_local(async move {
+                            yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
+                            state.save_generation.update(|g| *g += 1);
+                            yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
+                            state.is_view_mode.set(true);
+                        });
+                    }
+                    #[cfg(not(feature = "hydrate"))]
+                    state.is_view_mode.set(true);
+                }
             >
                 "◉"
             </button>

@@ -26,67 +26,45 @@ pub(super) enum SharedEditorKind {
 /// One collapsed-by-default appendix section for a notebook-level shared text
 /// field, rendered below the cell list — the cells are the story, the shared
 /// code is the footnotes (mirroring the view-only pages). Expanding lazily
-/// mounts the editor panel; in view mode the section is read-only and hidden
-/// entirely when the field is empty, matching the public/shared appendix.
+/// mounts the editor panel. Edit-mode only: view mode renders the public
+/// pages' read-only appendix via `ViewOnlyNotebook`.
 #[component]
 pub(super) fn SharedEditorSection(kind: SharedEditorKind) -> impl IntoView {
-    let state = expect_context::<NotebookState>();
-
-    let (label, content_signal) = match kind {
-        SharedEditorKind::Dependencies => (
-            "\u{2b21} Shared Dependencies (Cargo.toml)",
-            state.shared_cargo_toml,
-        ),
-        SharedEditorKind::Source => ("\u{270e} Shared Source (shared.rs)", state.shared_source),
+    let label = match kind {
+        SharedEditorKind::Dependencies => "\u{2b21} Shared Dependencies (Cargo.toml)",
+        SharedEditorKind::Source => "\u{270e} Shared Source (shared.rs)",
     };
 
     let collapsed = RwSignal::new(true);
     let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
 
-    // Edit mode always shows the section (it's how shared code gets added in
-    // the first place); view mode only shows it when there is content.
-    let visible = move || {
-        !state.is_view_mode.get()
-            || content_signal
-                .get()
-                .is_some_and(|content| !content.trim().is_empty())
-    };
-
     view! {
-        <Show when=visible>
-            <div class="view-only-shared-section">
-                <button
-                    class="view-only-shared-header"
-                    on:click=move |_| collapsed.update(|c| *c = !*c)
-                >
-                    <span class="ironpad-output-toggle">{toggle_icon}</span>
-                    <span>{label}</span>
-                </button>
-                // Reading is_view_mode here re-mounts the panel on mode
-                // switches, so it picks up the right read-only state and the
-                // freshest content in one place.
-                {move || {
-                    (!collapsed.get())
-                        .then(|| {
-                            view! {
-                                <div class="view-only-shared-body">
-                                    <SharedEditorPanel
-                                        kind=kind
-                                        read_only=state.is_view_mode.get()
-                                    />
-                                </div>
-                            }
-                        })
-                }}
-            </div>
-        </Show>
+        <div class="view-only-shared-section">
+            <button
+                class="view-only-shared-header"
+                on:click=move |_| collapsed.update(|c| *c = !*c)
+            >
+                <span class="ironpad-output-toggle">{toggle_icon}</span>
+                <span>{label}</span>
+            </button>
+            {move || {
+                (!collapsed.get())
+                    .then(|| {
+                        view! {
+                            <div class="view-only-shared-body">
+                                <SharedEditorPanel kind=kind />
+                            </div>
+                        }
+                    })
+            }}
+        </div>
     }
 }
 
 /// The editor body of a shared appendix section: a Monaco editor plus (in
 /// edit mode) a Save action.
 #[component]
-fn SharedEditorPanel(kind: SharedEditorKind, read_only: bool) -> impl IntoView {
+fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
     let (default_content, toast_title, language) = match kind {
         SharedEditorKind::Dependencies => {
             (SHARED_DEPS_DEFAULT, "Shared dependencies saved", "toml")
@@ -193,23 +171,17 @@ fn SharedEditorPanel(kind: SharedEditorKind, read_only: bool) -> impl IntoView {
                     on_change=Callback::new(move |val: String| {
                         editor_text.set(val);
                     })
-                    read_only=read_only
                 />
             </div>
-            {(!read_only)
-                .then(|| {
-                    view! {
-                        <div class="ironpad-shared-editor-actions">
-                            <Button
-                                appearance=ButtonAppearance::Primary
-                                on_click=on_save
-                                disabled=Signal::derive(move || saving.get())
-                            >
-                                {move || if saving.get() { "Saving\u{2026}" } else { "Save" }}
-                            </Button>
-                        </div>
-                    }
-                })}
+            <div class="ironpad-shared-editor-actions">
+                <Button
+                    appearance=ButtonAppearance::Primary
+                    on_click=on_save
+                    disabled=Signal::derive(move || saving.get())
+                >
+                    {move || if saving.get() { "Saving\u{2026}" } else { "Save" }}
+                </Button>
+            </div>
         </div>
     }
 }

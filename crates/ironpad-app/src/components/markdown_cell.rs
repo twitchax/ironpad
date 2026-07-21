@@ -43,10 +43,11 @@ pub fn MarkdownCell(
     /// Fires with the updated markdown source when the editor loses focus or
     /// Escape is pressed.
     on_change: Callback<String>,
-    /// When the notebook is in view mode, the cell must render (never stay
-    /// in the Monaco editor).
+    /// Bumped when a save/flush is requested (Ctrl+S, entering view mode).
+    /// An in-progress edit commits on each bump, so flushes never read a
+    /// stale source.
     #[prop(into)]
-    is_view_mode: Signal<bool>,
+    flush_generation: Signal<u64>,
 ) -> impl IntoView {
     let editing = RwSignal::new(false);
     let current_source = RwSignal::new(source.clone());
@@ -106,15 +107,22 @@ pub fn MarkdownCell(
         });
     }
 
-    // Force a commit back to preview if the notebook switches to view mode
-    // while this cell is mid-edit. Uses `commit` (not `editing.set(false)`)
-    // so the in-progress edit is saved, not discarded.
+    // Commit an in-progress edit whenever a flush is requested (Ctrl+S, the
+    // view-mode toggle) — flushes read the committed source signal, so an
+    // open editor must write through first. Uses `commit` (not
+    // `editing.set(false)`) so the in-progress edit is saved, not discarded.
     #[cfg(feature = "hydrate")]
     {
-        let commit_for_view = commit;
+        let commit_for_flush = commit;
+        let prev_gen = RwSignal::new(flush_generation.get_untracked());
         Effect::new(move || {
-            if is_view_mode.get() && editing.get_untracked() {
-                commit_for_view();
+            let gen = flush_generation.get();
+            if gen == prev_gen.get_untracked() {
+                return;
+            }
+            prev_gen.set(gen);
+            if editing.get_untracked() {
+                commit_for_flush();
             }
         });
     }
@@ -125,7 +133,7 @@ pub fn MarkdownCell(
     // Suppress unused warnings during SSR.
     #[cfg(not(feature = "hydrate"))]
     {
-        let _ = (&editor_handle, &commit, &is_view_mode);
+        let _ = (&editor_handle, &commit, &flush_generation);
     }
 
     view! {

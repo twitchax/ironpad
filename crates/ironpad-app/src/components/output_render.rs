@@ -83,7 +83,7 @@ pub(crate) enum DisplayPanel {
 // Fields are accessed only under #[cfg(feature = "hydrate")]; appear dead in SSR.
 #[derive(Clone, Default, Debug)]
 #[allow(dead_code)]
-pub(crate) struct CellOutputData {
+pub struct CellOutputData {
     pub(crate) bytes: Vec<u8>,
     pub(crate) type_tag: Option<String>,
 }

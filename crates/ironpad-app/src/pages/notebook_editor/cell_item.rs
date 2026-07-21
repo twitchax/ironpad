@@ -107,21 +107,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let source_handle: RwSignal<Option<MonacoEditorHandle>> = RwSignal::new(None);
     let cargo_toml_handle: RwSignal<Option<MonacoEditorHandle>> = RwSignal::new(None);
 
-    // Keep the cell's editors read-only in view mode: the body can be
-    // expanded there (saved default / the chevron), so a visible editor must
-    // not accept edits. Tracking the handles covers editors that mount while
-    // already in view mode; `try_get` keeps the reads safe if this effect is
-    // flushed after the cell is disposed.
-    Effect::new(move || {
-        let read_only = state.is_view_mode.get();
-        if let Some(handle) = source_handle.try_get().flatten() {
-            handle.set_read_only(read_only);
-        }
-        if let Some(handle) = cargo_toml_handle.try_get().flatten() {
-            handle.set_read_only(read_only);
-        }
-    });
-
     // ── Reactive source / cargo_toml state ──────────────────────────────
 
     let initial_content = state.notebook.with_untracked(|nb_opt| {
@@ -1424,9 +1409,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         if is_active() {
             class.push_str(" ironpad-cell-card--active");
         }
-        if state.is_view_mode.try_get().unwrap_or(false) {
-            class.push_str(" ironpad-cell--view-mode");
-        }
         class
     };
 
@@ -1519,7 +1501,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         class="ironpad-cell-label-input"
                         type="text"
                         prop:value=move || label.get()
-                        prop:readOnly=move || state.is_view_mode.get()
                         on:input=move |ev| {
                             let val = event_target_value(&ev);
                             label.set(val);
@@ -1619,8 +1600,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     // state means "loads collapsed". Shared cells have no
                     // output, markdown cells have neither toggle.
                     {(!is_markdown).then(|| view! {
-                        <Show when=move || !state.is_view_mode.get()>
-                            <div class="ironpad-collapse-defaults">
+                        <div class="ironpad-collapse-defaults">
                                 <button
                                     class=move || if default_collapsed.get() { "ironpad-collapse-default-btn ironpad-collapse-default-btn--collapsed" } else { "ironpad-collapse-default-btn" }
                                     title=move || if default_collapsed.get() { "Code loads collapsed. Click to load it open." } else { "Code loads open. Click to load it collapsed." }
@@ -1637,8 +1617,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         "⊡"
                                     </button>
                                 </Show>
-                            </div>
-                        </Show>
+                        </div>
                     })}
                 </div>
             </div>
@@ -1650,7 +1629,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         <MarkdownCell
                             source=source.get_untracked()
                             on_change=on_source_change
-                            is_view_mode=state.is_view_mode
+                            flush_generation=state.save_generation
                         />
                     </div>
                 }.into_any()
@@ -1721,15 +1700,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
         // ── Side action buttons ─────────────────────────────────────────
         <div class="ironpad-cell-side-actions">
-            {move || if !is_markdown && !state.is_view_mode.get() {
-                view! {
-                    <div class="ironpad-drag-handle" title="Drag to reorder">
-                        "⠿"
-                    </div>
-                }.into_any()
-            } else {
-                view! { <span /> }.into_any()
-            }}
+            {(!is_markdown).then(|| view! {
+                <div class="ironpad-drag-handle" title="Drag to reorder">
+                    "⠿"
+                </div>
+            })}
             {move || if is_markdown || is_shared.get() {
                 view! { <span /> }.into_any()
             } else {

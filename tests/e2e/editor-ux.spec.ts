@@ -80,10 +80,13 @@ test.describe("Editor UX (PRD-0032)", () => {
     await cell.locator(".ironpad-markdown-cell-preview").dblclick();
     await expect(cell.locator(".ironpad-markdown-cell-editor")).toBeVisible();
 
-    // Switch to view mode — the cell must render (not stay a Monaco editor).
+    // Switch to view mode — the public renderer takes over: the in-edit
+    // markdown commits and renders as a view-only cell, no Monaco editor.
     await page.locator('button[title="View mode"]').click();
-    await expect(cell.locator(".ironpad-markdown-cell-preview")).toBeVisible();
-    await expect(cell.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
+    await expect(page.locator(".view-only-markdown")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
   });
 
   // Rendered markdown fenced code blocks are syntax-highlighted by Prism
@@ -104,13 +107,11 @@ test.describe("Editor UX (PRD-0032)", () => {
     });
     await setCellSource(page, cell, "```rust\nlet x: u32 = 42;\n```");
 
-    // Render it (view mode commits + renders, per uat-003).
+    // Render it (view mode commits + renders via the public renderer).
     await page.locator('button[title="View mode"]').click();
 
     // The fence keeps its language class...
-    const code = cell.locator(
-      ".ironpad-markdown-cell-preview code.language-rust"
-    );
+    const code = page.locator(".view-only-markdown code.language-rust");
     await expect(code).toBeVisible({ timeout: 10_000 });
 
     // ...and Prism has rewritten it into token spans — the `let` keyword is the
@@ -165,15 +166,22 @@ test.describe("Editor UX (PRD-0032)", () => {
     const reloadedBody = reloadedCell.locator(".ironpad-cell-body");
     await expect(reloadedBody).toHaveClass(/ironpad-cell-body--collapsed/);
 
-    // View mode loads it collapsed too; the chevron still opens it
-    // transiently, and the revealed editor is read-only.
+    // View mode swaps in the public renderer and loads the cell collapsed
+    // there too; the chevron still opens it transiently, and its editor is
+    // read-only (all view-only editors are).
     await page.locator('button[title="View mode"]').click();
-    await expect(reloadedBody).toHaveClass(/ironpad-cell-body--collapsed/);
-    await reloadedCell.locator(".ironpad-cell-collapse-btn").click();
-    await expect(reloadedBody).not.toHaveClass(/ironpad-cell-body--collapsed/);
+    const viewCell = page.locator(".view-only-cell").first();
+    await expect(viewCell).toBeVisible({ timeout: 10_000 });
+    const viewBody = viewCell.locator(".ironpad-cell-body");
+    await expect(viewBody).toHaveClass(/ironpad-cell-body--collapsed/);
+    await viewCell.locator(".ironpad-cell-collapse-btn").click();
+    await expect(viewBody).not.toHaveClass(/ironpad-cell-body--collapsed/);
+    await expect(viewCell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
     const readOnly = await page.evaluate(() => {
       const monaco = (window as any).monaco;
-      const el = document.querySelector(".ironpad-cell-card");
+      const el = document.querySelector(".view-only-cell");
       const editor = monaco.editor
         .getEditors()
         .find((e: any) => el!.contains(e.getDomNode()));
@@ -181,10 +189,9 @@ test.describe("Editor UX (PRD-0032)", () => {
     });
     expect(readOnly).toBe(true);
 
-    // The authoring toggles are edit-mode chrome — hidden in view mode.
-    await expect(
-      reloadedCell.locator(".ironpad-collapse-defaults")
-    ).toHaveCount(0);
+    // The authoring toggles are edit-mode chrome — absent in the public
+    // renderer.
+    await expect(page.locator(".ironpad-collapse-defaults")).toHaveCount(0);
   });
 
   // The output toggle: collapses the output panel live and persists the flag.

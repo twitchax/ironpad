@@ -2382,40 +2382,6 @@ code[class*="language-"] {
     color: var(--ip-text-on-accent);
 }
 
-/* ── Cell view-mode overrides ───────────────────────────────────────── */
-
-/* Code cells keep the collapse toggle in view mode (expand/collapse code,
-   same as the public pages); markdown cells hide it — the rendered preview
-   is the content, there's nothing to reveal. */
-.ironpad-cell-card--markdown.ironpad-cell--view-mode .ironpad-cell-collapse-btn {
-    display: none;
-}
-
-.ironpad-cell--view-mode .ironpad-cell-label-input {
-    border-color: transparent;
-    background: transparent;
-    pointer-events: none;
-}
-
-/* Hide side action buttons (run, settings, menu) in view mode. */
-.ironpad-cell--view-mode~.ironpad-cell-side-actions {
-    display: none !important;
-}
-
-/* Markdown cells in view mode: hide editor and hint, show only preview. */
-.ironpad-cell--view-mode .ironpad-markdown-cell-editor {
-    display: none;
-}
-
-.ironpad-cell--view-mode .ironpad-markdown-cell-hint {
-    display: none;
-}
-
-.ironpad-cell--view-mode .ironpad-markdown-cell-preview {
-    cursor: default;
-    pointer-events: none;
-}
-
 /* ── Toolbar right-side group ───────────────────────────────────────── */
 
 .ironpad-toolbar-right {

@@ -49,8 +49,9 @@ fn canonical_path(spec: &str) -> Option<String> {
 /// Read-only notebook view. Displays cells (code + markdown), supports
 /// execution, and provides a fork button to clone the notebook.
 #[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::implicit_hasher)] // RwSignal needs the concrete map type.
 #[component]
-pub fn ViewOnlyNotebook(
+pub(crate) fn ViewOnlyNotebook(
     notebook: IronpadNotebook,
     /// Label shown on the fork button (e.g., "Fork" for public, "Fork to Private" for shared).
     #[prop(default = "Fork".to_string())]
@@ -66,11 +67,22 @@ pub fn ViewOnlyNotebook(
     #[prop(optional)]
     embed_spec: Option<String>,
     /// Run all code cells on load. Set only for TRUSTED first-party sources
-    /// (public showcase notebooks, and embeds of them when the embedder opts
-    /// in): shared notebooks are arbitrary user content and must never
-    /// auto-execute (PRD-0040 scopes auto-run to the trust boundary).
+    /// (public showcase notebooks, embeds of them when the embedder opts in,
+    /// and the editor's own view mode — the user's own content): shared
+    /// notebooks are arbitrary user content and must never auto-execute
+    /// (PRD-0040 scopes auto-run to the trust boundary).
     #[prop(optional)]
     autorun: bool,
+    /// Hide the Fork button without the rest of embed mode. The editor's
+    /// view mode uses this: forking your own open notebook from its preview
+    /// is a duplicate-with-extra-steps.
+    #[prop(optional)]
+    hide_fork: bool,
+    /// Share the caller's outputs map instead of an internal one, so cell
+    /// piping state survives the editor's edit/view mode flips. `None`
+    /// (public/shared/embed pages) keeps a private map.
+    #[prop(optional)]
+    cell_outputs: Option<RwSignal<HashMap<String, CellOutputData>>>,
 ) -> impl IntoView {
     // Leptos's optional-prop setter takes the bare String, so callers with no
     // spec pass ""; normalize that back to None here.
@@ -105,8 +117,10 @@ pub fn ViewOnlyNotebook(
 
     let notebook = StoredValue::new(notebook);
 
-    // Shared state: execution outputs keyed by cell ID (for piping between cells).
-    let cell_outputs: RwSignal<HashMap<String, CellOutputData>> = RwSignal::new(HashMap::new());
+    // Shared state: execution outputs keyed by cell ID (for piping between
+    // cells) — the caller's map when provided (editor view mode), else local.
+    let cell_outputs: RwSignal<HashMap<String, CellOutputData>> =
+        cell_outputs.unwrap_or_else(|| RwSignal::new(HashMap::new()));
 
     // Run-all sequential execution queue (cell IDs in order).
     let run_all_queue: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
@@ -281,7 +295,7 @@ pub fn ViewOnlyNotebook(
                 >
                     {move || if running_all.get() { "◐ Running…" } else { "▶▶ Run All" }}
                 </button>
-                {(!embed).then(|| view! {
+                {(!embed && !hide_fork).then(|| view! {
                     <button
                         class="fork-button"
                         on:click=fork_action
@@ -719,7 +733,7 @@ fn ViewOnlyCodeCell(
     });
 
     view! {
-        <div class="view-only-cell ironpad-cell--view-mode">
+        <div class="view-only-cell">
             <div class="view-only-cell-header">
                 <button
                     class="ironpad-cell-collapse-btn"
@@ -805,7 +819,7 @@ fn ViewOnlySharedCell(cell: IronpadCell) -> impl IntoView {
     });
 
     view! {
-        <div class="view-only-cell ironpad-cell--view-mode view-only-cell--shared">
+        <div class="view-only-cell view-only-cell--shared">
             <div class="view-only-cell-header">
                 <button
                     class="ironpad-cell-collapse-btn"

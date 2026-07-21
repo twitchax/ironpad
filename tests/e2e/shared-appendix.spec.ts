@@ -71,9 +71,8 @@ test.describe("Shared appendix (editor)", () => {
       page.locator("text=Shared source saved").first()
     ).toBeVisible({ timeout: 10_000 });
 
-    // The toast fires when the IndexedDB write is *dispatched*, not when it
-    // lands (persist_notebook is fire-and-forget), so poll the durable store
-    // before reloading — a straight reload races the write.
+    // The toast now means "durably saved", but keep the belt-and-suspenders
+    // poll so this test never races persistence again.
     const notebookId = url.match(/\/notebook\/([a-f0-9-]+)/)![1];
     await expect
       .poll(
@@ -107,17 +106,18 @@ test.describe("Shared appendix (editor)", () => {
     await newNotebook(page);
 
     // A fresh notebook has no shared source but does carry the default
-    // shared Cargo.toml, so view mode shows exactly the deps section —
-    // the same content-bearing rule as the public pages.
+    // shared Cargo.toml, so view mode (the public renderer, exactly) shows
+    // one deps section in ITS appendix — the content-bearing rule.
     await page.locator('button[title="View mode"]').click();
-    const appendix = page.locator(".ironpad-editor-shared-appendix");
+    const appendix = page.locator(".view-only-shared-appendix");
+    await expect(appendix).toBeVisible({ timeout: 10_000 });
     const headers = appendix.locator(".view-only-shared-header");
     await expect(headers).toHaveCount(1);
     await expect(headers.nth(0)).toContainText("Shared Dependencies");
 
     // Expanded in view mode: Monaco is read-only and there is no Save.
     await headers.nth(0).click();
-    const section = appendix.locator(".view-only-shared-section");
+    const section = appendix.locator(".view-only-shared-section").first();
     await expect(section.locator(".monaco-editor").first()).toBeVisible({
       timeout: 15_000,
     });
@@ -127,7 +127,7 @@ test.describe("Shared appendix (editor)", () => {
 
     const readOnly = await page.evaluate(() => {
       const monaco = (window as any).monaco;
-      const el = document.querySelector(".ironpad-editor-shared-appendix");
+      const el = document.querySelector(".view-only-shared-appendix");
       const editor = monaco.editor
         .getEditors()
         .find((e: any) => el!.contains(e.getDomNode()));
