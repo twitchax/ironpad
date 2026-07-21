@@ -168,8 +168,12 @@ pub struct NewCell {
     pub shared: bool,
 }
 
+/// Default label for cells created without one. Single source of truth —
+/// the CLI mirrors this instead of hard-coding the string.
+pub const DEFAULT_CELL_LABEL: &str = "New Cell";
+
 fn default_cell_label() -> String {
-    "New Cell".to_string()
+    DEFAULT_CELL_LABEL.to_string()
 }
 
 // ── Queries (client → model) ────────────────────────────────────────────────
@@ -296,11 +300,25 @@ pub enum Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result")]
 pub enum MutationResult {
-    CellAdded { cell_id: String, version: u64 },
-    CellUpdated { cell_id: String, version: u64 },
-    CellDeleted { cell_id: String },
+    CellAdded {
+        cell_id: String,
+        version: u64,
+    },
+    CellUpdated {
+        cell_id: String,
+        version: u64,
+    },
+    CellDeleted {
+        cell_id: String,
+    },
     CellReordered,
     NotebookMetaUpdated,
+    /// An unrecognised result from a newer peer (see the [`Message`]
+    /// forward-compat docs). Without this arm, a new result variant nested
+    /// in `Response::MutationOk` failed the whole message parse and the
+    /// requester hung to its timeout.
+    #[serde(other)]
+    Unknown,
 }
 
 // ── Control Messages (session management) ───────────────────────────────────
@@ -861,6 +879,19 @@ mod tests {
         // can't stall a pending request. (See the `Message` docs.)
         let wire = r#"{"id":"m","type":"Telemetry","payload":{"whatever":1}}"#;
         assert!(serde_json::from_str::<Message>(wire).is_err());
+
+        // Unknown MutationResult nested in a MutationOk → MutationResult::Unknown.
+        // This one stalls a CORRELATED request if it fails to parse (the
+        // requester's oneshot never resolves), so it must decode.
+        let wire = r#"{"id":"r","type":"Response","payload":{"response":"MutationOk","detail":{"result":"CellTeleported","cell_id":"c1"}}}"#;
+        let msg: Message = serde_json::from_str(wire)
+            .expect("unknown mutation result must decode to MutationResult::Unknown");
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Response(Response::MutationOk {
+                detail: MutationResult::Unknown
+            })
+        ));
     }
 
     #[test]
