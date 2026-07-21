@@ -192,6 +192,20 @@ test.describe("Editor UX (PRD-0032)", () => {
     // The authoring toggles are edit-mode chrome — absent in the public
     // renderer.
     await expect(page.locator(".ironpad-collapse-defaults")).toHaveCount(0);
+
+    // Back to edit mode: the rebuilt cell rows re-read the model's cell
+    // manifests, so the header toggle must still show collapsed-by-default
+    // (regression: collapse-only updates once skipped the manifest sync,
+    // so the round trip silently reset the toggle).
+    await page.locator('button[title="Edit mode"]').click();
+    const editCell = page.locator(".ironpad-cell-card").first();
+    await expect(editCell).toBeVisible({ timeout: 10_000 });
+    await expect(
+      editCell.locator(".ironpad-collapse-default-btn").first()
+    ).toHaveClass(/ironpad-collapse-default-btn--collapsed/);
+    await expect(editCell.locator(".ironpad-cell-body")).toHaveClass(
+      /ironpad-cell-body--collapsed/
+    );
   });
 
   // The output toggle: collapses the output panel live and persists the flag.

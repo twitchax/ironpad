@@ -445,9 +445,12 @@ impl NotebookModel {
             self.mark_downstream_stale(&cell_id);
         }
 
-        // Label and the shared flag are part of CellManifest, so sync the
-        // derived list.
-        if label.is_some() || shared.is_some() {
+        // Label, the shared flag, and the collapse defaults are part of
+        // CellManifest, so sync the derived list. (The cell list rebuilds
+        // its rows from these manifests on remount — e.g. returning from
+        // view mode — so a stale manifest resurrects old header state.)
+        if label.is_some() || shared.is_some() || collapsed.is_some() || output_collapsed.is_some()
+        {
             self.sync_from_notebook();
         }
 
@@ -718,12 +721,18 @@ mod collapse_tests {
     fn cell_update_persists_collapse_defaults() {
         Owner::new().with(|| {
             let nb_signal = RwSignal::new(Some(notebook_with_one_cell()));
+            let cells_signal = RwSignal::new(Vec::new());
             let model = NotebookModel::new(
                 nb_signal,
-                RwSignal::new(Vec::new()),
+                cells_signal,
                 RwSignal::new(HashMap::new()),
                 RwSignal::new(0),
             );
+            // Populate the derived manifest list first, so the assertion
+            // below proves a collapse-only update REFRESHES it rather than
+            // merely populating an empty one (the editor rebuilds cell rows
+            // from these manifests when returning from view mode).
+            model.sync_from_notebook();
 
             let (result, event) = model
                 .apply(
@@ -745,6 +754,14 @@ mod collapse_tests {
             assert!(nb.cells[0].collapsed, "collapsed flag must persist");
             assert!(nb.cells[0].output_collapsed, "output flag must persist");
             assert_eq!(nb.cells[0].version, 1);
+
+            // The manifest list must reflect the flags too: cell rows
+            // re-initialize their header toggles from it on remount.
+            let manifests = cells_signal.get_untracked();
+            assert!(
+                manifests[0].collapsed && manifests[0].output_collapsed,
+                "collapse defaults must sync into the CellManifest list"
+            );
             assert!(matches!(result, MutationResult::CellUpdated { .. }));
             match event.event {
                 Event::CellUpdated {
