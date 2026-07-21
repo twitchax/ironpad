@@ -1,6 +1,6 @@
 [package]
 name = "ironpad-cli"
-version = "0.12.10"
+version = "0.12.11"
 edition = "2021"
 
 [[bin]]
