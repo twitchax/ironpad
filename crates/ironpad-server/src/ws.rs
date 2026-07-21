@@ -44,6 +44,18 @@ const WS_CHANNEL_BOUND: usize = 1024;
 /// (PRD-0038 T-014).
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Idle timeout for the host read loop: the browser sends a Heartbeat every
+/// ~30s, so this much total silence means a half-open connection (a network
+/// drop without a FIN) — tear it down so the host doesn't stay registered
+/// forever. (The guest-side equivalent is configurable on [`WsState`].)
+const HOST_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// WS close code sent when the first frame is not a valid `ClaimHost`.
+const WS_CLOSE_BAD_HANDSHAKE: u16 = 4400;
+
+/// WS close code sent when the host claim's secret is rejected.
+const WS_CLOSE_CLAIM_REJECTED: u16 = 4403;
+
 // ── Query parameters ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -89,7 +101,12 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
             _ => None,
         });
     let Some(secret) = claim else {
-        close_host(&mut ws_sender, 4400, "expected ClaimHost first frame").await;
+        close_host(
+            &mut ws_sender,
+            WS_CLOSE_BAD_HANDSHAKE,
+            "expected ClaimHost first frame",
+        )
+        .await;
         return;
     };
     match state.ws.claim_host(&notebook_id, &secret).await {
@@ -98,12 +115,17 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
         }
         ClaimOutcome::Rejected => {
             tracing::warn!(notebook_id = %notebook_id, "host claim rejected — secret mismatch");
-            close_host(&mut ws_sender, 4403, "host claim rejected").await;
+            close_host(
+                &mut ws_sender,
+                WS_CLOSE_CLAIM_REJECTED,
+                "host claim rejected",
+            )
+            .await;
             return;
         }
     }
 
-    let (tx, mut rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+    let (tx, mut rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
     tracing::info!(
         notebook_id = %notebook_id,
         connection_id = %connection_id,
@@ -118,7 +140,7 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
     // Forward channel → WebSocket.
     let mut send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if ws_sender.send(Message::Text(msg.into())).await.is_err() {
+            if ws_sender.send(Message::Text(msg)).await.is_err() {
                 break;
             }
         }
@@ -129,10 +151,6 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
     let conn_id = connection_id.clone();
     let st = state.clone();
     let mut recv_task = tokio::spawn(async move {
-        // Idle timeout: the browser host sends a Heartbeat every ~30s, so 120s
-        // of total silence means a half-open connection (a network drop without
-        // a FIN) — tear it down so the host doesn't stay registered forever.
-        const HOST_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
         loop {
             let next = tokio::time::timeout(HOST_IDLE_TIMEOUT, ws_receiver.next()).await;
             // Stream end (`Ok(None)`), a WS error (`Ok(Some(Err))`), or the idle
@@ -245,8 +263,12 @@ async fn handle_host_message(text: &str, notebook_id: &str, connection_id: &str,
             // itself just sent — plus the model-assigned id/version it needs for
             // follow-ups — never another client's edits, which stay gated.
             if let Some(origin_client) = origin {
-                if !state.ws.guest_can_read(&origin_client).await {
-                    state.ws.send_to_guest(&origin_client, text).await;
+                if !state.ws.guest_can_read(&origin_client).await
+                    && !state.ws.send_to_guest(&origin_client, text).await
+                {
+                    // The originator strands on its request timeout without
+                    // this ack — leave a trace instead of failing silently.
+                    tracing::warn!(client_id = %origin_client, "failed to deliver mutation ack to originator");
                 }
             }
         }
@@ -254,7 +276,9 @@ async fn handle_host_message(text: &str, notebook_id: &str, connection_id: &str,
         // Host sends a response → route to the guest that sent the query.
         MessageKind::Response(_) => {
             if let Some(client_id) = state.ws.resolve_query(&msg.id).await {
-                state.ws.send_to_guest(&client_id, text).await;
+                if !state.ws.send_to_guest(&client_id, text).await {
+                    tracing::warn!(client_id = %client_id, "failed to deliver query response to guest");
+                }
             }
         }
 
@@ -402,7 +426,7 @@ async fn handle_guest(
     state: AppState,
 ) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (tx, mut rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+    let (tx, mut rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
 
     tracing::info!(
         session_id = %session_id,
@@ -424,7 +448,7 @@ async fn handle_guest(
     // Forward channel → WebSocket.
     let mut send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if ws_sender.send(Message::Text(msg.into())).await.is_err() {
+            if ws_sender.send(Message::Text(msg)).await.is_err() {
                 break;
             }
         }
@@ -597,7 +621,7 @@ mod tests {
         let conn = "conn-1";
 
         // Register host.
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         // Create a session so `broadcast_to_notebook_guests` can find guests.
@@ -608,7 +632,8 @@ mod tests {
             .await;
 
         // Register a guest on that session.
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -639,7 +664,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -648,7 +673,8 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -681,7 +707,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -690,7 +716,8 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -716,7 +743,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -725,7 +752,8 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -753,7 +781,8 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, mut host_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -762,7 +791,8 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -813,7 +843,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -821,7 +851,7 @@ mod tests {
             .sessions
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
-        let (guest_tx, _guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, _guest_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -852,7 +882,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         // A write-only (read: false) "blind" agent session.
@@ -868,7 +898,8 @@ mod tests {
                 },
             )
             .await;
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -926,7 +957,8 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, mut host_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let create_msg = wire_msg(
@@ -961,7 +993,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -970,7 +1002,8 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -1013,7 +1046,8 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, mut host_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -1022,7 +1056,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, _guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, _guest_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -1073,7 +1107,8 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, mut host_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -1082,7 +1117,7 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, _guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, _guest_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -1122,7 +1157,8 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, mut host_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         let session = state
@@ -1131,7 +1167,8 @@ mod tests {
             .create_session(nb.into(), conn.into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -1184,7 +1221,8 @@ mod tests {
         let state = test_state();
         let nb = "nb-1";
 
-        let (host_tx, mut host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, mut host_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, "conn-1", host_tx).await;
 
         let session = state
@@ -1193,7 +1231,8 @@ mod tests {
             .create_session(nb.into(), "conn-1".into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -1237,7 +1276,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         // Malformed JSON — should be silently ignored.
@@ -1260,7 +1299,7 @@ mod tests {
         let nb = "nb-1";
         let conn = "conn-1";
 
-        let (host_tx, _host_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state.ws.register_host(nb, conn, host_tx).await;
 
         // Valid JSON but missing required protocol fields.
@@ -1281,7 +1320,8 @@ mod tests {
             .create_session(nb.into(), "conn-1".into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)
@@ -1332,7 +1372,8 @@ mod tests {
             .create_session(nb.into(), "conn-1".into(), Permissions::default())
             .await;
 
-        let (guest_tx, mut guest_rx) = mpsc::channel::<String>(WS_CHANNEL_BOUND);
+        let (guest_tx, mut guest_rx) =
+            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
         state
             .ws
             .register_guest(&session.session_id, "guest-1", guest_tx)

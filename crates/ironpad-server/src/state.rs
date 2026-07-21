@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::ws::Utf8Bytes;
 use axum::extract::FromRef;
 use leptos::config::LeptosOptions;
 use tokio::sync::{mpsc, RwLock};
@@ -82,14 +83,14 @@ impl Default for WsState {
 #[derive(Clone)]
 struct HostHandle {
     connection_id: String,
-    sender: mpsc::Sender<String>,
+    sender: mpsc::Sender<Utf8Bytes>,
 }
 
 /// Channel handle for a connected CLI guest.
 #[derive(Clone)]
 struct GuestHandle {
     client_id: String,
-    sender: mpsc::Sender<String>,
+    sender: mpsc::Sender<Utf8Bytes>,
 }
 
 /// Outcome of a host claim against a notebook's bound secret (PRD-0038 T-014).
@@ -161,7 +162,7 @@ impl WsState {
         &self,
         notebook_id: &str,
         connection_id: &str,
-        sender: mpsc::Sender<String>,
+        sender: mpsc::Sender<Utf8Bytes>,
     ) {
         let prev = self.hosts.write().await.insert(
             notebook_id.to_string(),
@@ -254,7 +255,7 @@ impl WsState {
         let Some(host) = hosts.get(notebook_id) else {
             return HostDelivery::Disconnected;
         };
-        match host.sender.try_send(message.to_string()) {
+        match host.sender.try_send(Utf8Bytes::from(message)) {
             Ok(()) => HostDelivery::Delivered,
             Err(mpsc::error::TrySendError::Full(_)) => HostDelivery::Full,
             Err(mpsc::error::TrySendError::Closed(_)) => HostDelivery::Disconnected,
@@ -268,7 +269,7 @@ impl WsState {
         &self,
         session_id: &str,
         client_id: &str,
-        sender: mpsc::Sender<String>,
+        sender: mpsc::Sender<Utf8Bytes>,
     ) {
         self.guests
             .write()
@@ -302,11 +303,16 @@ impl WsState {
     }
 
     /// Send a JSON message to all guests on a session.
+    ///
+    /// The payload is materialized once and fanned out as cheap ref-counted
+    /// clones — events carry full cell source, so a per-recipient copy was a
+    /// real allocation on the relay hot path.
     pub async fn broadcast_to_guests(&self, session_id: &str, message: &str) {
+        let payload = Utf8Bytes::from(message);
         let guests = self.guests.read().await;
         if let Some(list) = guests.get(session_id) {
             for guest in list {
-                let _ = guest.sender.try_send(message.to_string());
+                let _ = guest.sender.try_send(payload.clone());
             }
         }
     }
@@ -320,12 +326,13 @@ impl WsState {
     /// control messages (`SessionEnded`) use [`broadcast_to_guests`], which is
     /// *not* gated so a revoked guest still learns its session ended.
     pub async fn broadcast_to_notebook_guests(&self, notebook_id: &str, message: &str) {
+        let payload = Utf8Bytes::from(message);
         let sessions = self.readable_sessions_for_notebook(notebook_id).await;
         let guests = self.guests.read().await;
         for session_id in &sessions {
             if let Some(list) = guests.get(session_id) {
                 for guest in list {
-                    let _ = guest.sender.try_send(message.to_string());
+                    let _ = guest.sender.try_send(payload.clone());
                 }
             }
         }
@@ -336,7 +343,7 @@ impl WsState {
         let guests = self.guests.read().await;
         for list in guests.values() {
             if let Some(guest) = list.iter().find(|g| g.client_id == client_id) {
-                return guest.sender.try_send(message.to_string()).is_ok();
+                return guest.sender.try_send(Utf8Bytes::from(message)).is_ok();
             }
         }
         false

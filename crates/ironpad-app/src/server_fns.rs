@@ -533,7 +533,9 @@ pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, Se
 
 /// Maximum accepted size of a single shared-notebook upload (before parsing).
 #[cfg(feature = "ssr")]
-const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum accepted size for one shared-notebook upload. The server binary
+/// derives its framework-level body cap from this — keep them coupled.
+pub const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Aggregate cap on the whole shares directory. Even with the per-upload cap, an
 /// attacker could otherwise post many *distinct* notebooks to fill the disk;

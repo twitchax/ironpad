@@ -28,10 +28,11 @@ use ironpad_server::ws;
 
 use crate::config::CliArgs;
 
-/// Framework-level cap on any request body. Comfortably above the 4 MiB
-/// per-share cap enforced in `share_notebook` so legitimate max-size uploads
-/// pass, while bounding truly oversized bodies at the router layer.
-const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// Framework-level cap on any request body: derived from the per-share cap
+/// enforced in `share_notebook` (with 2x headroom for encoding overhead) so
+/// raising one cannot silently strand the other — a body over THIS limit is
+/// rejected at the router before the handler's clearer per-share error.
+const MAX_REQUEST_BODY_BYTES: usize = 2 * ironpad_app::server_fns::MAX_SHARE_BYTES;
 
 #[tokio::main]
 async fn main() {
@@ -70,6 +71,10 @@ async fn main() {
     }
 
     let args = CliArgs::parse();
+    // Relay knobs are server-local (they configure WsState, not the shared
+    // AppConfig), so pull them out before the conversion consumes args.
+    let max_guests = args.max_guests;
+    let guest_idle_timeout = std::time::Duration::from_secs(args.guest_idle_timeout_secs);
     let config: AppConfig = args.into();
 
     tracing::info!(data_dir = %config.data_dir.display(), "data directory");
@@ -89,7 +94,9 @@ async fn main() {
     let app_state = AppState {
         leptos_options: leptos_options.clone(),
         config: config.clone(),
-        ws: WsState::default(),
+        ws: WsState::default()
+            .with_max_guests(max_guests)
+            .with_guest_idle_timeout(guest_idle_timeout),
     };
 
     // Periodically sweep expired sessions so the store doesn't grow unbounded

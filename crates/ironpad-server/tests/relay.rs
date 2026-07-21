@@ -688,8 +688,8 @@ async fn guest_connection_cap_rejects_over_limit() {
 
     // Pre-fill the cap with two directly-registered guests (deterministic — no
     // over-the-wire registration race to observe).
-    let (tx1, _r1) = mpsc::channel::<String>(8);
-    let (tx2, _r2) = mpsc::channel::<String>(8);
+    let (tx1, _r1) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(8);
+    let (tx2, _r2) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(8);
     ws.register_guest("sess", "c1", tx1).await;
     ws.register_guest("sess", "c2", tx2).await;
 

@@ -37,6 +37,14 @@ pub struct CliArgs {
     /// When set, user cell compilations route through this proxy for domain filtering.
     #[arg(long, env = "IRONPAD_COMPILATION_PROXY")]
     pub compilation_proxy: Option<String>,
+
+    /// Global cap on concurrent WebSocket guest (agent) connections.
+    #[arg(long, default_value_t = 512, env = "IRONPAD_MAX_GUESTS")]
+    pub max_guests: usize,
+
+    /// Idle timeout (seconds) after which a silent guest connection is reaped.
+    #[arg(long, default_value_t = 1800, env = "IRONPAD_GUEST_IDLE_TIMEOUT_SECS")]
+    pub guest_idle_timeout_secs: u64,
 }
 
 impl From<CliArgs> for AppConfig {
@@ -67,6 +75,21 @@ mod tests {
             PathBuf::from("./crates/ironpad-cell")
         );
         assert_eq!(args.compilation_proxy, None);
+        assert_eq!(args.max_guests, 512);
+        assert_eq!(args.guest_idle_timeout_secs, 1800);
+    }
+
+    #[test]
+    fn relay_knobs_override() {
+        let args = CliArgs::parse_from([
+            "ironpad",
+            "--max-guests",
+            "64",
+            "--guest-idle-timeout-secs",
+            "300",
+        ]);
+        assert_eq!(args.max_guests, 64);
+        assert_eq!(args.guest_idle_timeout_secs, 300);
     }
 
     #[test]
