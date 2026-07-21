@@ -1,6 +1,14 @@
+# push is scoped to main so a branch with an open PR doesn't run the whole
+# suite twice (the pull_request event covers it); superseded runs cancel.
+# Note: a branch pushed WITHOUT a PR gets no CI until one opens.
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 name: Build and Test
 

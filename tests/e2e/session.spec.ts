@@ -1,5 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { createNotebook, startSession, endSession } from "./helpers/session";
+import {
+  createNotebook,
+  startSession,
+  endSession,
+  waitForPersistedCells,
+} from "./helpers/session";
 import { connectCli, cliExec, cliExecRaw, stopCli, CliHandle } from "./helpers/cli";
 import { trackJsErrors } from "./helpers/errors";
 
@@ -63,8 +68,9 @@ test.describe.serial("Agent Session", () => {
     await page.locator(".ironpad-add-cell-btn").first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
 
-    // Wait for cell to persist.
-    await page.waitForTimeout(2_000);
+    // Wait for the cell to actually land in IndexedDB (persistence is
+    // fire-and-forget; a fixed sleep raced it).
+    await waitForPersistedCells(page, 1);
 
     // Start session and connect CLI.
     const token = await startSession(page);
@@ -129,7 +135,7 @@ test.describe.serial("Agent Session", () => {
     await createNotebook(page);
     await page.locator(".ironpad-add-cell-btn").first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
-    await page.waitForTimeout(2_000);
+    await waitForPersistedCells(page, 1);
 
     // Start session and connect.
     const token = await startSession(page);

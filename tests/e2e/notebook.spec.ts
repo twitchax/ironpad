@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
+import { waitForPersistedCells } from "./helpers/session";
 
 test.describe("Notebook", () => {
   test("create notebook and add cell", async ({ page }) => {
@@ -223,13 +224,10 @@ test.describe("Notebook", () => {
     });
 
     // ── Save the notebook via Ctrl+S ────────────────────────────────────
-    // Wait for any debounced saves to settle first.
-    await page.waitForTimeout(2_000);
+    // Ctrl+S flushes editor content into the model and persists; poll the
+    // durable store instead of sleeping (persistence is fire-and-forget).
     await page.keyboard.press("Control+s");
-
-    // The save button is hidden (auto-save via IndexedDB); wait for
-    // the save to persist by giving it a moment.
-    await page.waitForTimeout(2_000);
+    await waitForPersistedCells(page, 1);
 
     // ── Navigate to home page ───────────────────────────────────────────
     await page.locator("a.ironpad-brand").click();

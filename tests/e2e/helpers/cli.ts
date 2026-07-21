@@ -48,8 +48,10 @@ export async function connectCli(
     console.error(`[daemon] ${data.toString().trimEnd()}`);
   });
 
-  // Wait for the daemon to be fully connected.
+  // Wait for the daemon to be fully connected AND have the notebook cached —
+  // connected alone races the async cache fill (see waitForNotebookCached).
   await waitForDaemonReady(sockPath, 30_000);
+  await waitForNotebookCached(10_000);
 
   return { process: child, token };
 }
@@ -137,4 +139,31 @@ async function waitForDaemonReady(
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error("Timed out waiting for daemon to report connected status");
+}
+
+/**
+ * Phase 3: `connected` only means the WebSocket handshake finished — the
+ * daemon populates its notebook cache from an async NotebookGet AFTER that,
+ * and the Unix socket (deliberately) serves commands the whole time. Poll
+ * until `notebook` succeeds so tests can't race the cache fill ("no
+ * notebook cached").
+ */
+async function waitForNotebookCached(timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      // Success prints the notebook JSON and exits 0; "no notebook cached"
+      // exits non-zero (execFileSync throws). Exit code IS the signal.
+      execFileSync(CLI_BIN, ["notebook"], {
+        encoding: "utf-8",
+        timeout: 5_000,
+        env: CLI_ENV,
+      });
+      return;
+    } catch {
+      // Not cached yet — retry.
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error("Timed out waiting for daemon to cache the notebook");
 }

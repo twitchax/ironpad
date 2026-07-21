@@ -31,17 +31,42 @@ export async function startSession(page: Page): Promise<string> {
   const tokenEl = page.locator(".ironpad-session-token");
   await expect(tokenEl).toBeVisible({ timeout: 10_000 });
 
-  // Wait for the token to be populated (not just asterisks).
-  // Click "Show" to reveal the token.
+  // Click "Show" to reveal the token, then WAIT for the real value — the
+  // reveal is async, and reading immediately raced it (the trailing length
+  // assertion only caught the race after the fact).
   const showBtn = page.locator(".ironpad-session-token-toggle");
   await showBtn.click();
+  await expect(tokenEl).toHaveText(/^[0-9a-f]{64}$/, { timeout: 10_000 });
 
-  // Read the token text.
   const token = await tokenEl.textContent();
   expect(token).toBeTruthy();
   expect(token!.length).toBe(64);
 
   return token!;
+}
+
+/**
+ * Poll IndexedDB until the current notebook has `count` persisted cells.
+ *
+ * Deterministic replacement for fixed "wait for cell to persist" sleeps:
+ * persistence is fire-and-forget (persist_notebook), so only the durable
+ * store says when it has actually landed.
+ */
+export async function waitForPersistedCells(
+  page: Page,
+  count: number
+): Promise<void> {
+  const notebookId = page.url().match(/\/notebook\/([a-f0-9-]+)/)![1];
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async (id) => {
+          const nb = await (window as any).IronpadStorage.getNotebook(id);
+          return nb?.cells?.length ?? 0;
+        }, notebookId),
+      { timeout: 10_000 }
+    )
+    .toBe(count);
 }
 
 /** End the active session. */

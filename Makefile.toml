@@ -3,7 +3,7 @@
 # Quick reference:
 #   cargo make dev           — Start cargo-leptos watch (dev server with live reload)
 #   cargo make build         — Release build via cargo-leptos
-#   cargo make ci            — fmt-check + clippy + test
+#   cargo make ci            — fmt-check + gen-completions-check + clippy + test
 #   cargo make uat           — ci + playwright (the one true gate)
 #   cargo make test          — Run unit/integration tests via cargo nextest
 #   cargo make fmt           — Auto-format all code
