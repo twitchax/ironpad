@@ -23,8 +23,6 @@ use crate::components::session_panel::SessionButton;
 use self::cell_item::CellItem;
 use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
 
-/// Delay (ms) before resetting the save status indicator back to idle.
-const SAVE_STATUS_RESET_MS: i32 = 2_000;
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
 use self::state::{persist_notebook, NotebookState};
 
@@ -54,7 +52,7 @@ const CELL_FLUSH_PERSIST_YIELD_MS: i32 = 200;
 /// to run before the caller re-reads `state.notebook`. There's no
 /// async-timer dependency in this workspace, so this wraps `setTimeout` in a
 /// `Promise` (mirrors the `set_timeout_with_callback_and_timeout_and_arguments_0`
-/// usage elsewhere in this file, e.g. the save-status reset above). The
+/// usage elsewhere in this crate). The
 /// delays are a pragmatic yield for the effect queue, not a correctness
 /// guarantee — see `CELL_FLUSH_YIELD_MS`/`CELL_FLUSH_PERSIST_YIELD_MS` docs.
 #[cfg(feature = "hydrate")]
@@ -234,12 +232,10 @@ pub fn NotebookEditorPage() -> impl IntoView {
     // Wire up LayoutContext when notebook data arrives.
 
     let layout = expect_context::<LayoutContext>();
-    layout.show_save_button.set(false);
 
     Effect::new(move || {
         if let Some(nb) = state.notebook.get() {
             layout.notebook_title.set(Some(nb.title.clone()));
-            layout.notebook_id.set(Some(nb.id.to_string()));
             layout.cell_count.set(nb.cells.len());
             state.notebook_id.set(nb.id.to_string());
             state.shared_cargo_toml.set(nb.shared_cargo_toml.clone());
@@ -345,15 +341,13 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
     // ── Save-generation watcher ─────────────────────────────────────────
     //
-    // When the save button (or Ctrl+S) fires, propagate to cells,
+    // When a save fires (Ctrl+S, title commit), propagate to cells,
     // persist the notebook to IndexedDB, and show feedback.
 
     #[cfg(feature = "hydrate")]
     {
-        use crate::components::app_layout::SaveStatus;
         use std::time::Duration;
         use thaw::{ToastIntent, ToastOptions};
-        use wasm_bindgen::prelude::*;
 
         let toaster = ToasterInjection::expect_context();
         let prev_gen = RwSignal::new(layout.save_generation.get_untracked());
@@ -367,8 +361,6 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
             // Signal all cells to flush their pending content.
             state.save_generation.update(|g| *g += 1);
-
-            layout.save_status.set(SaveStatus::Saving);
 
             // Update title from layout into the notebook signal.
             let title = layout.notebook_title.get_untracked().unwrap_or_default();
@@ -385,7 +377,6 @@ pub fn NotebookEditorPage() -> impl IntoView {
             // Persist to IndexedDB.
             persist_notebook(&state);
 
-            layout.save_status.set(SaveStatus::Saved);
             layout.last_save_time.set(Some(js_sys::Date::now()));
 
             let toaster = toaster;
@@ -402,21 +393,6 @@ pub fn NotebookEditorPage() -> impl IntoView {
                     .with_intent(ToastIntent::Success)
                     .with_timeout(Duration::from_secs(3)),
             );
-
-            // Reset to Idle after 2 seconds. One-shot: `once_into_js` frees the
-            // Rust closure when the timer fires. It must NOT live in this
-            // effect's scope (a second save within the window would re-run the
-            // effect, dispose this run's scope, and drop a still-pending
-            // closure — "closure invoked after being dropped").
-            let reset_cb = Closure::once_into_js(move || {
-                layout.save_status.set(SaveStatus::Idle);
-            });
-            let _ = web_sys::window()
-                .unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(
-                    reset_cb.unchecked_ref(),
-                    SAVE_STATUS_RESET_MS,
-                );
         });
     }
 

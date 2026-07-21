@@ -1,17 +1,6 @@
 use leptos::prelude::*;
 #[cfg(feature = "hydrate")]
 use leptos::web_sys;
-use thaw::{Button, ButtonAppearance};
-
-// ── Save status ─────────────────────────────────────────────────────────────
-
-/// Visual state of the save button.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SaveStatus {
-    Idle,
-    Saving,
-    Saved,
-}
 
 // ── Layout context ──────────────────────────────────────────────────────────
 
@@ -23,18 +12,13 @@ pub enum SaveStatus {
 pub struct LayoutContext {
     /// Notebook title shown in the header center. `None` when on the home page.
     pub notebook_title: RwSignal<Option<String>>,
-    /// Notebook UUID string, needed for title‐save calls from the header.
-    pub notebook_id: RwSignal<Option<String>>,
-    /// Whether to show the save button in the header.
-    pub show_save_button: RwSignal<bool>,
-    /// Fires when the user clicks the save button. Child pages watch this.
+    /// Fires when a save is requested (Ctrl+S, title commit). Child pages
+    /// watch this and flush + persist.
     pub save_generation: RwSignal<u64>,
     /// Total cell count displayed in the status bar.
     pub cell_count: RwSignal<usize>,
     /// Epoch milliseconds of the last save (used to compute relative time).
     pub last_save_time: RwSignal<Option<f64>>,
-    /// Visual state of the save button (Idle → Saving → Saved → Idle).
-    pub save_status: RwSignal<SaveStatus>,
     /// Compiler/toolchain version string.
     pub compiler_version: RwSignal<String>,
 }
@@ -43,12 +27,9 @@ impl LayoutContext {
     fn new() -> Self {
         Self {
             notebook_title: RwSignal::new(None),
-            notebook_id: RwSignal::new(None),
-            show_save_button: RwSignal::new(false),
             save_generation: RwSignal::new(0),
             cell_count: RwSignal::new(0),
             last_save_time: RwSignal::new(None),
-            save_status: RwSignal::new(SaveStatus::Idle),
             compiler_version: RwSignal::new(crate::CELL_TOOLCHAIN.to_string()),
         }
     }
@@ -143,18 +124,6 @@ fn apply_theme(is_light: bool) {
 
 #[component]
 fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
-    let on_save = move |_| {
-        ctx.save_generation.update(|g| *g += 1);
-    };
-
-    let save_label = move || match ctx.save_status.get() {
-        SaveStatus::Idle => "Save",
-        SaveStatus::Saving => "Saving…",
-        SaveStatus::Saved => "Saved ✓",
-    };
-
-    let save_disabled = Signal::derive(move || ctx.save_status.get() == SaveStatus::Saving);
-
     // ── Inline-editable title state ─────────────────────────────────────
 
     let editing = RwSignal::new(false);
@@ -314,17 +283,6 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                     "☼"
                 </button>
             </div>
-            {move || ctx.show_save_button.get().then(|| {
-                view! {
-                    <Button
-                        appearance=ButtonAppearance::Primary
-                        on_click=on_save
-                        disabled=save_disabled
-                    >
-                        {save_label}
-                    </Button>
-                }
-            })}
         </div>
     }
 }

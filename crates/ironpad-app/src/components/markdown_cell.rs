@@ -43,9 +43,6 @@ pub fn MarkdownCell(
     /// Fires with the updated markdown source when the editor loses focus or
     /// Escape is pressed.
     on_change: Callback<String>,
-    /// Unique cell identifier (used for keying).
-    #[prop(into)]
-    cell_id: String,
     /// When the notebook is in view mode, the cell must render (never stay
     /// in the Monaco editor).
     #[prop(into)]
@@ -128,11 +125,8 @@ pub fn MarkdownCell(
     // Suppress unused warnings during SSR.
     #[cfg(not(feature = "hydrate"))]
     {
-        let _ = (&editor_handle, &commit, &cell_id, &is_view_mode);
+        let _ = (&editor_handle, &commit, &is_view_mode);
     }
-
-    // Consume cell_id to avoid unused warning (reserved for future keying).
-    let _ = &cell_id;
 
     view! {
         <div class="ironpad-markdown-cell">

@@ -779,7 +779,6 @@ impl IntoPanels for gpu::GpuCanvas {
 
 impl IntoPanels for canvas::Animation {
     #[allow(clippy::cast_possible_truncation)]
-    #[allow(clippy::cast_possible_truncation)]
     fn into_panels(&self) -> Vec<DisplayPanel> {
         let (w, h) = if let Some(f) = self.frames().first() {
             (f.width(), f.height())

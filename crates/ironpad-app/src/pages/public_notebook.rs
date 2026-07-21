@@ -19,7 +19,6 @@ pub fn PublicNotebookPage() -> impl IntoView {
     // avoid a duplicate (and to avoid the header showing the raw filename).
     let ctx = expect_context::<LayoutContext>();
     ctx.notebook_title.set(None);
-    ctx.show_save_button.set(false);
 
     // Spec handed to ViewOnlyNotebook so its Embed button can build snippets.
     let embed_spec = params

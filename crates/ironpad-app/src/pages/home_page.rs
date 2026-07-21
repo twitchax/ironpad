@@ -70,7 +70,6 @@ pub fn HomePage() -> impl IntoView {
 
     let ctx = expect_context::<LayoutContext>();
     ctx.notebook_title.set(None);
-    ctx.show_save_button.set(false);
     ctx.cell_count.set(0);
     ctx.last_save_time.set(None);
 

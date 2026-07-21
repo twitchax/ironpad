@@ -35,7 +35,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_flush = cell.id.clone();
     let cell_id_for_stale_header = cell.id.clone();
     let cell_id_for_output = cell.id.clone();
-    let cell_id_for_markdown = StoredValue::new(cell.id.clone());
 
     // Live-derived order: after T-001, NotebookContent (and this CellItem) is
     // built once and not rebuilt on reorder, so the `cell.order` captured by
@@ -1667,7 +1666,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         <MarkdownCell
                             source=source.get_untracked()
                             on_change=on_source_change
-                            cell_id=cell_id_for_markdown.get_value()
                             is_view_mode=state.is_view_mode
                         />
                     </div>

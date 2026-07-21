@@ -21,7 +21,6 @@ pub fn SharedNotebookPage() -> impl IntoView {
     // Real title is shown once in the view-only toolbar (<h1>); keep the header
     // center clear to avoid a duplicate.
     ctx.notebook_title.set(None);
-    ctx.show_save_button.set(false);
 
     let notebook_resource = Resource::new(move || hash.clone(), get_shared_notebook);
 
