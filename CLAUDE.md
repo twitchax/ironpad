@@ -154,7 +154,7 @@ The core of ironpad is a 5-stage WASM compiler:
    - Maps back to user source for inline error display
 
 5. **Optimize** (`compiler/optimize.rs`):
-   - Best-effort `wasm-opt -Oz` (binaryen)
+   - Best-effort `wasm-opt -O3` (binaryen; runtime speed over size)
    - Non-fatal failures
 
 **Important**: All stages are tested with unit tests; full pipeline tested with integration tests in `compiler/mod.rs`.

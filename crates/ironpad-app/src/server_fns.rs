@@ -145,19 +145,18 @@ async fn compile_cell_core(
     // on-disk work a cache hit skips. Its returned `needs_atomics` matches the
     // value hashed above (both derive from the same inputs), so we keep ours.
 
-    let (crate_dir, preamble_lines, _is_async, _is_simulation, _needs_atomics) =
-        scaffold_micro_crate(
-            &config.cache_dir,
-            &config.ironpad_cell_path,
-            session_id,
-            &request.cell_id,
-            &request.source,
-            &request.cargo_toml,
-            &request.previous_cell_types,
-            request.shared_cargo_toml.as_deref(),
-            request.shared_source.as_deref(),
-        )
-        .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
+    let (crate_dir, preamble_lines, _is_async, _is_simulation) = scaffold_micro_crate(
+        &config.cache_dir,
+        &config.ironpad_cell_path,
+        session_id,
+        &request.cell_id,
+        &request.source,
+        &request.cargo_toml,
+        &request.previous_cell_types,
+        request.shared_cargo_toml.as_deref(),
+        request.shared_source.as_deref(),
+    )
+    .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
 
     // Build.
 
@@ -369,19 +368,18 @@ async fn check_cell_core(
     let needs_autodiff = uses_std_autodiff(&request.source, request.shared_source.as_deref());
     let needs_simd = uses_wasm_simd(&request.source, request.shared_source.as_deref());
 
-    let (crate_dir, preamble_lines, _is_async, _is_simulation, _needs_atomics) =
-        scaffold_micro_crate(
-            &config.cache_dir,
-            &config.ironpad_cell_path,
-            session_id,
-            &request.cell_id,
-            &request.source,
-            &request.cargo_toml,
-            &request.previous_cell_types,
-            request.shared_cargo_toml.as_deref(),
-            request.shared_source.as_deref(),
-        )
-        .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
+    let (crate_dir, preamble_lines, _is_async, _is_simulation) = scaffold_micro_crate(
+        &config.cache_dir,
+        &config.ironpad_cell_path,
+        session_id,
+        &request.cell_id,
+        &request.source,
+        &request.cargo_toml,
+        &request.previous_cell_types,
+        request.shared_cargo_toml.as_deref(),
+        request.shared_source.as_deref(),
+    )
+    .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
 
     let result = check_micro_crate(
         &crate_dir,

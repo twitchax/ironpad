@@ -31,14 +31,15 @@ pub fn is_valid_cell_id(cell_id: &str) -> bool {
 ///     lib.rs
 /// ```
 ///
-/// Returns `(crate_dir, preamble_lines, is_async, is_simulation, needs_atomics)`:
+/// Returns `(crate_dir, preamble_lines, is_async, is_simulation)`. Feature
+/// flags (atomics/autodiff/simd) are re-derived here from the same pure
+/// detection functions callers hash with — those functions are the single
+/// source of truth, so both sides always agree:
 /// - `crate_dir`: path to the micro-crate root directory
 /// - `preamble_lines`: number of lines before user code (for diagnostic mapping)
 /// - `is_async`: whether the cell wrapper is async (source contains `.await`)
 /// - `is_simulation`: whether the cell uses the tick infrastructure (a
 ///   `Simulation` or `LiveView` trait impl)
-/// - `needs_atomics`: whether the merged dependencies pull in `rayon`, requiring
-///   the atomics/shared-memory WASM build
 #[allow(clippy::too_many_arguments)]
 pub fn scaffold_micro_crate(
     cache_dir: &Path,
@@ -50,7 +51,7 @@ pub fn scaffold_micro_crate(
     previous_cell_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
-) -> anyhow::Result<(PathBuf, u32, bool, bool, bool)> {
+) -> anyhow::Result<(PathBuf, u32, bool, bool)> {
     let crate_dir = cache_dir.join("workspaces").join(session_id).join(cell_id);
 
     let src_dir = crate_dir.join("src");
@@ -98,13 +99,7 @@ pub fn scaffold_micro_crate(
         std::fs::write(src_dir.join("shared.rs"), shared)?;
     }
 
-    Ok((
-        crate_dir,
-        preamble_lines,
-        is_async,
-        is_simulation,
-        needs_atomics,
-    ))
+    Ok((crate_dir, preamble_lines, is_async, is_simulation))
 }
 
 // ── Cargo.toml Generation ────────────────────────────────────────────────────
@@ -500,6 +495,21 @@ fn is_live_view(source: &str) -> Option<String> {
     impl_target_struct(source, "LiveView")
 }
 
+/// The `mod shared;` declaration injected when a notebook has shared source.
+///
+/// `allow(dead_code)`: the shared module is the notebook's library, but rustc
+/// only ever sees ONE cell's crate, so every helper this cell does not happen
+/// to call would report "never used" — a false positive, since it IS used, by
+/// another cell. Kept on one line so `preamble_lines` (and therefore
+/// diagnostic mapping) counts it as exactly one line in every generator.
+fn shared_mod_decl(has_shared_source: bool) -> &'static str {
+    if has_shared_source {
+        "#[allow(dead_code)] mod shared;\n"
+    } else {
+        ""
+    }
+}
+
 /// Wrap user source code in the `cell_main` wasm-bindgen entry point.
 ///
 /// Produces a `lib.rs` that:
@@ -552,16 +562,7 @@ pub fn generate_lib_rs(
         ("_input_ptr", "_input_len")
     };
 
-    let shared_mod = if has_shared_source {
-        // `allow(dead_code)`: the shared module is the notebook's library, but
-        // rustc only ever sees ONE cell's crate, so every helper this cell does
-        // not happen to call reports "never used" — a false positive, since it
-        // IS used, by another cell. Kept on one line so `preamble_lines` (and
-        // therefore diagnostic mapping) is unaffected.
-        "#[allow(dead_code)] mod shared;\n"
-    } else {
-        ""
-    };
+    let shared_mod = shared_mod_decl(has_shared_source);
 
     let mut code = format!(
         "\
@@ -646,16 +647,7 @@ fn generate_simulation_lib_rs(
     struct_name: &str,
     has_shared_source: bool,
 ) -> (String, u32, bool, bool) {
-    let shared_mod = if has_shared_source {
-        // `allow(dead_code)`: the shared module is the notebook's library, but
-        // rustc only ever sees ONE cell's crate, so every helper this cell does
-        // not happen to call reports "never used" — a false positive, since it
-        // IS used, by another cell. Kept on one line so `preamble_lines` (and
-        // therefore diagnostic mapping) is unaffected.
-        "#[allow(dead_code)] mod shared;\n"
-    } else {
-        ""
-    };
+    let shared_mod = shared_mod_decl(has_shared_source);
 
     let code = format!(
         "\
@@ -714,16 +706,7 @@ fn generate_live_view_lib_rs(
     struct_name: &str,
     has_shared_source: bool,
 ) -> (String, u32, bool, bool) {
-    let shared_mod = if has_shared_source {
-        // `allow(dead_code)`: the shared module is the notebook's library, but
-        // rustc only ever sees ONE cell's crate, so every helper this cell does
-        // not happen to call reports "never used" — a false positive, since it
-        // IS used, by another cell. Kept on one line so `preamble_lines` (and
-        // therefore diagnostic mapping) is unaffected.
-        "#[allow(dead_code)] mod shared;\n"
-    } else {
-        ""
-    };
+    let shared_mod = shared_mod_decl(has_shared_source);
 
     let code = format!(
         "\
@@ -1064,7 +1047,7 @@ serde = { version = "1", features = ["derive"] }
 serde = "1"
 "#;
 
-        let (crate_dir, preamble_lines, is_async, _, _) = scaffold_micro_crate(
+        let (crate_dir, preamble_lines, is_async, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
@@ -1289,7 +1272,7 @@ serde = "1"
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (_, _, is_async, _, _) = scaffold_micro_crate(
+        let (_, _, is_async, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -1303,7 +1286,7 @@ serde = "1"
         .unwrap();
         assert!(!is_async);
 
-        let (_, _, is_async, _, _) = scaffold_micro_crate(
+        let (_, _, is_async, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",

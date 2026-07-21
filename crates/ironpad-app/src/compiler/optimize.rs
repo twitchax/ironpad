@@ -1,7 +1,9 @@
 //! Best-effort WASM optimization via `wasm-opt`.
 //!
 //! If `wasm-opt` is not installed, optimization is skipped silently
-//! (logged at debug level). This is a size optimization pass only.
+//! (logged at debug level). The pass runs `-O3`: runtime performance over
+//! binary size, since cells execute repeatedly (simulations tick every
+//! frame) while the blob is fetched once and cached.
 
 use std::path::Path;
 use std::process::{Output, Stdio};

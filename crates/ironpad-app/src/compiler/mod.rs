@@ -174,7 +174,7 @@ mod pipeline_tests {
         let source = "    CellOutput::text(\"hello\")";
         let cargo_toml = "[dependencies]\nserde = \"1\"";
 
-        let (crate_dir, _preamble_lines, _is_async, _, _) = scaffold_micro_crate(
+        let (crate_dir, _preamble_lines, _is_async, _) = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "sess-1",
@@ -1242,7 +1242,7 @@ impl LiveView for Counter {
 "#;
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, _preamble, _is_async, is_sim, _) = scaffold_micro_crate(
+        let (crate_dir, _preamble, _is_async, is_sim) = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,

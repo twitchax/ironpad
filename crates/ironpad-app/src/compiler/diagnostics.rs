@@ -65,8 +65,9 @@ struct RustcSpan {
 /// Each line is parsed independently; malformed lines are silently skipped
 /// (cargo may emit non-JSON progress lines to stdout in some configurations).
 ///
-/// Only `"compiler-message"` entries with level `error`, `warning`, or `note`
-/// are returned. Span line numbers are adjusted for the wrapper preamble.
+/// Only `"compiler-message"` entries with level `error`, `warning`, `note`,
+/// or `help` are returned (`help` maps to Note; an internal compiler error
+/// maps to Error). Span line numbers are adjusted for the wrapper preamble.
 pub fn parse_diagnostics(cargo_stdout: &str, preamble_lines: u32) -> Vec<Diagnostic> {
     cargo_stdout
         .lines()

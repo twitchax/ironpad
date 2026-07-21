@@ -177,6 +177,7 @@ pub async fn build_micro_crate(
         cargo_home = %cargo_home.display(),
         target_dir = %target_dir.display(),
         needs_atomics = needs_atomics,
+        needs_autodiff = needs_autodiff,
         needs_simd = needs_simd,
         rustup_toolchain = %std::env::var("RUSTUP_TOOLCHAIN").unwrap_or_default(),
         "starting WASM build",
@@ -421,7 +422,7 @@ pub async fn check_micro_crate(
     crate_dir: &Path,
     cache_dir: &Path,
     session_id: &str,
-    _cell_id: &str,
+    cell_id: &str,
     compilation_proxy: Option<&str>,
     needs_atomics: bool,
     needs_autodiff: bool,
@@ -435,11 +436,21 @@ pub async fn check_micro_crate(
         target_dir(cache_dir, session_id)
     };
 
-    std::fs::create_dir_all(&cargo_home)?;
-    std::fs::create_dir_all(&target_dir)?;
+    // Async fs like the build path: this is the latency-sensitive
+    // check-on-type route, the one that most needs to not block a worker.
+    tokio::fs::create_dir_all(&cargo_home).await?;
+    tokio::fs::create_dir_all(&target_dir).await?;
 
-    let cargo_home = std::fs::canonicalize(&cargo_home)?;
-    let target_dir = std::fs::canonicalize(&target_dir)?;
+    let cargo_home = tokio::fs::canonicalize(&cargo_home).await?;
+    let target_dir = tokio::fs::canonicalize(&target_dir).await?;
+
+    tracing::debug!(
+        cell_id = %cell_id,
+        needs_atomics,
+        needs_autodiff,
+        needs_simd,
+        "starting live check",
+    );
 
     let output = tokio::time::timeout(timeout, {
         let mut cmd = Command::new("cargo");
