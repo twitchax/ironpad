@@ -106,6 +106,9 @@ enum CellsCommand {
         /// Custom Cargo.toml content.
         #[arg(long)]
         cargo_toml: Option<String>,
+        /// Create as a shared cell (source rides in every cell's shared.rs).
+        #[arg(long)]
+        shared: bool,
     },
     /// Update a cell's source or metadata.
     Update {
@@ -123,6 +126,15 @@ enum CellsCommand {
         /// Update label.
         #[arg(long)]
         label: Option<String>,
+        /// Set the shared-cell flag: --shared true|false.
+        #[arg(long)]
+        shared: Option<bool>,
+        /// Set whether the code body loads collapsed: --collapsed true|false.
+        #[arg(long)]
+        collapsed: Option<bool>,
+        /// Set whether the output panel loads collapsed: --output-collapsed true|false.
+        #[arg(long)]
+        output_collapsed: Option<bool>,
         /// Expected version for OCC. Auto-fetched from daemon if omitted.
         #[arg(long)]
         version: Option<u64>,
@@ -260,15 +272,43 @@ async fn handle_cells_command(cmd: CellsCommand) {
             label,
             after,
             cargo_toml,
-        } => handle_cells_add(source, source_file, r#type, label, after, cargo_toml).await,
+            shared,
+        } => {
+            handle_cells_add(
+                source,
+                source_file,
+                r#type,
+                label,
+                after,
+                cargo_toml,
+                shared,
+            )
+            .await;
+        }
         CellsCommand::Update {
             cell_id,
             source,
             source_file,
             cargo_toml,
             label,
+            shared,
+            collapsed,
+            output_collapsed,
             version,
-        } => handle_cells_update(cell_id, source, source_file, cargo_toml, label, version).await,
+        } => {
+            handle_cells_update(CellsUpdateArgs {
+                cell_id,
+                source,
+                source_file,
+                cargo_toml,
+                label,
+                shared,
+                collapsed,
+                output_collapsed,
+                version,
+            })
+            .await;
+        }
         CellsCommand::Delete { cell_id, version } => {
             handle_cells_delete(cell_id, version).await;
         }
@@ -286,6 +326,7 @@ async fn handle_cells_get(cell_id: &str) {
     print_response(&response);
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the clap arg list one-to-one.
 async fn handle_cells_add(
     source: Option<String>,
     source_file: Option<String>,
@@ -293,6 +334,7 @@ async fn handle_cells_add(
     label: Option<String>,
     after: Option<String>,
     cargo_toml: Option<String>,
+    shared: bool,
 ) {
     let source = resolve_source(source, source_file);
     let response = send_ipc(
@@ -300,42 +342,84 @@ async fn handle_cells_add(
         serde_json::json!({
             "source": source.unwrap_or_default(),
             "type": r#type.as_str(),
-            "label": label.unwrap_or_else(|| "New Cell".to_string()),
+            "label": label
+                .unwrap_or_else(|| ironpad_common::protocol::DEFAULT_CELL_LABEL.to_string()),
             "after_cell_id": after,
             "cargo_toml": cargo_toml,
+            "shared": shared,
         }),
     )
     .await;
     print_response(&response);
 }
 
-async fn handle_cells_update(
+/// Arg bundle for [`handle_cells_update`] — mirrors the clap arg list.
+struct CellsUpdateArgs {
     cell_id: String,
     source: Option<String>,
     source_file: Option<String>,
     cargo_toml: Option<String>,
     label: Option<String>,
+    shared: Option<bool>,
+    collapsed: Option<bool>,
+    output_collapsed: Option<bool>,
     version: Option<u64>,
-) {
-    let source = resolve_source(source, source_file);
+}
 
-    let version = match version {
+impl CellsUpdateArgs {
+    /// True when no field flag was supplied — the update would be a no-op
+    /// that still bumps the cell version.
+    fn is_empty_update(&self) -> bool {
+        self.source.is_none()
+            && self.source_file.is_none()
+            && self.cargo_toml.is_none()
+            && self.label.is_none()
+            && self.shared.is_none()
+            && self.collapsed.is_none()
+            && self.output_collapsed.is_none()
+    }
+}
+
+async fn handle_cells_update(update: CellsUpdateArgs) {
+    // Reject a field-less update up front: it would round-trip an all-None
+    // mutation that reports success while changing nothing user-visible
+    // (except bumping the version).
+    if update.is_empty_update() {
+        eprintln!(
+            "error: nothing to update — pass at least one of --source, --source-file, \
+             --cargo-toml, --label, --shared, --collapsed, --output-collapsed"
+        );
+        std::process::exit(CliExitCode::GenericError as i32);
+    }
+
+    let source = resolve_source(update.source, update.source_file);
+
+    let version = match update.version {
         Some(v) => v,
-        None => fetch_cell_version(&cell_id).await,
+        None => fetch_cell_version(&update.cell_id).await,
     };
 
     let mut args = serde_json::json!({
-        "cell_id": cell_id,
+        "cell_id": update.cell_id,
         "version": version,
     });
     if let Some(src) = source {
         args["source"] = serde_json::Value::String(src);
     }
-    if let Some(ct) = cargo_toml {
+    if let Some(ct) = update.cargo_toml {
         args["cargo_toml"] = serde_json::Value::String(ct);
     }
-    if let Some(lbl) = label {
+    if let Some(lbl) = update.label {
         args["label"] = serde_json::Value::String(lbl);
+    }
+    if let Some(sh) = update.shared {
+        args["shared"] = serde_json::Value::Bool(sh);
+    }
+    if let Some(c) = update.collapsed {
+        args["collapsed"] = serde_json::Value::Bool(c);
+    }
+    if let Some(oc) = update.output_collapsed {
+        args["output_collapsed"] = serde_json::Value::Bool(oc);
     }
 
     let response = send_ipc("cells.update", args).await;
@@ -502,5 +586,74 @@ fn libc_kill(pid: u32) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("kill failed: {}", std::io::Error::last_os_error()))
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cells_update_parses_collapse_and_shared_flags() {
+        let cli = Cli::try_parse_from([
+            "ironpad",
+            "cells",
+            "update",
+            "c1",
+            "--shared",
+            "true",
+            "--collapsed",
+            "true",
+            "--output-collapsed",
+            "false",
+        ])
+        .expect("flags should parse");
+        let Command::Cells(CellsCommand::Update {
+            shared,
+            collapsed,
+            output_collapsed,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected cells update");
+        };
+        assert_eq!(shared, Some(true));
+        assert_eq!(collapsed, Some(true));
+        assert_eq!(output_collapsed, Some(false));
+    }
+
+    #[test]
+    fn cells_add_parses_shared_flag() {
+        let cli = Cli::try_parse_from(["ironpad", "cells", "add", "--source", "42", "--shared"])
+            .expect("flag should parse");
+        let Command::Cells(CellsCommand::Add { shared, .. }) = cli.command else {
+            panic!("expected cells add");
+        };
+        assert!(shared);
+    }
+
+    #[test]
+    fn empty_update_is_detected() {
+        // No field flags → rejected before any IPC round-trip.
+        let empty = CellsUpdateArgs {
+            cell_id: "c1".into(),
+            source: None,
+            source_file: None,
+            cargo_toml: None,
+            label: None,
+            shared: None,
+            collapsed: None,
+            output_collapsed: None,
+            version: None,
+        };
+        assert!(empty.is_empty_update());
+
+        let with_flag = CellsUpdateArgs {
+            collapsed: Some(true),
+            ..empty
+        };
+        assert!(!with_flag.is_empty_update());
     }
 }

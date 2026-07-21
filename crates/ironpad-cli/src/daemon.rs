@@ -537,6 +537,9 @@ async fn serve_cells_list(state: &DaemonState) -> IpcResponse {
                         "order": c.order,
                         "label": c.label,
                         "cell_type": c.cell_type,
+                        "shared": c.shared,
+                        "collapsed": c.collapsed,
+                        "output_collapsed": c.output_collapsed,
                         "source_preview": c.source.chars().take(80).collect::<String>(),
                         "version": c.version,
                     })
@@ -577,7 +580,12 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
         let guard = state.ws_tx.read().await;
         match guard.as_ref() {
             Some(tx) => tx.clone(),
-            None => return IpcResponse::error("WebSocket not yet connected"),
+            None => {
+                return IpcResponse::error_with_code(
+                    "WebSocket not yet connected",
+                    "connection_error",
+                )
+            }
         }
     };
 
@@ -608,7 +616,7 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
     // Send over WebSocket.
     if ws_tx.send(json).is_err() {
         state.pending.write().await.remove(&msg_id);
-        return IpcResponse::error("WebSocket disconnected");
+        return IpcResponse::error_with_code("WebSocket disconnected", "connection_error");
     }
 
     // Wait for response (10s timeout).
@@ -622,8 +630,8 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
             Ok(response_msg) => translate_response(response_msg),
             Err(e) => IpcResponse::error(format!("invalid response: {e}")),
         },
-        Ok(Err(_)) => IpcResponse::error("response channel closed"),
-        Err(_) => IpcResponse::error("request timed out"),
+        Ok(Err(_)) => IpcResponse::error_with_code("response channel closed", "connection_error"),
+        Err(_) => IpcResponse::error_with_code("request timed out", "connection_error"),
     }
 }
 
@@ -645,7 +653,7 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 .args
                 .get("label")
                 .and_then(|v| v.as_str())
-                .unwrap_or("New Cell")
+                .unwrap_or(protocol::DEFAULT_CELL_LABEL)
                 .to_string();
             let after_cell_id = req
                 .args
