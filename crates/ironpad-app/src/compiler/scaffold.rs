@@ -6,6 +6,17 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+use ironpad_common::cache_key::merge_dependencies;
+
+// Re-exported so in-crate callers (`server_fns.rs`, `compiler/mod.rs`) and the
+// tests below keep their `compiler::scaffold::*` paths; the definitions moved
+// to `ironpad-common/src/cache_key.rs` (PRD-0047) so the browser computes
+// cache keys from the same recipe.
+pub use ironpad_common::cache_key::{
+    crate_name_from_dep_line, extract_user_dependencies, merged_deps_contain_rayon,
+    uses_std_autodiff, uses_wasm_simd,
+};
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Whether a cell id is safe to use in filesystem paths and the generated
@@ -177,120 +188,9 @@ crate-type = ["cdylib"]
     toml
 }
 
-/// Extract dependency lines from the user's `Cargo.toml` content.
-///
-/// Finds the `[dependencies]` section and collects all lines until the next
-/// section header (`[...]`), filtering out any existing `ironpad-cell` entry
-/// (we always inject our own).
-fn extract_user_dependencies(cargo_toml: &str) -> String {
-    let mut in_deps = false;
-    let mut deps = Vec::new();
-
-    for line in cargo_toml.lines() {
-        let trimmed = line.trim();
-
-        // Detect section headers.
-        if trimmed.starts_with('[') {
-            in_deps = trimmed == "[dependencies]";
-            continue;
-        }
-
-        if in_deps && !trimmed.is_empty() && !trimmed.starts_with('#') {
-            // Skip any user-specified ironpad-cell (we inject our own).
-            if trimmed.starts_with("ironpad-cell") || trimmed.starts_with("ironpad_cell") {
-                continue;
-            }
-            deps.push(line);
-        }
-    }
-
-    deps.join("\n")
-}
-
-/// Merge shared (notebook-level) and cell-level dependencies.
-///
-/// Cell deps take precedence: if both shared and cell declare the same crate
-/// name, the cell's line wins. The merge is at the dependency-line level.
-fn merge_dependencies(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> String {
-    let shared_deps = shared_cargo_toml.map_or_else(String::new, extract_user_dependencies);
-    let cell_deps = extract_user_dependencies(cell_cargo_toml);
-
-    if shared_deps.is_empty() {
-        return cell_deps;
-    }
-    if cell_deps.is_empty() {
-        return shared_deps;
-    }
-
-    // Build a map of crate_name → dep_line, shared first, then cell overrides.
-    let mut dep_map: Vec<(String, String)> = Vec::new();
-
-    for line in shared_deps.lines() {
-        if let Some(name) = crate_name_from_dep_line(line) {
-            dep_map.push((name, line.to_string()));
-        }
-    }
-
-    for line in cell_deps.lines() {
-        if let Some(name) = crate_name_from_dep_line(line) {
-            if let Some(entry) = dep_map.iter_mut().find(|(n, _)| *n == name) {
-                entry.1 = line.to_string();
-            } else {
-                dep_map.push((name, line.to_string()));
-            }
-        }
-    }
-
-    dep_map
-        .into_iter()
-        .map(|(_, line)| line)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Returns `true` if the merged dependency set (shared + cell) contains `rayon`.
-///
-/// Used to set the `needs_atomics` flag on the compilation pipeline so
-/// downstream stages can enable the atomics WASM feature.
-pub fn merged_deps_contain_rayon(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> bool {
-    let merged = merge_dependencies(shared_cargo_toml, cell_cargo_toml);
-    merged
-        .lines()
-        .filter_map(crate_name_from_dep_line)
-        .any(|name| name == "rayon")
-}
-
-/// Returns `true` if the cell (or the notebook's shared source) uses
-/// `std::autodiff`, opting the build into the Enzyme pipeline: crate-root
-/// feature gate, fat-LTO profile, nightly toolchain, and
-/// `-Zautodiff=Enable` (PRD-0041).
-///
-/// Substring detection mirrors the rayon opt-in's spirit: using the feature
-/// IS the opt-in. False positives (e.g. the strings in a comment) cost only a
-/// slower compile profile, never a wrong result.
-pub fn uses_std_autodiff(source: &str, shared_source: Option<&str>) -> bool {
-    let hit = |s: &str| {
-        s.contains("autodiff_forward")
-            || s.contains("autodiff_reverse")
-            || s.contains("std::autodiff")
-    };
-    hit(source) || shared_source.is_some_and(hit)
-}
-
-/// Returns `true` if the cell (or the notebook's shared source) uses WASM
-/// SIMD, opting the build into `-C target-feature=+simd128` and a crate-root
-/// `#![feature(portable_simd)]` gate (PRD-0042).
-///
-/// Same substring-detection spirit as [`uses_std_autodiff`]: using the feature
-/// IS the opt-in. A false positive (the strings in a comment) costs only an
-/// unused feature gate and a harmless codegen flag — every current browser
-/// instantiates simd128 modules natively.
-pub fn uses_wasm_simd(source: &str, shared_source: Option<&str>) -> bool {
-    let hit = |s: &str| {
-        s.contains("std::simd") || s.contains("core::simd") || s.contains("std::arch::wasm32")
-    };
-    hit(source) || shared_source.is_some_and(hit)
-}
+// (`extract_user_dependencies`, `merge_dependencies`, and the feature
+// detectors moved to `ironpad_common::cache_key` — see the re-exports at the
+// top of this module.)
 
 /// Rewrite `[profile.release]` in the forwarded extra sections so the Enzyme
 /// requirements hold: `lto = "fat"` and `codegen-units = 1` (rustc refuses
@@ -433,19 +333,6 @@ fn wasm_bindgen_dependency_line() -> String {
          post-processing"
     );
     r#"wasm-bindgen = "0.2""#.to_string()
-}
-
-/// Extract the crate name from a TOML dependency line.
-///
-/// Handles both `crate = "version"` and `crate = { ... }` forms.
-/// Normalizes hyphens to underscores for comparison.
-fn crate_name_from_dep_line(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    let name = trimmed.split('=').next()?.trim();
-    if name.is_empty() {
-        return None;
-    }
-    Some(name.replace('-', "_"))
 }
 
 // ── lib.rs Generation ────────────────────────────────────────────────────────

@@ -1526,6 +1526,7 @@ dependencies = [
 name = "ironpad-common"
 version = "0.12.13"
 dependencies = [
+ "blake3",
  "chrono",
  "serde",
  "serde_json",

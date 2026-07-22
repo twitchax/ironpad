@@ -30,6 +30,8 @@ pub mod compiler;
 /// source of truth for the toolchain most cells compile on.
 pub const CELL_TOOLCHAIN: &str = "nightly-2026-07-14";
 
+#[cfg(feature = "hydrate")]
+pub(crate) mod blob_cache;
 pub mod components;
 pub(crate) mod model;
 pub(crate) mod session;

@@ -3,7 +3,7 @@ use leptos_router::hooks::use_params_map;
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::view_only_notebook::ViewOnlyNotebook;
-use crate::server_fns::get_shared_notebook;
+use crate::server_fns::{get_shared_manifest, get_shared_notebook};
 
 /// Route component for `/shared/{hash}`.
 ///
@@ -22,11 +22,20 @@ pub fn SharedNotebookPage() -> impl IntoView {
     // center clear to avoid a duplicate.
     ctx.notebook_title.set(None);
 
-    let notebook_resource = Resource::new(move || hash.clone(), get_shared_notebook);
+    let notebook_resource = Resource::new(
+        move || hash.clone(),
+        |hash| async move {
+            let notebook = get_shared_notebook(hash.clone()).await?;
+            // A missing/failed manifest degrades to live compilation
+            // (PRD-0047); it never fails the page.
+            let manifest = get_shared_manifest(hash).await.unwrap_or(None);
+            Ok::<_, ServerFnError>((notebook, manifest))
+        },
+    );
 
     // Update footer cell count when the resource resolves.
     Effect::new(move || {
-        if let Some(Ok(nb)) = notebook_resource.get() {
+        if let Some(Ok((nb, _))) = notebook_resource.get() {
             ctx.cell_count.set(nb.cells.len());
         }
     });
@@ -43,12 +52,13 @@ pub fn SharedNotebookPage() -> impl IntoView {
                 let embed_spec = embed_spec.clone();
                 Suspend::new(async move {
                 match notebook_resource.await {
-                    Ok(notebook) => {
+                    Ok((notebook, share_manifest)) => {
                         view! {
                             <ViewOnlyNotebook
                                 notebook
                                 fork_label="Fork to Private".to_string()
                                 embed_spec=embed_spec.unwrap_or_default()
+                                share_manifest=share_manifest
                             />
                         }.into_any()
                     }

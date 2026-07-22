@@ -14,8 +14,12 @@
  */
 window.IronpadStorage = (function () {
     const DB_NAME = 'ironpad';
-    const DB_VERSION = 1;
+    const DB_VERSION = 2;
     const STORE_NAME = 'notebooks';
+    // Local compiled-WASM blob cache (PRD-0047), content-addressed by the
+    // same cache key the server uses. LRU-pruned to MAX_BLOB_ENTRIES.
+    const BLOB_STORE = 'blobs';
+    const MAX_BLOB_ENTRIES = 64;
 
     function openDb() {
         return new Promise((resolve, reject) => {
@@ -27,6 +31,10 @@ window.IronpadStorage = (function () {
                     store.createIndex('updated_at', 'updated_at');
                     store.createIndex('title', 'title');
                 }
+                if (!db.objectStoreNames.contains(BLOB_STORE)) {
+                    const blobs = db.createObjectStore(BLOB_STORE, { keyPath: 'hash' });
+                    blobs.createIndex('lastUsed', 'lastUsed');
+                }
             };
             req.onsuccess = (e) => resolve(e.target.result);
             req.onerror = (e) => reject(e.target.error);
@@ -36,6 +44,10 @@ window.IronpadStorage = (function () {
 
     function tx(db, mode) {
         return db.transaction(STORE_NAME, mode).objectStore(STORE_NAME);
+    }
+
+    function blobTx(db, mode) {
+        return db.transaction(BLOB_STORE, mode).objectStore(BLOB_STORE);
     }
 
     function reqToPromise(request) {
@@ -160,6 +172,79 @@ window.IronpadStorage = (function () {
             };
             await this.saveNotebook(nb);
             return nb;
+        },
+
+        // ── Compiled-blob cache (PRD-0047) ─────────────────────────────
+
+        /**
+         * Look up a locally cached compiled blob by content hash, touching
+         * its LRU timestamp on hit.
+         * @param {string} hash - 64-hex cache key.
+         * @returns {Promise<Object|null>} { hash, wasm: Uint8Array, glue,
+         *          diagnostics, lastUsed } or null.
+         */
+        getBlob: async function (hash) {
+            const db = await openDb();
+            try {
+                const store = blobTx(db, 'readwrite');
+                const record = await reqToPromise(store.get(hash));
+                if (!record) return null;
+                record.lastUsed = Date.now();
+                await reqToPromise(store.put(record));
+                return record;
+            } finally {
+                db.close();
+            }
+        },
+
+        /**
+         * Store (upsert) a compiled blob under its content hash, then prune
+         * the least-recently-used entries past MAX_BLOB_ENTRIES. Pruning
+         * walks a keys-only cursor on the lastUsed index so it never loads
+         * blob bytes.
+         * @param {string} hash - 64-hex cache key.
+         * @param {Uint8Array} wasm - Compiled WASM bytes.
+         * @param {string|null} glue - wasm-bindgen JS glue module, if any.
+         * @param {string|null} diagnostics - JSON-encoded diagnostics array.
+         * @param {number} preambleLines - Scaffold preamble offset the stored
+         *        diagnostics still need (mirrors CompileResponse).
+         * @returns {Promise<void>}
+         */
+        putBlob: async function (hash, wasm, glue, diagnostics, preambleLines) {
+            const db = await openDb();
+            try {
+                const store = blobTx(db, 'readwrite');
+                await reqToPromise(store.put({
+                    hash,
+                    wasm,
+                    glue: glue ?? null,
+                    diagnostics: diagnostics ?? null,
+                    preambleLines: preambleLines ?? 0,
+                    lastUsed: Date.now(),
+                }));
+
+                const count = await reqToPromise(store.count());
+                let excess = count - MAX_BLOB_ENTRIES;
+                if (excess > 0) {
+                    // Oldest-first over the lastUsed index; primary keys only.
+                    const cursorReq = store.index('lastUsed').openKeyCursor();
+                    await new Promise((resolve, reject) => {
+                        cursorReq.onsuccess = () => {
+                            const cursor = cursorReq.result;
+                            if (!cursor || excess <= 0) {
+                                resolve();
+                                return;
+                            }
+                            store.delete(cursor.primaryKey);
+                            excess -= 1;
+                            cursor.continue();
+                        };
+                        cursorReq.onerror = () => reject(cursorReq.error);
+                    });
+                }
+            } finally {
+                db.close();
+            }
         },
     };
 })();

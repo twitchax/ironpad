@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use leptos::prelude::*;
 
-#[cfg(feature = "hydrate")]
-use ironpad_common::CompileRequest;
 use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
+#[cfg(feature = "hydrate")]
+use ironpad_common::{CompileRequest, CompileResponse};
 
 use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
@@ -83,6 +83,14 @@ pub(crate) fn ViewOnlyNotebook(
     /// (public/shared/embed pages) keeps a private map.
     #[prop(optional)]
     cell_outputs: Option<RwSignal<HashMap<String, CellOutputData>>>,
+    /// Blob-snapshot manifest for shared notebooks (PRD-0047): cells with an
+    /// entry fetch their compiled WASM from the immutable `/share-blobs/`
+    /// route instead of invoking `compile_cell`. `None` (public pages,
+    /// pre-snapshot shares) keeps the live compile path. `default` rather
+    /// than `optional` so the setter takes the `Option` as-is (optional
+    /// Option-props strip to the bare inner type).
+    #[prop(default = None)]
+    share_manifest: Option<ironpad_common::ShareManifest>,
 ) -> impl IntoView {
     // Leptos's optional-prop setter takes the bare String, so callers with no
     // spec pass ""; normalize that back to None here.
@@ -349,6 +357,11 @@ pub(crate) fn ViewOnlyNotebook(
                         let shared = shared_cargo_toml.clone();
                         let shared_src = shared_source.clone();
                         let nid = notebook_id.clone();
+                        // Snapshotted blob for this cell, if the share
+                        // manifest has one (PRD-0047).
+                        let share_blob = share_manifest
+                            .as_ref()
+                            .and_then(|m| m.cells.get(&cell.id).cloned());
 
                         view! {
                             <ViewOnlyCell
@@ -360,6 +373,7 @@ pub(crate) fn ViewOnlyNotebook(
                                 cell_outputs=cell_outputs
                                 run_all_queue=run_all_queue
                                 force_recompile=force_recompile
+                                share_blob=share_blob
                             />
                         }
                     }).collect_view()
@@ -445,6 +459,7 @@ fn ViewOnlyCell(
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
     force_recompile: RwSignal<bool>,
+    share_blob: Option<ironpad_common::ShareBlobEntry>,
 ) -> impl IntoView {
     if cell.shared {
         // Shared cells never execute: their source rides in every other
@@ -465,6 +480,7 @@ fn ViewOnlyCell(
                 cell_outputs=cell_outputs
                 run_all_queue=run_all_queue
                 force_recompile=force_recompile
+                share_blob=share_blob
             />
         }
         .into_any(),
@@ -490,12 +506,14 @@ fn ViewOnlyCodeCell(
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
     force_recompile: RwSignal<bool>,
+    share_blob: Option<ironpad_common::ShareBlobEntry>,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let all_cells = StoredValue::new(all_cells);
     let stored_cargo_toml = StoredValue::new(shared_cargo_toml);
     let stored_source = StoredValue::new(shared_source);
     let stored_notebook_id = StoredValue::new(notebook_id);
+    let stored_share_blob = StoredValue::new(share_blob);
 
     let compiling = RwSignal::new(false);
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
@@ -596,13 +614,60 @@ fn ViewOnlyCodeCell(
                 };
 
                 let compile_start = js_sys::Date::now();
+
+                // Snapshotted share blob (PRD-0047): in cache mode, a manifest
+                // entry replaces the compile round trip with an immutable
+                // static GET. Fresh mode skips the snapshot so the server
+                // really recompiles; any fetch failure falls back to the live
+                // pipeline below.
+                let force = force_recompile.get_untracked();
+                let mut snapshot_response: Option<CompileResponse> = None;
+                if !force {
+                    if let Some(entry) = stored_share_blob.get_value() {
+                        match crate::components::executor::fetch_share_blob(&entry).await {
+                            Ok((wasm_blob, js_glue)) => {
+                                snapshot_response = Some(CompileResponse {
+                                    wasm_blob,
+                                    diagnostics: vec![],
+                                    cached: true,
+                                    preamble_lines: 0,
+                                    js_glue,
+                                });
+                            }
+                            Err(e) => leptos::logging::warn!(
+                                "share blob fetch failed ({e}); falling back to compile"
+                            ),
+                        }
+                    }
+                }
+
+                // Local blob store (PRD-0047): cache mode probes IndexedDB
+                // before paying the wire. The hash is computed in Fresh mode
+                // too (so the fresh server result can overwrite the entry),
+                // but not when the snapshot already served the blob — that
+                // path stores nothing, and skipping keeps a snapshot replay
+                // free of even the fingerprint round trip.
+                let request_hash = if snapshot_response.is_some() {
+                    None
+                } else {
+                    crate::blob_cache::request_hash(&request).await
+                };
+                if !force && snapshot_response.is_none() {
+                    if let Some(hash) = &request_hash {
+                        snapshot_response = crate::blob_cache::try_local_hit(hash).await;
+                    }
+                }
+                let served_without_server = snapshot_response.is_some();
+
                 // Compile requests are idempotent (cache-keyed server-side), so
                 // TRANSPORT failures — a dropped connection mid-build, a network
                 // change on a mobile client — are safe to retry; the server's
                 // incremental target dir makes retried builds much cheaper than
                 // the first attempt. Compile diagnostics are Ok responses and
                 // never retried.
-                let compile_result = {
+                let compile_result = if let Some(response) = snapshot_response {
+                    Ok(response)
+                } else {
                     let mut attempt: i32 = 0;
                     loop {
                         match compile_cell(request.clone()).await {
@@ -628,6 +693,15 @@ fn ViewOnlyCodeCell(
                                 .collect();
                             error_message.set(Some(errors.join("\n")));
                         } else {
+                            // Persist server results locally (PRD-0047). Runs
+                            // for Fresh compiles too — that overwrite is what
+                            // makes flipping back to cache serve the fresh
+                            // blob.
+                            if !served_without_server {
+                                if let Some(request_hash) = &request_hash {
+                                    crate::blob_cache::store_local(request_hash, &response).await;
+                                }
+                            }
                             let hash =
                                 crate::components::executor::hash_wasm_blob(&response.wasm_blob);
                             match crate::components::executor::load_blob(

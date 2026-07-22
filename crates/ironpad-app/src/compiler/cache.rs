@@ -12,74 +12,17 @@ use std::path::{Path, PathBuf};
 
 use super::toolchain::toolchain_fingerprint;
 
-/// The compilation target baked into the cache key so that a future target
-/// change automatically invalidates existing entries.
-const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
-
-/// Monotonic epoch counter baked into the cache key.
-///
-/// Bump this whenever the compilation pipeline changes in a way that should
-/// invalidate all cached blobs (e.g. RUSTFLAGS changes, wasm-bindgen
-/// post-processing changes, scaffold template changes, `ironpad-cell` source
-/// edits — there is no automatic hash of the injected `ironpad-cell` crate's
-/// contents, so bump this manually when it changes).
-///
-/// Bumped 1 -> 2 for PRD-0031 T-003: folding the toolchain fingerprint into
-/// the key (see [`toolchain_fingerprint`]) should invalidate all pre-existing
-/// blobs once, since their toolchain provenance is unknown.
-///
-/// Caveat: [`toolchain_fingerprint`] tracks only `CELL_TOOLCHAIN`, so bumping
-/// `CELL_TOOLCHAIN` invalidates every blob automatically, but bumping the
-/// split-out pins (`AUTODIFF_TOOLCHAIN` or `ATOMICS_TOOLCHAIN` in
-/// `compiler/build.rs`) does NOT — bump this epoch when you change one of those
-/// so their cells rebuild against the new toolchain.
-///
-/// Bumped 2 -> 3 for PRD-0036 T-008: `ironpad-cell`'s `CellInputs::from_raw`
-/// gained bounds checking, so cached cells should rebuild against the safer
-/// runtime.
-///
-/// Bumped 3 -> 4 for PRD-0038 T-001: variable-length fields are now
-/// length-prefixed (framed) in the hash input, which changes every key, so
-/// pre-existing blobs (hashed with the old bare-concatenation scheme) must be
-/// invalidated once.
-///
-/// Bumped 4 -> 5 for PRD-0043 T-001: `ironpad-cell` gained the `blocking`
-/// module (JSPI host imports), so cached cells must rebuild against the new
-/// runtime. (The `needs_simd` hash byte added in the same release also
-/// changes every key; the bump keeps the documented ironpad-cell discipline.)
-///
-/// Bumped 5 -> 6: `IntoPanels for Canvas` switched from an Html panel (whose
-/// data: URI the sanitizer strips — tuple outputs rendered an empty image) to
-/// the structured `BlobImage` panel; cached blobs bake the old behavior in.
-///
-/// Bumped 6 -> 7: the scaffold now emits `#[allow(dead_code)] mod shared;`, so
-/// shared helpers a cell does not call no longer report the false "never used"
-/// warning. The scaffold is not part of the hash input, and the cache stores
-/// DIAGNOSTICS next to the blob, so without this bump every already-cached cell
-/// would keep replaying the stale warnings forever.
-///
-/// Bumped 7 -> 8 (two scaffold diagnostic fixes in one release): the injected
-/// `cellN` / `last` input bindings now carry `#[allow(unused_variables)]`, so
-/// cells that use only some (or none) of their upstream outputs no longer
-/// warn; and the sim/live-view tick wrappers reach their `static mut` through
-/// a raw pointer, silencing the `static_mut_refs` warning that mapped past
-/// the end of the user's source. Same rationale as 6 -> 7: cached diagnostics
-/// would replay the stale warnings without the bump.
-const CACHE_EPOCH: u32 = 8;
-
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Compute a deterministic blake3 content hash from cell source, Cargo.toml,
 /// and predecessor cell type tags.
 ///
-/// The hash includes the fixed target triple so any future target change
-/// naturally invalidates the cache. Every variable-length field is
-/// length-prefixed (framed) so field boundaries are unambiguous — otherwise
-/// distinct inputs whose bytes concatenate identically would collide (e.g.
-/// `("ab", "c")` and `("a", "bc")`) and serve each other's compiled WASM.
-/// Also folds in the process-cached toolchain fingerprint (rustc version +
-/// host wasm-bindgen CLI version, see [`toolchain_fingerprint`]) so a toolchain
-/// upgrade invalidates stale cached blobs.
+/// Thin wrapper over the shared recipe in [`ironpad_common::cache_key`]
+/// (which the browser also uses for its local blob store, PRD-0047), bound to
+/// the process-cached toolchain fingerprint (rustc version + host wasm-bindgen
+/// CLI version, see [`toolchain_fingerprint`]) so a toolchain upgrade
+/// invalidates stale cached blobs. `CACHE_EPOCH` lives with the recipe —
+/// bump it in `ironpad-common/src/cache_key.rs`.
 #[allow(clippy::fn_params_excessive_bools)]
 #[allow(clippy::too_many_arguments)]
 pub fn content_hash(
@@ -92,7 +35,7 @@ pub fn content_hash(
     needs_autodiff: bool,
     needs_simd: bool,
 ) -> String {
-    content_hash_inner(
+    ironpad_common::cache_key::content_hash_with_fingerprint(
         source,
         cargo_toml,
         previous_types,
@@ -103,67 +46,6 @@ pub fn content_hash(
         needs_simd,
         toolchain_fingerprint(),
     )
-}
-
-/// Core hashing logic, parameterized on an explicit toolchain fingerprint so
-/// it's unit-testable without depending on the process-global cache. See
-/// [`content_hash`] for the public entry point.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::fn_params_excessive_bools)]
-fn content_hash_inner(
-    source: &str,
-    cargo_toml: &str,
-    previous_types: &[String],
-    shared_cargo_toml: Option<&str>,
-    shared_source: Option<&str>,
-    needs_atomics: bool,
-    needs_autodiff: bool,
-    needs_simd: bool,
-    toolchain: &str,
-) -> String {
-    // Every variable-length field is length-prefixed so its boundary with the
-    // next field is unambiguous. A bare concatenation (`source || cargo_toml ||
-    // …`) lets distinct inputs whose bytes line up collide and serve each
-    // other's cached WASM — e.g. `("ab", "c")` vs `("a", "bc")`, or a
-    // `cargo_toml` ending in the target triple bytes vs a shorter one.
-    let mut hasher = blake3::Hasher::new();
-    update_framed(&mut hasher, source.as_bytes());
-    update_framed(&mut hasher, cargo_toml.as_bytes());
-    update_framed(&mut hasher, TARGET_TRIPLE.as_bytes());
-    update_framed(&mut hasher, &(previous_types.len() as u64).to_le_bytes());
-    for t in previous_types {
-        update_framed(&mut hasher, t.as_bytes());
-    }
-    update_framed_opt(&mut hasher, shared_cargo_toml.map(str::as_bytes));
-    update_framed_opt(&mut hasher, shared_source.map(str::as_bytes));
-    hasher.update(&[u8::from(needs_atomics)]);
-    hasher.update(&[u8::from(needs_autodiff)]);
-    hasher.update(&[u8::from(needs_simd)]);
-    hasher.update(&CACHE_EPOCH.to_le_bytes());
-    update_framed(&mut hasher, toolchain.as_bytes());
-    hasher.finalize().to_hex().to_string()
-}
-
-/// Feed `bytes` into the hasher framed by an 8-byte little-endian length
-/// prefix, so the boundary between this field and the next is unambiguous and
-/// no two distinct field splits can produce the same byte stream.
-fn update_framed(hasher: &mut blake3::Hasher, bytes: &[u8]) {
-    hasher.update(&(bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
-}
-
-/// Frame an optional field: a presence byte (`1`/`0`) followed by the framed
-/// content when present. Keeps `None` distinct from `Some("")`.
-fn update_framed_opt(hasher: &mut blake3::Hasher, bytes: Option<&[u8]>) {
-    match bytes {
-        Some(b) => {
-            hasher.update(&[1]);
-            update_framed(hasher, b);
-        }
-        None => {
-            hasher.update(&[0]);
-        }
-    }
 }
 
 /// Path where a cached WASM blob lives (or would live) for the given hash.
@@ -705,59 +587,7 @@ mod tests {
         assert_ne!(a, b, "simd128 changes codegen, so it must change the key");
     }
 
-    // ── T-003: toolchain fingerprint folded into the cache key ───────────
-
-    #[test]
-    fn inner_hash_changes_when_toolchain_fingerprint_changes() {
-        let a = content_hash_inner(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            "toolchain-a",
-        );
-        let b = content_hash_inner(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            "toolchain-b",
-        );
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn inner_hash_is_deterministic_for_same_toolchain() {
-        let a = content_hash_inner(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            "toolchain-a",
-        );
-        let b = content_hash_inner(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            "toolchain-a",
-        );
-        assert_eq!(a, b);
-    }
+    // Fingerprint-variation tests live with the shared recipe in
+    // `ironpad-common/src/cache_key.rs`; the tests above exercise the
+    // delegating entry point with the process fingerprint.
 }

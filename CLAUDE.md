@@ -172,8 +172,12 @@ The core of ironpad is a 5-stage WASM compiler:
 
 **Shared notebooks** use content-addressed storage:
 - Upload notebook JSON → blake3 hash (16 hex chars) → stored at `{data_dir}/shares/{hash}.json`
-- Server functions: `share_notebook(notebook_json)`, `get_shared_notebook(hash)`
+- Server functions: `share_notebook(notebook_json, cell_type_tags)`, `get_shared_notebook(hash)`, `get_shared_manifest(hash)`
 - Share URL: `/shared/{hash}`
+
+**Blob delivery (PRD-0047)** — two cache layers in front of `compile_cell`:
+- **Share snapshots**: at share time the server recomputes each runnable cell's cache key (from the sharer-supplied positional type tags) and copies CACHE HITS into `{data_dir}/shares/blobs/{content_hash}.wasm/.js` plus a `{share_hash}.manifest.json` sidecar. Viewers of `/shared/*` and `/embed/shared/*` fetch blobs from the immutable `/share-blobs/{hash}.{wasm,js}` route (axum handler in `ironpad-server/src/main.rs`) instead of compiling — shares survive toolchain bumps and cache wipes, and viewers can never trigger builds. Misses are skipped (never compiled at share time); everything degrades to the live pipeline.
+- **Local blob cache**: the browser keeps a content-addressed IndexedDB store (`blobs` object store in `public/storage.js`, LRU-capped; Rust side in `ironpad-app/src/blob_cache.rs`). Keys come from the SAME recipe as the server — `ironpad_common::cache_key` (moved there so both targets share it; `CACHE_EPOCH` now lives in `cache_key.rs`) plus the server fingerprint from `get_toolchain_fingerprint()` — so a deploy/toolchain bump invalidates local entries for free. The Force Recompile toggle bypasses every layer (share snapshot, local store, server cache) and its fresh result overwrites the local entry.
 
 **Routes**:
 - `/` — HomePage (lists private IndexedDB notebooks + public notebooks)
@@ -227,7 +231,7 @@ Key modules:
 
 ### Adding a New Server Function
 
-Current server functions: `compile_cell`, `check_cell` (live check-on-type, PRD-0045), `list_public_notebooks`, `get_public_notebook`, `share_notebook`, `get_shared_notebook`.
+Current server functions: `compile_cell`, `check_cell` (live check-on-type, PRD-0045), `list_public_notebooks`, `get_public_notebook`, `share_notebook`, `get_shared_notebook`, `get_shared_manifest` (blob-snapshot sidecar, PRD-0047), `get_toolchain_fingerprint` (client cache keys, PRD-0047).
 
 1. Add to `server_fns.rs` with `#[server]` attribute:
    ```rust
@@ -558,5 +562,5 @@ Sharp edges: target features from independent concerns must merge into ONE `-C t
 
 ---
 
-**Last Updated**: 2026-07-22 — Thaw removed: native UI primitives + owned toaster (v0.12.13); session teardown on page disposal + disposal-read guards (v0.12.12); view mode renders the public notebook renderer + code-wide papercut sweep (v0.12.11); per-cell collapse defaults (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
+**Last Updated**: 2026-07-22 — Static blob delivery (PRD-0047): share-time blob snapshots + immutable /share-blobs route + client IndexedDB blob cache, cache-key recipe moved to ironpad-common; Thaw removed: native UI primitives + owned toaster (v0.12.13); session teardown on page disposal + disposal-read guards (v0.12.12); view mode renders the public notebook renderer + code-wide papercut sweep (v0.12.11); per-cell collapse defaults (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
 **Target Audience**: AI agents, developers contributing to ironpad

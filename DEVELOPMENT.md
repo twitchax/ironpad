@@ -245,7 +245,8 @@ scaffold → cache check → cargo build → diagnostics → wasm-opt
 ### Key Details
 
 - **Typed injection**: Types from previous cells are injected as typed variables into the scaffold, enabling inter-cell data flow.
-- **Content hash inputs**: source + dependencies + previous cell types + shared deps — any change triggers recompilation.
+- **Content hash inputs**: source + dependencies + previous cell types + shared deps — any change triggers recompilation. The hash recipe (and `CACHE_EPOCH`) lives in `ironpad-common/src/cache_key.rs` so the browser computes identical keys for its local IndexedDB blob cache (PRD-0047); the server binds it to the toolchain fingerprint, the client fetches that fingerprint once per session.
+- **Blob delivery (PRD-0047)**: shares snapshot their compiled blobs into `{data_dir}/shares/blobs/` at share time (cache hits only) with a per-share manifest sidecar; viewers replay from the immutable `/share-blobs/` route with zero compile calls, and the editor/viewer probe a local IndexedDB blob store before paying the `compile_cell` round trip. Force Recompile bypasses all layers and overwrites the local entry.
 - **Cell I/O**: Cells communicate via bincode 2.0 serialized data piped through WASM memory.
 
 ### End-to-End Compilation Example

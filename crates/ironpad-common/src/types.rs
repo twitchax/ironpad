@@ -409,6 +409,34 @@ impl IronpadCell {
     }
 }
 
+// ── Share Blob Manifest (PRD-0047) ──────────────────────────────────────────
+
+/// One snapshotted cell artifact in a share: the content hash naming the
+/// `.wasm` (and optional `.js` glue) files under `/share-blobs/`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShareBlobEntry {
+    /// 64-hex blake3 content hash; the blob is served as `/share-blobs/{blob}.wasm`.
+    pub blob: String,
+    /// Whether a wasm-bindgen JS glue sibling (`/share-blobs/{blob}.js`) exists.
+    pub has_js_glue: bool,
+}
+
+/// Sidecar manifest written next to a shared notebook at share time, mapping
+/// cell ids to their snapshotted compiled artifacts. Viewers with a manifest
+/// entry fetch the immutable blob instead of invoking `compile_cell`; cells
+/// without an entry (or any fetch failure) fall back to the live pipeline.
+///
+/// Stored at `{data_dir}/shares/{share_hash}.manifest.json`, deliberately
+/// separate from the `{share_hash}.json` notebook so the stored notebook
+/// format (and existing shares) stay untouched.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShareManifest {
+    /// Manifest schema version (currently 1).
+    pub version: u32,
+    /// Cell id → snapshotted artifact. `BTreeMap` for stable serialization.
+    pub cells: std::collections::BTreeMap<String, ShareBlobEntry>,
+}
+
 // ── Public Notebook Types ───────────────────────────────────────────────────
 
 /// Lightweight summary of a public notebook for the home-page listing.

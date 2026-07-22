@@ -95,6 +95,51 @@ pub async fn load_blob(
     Ok(())
 }
 
+/// Fetch a URL and return the (ok-status) `Response`, mapping every JS-side
+/// failure into a string error.
+#[cfg(feature = "hydrate")]
+async fn fetch_response(url: &str) -> Result<web_sys::Response, String> {
+    use wasm_bindgen::JsCast as _;
+
+    let window = web_sys::window().ok_or("no window")?;
+    let resp = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
+        .await
+        .map_err(|e| format!("fetch failed: {e:?}"))?;
+    let resp: web_sys::Response = resp.dyn_into().map_err(|_| "not a Response".to_string())?;
+    if !resp.ok() {
+        return Err(format!("HTTP {} for {url}", resp.status()));
+    }
+    Ok(resp)
+}
+
+/// Fetch a snapshotted share blob (and its wasm-bindgen JS glue, when the
+/// manifest says one exists) from the immutable `/share-blobs/` route
+/// (PRD-0047). Returns `(wasm_bytes, js_glue)` ready for [`load_blob`].
+#[cfg(feature = "hydrate")]
+pub async fn fetch_share_blob(
+    entry: &ironpad_common::ShareBlobEntry,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    use wasm_bindgen_futures::JsFuture;
+
+    let resp = fetch_response(&format!("/share-blobs/{}.wasm", entry.blob)).await?;
+    let buf = JsFuture::from(resp.array_buffer().map_err(|e| format!("{e:?}"))?)
+        .await
+        .map_err(|e| format!("blob read failed: {e:?}"))?;
+    let wasm_bytes = js_sys::Uint8Array::new(&buf).to_vec();
+
+    let js_glue = if entry.has_js_glue {
+        let resp = fetch_response(&format!("/share-blobs/{}.js", entry.blob)).await?;
+        let text = JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
+            .await
+            .map_err(|e| format!("glue read failed: {e:?}"))?;
+        Some(text.as_string().ok_or("glue not a string")?)
+    } else {
+        None
+    };
+
+    Ok((wasm_bytes, js_glue))
+}
+
 /// Execution result from running a cell: (`output_bytes`, `display_text`, `type_tag`, `ran_on_main_thread`).
 #[cfg(feature = "hydrate")]
 pub type CellExecResult = (Vec<u8>, Option<String>, Option<String>, bool);

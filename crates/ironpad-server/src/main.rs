@@ -131,6 +131,7 @@ async fn main() {
     let app = Router::new()
         .route("/ws/host", get(ws::ws_host_handler))
         .route("/ws/connect", get(ws::ws_connect_handler))
+        .route("/share-blobs/{file}", get(share_blob_handler))
         .leptos_routes_with_context(
             &app_state,
             routes,
@@ -443,14 +444,67 @@ async fn embed_corp_header(
 ///
 /// The `/pkg/` bundle carries a content hash in its filename (cargo-leptos
 /// `hash-files`), so it can be cached forever: a new release references new
-/// URLs. Everything else (Monaco, executor/storage JS, notebooks, SSR pages)
-/// is served under URL-stable paths, so browsers must revalidate on each use
-/// (`no-cache` still allows conditional 304s via `Last-Modified`).
+/// URLs. `/share-blobs/` files are content-addressed by cache key (PRD-0047),
+/// so they are likewise immutable — the CDN and browser absorb repeat viewer
+/// traffic. Everything else (Monaco, executor/storage JS, notebooks, SSR
+/// pages) is served under URL-stable paths, so browsers must revalidate on
+/// each use (`no-cache` still allows conditional 304s via `Last-Modified`).
 fn cache_control_value(path: &str) -> HeaderValue {
-    if path.starts_with("/pkg/") {
+    if path.starts_with("/pkg/") || path.starts_with("/share-blobs/") {
         HeaderValue::from_static("public, max-age=31536000, immutable")
     } else {
         HeaderValue::from_static("no-cache")
+    }
+}
+
+/// Is `file` a well-formed share-blob filename: a 64-hex content hash plus a
+/// `.wasm` or `.js` extension? Anything else (traversal, other extensions,
+/// stray temp files) is rejected before touching the filesystem.
+fn is_valid_share_blob_name(file: &str) -> bool {
+    let hash = if let Some(h) = file.strip_suffix(".wasm") {
+        h
+    } else if let Some(h) = file.strip_suffix(".js") {
+        h
+    } else {
+        return false;
+    };
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// Serve a snapshotted share blob (PRD-0047) from `{data_dir}/shares/blobs/`.
+///
+/// Content-addressed and immutable — the cache-control middleware stamps the
+/// forever policy from [`cache_control_value`].
+async fn share_blob_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(file): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+
+    if !is_valid_share_blob_name(&file) {
+        return (axum::http::StatusCode::NOT_FOUND, "not found").into_response();
+    }
+
+    let path = state
+        .config
+        .data_dir
+        .join("shares")
+        .join("blobs")
+        .join(&file);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            // Validation above admits exactly two suffixes.
+            let content_type = if file.strip_suffix(".wasm").is_some() {
+                "application/wasm"
+            } else {
+                "text/javascript"
+            };
+            ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response()
+        }
+        Err(_) => (axum::http::StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
@@ -493,7 +547,7 @@ mod embed_header_tests {
 
 #[cfg(test)]
 mod cache_header_tests {
-    use super::cache_control_value;
+    use super::{cache_control_value, is_valid_share_blob_name};
 
     #[test]
     fn hashed_pkg_assets_are_immutable_everything_else_revalidates() {
@@ -506,6 +560,12 @@ mod cache_header_tests {
             "public, max-age=31536000, immutable"
         );
 
+        // Share blobs are content-addressed (PRD-0047): immutable forever.
+        assert_eq!(
+            cache_control_value(&format!("/share-blobs/{}.wasm", "a".repeat(64))),
+            "public, max-age=31536000, immutable"
+        );
+
         // URL-stable assets and pages must revalidate every use: a stale
         // cached bundle silently drops notebook fields it predates.
         assert_eq!(cache_control_value("/"), "no-cache");
@@ -513,6 +573,25 @@ mod cache_header_tests {
         assert_eq!(cache_control_value("/monaco/vs/loader.js"), "no-cache");
         assert_eq!(cache_control_value("/notebooks/cannon.ironpad"), "no-cache");
         assert_eq!(cache_control_value("/pkgx/evil.js"), "no-cache");
+    }
+
+    #[test]
+    fn share_blob_names_are_strictly_validated() {
+        let hash = "a".repeat(64);
+        assert!(is_valid_share_blob_name(&format!("{hash}.wasm")));
+        assert!(is_valid_share_blob_name(&format!("{hash}.js")));
+
+        // Wrong length, case, extension, or traversal-ish input: rejected.
+        assert!(!is_valid_share_blob_name("abc.wasm"));
+        assert!(!is_valid_share_blob_name(&format!(
+            "{}.wasm",
+            "A".repeat(64)
+        )));
+        assert!(!is_valid_share_blob_name(&format!("{hash}.json")));
+        assert!(!is_valid_share_blob_name(&hash));
+        assert!(!is_valid_share_blob_name(&format!("../{hash}.wasm")));
+        assert!(!is_valid_share_blob_name(&format!("{hash}.wasm.tmp.x")));
+        assert!(!is_valid_share_blob_name(""));
     }
 }
 

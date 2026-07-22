@@ -116,7 +116,27 @@ fn share_current_notebook(state: &NotebookState, toaster: Toaster) {
             }
         };
 
-        match share_notebook(json).await {
+        // Positional type tags (one per cell, empty when unrun/non-code) let
+        // the server snapshot compiled blobs for the share (PRD-0047). Tags
+        // come from the editor's live outputs — the same source the compile
+        // path hashes with, so the server-side keys line up with warm cache
+        // entries.
+        let cell_type_tags: Vec<String> = state.cell_outputs.try_get_untracked().map_or_else(
+            || vec![String::new(); nb.cells.len()],
+            |outputs| {
+                nb.cells
+                    .iter()
+                    .map(|c| {
+                        outputs
+                            .get(&c.id)
+                            .and_then(|d| d.type_tag.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            },
+        );
+
+        match share_notebook(json, cell_type_tags).await {
             Ok(hash) => {
                 #[cfg(target_arch = "wasm32")]
                 let origin = web_sys::window()

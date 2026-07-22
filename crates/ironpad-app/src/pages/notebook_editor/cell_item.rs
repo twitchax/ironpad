@@ -642,6 +642,27 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 shared_check: None,
             };
 
+            // Local blob store (PRD-0047): cache mode probes IndexedDB before
+            // paying the compile round trip; Fresh mode always compiles, and
+            // the fresh result overwrites the local entry below.
+            #[cfg(feature = "hydrate")]
+            let (result, served_locally, request_hash) = {
+                let request_hash = crate::blob_cache::request_hash(&request).await;
+                let local_hit = if request.force {
+                    None
+                } else if let Some(hash) = &request_hash {
+                    crate::blob_cache::try_local_hit(hash).await
+                } else {
+                    None
+                };
+                let served_locally = local_hit.is_some();
+                let result = match local_hit {
+                    Some(response) => Ok(response),
+                    None => compile_cell(request).await,
+                };
+                (result, served_locally, request_hash)
+            };
+            #[cfg(not(feature = "hydrate"))]
             let result = compile_cell(request).await;
 
             // If the cell (or the whole page) was disposed while the compile was
@@ -683,6 +704,16 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             use crate::components::executor;
 
                             cell_status.set(CellStatus::Running);
+
+                            // Persist server results locally (PRD-0047). Runs
+                            // for Fresh compiles too — that overwrite is what
+                            // makes flipping back to cache serve the fresh
+                            // blob.
+                            if !served_locally {
+                                if let Some(request_hash) = &request_hash {
+                                    crate::blob_cache::store_local(request_hash, &response).await;
+                                }
+                            }
 
                             let blob = response.wasm_blob.clone();
                             let js_glue = response.js_glue.clone();

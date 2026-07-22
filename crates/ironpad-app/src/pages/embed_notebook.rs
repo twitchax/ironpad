@@ -13,7 +13,7 @@ use leptos_router::hooks::use_params_map;
 use ironpad_common::IronpadNotebook;
 
 use crate::components::view_only_notebook::ViewOnlyNotebook;
-use crate::server_fns::{get_public_notebook, get_shared_notebook};
+use crate::server_fns::{get_public_notebook, get_shared_manifest, get_shared_notebook};
 
 /// Route component for `/embed/shared/{hash}` — the iframe-embeddable variant
 /// of [`SharedNotebookPage`](super::SharedNotebookPage).
@@ -23,16 +23,30 @@ pub fn EmbedSharedPage() -> impl IntoView {
     let hash = params.read_untracked().get("hash").unwrap_or_default();
     let spec = format!("shared/{hash}");
 
-    let notebook_resource = Resource::new(move || hash.clone(), get_shared_notebook);
+    let notebook_resource = Resource::new(
+        move || hash.clone(),
+        |hash| async move {
+            let notebook = get_shared_notebook(hash.clone()).await?;
+            // A missing/failed manifest degrades to live compilation
+            // (PRD-0047); it never fails the embed.
+            let manifest = get_shared_manifest(hash).await.unwrap_or(None);
+            Ok::<_, ServerFnError>((notebook, manifest))
+        },
+    );
 
     view! {
         <Suspense fallback=embed_loading>
             {move || {
                 let spec = spec.clone();
                 Suspend::new(async move {
+                    let (result, manifest) = match notebook_resource.await {
+                        Ok((nb, manifest)) => (Ok(nb), manifest),
+                        Err(e) => (Err(e), None),
+                    };
                     // Shared content is arbitrary user code: never auto-run.
                     embed_body(
-                        notebook_resource.await,
+                        result,
+                        manifest,
                         spec,
                         false,
                         "Shared notebook not found or expired",
@@ -72,6 +86,7 @@ pub fn EmbedPublicPage() -> impl IntoView {
                 Suspend::new(async move {
                     embed_body(
                         notebook_resource.await,
+                        None,
                         spec,
                         autorun,
                         "Public notebook not found",
@@ -96,13 +111,20 @@ fn embed_loading() -> impl IntoView {
 /// error text stays terse: it renders inside someone else's page.
 fn embed_body(
     result: Result<IronpadNotebook, ServerFnError>,
+    share_manifest: Option<ironpad_common::ShareManifest>,
     spec: String,
     autorun: bool,
     not_found: &'static str,
 ) -> AnyView {
     match result {
         Ok(notebook) => view! {
-            <ViewOnlyNotebook notebook embed=true embed_spec=spec autorun=autorun />
+            <ViewOnlyNotebook
+                notebook
+                embed=true
+                embed_spec=spec
+                autorun=autorun
+                share_manifest=share_manifest
+            />
         }
         .into_any(),
 
