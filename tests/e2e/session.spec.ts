@@ -160,6 +160,75 @@ test.describe.serial("Agent Session", () => {
     expect(cell.source).toContain("let x = 99;");
   });
 
+  test("navigating away ends the session instead of poisoning the page", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+
+    const jsErrors = trackJsErrors(page);
+    // The regression signature: a leaked WS handler reading the disposed
+    // page's signals panics with "already been disposed" (a console.error,
+    // not a pageerror — and the follow-on trap is "unreachable", which
+    // trackJsErrors treats as a benign cell panic). Watch for it directly.
+    const disposedPanics: string[] = [];
+    page.on("console", (msg) => {
+      if (
+        msg.type() === "error" &&
+        (msg.text().includes("already been disposed") ||
+          msg.text().includes("RefCell already borrowed"))
+      ) {
+        disposedPanics.push(msg.text());
+      }
+    });
+
+    await createNotebook(page);
+    const notebookId = page.url().match(/\/notebook\/([a-f0-9-]+)/)![1];
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+    expect(cliExec(["status"]).connected).toBe(true);
+
+    // Leave the notebook WITHOUT stopping the session. Pre-fix, the socket
+    // and its forget()-leaked handlers survived the page; the next incoming
+    // agent message then panicked the wasm runtime and left every page
+    // render-only until a hard reload ("cannot edit the title").
+    await page.locator("a.ironpad-brand").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // Page disposal must end the session server-side: the daemon observes
+    // the close and commands fail fast instead of stranding on a timeout.
+    await expect
+      .poll(() => cliExecRaw(["status"]).exitCode, { timeout: 10_000 })
+      .not.toBe(0);
+    const late = cliExecRaw([
+      "cells",
+      "add",
+      "--label",
+      "probe",
+      "--source",
+      "42",
+    ]);
+    expect(late.exitCode).not.toBe(0);
+
+    // The SAME wasm instance must still be fully reactive: SPA-navigate back
+    // into the notebook (no reload — a reload would mask a poisoned runtime)
+    // and run the title-edit flow end to end.
+    await page.locator(`a[href="/notebook/${notebookId}"]`).click();
+    const title = page.locator(".ironpad-notebook-title--editable");
+    await expect(title).toBeVisible({ timeout: 15_000 });
+    await title.click();
+    const input = page.locator(".ironpad-header-title-input");
+    await expect(input).toBeVisible();
+    await input.fill("");
+    await input.pressSequentially("Still Alive", { delay: 20 });
+    await input.press("Enter");
+    await expect(title).toHaveText("Still Alive", { timeout: 10_000 });
+
+    expect(disposedPanics).toEqual([]);
+    expect(jsErrors).toEqual([]);
+  });
+
   test("session ends on tab close", async ({ page }) => {
     test.setTimeout(60_000);
 

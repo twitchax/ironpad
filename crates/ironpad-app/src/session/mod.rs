@@ -31,6 +31,13 @@ pub(crate) struct SessionState {
     pub connected_guests: RwSignal<Vec<String>>,
     /// Current connection status.
     pub connection_status: RwSignal<ConnectionStatus>,
+    /// The live socket plus its event closures and heartbeat interval, owned
+    /// here (page-scoped) so [`end_session`](connection::end_session) — from
+    /// the Stop button or the page's `on_cleanup` — can tear it all down.
+    /// The closures capture this page's model signals, so nothing about the
+    /// session may outlive the page.
+    #[cfg(feature = "hydrate")]
+    pub socket: StoredValue<Option<connection::SessionSocket>, LocalStorage>,
 }
 
 /// WebSocket connection status.
@@ -49,6 +56,8 @@ impl SessionState {
             token: RwSignal::new(None),
             connected_guests: RwSignal::new(Vec::new()),
             connection_status: RwSignal::new(ConnectionStatus::Disconnected),
+            #[cfg(feature = "hydrate")]
+            socket: StoredValue::new_local(None),
         }
     }
 

@@ -98,7 +98,9 @@ fn share_current_notebook(state: &NotebookState, toaster: ToasterInjection) {
         #[cfg(feature = "hydrate")]
         yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
 
-        let Some(nb) = state.notebook.get_untracked() else {
+        // try_: the page can be disposed during the yield (navigation), and
+        // reading a disposed signal panics the reactive runtime.
+        let Some(nb) = state.notebook.try_get_untracked().flatten() else {
             return;
         };
         let json = match serde_json::to_string(&nb) {
@@ -217,6 +219,15 @@ pub fn NotebookEditorPage() -> impl IntoView {
     provide_context(model);
     provide_context(session_state);
 
+    // The session cannot outlive this page: the browser IS the model server,
+    // and the socket's handlers capture this page's signals. Left open after
+    // disposal, the next incoming agent message would read disposed signals
+    // and panic the reactive runtime (leaving every page render-only until a
+    // hard reload). Guests receive SessionEnded and can reconnect to a new
+    // session.
+    #[cfg(feature = "hydrate")]
+    on_cleanup(move || crate::session::end_session(&session_state));
+
     // Load notebook from IndexedDB on the client side.
 
     #[cfg(feature = "hydrate")]
@@ -224,6 +235,12 @@ pub fn NotebookEditorPage() -> impl IntoView {
         let nb_id = notebook_id;
         leptos::task::spawn_local(async move {
             if let Some(nb) = crate::storage::client::get_notebook(&nb_id).await {
+                // The page may already be gone (navigated away while the
+                // IndexedDB read was in flight); sync_from_notebook READS
+                // the notebook signal, which panics once disposed.
+                if state.notebook.try_get_untracked().is_none() {
+                    return;
+                }
                 state.notebook.set(Some(nb));
                 model.sync_from_notebook();
             }
@@ -725,14 +742,24 @@ fn NotebookContent() -> impl IntoView {
                                                 leptos::task::spawn_local(async move {
                                                     yield_for_cell_flush(CELL_FLUSH_YIELD_MS)
                                                         .await;
-                                                    let nb = state.notebook.get_untracked();
-                                                    if let Some(nb) = nb {
-                                                        let display_texts =
-                                                            state.cell_display_texts.get_untracked();
-                                                        let html =
-                                                            export::build_export_html(&nb, &display_texts);
-                                                        export::trigger_html_download(&html, &nb.title);
-                                                    }
+                                                    // try_: disposal can land
+                                                    // during the yield.
+                                                    let Some(nb) = state
+                                                        .notebook
+                                                        .try_get_untracked()
+                                                        .flatten()
+                                                    else {
+                                                        return;
+                                                    };
+                                                    let Some(display_texts) = state
+                                                        .cell_display_texts
+                                                        .try_get_untracked()
+                                                    else {
+                                                        return;
+                                                    };
+                                                    let html =
+                                                        export::build_export_html(&nb, &display_texts);
+                                                    export::trigger_html_download(&html, &nb.title);
                                                 });
                                             }
                                         }

@@ -58,6 +58,40 @@ fn host_secret(notebook_id: &str) -> String {
     secret
 }
 
+// ── Session socket ──────────────────────────────────────────────────────────
+
+/// The live WebSocket plus everything that must die with it: the event
+/// closures and the heartbeat interval. These closures capture the page's
+/// model signals; they were previously `forget()`-leaked, so a message
+/// arriving after the page was disposed (navigate away with the session
+/// still running) read disposed signals and panicked the whole reactive
+/// runtime — leaving every subsequent page render-only.
+pub(crate) struct SessionSocket {
+    ws: web_sys::WebSocket,
+    heartbeat_interval_id: Option<i32>,
+    _on_open: Closure<dyn FnMut()>,
+    _on_message: Closure<dyn FnMut(web_sys::MessageEvent)>,
+    _on_close: Closure<dyn FnMut(web_sys::CloseEvent)>,
+    _on_error: Closure<dyn FnMut(web_sys::ErrorEvent)>,
+    _heartbeat: Closure<dyn FnMut()>,
+}
+
+impl SessionSocket {
+    /// Detach the handlers, stop the heartbeat, and close the socket.
+    /// Handlers are detached BEFORE the closures drop (when `self` does), so
+    /// a straggling event can't invoke a dropped closure.
+    fn teardown(self) {
+        self.ws.set_onopen(None);
+        self.ws.set_onmessage(None);
+        self.ws.set_onclose(None);
+        self.ws.set_onerror(None);
+        if let (Some(id), Some(window)) = (self.heartbeat_interval_id, web_sys::window()) {
+            window.clear_interval_with_handle(id);
+        }
+        let _ = self.ws.close();
+    }
+}
+
 // ── Start session ───────────────────────────────────────────────────────────
 
 /// Open a WebSocket to the server and start an agent session.
@@ -80,6 +114,12 @@ pub(crate) fn start_session(
     let url = format!("{ws_protocol}//{host}/ws/host?notebook_id={notebook_id}");
 
     let ws = web_sys::WebSocket::new(&url).map_err(|e| format!("{e:?}"))?;
+
+    // Replace any existing socket. The panel gates Start on !active, but a
+    // leaked previous socket must never survive regardless.
+    if let Some(old) = state.socket.try_update_value(Option::take).flatten() {
+        old.teardown();
+    }
 
     state.connection_status.set(ConnectionStatus::Connecting);
     state.active.set(true);
@@ -132,7 +172,6 @@ pub(crate) fn start_session(
         }
     });
     ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-    on_open.forget();
 
     // ── On message: dispatch to model ───────────────────────────────────
 
@@ -145,7 +184,6 @@ pub(crate) fn start_session(
             handle_incoming(&text, &model, &state, &ws_for_msg);
         });
     ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-    on_message.forget();
 
     // ── On close ────────────────────────────────────────────────────────
 
@@ -168,7 +206,6 @@ pub(crate) fn start_session(
             // UI can show "disconnected" rather than silently reverting.
         });
     ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-    on_close.forget();
 
     // ── On error ────────────────────────────────────────────────────────
 
@@ -178,7 +215,6 @@ pub(crate) fn start_session(
             web_sys::console::warn_1(&"WebSocket error".into());
         });
     ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-    on_error.forget();
 
     // ── Event bridge: model events → WebSocket ──────────────────────────
 
@@ -229,23 +265,24 @@ pub(crate) fn start_session(
             );
         }
     });
-    if let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
-        heartbeat.as_ref().unchecked_ref(),
-        30_000,
-    ) {
-        // Store the interval id so end_session can clear it.
-        let _ = js_sys::Reflect::set(
-            &window,
-            &JsValue::from_str("__ironpad_heartbeat_interval"),
-            &JsValue::from_f64(f64::from(interval_id)),
-        );
-    }
-    heartbeat.forget();
+    let heartbeat_interval_id = window
+        .set_interval_with_callback_and_timeout_and_arguments_0(
+            heartbeat.as_ref().unchecked_ref(),
+            30_000,
+        )
+        .ok();
 
-    // Store the WebSocket on window so end_session can close it.
-    if js_sys::Reflect::set(&window, &JsValue::from_str("__ironpad_session_ws"), &ws).is_err() {
-        web_sys::console::error_1(&"failed to store WebSocket on window".into());
-    }
+    // Hand everything to the page-scoped holder: end_session (Stop button or
+    // page cleanup) takes it back and tears it down.
+    state.socket.set_value(Some(SessionSocket {
+        ws,
+        heartbeat_interval_id,
+        _on_open: on_open,
+        _on_message: on_message,
+        _on_close: on_close,
+        _on_error: on_error,
+        _heartbeat: heartbeat,
+    }));
 
     Ok(())
 }
@@ -253,45 +290,27 @@ pub(crate) fn start_session(
 // ── End session ─────────────────────────────────────────────────────────────
 
 /// Close the WebSocket and reset session state.
+///
+/// Runs from the panel's Stop button AND from the notebook page's
+/// `on_cleanup` (the session must never outlive the page whose model it
+/// serves), so signal reads use `try_` variants.
 pub(crate) fn end_session(state: &SessionState) {
-    // Send EndSession if we have a session_id.
-    if let (Some(session_id), Some(ws)) = (state.session_id.get_untracked(), get_stored_ws()) {
-        ws_send(
-            &ws,
-            &protocol::Message {
-                id: "end-session".to_string(),
-                kind: MessageKind::Control(ControlMessage::EndSession { session_id }),
-            },
-        );
-        let _ = ws.close();
-    }
-
-    // Clear the stored WebSocket and the heartbeat interval.
-    if let Some(window) = web_sys::window() {
-        if let Ok(id) =
-            js_sys::Reflect::get(&window, &JsValue::from_str("__ironpad_heartbeat_interval"))
-        {
-            if let Some(id) = id.as_f64() {
-                #[allow(clippy::cast_possible_truncation)]
-                window.clear_interval_with_handle(id as i32);
-            }
+    if let Some(socket) = state.socket.try_update_value(Option::take).flatten() {
+        // Polite goodbye so the server releases the session and guests see
+        // SessionEnded instead of a silent stall.
+        if let Some(session_id) = state.session_id.try_get_untracked().flatten() {
+            ws_send(
+                &socket.ws,
+                &protocol::Message {
+                    id: "end-session".to_string(),
+                    kind: MessageKind::Control(ControlMessage::EndSession { session_id }),
+                },
+            );
         }
-        let _ = js_sys::Reflect::delete_property(
-            &window,
-            &JsValue::from_str("__ironpad_heartbeat_interval"),
-        );
-        let _ =
-            js_sys::Reflect::delete_property(&window, &JsValue::from_str("__ironpad_session_ws"));
+        socket.teardown();
     }
 
     state.reset();
-}
-
-/// Retrieve the stored WebSocket from window.
-fn get_stored_ws() -> Option<web_sys::WebSocket> {
-    let window = web_sys::window()?;
-    let val = js_sys::Reflect::get(&window, &JsValue::from_str("__ironpad_session_ws")).ok()?;
-    val.dyn_into::<web_sys::WebSocket>().ok()
 }
 
 // ── Incoming message handler ────────────────────────────────────────────────
