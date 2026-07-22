@@ -51,7 +51,7 @@ test.describe("Notebook import/export", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     // Add a cell so the notebook has content.
@@ -194,7 +194,7 @@ test.describe("Notebook import/export", () => {
         hasText: "E2E Import Test Notebook",
       })
       .click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible({
       timeout: 10_000,
     });

@@ -73,7 +73,7 @@ test.describe("Shared appendix (editor)", () => {
 
     // The toast now means "durably saved", but keep the belt-and-suspenders
     // poll so this test never races persistence again.
-    const notebookId = url.match(/\/notebook\/([a-f0-9-]+)/)![1];
+    const notebookId = url.match(/\/local\/([a-f0-9-]+)/)![1];
     await expect
       .poll(
         () =>

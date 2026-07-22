@@ -14,7 +14,7 @@ export async function createNotebook(page: Page): Promise<void> {
   await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
   await page.waitForTimeout(3_000); // hydration (suite convention)
   await page.locator("button", { hasText: "+ New Notebook" }).click();
-  await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/, { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 15_000 });
   await expect(page.locator(".ironpad-editor")).toBeVisible({
     timeout: 15_000,
   });
@@ -56,7 +56,7 @@ export async function waitForPersistedCells(
   page: Page,
   count: number
 ): Promise<void> {
-  const notebookId = page.url().match(/\/notebook\/([a-f0-9-]+)/)![1];
+  const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
   await expect
     .poll(
       () =>

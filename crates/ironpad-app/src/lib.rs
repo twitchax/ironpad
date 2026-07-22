@@ -46,7 +46,8 @@ use components::toaster::{ToastHost, Toaster};
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
 use leptos_router::{
-    components::{Route, Router, Routes},
+    components::{Redirect, Route, Router, Routes},
+    hooks::use_params_map,
     ParamSegment, StaticSegment,
 };
 use pages::{
@@ -138,16 +139,53 @@ pub fn App() -> impl IntoView {
             <AppLayout>
                 <Routes fallback=|| "Page not found.".into_view()>
                     <Route path=StaticSegment("") view=HomePage/>
-                    <Route path=(StaticSegment("notebook"), StaticSegment("public"), ParamSegment("filename")) view=PublicNotebookPage/>
+                    // Canonical scheme (PRD-0048): the prefix names the
+                    // storage class — /local (private, IndexedDB), /public
+                    // (bundled showcase, extension-less), /shared
+                    // (content-addressed shares).
+                    <Route path=(StaticSegment("local"), ParamSegment("id")) view=NotebookEditorPage/>
+                    <Route path=(StaticSegment("public"), ParamSegment("filename")) view=PublicNotebookPage/>
                     <Route path=(StaticSegment("shared"), ParamSegment("hash")) view=SharedNotebookPage/>
                     <Route path=(StaticSegment("embed"), StaticSegment("shared"), ParamSegment("hash")) view=EmbedSharedPage/>
                     <Route path=(StaticSegment("embed"), StaticSegment("public"), ParamSegment("filename")) view=EmbedPublicPage/>
-                    <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=NotebookEditorPage/>
+                    // Legacy routes redirect to canonical forever: bookmarks
+                    // and old links must never break.
+                    <Route path=(StaticSegment("notebook"), StaticSegment("public"), ParamSegment("filename")) view=LegacyPublicRedirect/>
+                    <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=LegacyLocalRedirect/>
                 </Routes>
             </AppLayout>
         </Router>
         <ToastHost/>
     }
+}
+
+// ── Legacy route redirects (PRD-0048) ───────────────────────────────────────
+
+/// `/notebook/{id}` → `/local/{id}`. Kept forever: private-notebook links
+/// only live in the owner's own browser (bookmarks, history), but they
+/// should keep working.
+#[component]
+fn LegacyLocalRedirect() -> impl IntoView {
+    let id = use_params_map()
+        .read_untracked()
+        .get("id")
+        .unwrap_or_default();
+    view! { <Redirect path=format!("/local/{id}")/> }
+}
+
+/// `/notebook/public/{filename}` → `/public/{name}`, stripping the
+/// `.ironpad` extension the legacy form carried.
+#[component]
+fn LegacyPublicRedirect() -> impl IntoView {
+    let filename = use_params_map()
+        .read_untracked()
+        .get("filename")
+        .unwrap_or_default();
+    let name = filename
+        .strip_suffix(".ironpad")
+        .unwrap_or(&filename)
+        .to_string();
+    view! { <Redirect path=format!("/public/{name}")/> }
 }
 
 #[cfg(test)]

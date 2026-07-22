@@ -32,7 +32,7 @@ test.describe("Notebook embedding", () => {
     await expect(badge).toBeVisible();
     await expect(badge).toHaveAttribute(
       "href",
-      "/notebook/public/welcome.ironpad"
+      "/public/welcome"
     );
 
     expect(jsErrors).toEqual([]);
@@ -120,7 +120,7 @@ test.describe("Notebook embedding", () => {
     // Run All, Fork, and Embed sit together in the view-only toolbar and must
     // round identically. Fork/Embed once hardcoded 4px while Run All used the
     // --ip-radius-md token (6px), so they read as subtly mismatched pills.
-    await page.goto("/notebook/public/welcome.ironpad");
+    await page.goto("/public/welcome");
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,
     });
@@ -148,7 +148,7 @@ test.describe("Notebook embedding", () => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     const jsErrors = trackJsErrors(page);
 
-    await page.goto("/notebook/public/welcome.ironpad");
+    await page.goto("/public/welcome");
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,
     });
@@ -159,22 +159,22 @@ test.describe("Notebook embedding", () => {
     const popover = page.locator(".view-only-embed-popover");
     await expect(popover).toBeVisible();
 
-    // Both snippet styles are offered and reference this notebook.
+    // Both snippet styles are offered and reference this notebook. The spec
+    // is extension-less (PRD-0048); the closing quote pins that no .ironpad
+    // suffix sneaks back in.
     const snippets = popover.locator("pre");
     await expect(snippets).toHaveCount(2);
-    await expect(snippets.nth(0)).toContainText(
-      "/embed/public/welcome.ironpad"
-    );
+    await expect(snippets.nth(0)).toContainText('/embed/public/welcome"');
     await expect(snippets.nth(1)).toContainText("embed.js");
     await expect(snippets.nth(1)).toContainText(
-      'data-notebook="public/welcome.ironpad"'
+      'data-notebook="public/welcome"'
     );
 
     // The copy button actually copies the iframe snippet.
     await popover.locator("button").first().click();
     const copied = await page.evaluate(() => navigator.clipboard.readText());
     expect(copied).toContain("<iframe");
-    expect(copied).toContain("/embed/public/welcome.ironpad");
+    expect(copied).toContain('/embed/public/welcome"');
 
     expect(jsErrors).toEqual([]);
   });

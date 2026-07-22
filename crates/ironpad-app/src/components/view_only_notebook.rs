@@ -36,13 +36,15 @@ async fn transport_backoff(ms: i32) {
 }
 
 /// Derive the canonical (full-page) route for an embed spec:
-/// `shared/{hash}` → `/shared/{hash}`, `public/{file}` → `/notebook/public/{file}`.
+/// `shared/{hash}` → `/shared/{hash}`, `public/{name}` → `/public/{name}`.
 fn canonical_path(spec: &str) -> Option<String> {
     spec.strip_prefix("shared/")
         .map(|h| format!("/shared/{h}"))
         .or_else(|| {
+            // Canonical public URLs are extension-less (PRD-0048); specs from
+            // pre-0048 embeds still carry `.ironpad`.
             spec.strip_prefix("public/")
-                .map(|f| format!("/notebook/public/{f}"))
+                .map(|f| format!("/public/{}", f.strip_suffix(".ironpad").unwrap_or(f)))
         })
 }
 
@@ -210,7 +212,7 @@ pub(crate) fn ViewOnlyNotebook(
 
                 match crate::storage::client::save_notebook(&nb).await {
                     Ok(()) => navigate(
-                        &format!("/notebook/{}", nb.id),
+                        &format!("/local/{}", nb.id),
                         leptos_router::NavigateOptions::default(),
                     ),
                     Err(e) => {

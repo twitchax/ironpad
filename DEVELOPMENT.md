@@ -465,8 +465,8 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 
 ```
 /                              → HomePage (private + public notebook list)
-/notebook/{id}                 → NotebookEditorPage (private, IndexedDB-backed)
-/notebook/public/{filename}    → PublicNotebookPage (read-only, static .ironpad file)
+/local/{id}                    → NotebookEditorPage (private, IndexedDB-backed)
+/public/{name}                 → PublicNotebookPage (read-only, static .ironpad file; legacy /notebook/* paths redirect)
 /shared/{hash}                 → SharedNotebookPage (read-only, shared via hash)
 ```
 

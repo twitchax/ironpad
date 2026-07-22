@@ -178,7 +178,7 @@ test.describe("Editor UX (PRD-0032)", () => {
 
     // ...and persists (poll the durable store; persist_notebook is
     // fire-and-forget, so a straight reload races the write).
-    const notebookId = url.match(/\/notebook\/([a-f0-9-]+)/)![1];
+    const notebookId = url.match(/\/local\/([a-f0-9-]+)/)![1];
     await expect
       .poll(
         () =>
@@ -269,7 +269,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     );
 
     // ...and the flag lands in the durable store.
-    const notebookId = url.match(/\/notebook\/([a-f0-9-]+)/)![1];
+    const notebookId = url.match(/\/local\/([a-f0-9-]+)/)![1];
     await expect
       .poll(
         () =>

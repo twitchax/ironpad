@@ -5,7 +5,7 @@ use crate::components::app_layout::LayoutContext;
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::server_fns::get_public_notebook;
 
-/// Route component for `/notebook/public/{filename}`.
+/// Route component for `/public/{name}` (extension-less, PRD-0048).
 ///
 /// Fetches a public notebook from the server's static files and renders it
 /// in view-only mode via [`ViewOnlyNotebook`].

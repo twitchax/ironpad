@@ -17,7 +17,7 @@ test.describe("Notebook", () => {
     await page.locator("button", { hasText: "+ New Notebook" }).click();
 
     // Verify navigation to /notebook/{id}.
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
 
     // Verify the notebook editor is visible.
     await expect(page.locator(".ironpad-editor")).toBeVisible();
@@ -60,7 +60,7 @@ test.describe("Notebook", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     // Add a cell (default code: CellOutput::text("hello from ironpad").into()).
@@ -109,7 +109,7 @@ test.describe("Notebook", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     // ── Add Cell 0 (producer) ───────────────────────────────────────────
@@ -206,7 +206,7 @@ test.describe("Notebook", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     // ── Add a cell ──────────────────────────────────────────────────────
@@ -240,7 +240,7 @@ test.describe("Notebook", () => {
     await notebookLink.click();
 
     // Verify we're back on the notebook editor page.
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     // ── Verify cell source is preserved ─────────────────────────────────
@@ -276,7 +276,7 @@ test.describe("Notebook", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     // ── Add a cell ──────────────────────────────────────────────────────

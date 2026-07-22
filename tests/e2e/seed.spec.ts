@@ -22,7 +22,7 @@ test.describe("Welcome public notebook", () => {
 
     // Click into the notebook — it's a public notebook, so it opens in view-only mode.
     await welcomeCard.click();
-    await expect(page).toHaveURL(/\/notebook\/public\/welcome\.ironpad/);
+    await expect(page).toHaveURL(/\/public\/welcome/);
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 15_000,
     });

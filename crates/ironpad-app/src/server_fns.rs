@@ -498,11 +498,16 @@ pub(crate) async fn get_public_notebook_core(
     // Reject path traversal attempts.
     validate_safe_path_segment(filename)?;
 
-    // Only serve notebook files, not arbitrary files in the directory
-    // (e.g. index.json or anything else that lands under notebooks/).
-    if !filename.ends_with(".ironpad") {
-        anyhow::bail!("not a notebook file: {filename}");
-    }
+    // Accept both name forms (PRD-0048): the canonical route is
+    // extension-less (`/public/welcome`), while legacy links and embed specs
+    // on third-party pages carry `.ironpad` forever. Appending the extension
+    // when missing also keeps this endpoint serving ONLY notebook files —
+    // any other name resolves to `{name}.ironpad`, which won't exist.
+    let filename = if filename.ends_with(".ironpad") {
+        filename.to_string()
+    } else {
+        format!("{filename}.ironpad")
+    };
 
     let path = site_root.join("notebooks").join(filename);
 
@@ -1492,6 +1497,26 @@ mod tests {
             .unwrap();
         assert_eq!(nb.title, "Test Notebook");
         assert_eq!(nb.cells.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn server_fn_core_get_public_notebook_accepts_extensionless_name() {
+        // The canonical route is extension-less (PRD-0048); legacy links and
+        // embed specs carry .ironpad. Both must resolve to the same file.
+        let dir = tempfile::tempdir().unwrap();
+        let nb_dir = dir.path().join("notebooks");
+        std::fs::create_dir_all(&nb_dir).unwrap();
+        std::fs::write(nb_dir.join("demo.ironpad"), VALID_NOTEBOOK_JSON).unwrap();
+
+        let nb = get_public_notebook_core(dir.path(), "demo").await.unwrap();
+        assert_eq!(nb.title, "Test Notebook");
+
+        // A non-notebook name resolves to {name}.ironpad and misses — the
+        // endpoint still serves only notebook files.
+        std::fs::write(nb_dir.join("evil.json"), b"{}").unwrap();
+        assert!(get_public_notebook_core(dir.path(), "evil.json")
+            .await
+            .is_err());
     }
 
     #[tokio::test]

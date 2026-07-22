@@ -182,7 +182,7 @@ test.describe.serial("Agent Session", () => {
     });
 
     await createNotebook(page);
-    const notebookId = page.url().match(/\/notebook\/([a-f0-9-]+)/)![1];
+    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
     const token = await startSession(page);
     cliHandle = await connectCli(token);
     expect(cliExec(["status"]).connected).toBe(true);
@@ -214,7 +214,7 @@ test.describe.serial("Agent Session", () => {
     // The SAME wasm instance must still be fully reactive: SPA-navigate back
     // into the notebook (no reload — a reload would mask a poisoned runtime)
     // and run the title-edit flow end to end.
-    await page.locator(`a[href="/notebook/${notebookId}"]`).click();
+    await page.locator(`a[href="/local/${notebookId}"]`).click();
     const title = page.locator(".ironpad-notebook-title--editable");
     await expect(title).toBeVisible({ timeout: 15_000 });
     await title.click();

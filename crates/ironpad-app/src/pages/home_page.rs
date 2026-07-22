@@ -105,7 +105,7 @@ pub fn HomePage() -> impl IntoView {
                 let nb = IronpadNotebook::new("Untitled Notebook");
                 let id = nb.id.to_string();
                 match crate::storage::client::save_notebook(&nb).await {
-                    Ok(()) => navigate(&format!("/notebook/{id}"), NavigateOptions::default()),
+                    Ok(()) => navigate(&format!("/local/{id}"), NavigateOptions::default()),
                     Err(e) => {
                         leptos::logging::error!(
                             "failed to persist new notebook to IndexedDB: {e:?}"
@@ -299,7 +299,7 @@ fn NotebookCard(
             cell_count,
             updated_at,
         } => {
-            let href = format!("/notebook/{id}");
+            let href = format!("/local/{id}");
             let cell_text = format_cell_count(cell_count);
 
             #[cfg(feature = "hydrate")]
@@ -351,7 +351,11 @@ fn NotebookCard(
             cell_count,
             tags,
         } => {
-            let href = format!("/notebook/public/{filename}");
+            // Canonical public URLs are extension-less (PRD-0048).
+            let href = format!(
+                "/public/{}",
+                filename.strip_suffix(".ironpad").unwrap_or(&filename)
+            );
             let cell_text = format_cell_count(cell_count);
 
             view! {

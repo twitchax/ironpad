@@ -13,7 +13,7 @@ test.describe("Cell execution and output", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     await page.locator(".ironpad-add-cell-btn").first().click();
@@ -62,7 +62,7 @@ test.describe("Cell execution and output", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     await page.locator(".ironpad-add-cell-btn").first().click();
@@ -115,7 +115,7 @@ test.describe("Cell execution and output", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
     await page.locator("button", { hasText: "+ New Notebook" }).click();
-    await expect(page).toHaveURL(/\/notebook\/[a-f0-9-]+/);
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
     await page.locator(".ironpad-add-cell-btn").first().click();

@@ -78,7 +78,7 @@ test.describe("Public notebooks", () => {
 
     // Verify navigation to a new private notebook editor.
     // The fork URL must NOT match /notebook/public/ (it should be /notebook/{uuid}).
-    await expect(page).toHaveURL(/\/notebook\/(?!public\/)[a-f0-9-]+/, {
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, {
       timeout: 15_000,
     });
     await expect(page.locator(".ironpad-editor")).toBeVisible({
