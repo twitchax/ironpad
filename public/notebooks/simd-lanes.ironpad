@@ -20,7 +20,7 @@
    "id": "cell_hook",
    "cell_type": "Markdown",
    "label": "The pitch",
-   "source": "# Four Lanes Wide\n\nEvery browser your readers are likely to own has shipped **128-bit WASM SIMD since 2021** (Safari joined at 16.4), which puts coverage around **95% of sessions**. One instruction, four `f32` lanes. And yet almost all Rust compiled to WASM runs one lane at a time, because the `simd128` target feature is off by default.\n\nIn ironpad, **using SIMD is the opt-in**: any cell that mentions `std::simd` gets compiled with `-C target-feature=+simd128` and a crate-root `#![feature(portable_simd)]` gate, the same way autodiff cells opt into Enzyme. Nothing else changes.\n\nThis notebook races one kernel through three gears: a scalar baseline, the autovectorizer, and explicit `std::simd`. Then it spends the winnings on a fractal. Every number you see is measured **live, in your browser, right now**.",
+   "source": "## Introduction\n\nEvery browser your readers are likely to own has shipped **128-bit WASM SIMD since 2021** (Safari joined at 16.4), which puts coverage around **95% of sessions**. One instruction, four `f32` lanes. And yet almost all Rust compiled to WASM runs one lane at a time, because the `simd128` target feature is off by default.\n\nIn ironpad, **using SIMD is the opt-in**: any cell that mentions `std::simd` gets compiled with `-C target-feature=+simd128` and a crate-root `#![feature(portable_simd)]` gate, the same way autodiff cells opt into Enzyme. Nothing else changes.\n\nThis notebook races one kernel through three gears: a scalar baseline, the autovectorizer, and explicit `std::simd`. Then it spends the winnings on a fractal. Every number you see is measured **live, in your browser, right now**.",
    "order": 0,
    "cargo_toml": null
   },
@@ -108,7 +108,7 @@
    "id": "cell_tail_md",
    "cell_type": "Markdown",
    "label": "The tail problem",
-   "source": "## The tail problem\n\nReal buffers are not multiples of four. Every SIMD kernel therefore has two parts: a wide body and a scalar **tail**, and the cleanest way to write that split in Rust is `chunks_exact`. It hands you full four-element chunks, and whatever is left over (zero to three elements) waits in `.remainder()`.\n\nThe trap is the seductive alternative: padding with zeros so the tail disappears. Zeros are safe for a sum but wrong for a min, a product, or anything masked; a padded lane is a lie you carry through every later step.\n\nThe demo below sums 1,003 elements of small integers stored as floats, so every grouping is exact and the wide and scalar answers match to the bit.",
+   "source": "## The tail problem\n\nReal buffers are not multiples of four. Every SIMD kernel therefore has two parts: a wide body and a scalar **tail**, and the cleanest way to write that split in Rust is `chunks_exact`. It hands you full four-element chunks, and whatever is left over (zero to three elements) waits in `.remainder()`.\n\nThe trap is the tempting alternative: padding with zeros so the tail disappears. Zeros are safe for a sum but wrong for a min, a product, or anything masked; a padded lane is a lie you carry through every later step.\n\nThe demo below sums 1,003 elements of small integers stored as floats, so every grouping is exact and the wide and scalar answers match to the bit.",
    "cargo_toml": null,
    "order": 11
   },
