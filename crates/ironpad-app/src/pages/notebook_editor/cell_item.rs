@@ -2,7 +2,6 @@ use ironpad_common::{
     CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult, Severity,
 };
 use leptos::prelude::*;
-use thaw::{Tab, TabList, Tag, TagSize};
 
 use crate::components::markdown_cell::MarkdownCell;
 use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
@@ -1391,11 +1390,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── CSS classes ─────────────────────────────────────────────────────
 
-    // NOTE: this reactive class must land on a plain element, never on a Thaw
-    // component. A Thaw component with a reactive class runs its class_list
-    // effect (thaw_utils class_list.rs) during this cell's disposal teardown and
-    // `.get()`s the already-disposed signal, which panics. `try_get` keeps the
-    // reads safe even if the closure is flushed after the cell is gone.
+    // `try_get` keeps the reads safe even if the closure is flushed after the
+    // cell is gone.
     let cell_class = move || {
         let mut class = "ironpad-cell-card".to_string();
         if is_markdown {
@@ -1530,27 +1526,21 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
                     {if is_markdown {
                         view! {
-                            <Tag size=TagSize::ExtraSmall class="ironpad-cell-type-badge ironpad-cell-type-badge--markdown">
+                            <span class="ironpad-tag ironpad-cell-type-badge ironpad-cell-type-badge--markdown">
                                 "¶ markdown"
-                            </Tag>
+                            </span>
                         }.into_any()
                     } else {
                         view! {
                             {move || if is_shared.get() {
                                 view! {
-                                    <Tag size=TagSize::ExtraSmall class="ironpad-cell-type-badge ironpad-cell-type-badge--shared">
+                                    <span class="ironpad-tag ironpad-cell-type-badge ironpad-cell-type-badge--shared">
                                         "⬡ shared"
-                                    </Tag>
+                                    </span>
                                 }.into_any()
                             } else {
                                 view! { <span /> }.into_any()
                             }}
-                            // A plain <span>, deliberately not a Thaw <Tag>: handing a
-                            // Thaw component a *reactive* class makes its class_list
-                            // effect (thaw_utils class_list.rs) run during this cell's
-                            // disposal teardown and `.get()` the already-disposed
-                            // signal, which panics. The badge's chrome lives entirely
-                            // in `.ironpad-cell-status`, so a span renders identically.
                             // `try_get` keeps the reads safe if these closures are
                             // flushed after the cell is gone.
                             <span
@@ -1638,14 +1628,18 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 view! {
                     <div class=body_class>
                         <div class="ironpad-cell-tabs">
-                            <TabList selected_value=selected_tab>
-                                <Tab value="code">
-                                    {move || if source_dirty.get() { "Code ●" } else { "Code" }}
-                                </Tab>
-                                <Tab value="cargo-toml">
-                                    {move || if cargo_toml_dirty.get() { "Cargo.toml ●" } else { "Cargo.toml" }}
-                                </Tab>
-                            </TabList>
+                            <button
+                                class=move || if selected_tab.get() == "code" { "ironpad-cell-tab ironpad-cell-tab--selected" } else { "ironpad-cell-tab" }
+                                on:click=move |_| selected_tab.set("code".to_string())
+                            >
+                                {move || if source_dirty.get() { "Code ●" } else { "Code" }}
+                            </button>
+                            <button
+                                class=move || if selected_tab.get() == "cargo-toml" { "ironpad-cell-tab ironpad-cell-tab--selected" } else { "ironpad-cell-tab" }
+                                on:click=move |_| selected_tab.set("cargo-toml".to_string())
+                            >
+                                {move || if cargo_toml_dirty.get() { "Cargo.toml ●" } else { "Cargo.toml" }}
+                            </button>
                         </div>
 
                         <div

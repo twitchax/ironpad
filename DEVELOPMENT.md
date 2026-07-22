@@ -518,7 +518,7 @@ Renders compiler diagnostics inline in the editor:
 CSS (SCSS) at `style/main.scss` with dark theme:
 - CSS custom properties for colors, fonts, spacing
 - Leptos-generated CSS module at `target/site/pkg/ironpad.css`
-- Thaw components provide pre-styled UI
+- Native UI primitives (`.ironpad-btn`, `.ironpad-tag`, `.ironpad-cell-tab`, toasts) styled in-repo; no component library
 
 ---
 

@@ -1,7 +1,7 @@
 use leptos::prelude::*;
-use thaw::{Button, ButtonAppearance, Toast, ToastBody, ToastTitle, ToasterInjection};
 
 use crate::components::monaco_editor::MonacoEditor;
+use crate::components::toaster::{ToastIntent, Toaster};
 use crate::model::NotebookModel;
 
 #[cfg(not(feature = "hydrate"))]
@@ -74,7 +74,7 @@ fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
 
     let state = expect_context::<NotebookState>();
     let model = expect_context::<NotebookModel>();
-    let toaster = ToasterInjection::expect_context();
+    let toaster = Toaster::expect_context();
 
     let initial_value = match kind {
         SharedEditorKind::Dependencies => state.shared_cargo_toml.get_untracked(),
@@ -117,18 +117,11 @@ fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
         }
 
         let dispatch_saved_toast = move || {
-            toaster.dispatch_toast(
-                move || {
-                    view! {
-                        <Toast>
-                            <ToastTitle>{toast_title}</ToastTitle>
-                            <ToastBody>"Changes will apply on next cell compile."</ToastBody>
-                        </Toast>
-                    }
-                },
-                thaw::ToastOptions::default()
-                    .with_intent(thaw::ToastIntent::Success)
-                    .with_timeout(std::time::Duration::from_secs(3)),
+            toaster.toast(
+                ToastIntent::Success,
+                toast_title,
+                "Changes will apply on next cell compile.",
+                3,
             );
         };
 
@@ -174,13 +167,13 @@ fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
                 />
             </div>
             <div class="ironpad-shared-editor-actions">
-                <Button
-                    appearance=ButtonAppearance::Primary
-                    on_click=on_save
-                    disabled=Signal::derive(move || saving.get())
+                <button
+                    class="ironpad-btn ironpad-btn--primary"
+                    on:click=on_save
+                    prop:disabled=move || saving.get()
                 >
                     {move || if saving.get() { "Saving\u{2026}" } else { "Save" }}
-                </Button>
+                </button>
             </div>
         </div>
     }

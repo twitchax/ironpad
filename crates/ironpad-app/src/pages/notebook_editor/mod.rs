@@ -11,9 +11,9 @@ use ironpad_common::CellType;
 use leptos::prelude::*;
 use leptos_router::hooks::{use_navigate, use_params_map};
 use leptos_router::NavigateOptions;
-use thaw::{Toast, ToastBody, ToastTitle, ToasterInjection};
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::toaster::{ToastIntent, Toaster};
 use crate::model::NotebookModel;
 use crate::server_fns::share_notebook;
 use crate::session::SessionState;
@@ -92,7 +92,7 @@ fn destroy_sortable(instance: StoredValue<Option<wasm_bindgen::JsValue>, LocalSt
 /// toast. The caller must bump `save_generation` first to flush in-progress cell
 /// edits into the model; this yields once so those flush effects run before the
 /// notebook is re-read.
-fn share_current_notebook(state: &NotebookState, toaster: ToasterInjection) {
+fn share_current_notebook(state: &NotebookState, toaster: Toaster) {
     let state = *state;
     leptos::task::spawn_local(async move {
         #[cfg(feature = "hydrate")]
@@ -106,16 +106,11 @@ fn share_current_notebook(state: &NotebookState, toaster: ToasterInjection) {
         let json = match serde_json::to_string(&nb) {
             Ok(j) => j,
             Err(e) => {
-                toaster.dispatch_toast(
-                    move || {
-                        view! {
-                            <Toast>
-                                <ToastTitle>"Share Failed"</ToastTitle>
-                                <ToastBody>{format!("Failed to serialize: {e}")}</ToastBody>
-                            </Toast>
-                        }
-                    },
-                    thaw::ToastOptions::default(),
+                toaster.toast(
+                    ToastIntent::Error,
+                    "Share Failed",
+                    format!("Failed to serialize: {e}"),
+                    5,
                 );
                 return;
             }
@@ -135,33 +130,10 @@ fn share_current_notebook(state: &NotebookState, toaster: ToasterInjection) {
                     let clipboard = window.navigator().clipboard();
                     let _ = wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&url)).await;
                 }
-                let url_clone = url.clone();
-                toaster.dispatch_toast(
-                    move || {
-                        view! {
-                            <Toast>
-                                <ToastTitle>"Link Copied!"</ToastTitle>
-                                <ToastBody>{url_clone.clone()}</ToastBody>
-                            </Toast>
-                        }
-                    },
-                    thaw::ToastOptions::default()
-                        .with_intent(thaw::ToastIntent::Success)
-                        .with_timeout(std::time::Duration::from_secs(5)),
-                );
+                toaster.toast(ToastIntent::Success, "Link Copied!", url, 5);
             }
             Err(e) => {
-                toaster.dispatch_toast(
-                    move || {
-                        view! {
-                            <Toast>
-                                <ToastTitle>"Share Failed"</ToastTitle>
-                                <ToastBody>{format!("{e}")}</ToastBody>
-                            </Toast>
-                        }
-                    },
-                    thaw::ToastOptions::default(),
-                );
+                toaster.toast(ToastIntent::Error, "Share Failed", format!("{e}"), 5);
             }
         }
     });
@@ -364,10 +336,7 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
     #[cfg(feature = "hydrate")]
     {
-        use std::time::Duration;
-        use thaw::{ToastIntent, ToastOptions};
-
-        let toaster = ToasterInjection::expect_context();
+        let toaster = Toaster::expect_context();
         let prev_gen = RwSignal::new(layout.save_generation.get_untracked());
 
         Effect::new(move || {
@@ -397,19 +366,11 @@ pub fn NotebookEditorPage() -> impl IntoView {
 
             layout.last_save_time.set(Some(js_sys::Date::now()));
 
-            let toaster = toaster;
-            toaster.dispatch_toast(
-                move || {
-                    view! {
-                        <Toast>
-                            <ToastTitle>"Notebook saved"</ToastTitle>
-                            <ToastBody>"All changes have been saved."</ToastBody>
-                        </Toast>
-                    }
-                },
-                ToastOptions::default()
-                    .with_intent(ToastIntent::Success)
-                    .with_timeout(Duration::from_secs(3)),
+            toaster.toast(
+                ToastIntent::Success,
+                "Notebook saved",
+                "All changes have been saved.",
+                3,
             );
         });
     }
@@ -721,7 +682,7 @@ fn NotebookContent() -> impl IntoView {
                                             state.save_generation.update(|g| *g += 1);
                                             share_current_notebook(
                                                 &state,
-                                                expect_context::<ToasterInjection>(),
+                                                Toaster::expect_context(),
                                             );
                                         }
                                     >

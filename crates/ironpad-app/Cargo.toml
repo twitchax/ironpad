@@ -9,8 +9,6 @@ leptos_meta.workspace = true
 leptos_router.workspace = true
 leptos_axum = { workspace = true, optional = true }
 
-thaw.workspace = true
-
 ironpad-common = { workspace = true }
 
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
@@ -40,12 +38,11 @@ tempfile = "3"
 
 [features]
 default = []
-hydrate = ["leptos/hydrate", "thaw/hydrate", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "dep:serde", "dep:serde_json", "dep:serde-wasm-bindgen", "dep:bincode", "dep:uuid", "dep:chrono"]
+hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "dep:serde", "dep:serde_json", "dep:serde-wasm-bindgen", "dep:bincode", "dep:uuid", "dep:chrono"]
 ssr = [
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",
-    "thaw/ssr",
     "dep:leptos_axum",
     "dep:anyhow",
     "dep:uuid",

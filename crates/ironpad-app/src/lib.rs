@@ -1,8 +1,7 @@
-// The cell card is a plain <div> rather than a Thaw <Card> (a Thaw component
-// with a reactive class panics on the disposed signal during cell teardown).
-// Components act as type-erasure boundaries, so inlining that one collapsed the
-// cell's view into a single deep tachys type and tripped the default limit:
-// "queries overflow the depth limit!" when computing the hydrate_async layout.
+// The cell card is a plain <div> rather than a component. Components act as
+// type-erasure boundaries, so inlining it collapsed the cell's view into a
+// single deep tachys type and tripped the default limit: "queries overflow
+// the depth limit!" when computing the hydrate_async layout.
 #![recursion_limit = "512"]
 
 #[cfg(feature = "ssr")]
@@ -41,6 +40,7 @@ pub mod server_fns;
 pub mod storage;
 
 use components::app_layout::AppLayout;
+use components::toaster::{ToastHost, Toaster};
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
 use leptos_router::{
@@ -51,7 +51,6 @@ use pages::{
     EmbedPublicPage, EmbedSharedPage, HomePage, NotebookEditorPage, PublicNotebookPage,
     SharedNotebookPage,
 };
-use thaw::{ConfigProvider, Theme, ToastPosition, ToasterProvider};
 
 /// Appends a release-version query to a URL-stable static asset path so
 /// browsers refetch it after every deploy. These scripts change with releases
@@ -120,35 +119,32 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 
 /// Root application component.
 ///
-/// Wraps the entire app in Thaw's ConfigProvider with a dark theme,
-/// sets up leptos_meta context, and defines routes for the home page
-/// and notebook editor. All routes are wrapped in `AppLayout` which
-/// provides the header, content area, and status bar.
+/// Sets up leptos_meta context, provides the app-level [`Toaster`], and
+/// defines routes for the home page and notebook editor. All routes are
+/// wrapped in `AppLayout` which provides the header, content area, and
+/// status bar; theming is ironpad's own (CSS custom properties plus the
+/// `data-theme` attribute).
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
-
-    let theme = RwSignal::new(Theme::dark());
+    provide_context(Toaster::new());
 
     view! {
         <Title text="ironpad"/>
 
-        <ConfigProvider theme>
-            <ToasterProvider position=ToastPosition::BottomEnd>
-                <Router>
-                    <AppLayout>
-                        <Routes fallback=|| "Page not found.".into_view()>
-                            <Route path=StaticSegment("") view=HomePage/>
-                            <Route path=(StaticSegment("notebook"), StaticSegment("public"), ParamSegment("filename")) view=PublicNotebookPage/>
-                            <Route path=(StaticSegment("shared"), ParamSegment("hash")) view=SharedNotebookPage/>
-                            <Route path=(StaticSegment("embed"), StaticSegment("shared"), ParamSegment("hash")) view=EmbedSharedPage/>
-                            <Route path=(StaticSegment("embed"), StaticSegment("public"), ParamSegment("filename")) view=EmbedPublicPage/>
-                            <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=NotebookEditorPage/>
-                        </Routes>
-                    </AppLayout>
-                </Router>
-            </ToasterProvider>
-        </ConfigProvider>
+        <Router>
+            <AppLayout>
+                <Routes fallback=|| "Page not found.".into_view()>
+                    <Route path=StaticSegment("") view=HomePage/>
+                    <Route path=(StaticSegment("notebook"), StaticSegment("public"), ParamSegment("filename")) view=PublicNotebookPage/>
+                    <Route path=(StaticSegment("shared"), ParamSegment("hash")) view=SharedNotebookPage/>
+                    <Route path=(StaticSegment("embed"), StaticSegment("shared"), ParamSegment("hash")) view=EmbedSharedPage/>
+                    <Route path=(StaticSegment("embed"), StaticSegment("public"), ParamSegment("filename")) view=EmbedPublicPage/>
+                    <Route path=(StaticSegment("notebook"), ParamSegment("id")) view=NotebookEditorPage/>
+                </Routes>
+            </AppLayout>
+        </Router>
+        <ToastHost/>
     }
 }
 

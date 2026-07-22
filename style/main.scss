@@ -108,24 +108,6 @@
     --ip-neutral-dim: #555566;
     --ip-neutral-dimmer: #888899;
     --ip-hover-overlay: rgba(0, 0, 0, 0.06);
-
-    .thaw-config-provider {
-        --colorBrandBackground: #d63851;
-        --colorBrandBackgroundHover: #e94560;
-        --colorBrandBackgroundPressed: #b82e44;
-        --colorBrandStroke1: #d63851;
-        --colorNeutralBackground1: #ffffff;
-        --colorNeutralBackground1Hover: #eef0f5;
-        --colorNeutralBackground1Pressed: #e0e2ea;
-        --colorNeutralBackground3: #f5f6fa;
-        --colorNeutralForeground1: #1a1a2e;
-        --colorNeutralForeground2: #444466;
-        --colorSubtleBackground: transparent;
-        --colorSubtleBackgroundHover: rgba(0, 0, 0, 0.06);
-        --colorSubtleBackgroundPressed: rgba(0, 0, 0, 0.04);
-        --colorNeutralStroke1: #d0d5e0;
-        --fontFamilyBase: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    }
 }
 
 /* ── Base reset & typography ────────────────────────────────────────────── */
@@ -205,64 +187,93 @@ a:focus-visible {
     scrollbar-color: rgba(var(--ip-error-rgb), 0.15) transparent;
 }
 
-/* ── Thaw component overrides ───────────────────────────────────────────── */
+/* ── Native UI primitives ───────────────────────────────────────────────── */
 
-.thaw-config-provider {
-    --colorBrandBackground: var(--ip-accent);
-    --colorBrandBackgroundHover: var(--ip-accent-hover);
-    --colorBrandBackgroundPressed: var(--ip-accent-pressed);
-    --colorBrandStroke1: var(--ip-accent);
-    --colorNeutralBackground1: var(--ip-bg-surface);
-    --colorNeutralBackground1Hover: var(--ip-bg-elevated);
-    --colorNeutralBackground1Pressed: #0f1a30;
-    --colorNeutralBackground3: var(--ip-bg-primary);
-    --colorNeutralForeground1: var(--ip-text-primary);
-    --colorNeutralForeground2: var(--ip-text-secondary);
-    --colorSubtleBackground: transparent;
-    --colorSubtleBackgroundHover: rgba(255, 255, 255, 0.06);
-    --colorSubtleBackgroundPressed: rgba(255, 255, 255, 0.04);
-    --colorNeutralStroke1: var(--ip-border);
-    --fontFamilyBase: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-}
+// Buttons: `.ironpad-btn` base plus an appearance modifier.
 
-.thaw-button {
-    transition: all var(--ip-transition-fast);
+.ironpad-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 14px;
+    border: 1px solid transparent;
     border-radius: var(--ip-radius-md);
+    font-family: var(--ip-font-sans);
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: all var(--ip-transition-fast);
 }
 
-.thaw-button:focus-visible {
+.ironpad-btn:focus-visible {
     outline: 2px solid var(--ip-accent);
     outline-offset: 2px;
 }
 
-.thaw-card {
-    border-radius: var(--ip-radius-lg);
-    border-color: var(--ip-border);
-    background: var(--ip-bg-surface);
-    transition: border-color var(--ip-transition-normal);
+.ironpad-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
-.thaw-tab {
-    transition: color var(--ip-transition-fast), border-color var(--ip-transition-fast);
+.ironpad-btn--primary {
+    background: var(--ip-accent);
+    color: var(--ip-text-on-accent);
 }
 
-.thaw-tab--selected {
-    color: var(--ip-accent) !important;
-    border-bottom-color: var(--ip-accent) !important;
+.ironpad-btn--primary:hover:not(:disabled) {
+    background: var(--ip-accent-hover);
 }
 
-.thaw-spinner__spinner-tail {
-    stroke: var(--ip-accent);
+.ironpad-btn--primary:active:not(:disabled) {
+    background: var(--ip-accent-pressed);
 }
 
-.thaw-tag {
+.ironpad-btn--subtle {
+    background: transparent;
+    color: var(--ip-text-primary);
+}
+
+.ironpad-btn--subtle:hover:not(:disabled) {
+    background: var(--ip-hover-overlay);
+}
+
+// Tags: small status pills (connected agents, cell-type badges).
+
+.ironpad-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border: 1px solid var(--ip-border);
     border-radius: 10px;
+    background: var(--ip-bg-elevated);
+    color: var(--ip-text-secondary);
     font-size: 0.7rem;
     letter-spacing: 0.5px;
+    white-space: nowrap;
 }
 
-.thaw-layout {
-    background: var(--ip-bg-primary);
+// Skeleton items: shimmering placeholders while content loads.
+
+.ironpad-skeleton-item {
+    background: linear-gradient(
+        90deg,
+        var(--ip-bg-elevated) 25%,
+        var(--ip-bg-primary) 50%,
+        var(--ip-bg-elevated) 75%
+    );
+    background-size: 200% 100%;
+    animation: ironpad-skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes ironpad-skeleton-shimmer {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
 }
 
 /* ── Root layout ─────────────────────────────────────────────────────────── */
@@ -580,6 +591,18 @@ a:focus-visible {
     border-radius: var(--ip-radius-lg);
     transition: border-color var(--ip-transition-normal), transform var(--ip-transition-normal), box-shadow var(--ip-transition-normal);
     cursor: pointer;
+
+    // Card chrome (used to come from Thaw's card.css).
+    display: flex;
+    flex-direction: column;
+    row-gap: 12px;
+    padding: 12px;
+    overflow: hidden;
+}
+
+.ironpad-notebook-card-header {
+    display: flex;
+    align-items: center;
 }
 
 [data-theme="light"] .ironpad-notebook-card {
@@ -830,10 +853,7 @@ a:focus-visible {
     border-radius: 8px;
     transition: border-color 0.2s;
 
-    // The cell card used to be a Thaw <Card>, but handing a Thaw component a
-    // reactive class makes its class_list effect panic on the disposed signal
-    // when the cell is deleted (thaw_utils class_list.rs). It is now a plain
-    // div, so the chrome Thaw's card.css used to contribute lives here.
+    // Card chrome.
     position: relative;
     display: flex;
     flex-direction: column;
@@ -841,10 +861,9 @@ a:focus-visible {
     box-sizing: border-box;
     padding: 12px;
     row-gap: 12px;
-    box-shadow: var(--shadow4);
+    box-shadow: 0 0 2px rgba(0, 0, 0, 0.24), 0 2px 4px rgba(0, 0, 0, 0.28);
 }
 
-// Replaces Thaw's <CardHeader> (.thaw-card-header).
 .ironpad-cell-card-header {
     display: flex;
     align-items: center;
@@ -1237,12 +1256,31 @@ a:focus-visible {
 /* ── Cell tab bar ───────────────────────────────────────────────────── */
 
 .ironpad-cell-tabs {
+    display: flex;
+    gap: 0;
     padding: 0 12px;
     border-bottom: 1px solid var(--ip-border);
 }
 
-.ironpad-cell-tabs .thaw-tab-list {
-    gap: 0;
+.ironpad-cell-tab {
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--ip-text-secondary);
+    font-family: var(--ip-font-sans);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: color var(--ip-transition-fast), border-color var(--ip-transition-fast);
+}
+
+.ironpad-cell-tab:hover {
+    color: var(--ip-text-primary);
+}
+
+.ironpad-cell-tab--selected {
+    color: var(--ip-accent);
+    border-bottom-color: var(--ip-accent);
 }
 
 /* ── Cell editor pane ───────────────────────────────────────────────── */
@@ -1936,43 +1974,63 @@ code[class*="language-"] {
     margin-top: 0.5rem;
 }
 
-/* ── Toast overrides ────────────────────────────────────────────────────── */
+/* ── Toasts ─────────────────────────────────────────────────────────────── */
 
-.thaw-toaster {
+.ironpad-toaster {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
     z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    // The overlay is always mounted; only the toasts themselves are clickable.
+    pointer-events: none;
 }
 
-.thaw-toast {
+.ironpad-toast {
+    pointer-events: auto;
+    min-width: 240px;
+    max-width: 380px;
+    padding: 10px 14px;
     background: var(--ip-bg-elevated);
     border: 1px solid var(--ip-border);
     border-radius: var(--ip-radius-md);
     color: var(--ip-text-primary);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    animation: ironpad-toast-in var(--ip-transition-normal);
 }
 
-.thaw-toast-title {
+@keyframes ironpad-toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.ironpad-toast-title {
     font-weight: 600;
     font-size: 0.875rem;
 }
 
-.thaw-toast-body {
+.ironpad-toast-body {
     font-size: 0.8rem;
     color: var(--ip-text-secondary);
+    overflow-wrap: anywhere;
 }
 
-.thaw-toast-title__success {
+.ironpad-toast-title--success {
     color: var(--ip-success);
 }
 
-.thaw-toast-title__error {
+.ironpad-toast-title--error {
     color: var(--ip-error);
-}
-
-.thaw-toast-title__warning {
-    color: var(--ip-warning);
-}
-
-.thaw-toast-title__info {
-    color: var(--ip-info);
 }
 
 /* ── Placeholder text ──────────────────────────────────────────────────── */
@@ -3013,7 +3071,7 @@ code[class*="language-"] {
     border-radius: var(--ip-radius-md);
     cursor: pointer;
     font-size: 0.9rem;
-    font-family: var(--fontFamilyMonospace, monospace);
+    font-family: var(--ip-font-mono);
 
     &:hover {
         color: var(--ip-text-primary);

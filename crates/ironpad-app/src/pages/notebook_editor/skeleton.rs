@@ -1,6 +1,5 @@
 use ironpad_common::CellType;
 use leptos::prelude::*;
-use thaw::{Skeleton, SkeletonItem};
 
 // ── Add cell button ─────────────────────────────────────────────────────────
 
@@ -50,13 +49,13 @@ pub(super) fn NotebookEditorSkeleton() -> impl IntoView {
 #[component]
 fn CellSkeleton() -> impl IntoView {
     view! {
-        <Skeleton class="ironpad-cell-skeleton">
+        <div class="ironpad-cell-skeleton">
             <div class="ironpad-cell-skeleton-header">
-                <SkeletonItem class="ironpad-skeleton-badge" />
-                <SkeletonItem class="ironpad-skeleton-label" />
-                <SkeletonItem class="ironpad-skeleton-status" />
+                <div class="ironpad-skeleton-item ironpad-skeleton-badge" />
+                <div class="ironpad-skeleton-item ironpad-skeleton-label" />
+                <div class="ironpad-skeleton-item ironpad-skeleton-status" />
             </div>
-            <SkeletonItem class="ironpad-skeleton-editor" />
-        </Skeleton>
+            <div class="ironpad-skeleton-item ironpad-skeleton-editor" />
+        </div>
     }
 }

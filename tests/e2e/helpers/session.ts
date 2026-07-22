@@ -95,6 +95,6 @@ export async function getConnectedAgentCount(page: Page): Promise<number> {
     await btn.click();
   }
 
-  const agents = page.locator(".ironpad-session-agent-list .thaw-tag");
+  const agents = page.locator(".ironpad-session-agent-list .ironpad-tag");
   return agents.count();
 }

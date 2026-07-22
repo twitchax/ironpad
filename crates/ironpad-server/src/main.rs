@@ -123,11 +123,6 @@ async fn main() {
         .await
         .ok();
 
-    // Thaw's `ToasterProvider` creates an effect that calls `spawn_local` during
-    // route generation. Entering a `LocalSet` gives `spawn_local` a valid context;
-    // the spawned tasks are never driven since we only need the route list.
-    let local = tokio::task::LocalSet::new();
-    let _guard = local.enter();
     let routes = generate_route_list(App);
 
     // Shared across all compile requests; serializes same-cell compiles.

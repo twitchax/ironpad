@@ -1,7 +1,6 @@
 //! Session panel UI for starting/stopping agent sessions and viewing tokens.
 
 use leptos::prelude::*;
-use thaw::{Button, ButtonAppearance, Tag, TagSize};
 
 use crate::session::{ConnectionStatus, SessionState};
 
@@ -155,7 +154,7 @@ fn SessionPanel(on_close: impl Fn() + 'static + Clone) -> impl IntoView {
                         view! {
                             <div class="ironpad-session-agent-list">
                                 {guests.into_iter().map(|id| view! {
-                                    <Tag size=TagSize::Small>{id}</Tag>
+                                    <span class="ironpad-tag">{id}</span>
                                 }).collect_view()}
                             </div>
                         }.into_any()
@@ -165,14 +164,14 @@ fn SessionPanel(on_close: impl Fn() + 'static + Clone) -> impl IntoView {
 
             // ── End session ──────────────────────────────────────────────
             <div class="ironpad-session-actions">
-                <Button
-                    appearance=ButtonAppearance::Primary
-                    on_click=move |_| {
+                <button
+                    class="ironpad-btn ironpad-btn--primary"
+                    on:click=move |_| {
                         end_session_flow();
                     }
                 >
                     "End Session"
-                </Button>
+                </button>
             </div>
         </div>
     }

@@ -471,7 +471,6 @@ git push origin feature/my-feature
 - **Bincode 2**: Binary serialization (cell I/O)
 - **Serde 1**: Serialization framework
 - **Clap 4**: CLI argument parsing
-- **Thaw 0.5-beta**: UI component library
 
 ### Frontend-Only
 
@@ -495,7 +494,6 @@ git push origin feature/my-feature
 - **Per-module docs**: Each compiler module has inline `//!` documentation
 - **Test examples**: Look at test cases for API usage patterns
 - **Leptos docs**: https://leptos.dev
-- **Thaw docs**: Component library with dark theme
 
 ---
 
@@ -560,5 +558,5 @@ Sharp edges: target features from independent concerns must merge into ONE `-C t
 
 ---
 
-**Last Updated**: 2026-07-22 — session teardown on page disposal + disposal-read guards (v0.12.12); view mode renders the public notebook renderer + code-wide papercut sweep (v0.12.11); per-cell collapse defaults (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
+**Last Updated**: 2026-07-22 — Thaw removed: native UI primitives + owned toaster; session teardown on page disposal + disposal-read guards (v0.12.12); view mode renders the public notebook renderer + code-wide papercut sweep (v0.12.11); per-cell collapse defaults (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
 **Target Audience**: AI agents, developers contributing to ironpad

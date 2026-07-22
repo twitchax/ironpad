@@ -1,11 +1,10 @@
+#[cfg(feature = "hydrate")]
+use crate::components::toaster::Toaster;
 use ironpad_common::{IronpadNotebook, PublicNotebookSummary};
 use leptos::prelude::*;
 use leptos_router::hooks::use_navigate;
 #[cfg(feature = "hydrate")]
 use leptos_router::NavigateOptions;
-use thaw::{Button, ButtonAppearance, Card, CardHeader, Skeleton, SkeletonItem};
-#[cfg(feature = "hydrate")]
-use thaw::{Toast, ToastBody, ToastTitle, ToasterInjection};
 
 use crate::components::app_layout::LayoutContext;
 use crate::server_fns::list_public_notebooks;
@@ -122,7 +121,7 @@ pub fn HomePage() -> impl IntoView {
     // FileReader callbacks run outside any owner, where `expect_context` panics
     // (which used to swallow both the success and the rejection toast).
     #[cfg(feature = "hydrate")]
-    let toaster = ToasterInjection::expect_context();
+    let toaster = Toaster::expect_context();
 
     let on_import = move |_| {
         let _ = &private_notebooks;
@@ -140,18 +139,18 @@ pub fn HomePage() -> impl IntoView {
                     <p class="ironpad-home-tagline">"Interactive Rust notebooks — compile to WebAssembly, run in the browser."</p>
                 </div>
                 <div class="ironpad-home-actions">
-                    <Button
-                        appearance=ButtonAppearance::Primary
-                        on_click=on_create
+                    <button
+                        class="ironpad-btn ironpad-btn--primary"
+                        on:click=on_create
                     >
                         "+ New Notebook"
-                    </Button>
-                    <Button
-                        appearance=ButtonAppearance::Subtle
-                        on_click=on_import
+                    </button>
+                    <button
+                        class="ironpad-btn ironpad-btn--subtle"
+                        on:click=on_import
                     >
                         "↑ Import Notebook"
-                    </Button>
+                    </button>
                 </div>
             </div>
 
@@ -326,16 +325,16 @@ fn NotebookCard(
             view! {
                 <div class="ironpad-notebook-card-wrapper">
                     <a href=href class="ironpad-notebook-card-link">
-                        <Card class="ironpad-notebook-card">
-                            <CardHeader>
+                        <div class="ironpad-notebook-card">
+                            <div class="ironpad-notebook-card-header">
                                 <span class="ironpad-notebook-badge private">"◆"</span>
                                 <span class="ironpad-notebook-card-title">{title}</span>
-                            </CardHeader>
+                            </div>
                             <div class="ironpad-notebook-card-body">
                                 <span class="ironpad-notebook-card-cells">{cell_text}</span>
                                 <span class="ironpad-notebook-card-updated">{updated_at}</span>
                             </div>
-                        </Card>
+                        </div>
                     </a>
                     <button class="ironpad-delete-btn" on:click=on_delete title="Delete notebook">
                         "╳"
@@ -358,11 +357,11 @@ fn NotebookCard(
             view! {
                 <div class="ironpad-notebook-card-wrapper">
                     <a href=href class="ironpad-notebook-card-link">
-                        <Card class="ironpad-notebook-card">
-                            <CardHeader>
+                        <div class="ironpad-notebook-card">
+                            <div class="ironpad-notebook-card-header">
                                 <span class="ironpad-notebook-badge public">"◇"</span>
                                 <span class="ironpad-notebook-card-title">{title}</span>
-                            </CardHeader>
+                            </div>
                             <div class="ironpad-notebook-card-body">
                                 <p class="ironpad-notebook-card-description">{description}</p>
                                 <div class="ironpad-notebook-card-meta">
@@ -380,7 +379,7 @@ fn NotebookCard(
                                     }}
                                 </div>
                             </div>
-                        </Card>
+                        </div>
                     </a>
                 </div>
             }
@@ -395,10 +394,10 @@ fn NotebookCard(
 #[component]
 fn NotebookCardSkeleton() -> impl IntoView {
     view! {
-        <Skeleton class="ironpad-notebook-card-skeleton">
-            <SkeletonItem class="ironpad-skeleton-title" />
-            <SkeletonItem class="ironpad-skeleton-meta" />
-        </Skeleton>
+        <div class="ironpad-notebook-card-skeleton">
+            <div class="ironpad-skeleton-item ironpad-skeleton-title" />
+            <div class="ironpad-skeleton-item ironpad-skeleton-meta" />
+        </div>
     }
 }
 
@@ -408,18 +407,14 @@ fn NotebookCardSkeleton() -> impl IntoView {
 /// it, imports it via `storage.js`, and refreshes the notebook list.
 ///
 /// Takes the toaster by value: the `FileReader` callbacks below run outside any
-/// reactive owner, where `ToasterInjection::expect_context()` panics, so the
-/// caller resolves it inside the component and moves it in.
+/// reactive owner, where `Toaster::expect_context()` panics, so the caller
+/// resolves it inside the component and moves it in.
 #[cfg(feature = "hydrate")]
-fn import_notebook_from_file(
-    private_notebooks: RwSignal<Vec<IronpadNotebook>>,
-    toaster: ToasterInjection,
-) {
+fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>, toaster: Toaster) {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use std::time::Duration;
 
-    use thaw::{ToastIntent, ToastOptions};
+    use crate::components::toaster::ToastIntent;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
 
@@ -512,19 +507,7 @@ fn import_notebook_from_file(
 
                 // Validate the JSON before importing.
                 if let Err(msg) = crate::storage::validate::validate_notebook_json(&text) {
-                    toaster.dispatch_toast(
-                        move || {
-                            view! {
-                                <Toast>
-                                    <ToastTitle>"Import Failed"</ToastTitle>
-                                    <ToastBody>{msg.clone()}</ToastBody>
-                                </Toast>
-                            }
-                        },
-                        ToastOptions::default()
-                            .with_intent(ToastIntent::Error)
-                            .with_timeout(Duration::from_secs(5)),
-                    );
+                    toaster.toast(ToastIntent::Error, "Import Failed", msg, 5);
                     return;
                 }
 
@@ -535,37 +518,19 @@ fn import_notebook_from_file(
                             let title = nb.title.clone();
                             let nbs = crate::storage::client::list_notebooks().await;
                             private_notebooks.set(nbs);
-                            toaster.dispatch_toast(
-                                move || {
-                                    view! {
-                                        <Toast>
-                                            <ToastTitle>"Notebook Imported"</ToastTitle>
-                                            <ToastBody>
-                                                {format!("\"{title}\" has been added to your notebooks.")}
-                                            </ToastBody>
-                                        </Toast>
-                                    }
-                                },
-                                ToastOptions::default()
-                                    .with_intent(ToastIntent::Success)
-                                    .with_timeout(Duration::from_secs(3)),
+                            toaster.toast(
+                                ToastIntent::Success,
+                                "Notebook Imported",
+                                format!("\"{title}\" has been added to your notebooks."),
+                                3,
                             );
                         }
                         None => {
-                            toaster.dispatch_toast(
-                                move || {
-                                    view! {
-                                        <Toast>
-                                            <ToastTitle>"Import Failed"</ToastTitle>
-                                            <ToastBody>
-                                                "Failed to import the notebook. The file may be corrupted."
-                                            </ToastBody>
-                                        </Toast>
-                                    }
-                                },
-                                ToastOptions::default()
-                                    .with_intent(ToastIntent::Error)
-                                    .with_timeout(Duration::from_secs(5)),
+                            toaster.toast(
+                                ToastIntent::Error,
+                                "Import Failed",
+                                "Failed to import the notebook. The file may be corrupted.",
+                                5,
                             );
                         }
                     }
