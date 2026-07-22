@@ -558,5 +558,5 @@ Sharp edges: target features from independent concerns must merge into ONE `-C t
 
 ---
 
-**Last Updated**: 2026-07-22 — Thaw removed: native UI primitives + owned toaster; session teardown on page disposal + disposal-read guards (v0.12.12); view mode renders the public notebook renderer + code-wide papercut sweep (v0.12.11); per-cell collapse defaults (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
+**Last Updated**: 2026-07-22 — Thaw removed: native UI primitives + owned toaster (v0.12.13); session teardown on page disposal + disposal-read guards (v0.12.12); view mode renders the public notebook renderer + code-wide papercut sweep (v0.12.11); per-cell collapse defaults (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
 **Target Audience**: AI agents, developers contributing to ironpad
