@@ -25,15 +25,15 @@ acceptance_tests:
 - id: uat-001
   name: "Shared notebook with a snapshot replays via /share-blobs/ GETs with zero compile_cell calls (Playwright network assertion)"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "Editor second run of an unchanged cell serves from the local IndexedDB blob store with no compile_cell request"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Fresh mode forces a server compile (force: true) and overwrites the local blob entry; flipping back to cache reuses the fresh blob"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
@@ -79,7 +79,7 @@ tasks:
 - id: T-009
   title: "e2e coverage"
   priority: 2
-  status: in-progress
+  status: done
   notes: "Playwright: shared replay with zero compile_cell network calls (uat-001); editor local-cache second run (uat-002); fresh-mode force + local overwrite (uat-003). Route interception/request counting per project convention."
 - id: T-010
   title: "Docs"
@@ -145,3 +145,4 @@ Every cell run pays a `compile_cell` round trip carrying megabytes of WASM, even
 
 - 2026-07-22: Created; design agreed in session (layer split, sharer-supplied type tags, sidecar manifest, common-crate key recipe).
 - 2026-07-22: Implemented T-001 through T-008 and T-010. Cache-key recipe + CACHE_EPOCH moved to ironpad-common/src/cache_key.rs (blake3 in common); share snapshots are cache-hit-only with a merged manifest sidecar and a 2 GiB blob-dir cap; /share-blobs/{hash}.{wasm,js} served immutable with strict name validation; viewer takes snapshot -> local IndexedDB -> compile_cell in that order; editor takes local -> compile_cell; Force Recompile bypasses all layers and overwrites the local entry. 8 new unit tests (cargo make ci green, 667 passing). T-009 spec written (tests/e2e/blob-cache.spec.ts), runs with the Playwright gate next.
+- 2026-07-22: T-009 done — full gate green: cargo make ci (667/667), test-integration (12/12), Playwright (64 passed / 1 pre-existing skip) including the three new blob-cache tests. All three UATs verified.
