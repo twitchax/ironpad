@@ -136,7 +136,7 @@ fn share_current_notebook(state: &NotebookState, toaster: Toaster) {
             },
         );
 
-        match share_notebook(json, cell_type_tags).await {
+        match share_notebook(json, Some(cell_type_tags)).await {
             Ok(hash) => {
                 #[cfg(target_arch = "wasm32")]
                 let origin = web_sys::window()
@@ -646,29 +646,36 @@ fn NotebookContent() -> impl IntoView {
         // renderer the public/shared/embed pages use, so the preview cannot
         // drift from the published look. The swap remounts per entry with a
         // fresh snapshot (agent edits mid-view appear on re-toggle).
-        <Show when=move || !state.is_view_mode.get()>
+        //
+        // The toolbar renders in BOTH modes: the notebook-level actions
+        // (hamburger menu, close) apply to view mode too. Editing-only
+        // chrome (Run All, session, gear) stays behind the edit-mode Show —
+        // view mode's own header already carries Run All and the
+        // cache/fresh toggle, and Reactive Mode is an edit-time setting.
         <div class="ironpad-notebook-toolbar">
-            // ── Run All button ──────────────────────────────────────────
-            <button
-                class="ironpad-run-all-button"
-                title="Run all code cells (Ctrl+Shift+Enter)"
-                on:click=move |_| {
-                    let cell_ids: Vec<String> = state
-                        .cells
-                        .get_untracked()
-                        .iter()
-                        .filter(|c| c.is_runnable())
-                        .map(|c| c.id.clone())
-                        .collect();
-                    if !cell_ids.is_empty() {
-                        state.run_all_queue.set(cell_ids);
+            <Show when=move || !state.is_view_mode.get()>
+                // ── Run All button ──────────────────────────────────────
+                <button
+                    class="ironpad-run-all-button"
+                    title="Run all code cells (Ctrl+Shift+Enter)"
+                    on:click=move |_| {
+                        let cell_ids: Vec<String> = state
+                            .cells
+                            .get_untracked()
+                            .iter()
+                            .filter(|c| c.is_runnable())
+                            .map(|c| c.id.clone())
+                            .collect();
+                        if !cell_ids.is_empty() {
+                            state.run_all_queue.set(cell_ids);
+                        }
                     }
-                }
-            >
-                "▶▶ Run All"
-            </button>
+                >
+                    "▶▶ Run All"
+                </button>
 
-            <SessionButton />
+                <SessionButton />
+            </Show>
 
             <div class="ironpad-toolbar-right">
                 // ── Hamburger dropdown (☰) ──────────────────────────────
@@ -826,7 +833,8 @@ fn NotebookContent() -> impl IntoView {
                     }}
                 </div>
 
-                // ── Gear dropdown (⚙) ───────────────────────────────────
+                // ── Gear dropdown (⚙) — edit mode only ──────────────────
+                <Show when=move || !state.is_view_mode.get()>
                 <div class="ironpad-toolbar-dropdown">
                     <button
                         class="ironpad-toolbar-dropdown-toggle"
@@ -896,6 +904,7 @@ fn NotebookContent() -> impl IntoView {
                         }
                     }}
                 </div>
+                </Show>
 
                 // ── Close button (✕) ────────────────────────────────────
                 <button
@@ -910,6 +919,7 @@ fn NotebookContent() -> impl IntoView {
             </div>
         </div>
 
+        <Show when=move || !state.is_view_mode.get()>
         <div class="ironpad-cell-list ironpad-cells-container" node_ref=cells_container_ref>
             <AddCellButton after_cell_id=None on_add=add_cell_cb />
 

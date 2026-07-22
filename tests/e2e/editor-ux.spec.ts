@@ -89,6 +89,37 @@ test.describe("Editor UX (PRD-0032)", () => {
     await expect(page.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
   });
 
+  // The notebook-level actions (hamburger menu, close) survive the flip to
+  // view mode; editing-only chrome (Run All, session, gear) does not — view
+  // mode's own header carries Run All and the cache/fresh toggle.
+  test("notebook menu chrome is available in view mode", async ({ page }) => {
+    await newNotebook(page);
+
+    await page.locator('button[title="View mode"]').click();
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // Available: hamburger + close. Hidden: editing-only toolbar chrome.
+    await expect(page.locator('button[title="Notebook menu"]')).toBeVisible();
+    await expect(
+      page.locator('button[title="Back to notebook list"]')
+    ).toBeVisible();
+    await expect(page.locator('button[title="Notebook settings"]')).toHaveCount(
+      0
+    );
+    await expect(page.locator(".ironpad-run-all-button")).toHaveCount(0);
+
+    // The menu's actions work from view mode: Share surfaces the share URL.
+    await page.locator('button[title="Notebook menu"]').click();
+    await page
+      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share" })
+      .click();
+    await expect(page.getByText(/\/shared\//).first()).toBeVisible({
+      timeout: 30_000,
+    });
+  });
+
   // Rendered markdown fenced code blocks are syntax-highlighted by Prism
   // (public/prism/highlight-code.js), not just Monaco-highlighted while editing.
   test("rendered code block is syntax-highlighted by Prism", async ({

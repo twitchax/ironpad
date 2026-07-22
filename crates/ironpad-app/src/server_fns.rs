@@ -643,7 +643,12 @@ async fn share_notebook_core_capped(
 #[server]
 pub async fn share_notebook(
     notebook_json: String,
-    cell_type_tags: Vec<String>,
+    // Option, NOT Vec: the URL-encoded server-fn body omits an empty Vec
+    // entirely, and a bare Vec then fails deserialization with "missing
+    // field" — which broke sharing zero-cell notebooks. A missing field
+    // deserializes to None implicitly, which also tolerates stale clients
+    // that predate the argument.
+    cell_type_tags: Option<Vec<String>>,
 ) -> Result<String, ServerFnError> {
     use ironpad_common::AppConfig;
 
@@ -659,7 +664,7 @@ pub async fn share_notebook(
             &config.data_dir,
             &config.cache_dir,
             &notebook,
-            &cell_type_tags,
+            &cell_type_tags.unwrap_or_default(),
             &hash,
         )
         .await
