@@ -19,6 +19,17 @@ enum NotebookListItem {
         cell_count: usize,
         updated_at: String,
     },
+    /// A mutable share (PRD-0049). `local_id` is `Some(uuid)` when the notebook
+    /// is bound on this device (card links to the editor); `None` for a share
+    /// enumerated by user key but not yet pulled here (card links to the
+    /// reader page, where the rebind control lives).
+    Mutable {
+        local_id: Option<String>,
+        share_id: String,
+        title: String,
+        cell_count: usize,
+        updated_at: String,
+    },
     Public {
         title: String,
         description: String,
@@ -28,10 +39,23 @@ enum NotebookListItem {
     },
 }
 
+/// A mutable-share row for the home "Published" group, unifying locally-bound
+/// records and user-key-enumerated remote shares into one target-agnostic
+/// shape (so the signal type is valid on both build targets).
+#[derive(Clone)]
+struct MutableEntry {
+    local_id: Option<String>,
+    share_id: String,
+    title: String,
+    cell_count: usize,
+    updated_at: String,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum FilterMode {
     All,
     Private,
+    Mutable,
     Public,
 }
 
@@ -85,6 +109,53 @@ pub fn HomePage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             let nbs = crate::storage::client::list_notebooks().await;
             private_notebooks.set(nbs);
+        });
+    }
+
+    // Mutable shares (PRD-0049): locally-bound working copies plus any shares
+    // this device's user key owns but hasn't pulled yet (found on a fresh
+    // machine by pasting the key). Deduped by share id.
+
+    let mutable_entries: RwSignal<Vec<MutableEntry>> = RwSignal::new(vec![]);
+
+    #[cfg(feature = "hydrate")]
+    {
+        leptos::task::spawn_local(async move {
+            let local = crate::storage::client::list_mutable().await;
+            let mut entries: Vec<MutableEntry> = local
+                .iter()
+                .map(|r| MutableEntry {
+                    local_id: Some(r.id.clone()),
+                    share_id: r.share_id.clone(),
+                    title: r.notebook.title.clone(),
+                    cell_count: r.notebook.cells.len(),
+                    updated_at: r.notebook.updated_at.format("%b %d, %Y").to_string(),
+                })
+                .collect();
+            let local_ids: std::collections::HashSet<String> =
+                local.iter().map(|r| r.share_id.clone()).collect();
+
+            let user_key = crate::storage::client::get_user_key().await;
+            if !user_key.is_empty() {
+                if let Ok(remote) = crate::server_fns::list_mutable_shares(user_key).await {
+                    for s in remote {
+                        if !local_ids.contains(&s.id) {
+                            entries.push(MutableEntry {
+                                local_id: None,
+                                share_id: s.id,
+                                title: s.title,
+                                cell_count: s.cell_count,
+                                updated_at: s
+                                    .pushed_at
+                                    .get(..10)
+                                    .unwrap_or(&s.pushed_at)
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            mutable_entries.set(entries);
         });
     }
 
@@ -171,6 +242,10 @@ pub fn HomePage() -> impl IntoView {
                         on:click=move |_| filter_mode.set(FilterMode::Private)
                     >"◆ Private"</button>
                     <button
+                        class=move || if filter_mode.get() == FilterMode::Mutable { "ironpad-chip active" } else { "ironpad-chip" }
+                        on:click=move |_| filter_mode.set(FilterMode::Mutable)
+                    >"⟳ Published"</button>
+                    <button
                         class=move || if filter_mode.get() == FilterMode::Public { "ironpad-chip active" } else { "ironpad-chip" }
                         on:click=move |_| filter_mode.set(FilterMode::Public)
                     >"◇ Public"</button>
@@ -191,6 +266,7 @@ pub fn HomePage() -> impl IntoView {
                         <NotebookGrid
                             public_notebooks=public_list
                             private_notebooks=private_notebooks
+                            mutable_entries=mutable_entries
                             search_query=search_query
                             filter_mode=filter_mode
                         />
@@ -208,6 +284,7 @@ pub fn HomePage() -> impl IntoView {
 fn NotebookGrid(
     public_notebooks: Vec<PublicNotebookSummary>,
     private_notebooks: RwSignal<Vec<IronpadNotebook>>,
+    mutable_entries: RwSignal<Vec<MutableEntry>>,
     search_query: RwSignal<String>,
     filter_mode: RwSignal<FilterMode>,
 ) -> impl IntoView {
@@ -229,6 +306,21 @@ fn NotebookGrid(
                             title: nb.title.clone(),
                             cell_count: nb.cells.len(),
                             updated_at: nb.updated_at.format("%b %d, %Y").to_string(),
+                        });
+                    }
+                }
+            }
+
+            // Mutable shares (PRD-0049), between private and public.
+            if matches!(mode, FilterMode::All | FilterMode::Mutable) {
+                for e in &mutable_entries.get() {
+                    if query.is_empty() || e.title.to_lowercase().contains(&query) {
+                        items.push(NotebookListItem::Mutable {
+                            local_id: e.local_id.clone(),
+                            share_id: e.share_id.clone(),
+                            title: e.title.clone(),
+                            cell_count: e.cell_count,
+                            updated_at: e.updated_at.clone(),
                         });
                     }
                 }
@@ -339,6 +431,46 @@ fn NotebookCard(
                     <button class="ironpad-delete-btn" on:click=on_delete title="Delete notebook">
                         "╳"
                     </button>
+                </div>
+            }
+            .into_any()
+        }
+
+        NotebookListItem::Mutable {
+            local_id,
+            share_id,
+            title,
+            cell_count,
+            updated_at,
+        } => {
+            // Bound locally → open the editor; otherwise → the reader page,
+            // where the "enter your key" rebind control lives.
+            let href = local_id.as_ref().map_or_else(
+                || format!("/mutable/{share_id}"),
+                |id| format!("/local/{id}"),
+            );
+            let cell_text = format_cell_count(cell_count);
+            let hint = if local_id.is_some() {
+                "published"
+            } else {
+                "published · tap to edit"
+            };
+
+            view! {
+                <div class="ironpad-notebook-card-wrapper">
+                    <a href=href class="ironpad-notebook-card-link">
+                        <div class="ironpad-notebook-card">
+                            <div class="ironpad-notebook-card-header">
+                                <span class="ironpad-notebook-badge mutable">"⟳"</span>
+                                <span class="ironpad-notebook-card-title">{title}</span>
+                            </div>
+                            <div class="ironpad-notebook-card-body">
+                                <span class="ironpad-notebook-card-cells">{cell_text}</span>
+                                <span class="ironpad-notebook-card-updated">{updated_at}</span>
+                                <span class="ironpad-notebook-card-mutable-hint">{hint}</span>
+                            </div>
+                        </div>
+                    </a>
                 </div>
             }
             .into_any()

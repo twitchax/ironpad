@@ -21,6 +21,9 @@ pub struct LayoutContext {
     pub last_save_time: RwSignal<Option<f64>>,
     /// Compiler/toolchain version string.
     pub compiler_version: RwSignal<String>,
+    /// This device's mutable-share user key (PRD-0049), shown masked in the
+    /// status bar. Empty until loaded from `IndexedDB`.
+    pub user_key: RwSignal<String>,
 }
 
 impl LayoutContext {
@@ -31,6 +34,7 @@ impl LayoutContext {
             cell_count: RwSignal::new(0),
             last_save_time: RwSignal::new(None),
             compiler_version: RwSignal::new(crate::CELL_TOOLCHAIN.to_string()),
+            user_key: RwSignal::new(String::new()),
         }
     }
 }
@@ -42,6 +46,16 @@ impl LayoutContext {
 pub fn AppLayout(children: Children) -> impl IntoView {
     let ctx = LayoutContext::new();
     provide_context(ctx);
+
+    // Load this device's mutable-share user key for the status bar (PRD-0049),
+    // generating one on first use.
+    #[cfg(feature = "hydrate")]
+    {
+        leptos::task::spawn_local(async move {
+            let key = crate::storage::client::get_user_key().await;
+            ctx.user_key.set(key);
+        });
+    }
 
     let location = leptos_router::hooks::use_location();
     let show_footer = Memo::new(move |_| location.pathname.get() != "/");
@@ -317,6 +331,73 @@ fn format_relative_time(epoch_ms: f64, now_ms: f64) -> String {
     }
 }
 
+/// Masked user-key element for the status bar (PRD-0049): reveal, copy, and
+/// replace. The key never appears in a URL; replace validates 64-hex to keep
+/// keys full-entropy (the no-salt hashing model depends on it), and is a local
+/// clobber that does not revoke the previous key server-side.
+#[component]
+fn UserKeyStatus(ctx: LayoutContext) -> impl IntoView {
+    let revealed = RwSignal::new(false);
+
+    let copy = move |_: leptos::ev::MouseEvent| {
+        #[cfg(feature = "hydrate")]
+        if let Some(window) = web_sys::window() {
+            let clipboard = window.navigator().clipboard();
+            let _ = clipboard.write_text(&ctx.user_key.get_untracked());
+        }
+    };
+
+    let replace = move |_: leptos::ev::MouseEvent| {
+        #[cfg(feature = "hydrate")]
+        if let Some(window) = web_sys::window() {
+            let current = ctx.user_key.get_untracked();
+            if let Ok(Some(input)) = window.prompt_with_message_and_default(
+                "Paste a 64-hex user key for this device. This clobbers the current key locally; it does NOT revoke the old one server-side.",
+                &current,
+            ) {
+                let candidate = input.trim().to_lowercase();
+                if candidate.is_empty() || candidate == current {
+                    return;
+                }
+                let valid = candidate.len() == 64 && candidate.bytes().all(|b| b.is_ascii_hexdigit());
+                if valid {
+                    ctx.user_key.set(candidate.clone());
+                    leptos::task::spawn_local(async move {
+                        crate::storage::client::set_user_key(&candidate).await;
+                    });
+                } else {
+                    let _ = window.alert_with_message("That is not a 64-character hex key.");
+                }
+            }
+        }
+    };
+
+    view! {
+        {move || {
+            let key = ctx.user_key.get();
+            (!key.is_empty()).then(|| {
+                let shown = if revealed.get() { key.clone() } else { "•".repeat(12) };
+                view! {
+                    <span class="ironpad-status-separator">"|"</span>
+                    <span class="ironpad-status-item ironpad-status-key" title="Your mutable-share key (keep it private)">
+                        "Key: "
+                        <span class="ironpad-status-key-value">{shown}</span>
+                        <button
+                            class="ironpad-status-key-btn"
+                            title=move || if revealed.get() { "Hide" } else { "Reveal" }
+                            on:click=move |_| revealed.update(|r| *r = !*r)
+                        >
+                            {move || if revealed.get() { "◡" } else { "◉" }}
+                        </button>
+                        <button class="ironpad-status-key-btn" title="Copy" on:click=copy>"⧉"</button>
+                        <button class="ironpad-status-key-btn" title="Replace" on:click=replace>"✎"</button>
+                    </span>
+                }
+            })
+        }}
+    }
+}
+
 #[component]
 fn StatusBar(ctx: LayoutContext) -> impl IntoView {
     // Tick counter that bumps every 30 s so the relative timestamp refreshes.
@@ -363,6 +444,7 @@ fn StatusBar(ctx: LayoutContext) -> impl IntoView {
                 "Cells: "
                 {move || ctx.cell_count.get().to_string()}
             </span>
+            <UserKeyStatus ctx />
             {move || {
                 // Touch `tick` so the closure re-runs on each interval.
                 let _ = tick.get();

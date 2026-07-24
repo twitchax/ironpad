@@ -890,9 +890,14 @@ async fn snapshot_share_blobs_capped(
 ) -> anyhow::Result<usize> {
     use ironpad_common::ShareManifest;
 
-    let fresh_entries =
-        write_cell_blobs_capped(data_dir, cache_dir, notebook, cell_type_tags, max_total_bytes)
-            .await?;
+    let fresh_entries = write_cell_blobs_capped(
+        data_dir,
+        cache_dir,
+        notebook,
+        cell_type_tags,
+        max_total_bytes,
+    )
+    .await?;
 
     let manifest_path = share_manifest_path(data_dir, share_hash);
     let mut manifest = match tokio::fs::read(&manifest_path).await {
@@ -1233,9 +1238,7 @@ pub(crate) async fn get_mutable_notebook_core(
     data_dir: &std::path::Path,
     id: &str,
 ) -> anyhow::Result<Option<IronpadNotebook>> {
-    Ok(read_mutable_record(data_dir, id)
-        .await?
-        .map(|r| r.notebook))
+    Ok(read_mutable_record(data_dir, id).await?.map(|r| r.notebook))
 }
 
 #[cfg(feature = "ssr")]
@@ -2194,12 +2197,16 @@ mod tests {
             .await
             .unwrap());
         // Unknown id → false, not error (powers the rebind gate).
-        assert!(!verify_mutable_key_core(data.path(), "0000000000000000", "userkey")
-            .await
-            .unwrap());
+        assert!(
+            !verify_mutable_key_core(data.path(), "0000000000000000", "userkey")
+                .await
+                .unwrap()
+        );
 
         // Wrong key can't unpublish.
-        assert!(delete_mutable_core(data.path(), &id, "wrong").await.is_err());
+        assert!(delete_mutable_core(data.path(), &id, "wrong")
+            .await
+            .is_err());
         assert!(get_mutable_notebook_core(data.path(), &id)
             .await
             .unwrap()

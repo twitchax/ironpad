@@ -159,6 +159,140 @@ fn share_current_notebook(state: &NotebookState, toaster: Toaster) {
     });
 }
 
+// ── Mutable shares (PRD-0049) ───────────────────────────────────────────────
+
+/// Flush in-progress cell edits, then serialize the current notebook to JSON
+/// along with its positional type tags (for blob snapshotting). Returns `None`
+/// if the page was disposed mid-flush or serialization fails (a failure toast
+/// is emitted with `fail_title`). Shared by the mutable Share and Push flows.
+async fn flush_serialize_tags(
+    state: &NotebookState,
+    toaster: Toaster,
+    fail_title: &'static str,
+) -> Option<(String, Vec<String>)> {
+    #[cfg(feature = "hydrate")]
+    yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
+
+    let nb = state.notebook.try_get_untracked().flatten()?;
+    let json = match serde_json::to_string(&nb) {
+        Ok(j) => j,
+        Err(e) => {
+            toaster.toast(
+                ToastIntent::Error,
+                fail_title,
+                format!("Failed to serialize: {e}"),
+                5,
+            );
+            return None;
+        }
+    };
+    let tags: Vec<String> = state.cell_outputs.try_get_untracked().map_or_else(
+        || vec![String::new(); nb.cells.len()],
+        |outputs| {
+            nb.cells
+                .iter()
+                .map(|c| {
+                    outputs
+                        .get(&c.id)
+                        .and_then(|d| d.type_tag.clone())
+                        .unwrap_or_default()
+                })
+                .collect()
+        },
+    );
+    Some((json, tags))
+}
+
+/// Convert the current notebook into a mutable share (PRD-0049): mint a
+/// per-notebook key, create the share server-side under this device's user
+/// key, move the notebook into the local mutable store, update `binding`, and
+/// copy the `/mutable/{id}` link. The caller bumps `save_generation` first.
+fn share_mutable_current_notebook(
+    state: &NotebookState,
+    toaster: Toaster,
+    binding: RwSignal<Option<(String, String)>>,
+) {
+    let state = *state;
+    leptos::task::spawn_local(async move {
+        let Some((json, tags)) = flush_serialize_tags(&state, toaster, "Share Failed").await else {
+            return;
+        };
+        #[cfg(feature = "hydrate")]
+        {
+            let uuid = state.notebook_id.get_untracked();
+            let user_key = crate::storage::client::get_user_key().await;
+            let notebook_key = crate::storage::client::mint_key();
+            match crate::server_fns::create_mutable_share(
+                json,
+                user_key,
+                notebook_key.clone(),
+                Some(tags),
+            )
+            .await
+            {
+                Ok(share_id) => {
+                    if let Err(e) =
+                        crate::storage::client::convert_to_mutable(&uuid, &share_id, &notebook_key)
+                            .await
+                    {
+                        toaster.toast(
+                            ToastIntent::Error,
+                            "Share Failed",
+                            format!("Published, but could not update local storage: {e:?}"),
+                            6,
+                        );
+                        return;
+                    }
+                    // The page may have been disposed during the awaits.
+                    if state.notebook_id.try_get_untracked().is_some() {
+                        binding.set(Some((share_id.clone(), notebook_key)));
+                    }
+                    let origin = web_sys::window()
+                        .and_then(|w| w.location().origin().ok())
+                        .unwrap_or_default();
+                    let url = format!("{origin}/mutable/{share_id}");
+                    if let Some(window) = web_sys::window() {
+                        let clipboard = window.navigator().clipboard();
+                        let _ =
+                            wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&url)).await;
+                    }
+                    toaster.toast(ToastIntent::Success, "Mutable Link Copied!", url, 6);
+                }
+                Err(e) => toaster.toast(ToastIntent::Error, "Share Failed", format!("{e}"), 5),
+            }
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = (json, tags, binding, state);
+        }
+    });
+}
+
+/// Push the current notebook to its existing mutable share, overwriting the
+/// server copy. Uses the stored per-share edit key.
+fn push_mutable_current_notebook(
+    state: &NotebookState,
+    toaster: Toaster,
+    share_id: String,
+    edit_key: String,
+) {
+    let state = *state;
+    leptos::task::spawn_local(async move {
+        let Some((json, tags)) = flush_serialize_tags(&state, toaster, "Push Failed").await else {
+            return;
+        };
+        match crate::server_fns::push_mutable(share_id, edit_key, json, Some(tags)).await {
+            Ok(()) => toaster.toast(
+                ToastIntent::Success,
+                "Pushed",
+                "The mutable notebook is updated.".to_string(),
+                4,
+            ),
+            Err(e) => toaster.toast(ToastIntent::Error, "Push Failed", format!("{e}"), 6),
+        }
+    });
+}
+
 // ── Notebook editor page ────────────────────────────────────────────────────
 
 /// Route component for `/notebook/{id}`.
@@ -465,6 +599,32 @@ fn NotebookContent() -> impl IntoView {
     let hamburger_open = RwSignal::new(false);
     let gear_open = RwSignal::new(false);
 
+    // ── Mutable-share binding (PRD-0049) ────────────────────────────────
+    //
+    // `Some((share_id, edit_key))` when this notebook is mutable-backed on
+    // this device. Drives the Share Mutable ↔ Push and Delete ↔ Unpublish
+    // menu swaps. Loaded from the local mutable store once the notebook id is
+    // known.
+    let mutable_binding: RwSignal<Option<(String, String)>> = RwSignal::new(None);
+
+    #[cfg(feature = "hydrate")]
+    {
+        Effect::new(move |_| {
+            let id = state.notebook_id.get();
+            if id.is_empty() {
+                return;
+            }
+            leptos::task::spawn_local(async move {
+                let record = crate::storage::client::get_mutable(&id).await;
+                // The page may have been disposed during the read.
+                if state.notebook_id.try_get_untracked().is_none() {
+                    return;
+                }
+                mutable_binding.set(record.map(|r| (r.share_id, r.edit_key)));
+            });
+        });
+    }
+
     // ── Cells container ref for SortableJS ──────────────────────────────
 
     let cells_container_ref = NodeRef::new();
@@ -715,6 +875,42 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         "↗ Share"
                                     </button>
+                                    // Share Mutable / Push Update (PRD-0049)
+                                    {move || match mutable_binding.get() {
+                                        None => view! {
+                                            <button
+                                                class="ironpad-toolbar-dropdown-item"
+                                                on:click=move |_| {
+                                                    hamburger_open.set(false);
+                                                    state.save_generation.update(|g| *g += 1);
+                                                    share_mutable_current_notebook(
+                                                        &state,
+                                                        Toaster::expect_context(),
+                                                        mutable_binding,
+                                                    );
+                                                }
+                                            >
+                                                "⇅ Share Mutable"
+                                            </button>
+                                        }.into_any(),
+                                        Some((share_id, edit_key)) => view! {
+                                            <button
+                                                class="ironpad-toolbar-dropdown-item"
+                                                on:click=move |_| {
+                                                    hamburger_open.set(false);
+                                                    state.save_generation.update(|g| *g += 1);
+                                                    push_mutable_current_notebook(
+                                                        &state,
+                                                        Toaster::expect_context(),
+                                                        share_id.clone(),
+                                                        edit_key.clone(),
+                                                    );
+                                                }
+                                            >
+                                                "⬆ Push Update"
+                                            </button>
+                                        }.into_any(),
+                                    }}
                                     // Export HTML
                                     <button
                                         class="ironpad-toolbar-dropdown-item"
@@ -797,33 +993,88 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         "↓ Download .ironpad"
                                     </button>
-                                    // Delete
-                                    <button
-                                        class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
-                                        on:click=move |_| {
-                                            hamburger_open.set(false);
-                                            #[cfg(feature = "hydrate")]
-                                            {
-                                                let id = state.notebook_id.get_untracked();
-                                                let confirmed = web_sys::window()
-                                                    .unwrap()
-                                                    .confirm_with_message(
-                                                        "Delete this notebook? This cannot be undone.",
-                                                    )
-                                                    .unwrap_or(false);
-                                                if confirmed {
-                                                    let navigate = navigate.get_value();
-                                                    leptos::task::spawn_local(async move {
-                                                        crate::storage::client::delete_notebook(&id)
-                                                            .await;
-                                                        navigate("/", NavigateOptions::default());
-                                                    });
+                                    // Delete (private) / Unpublish (mutable, PRD-0049)
+                                    {move || match mutable_binding.get() {
+                                        Some((share_id, edit_key)) => view! {
+                                            <button
+                                                class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
+                                                on:click=move |_| {
+                                                    hamburger_open.set(false);
+                                                    #[cfg(feature = "hydrate")]
+                                                    {
+                                                        let confirmed = web_sys::window()
+                                                            .unwrap()
+                                                            .confirm_with_message(
+                                                                "Unpublish this notebook? The public link stops working and it returns to your private list.",
+                                                            )
+                                                            .unwrap_or(false);
+                                                        if confirmed {
+                                                            let uuid = state.notebook_id.get_untracked();
+                                                            let toaster = Toaster::expect_context();
+                                                            let share_id = share_id.clone();
+                                                            let edit_key = edit_key.clone();
+                                                            leptos::task::spawn_local(async move {
+                                                                match crate::server_fns::delete_mutable_share(
+                                                                    share_id, edit_key,
+                                                                )
+                                                                .await
+                                                                {
+                                                                    Ok(()) => {
+                                                                        crate::storage::client::convert_to_private(&uuid).await;
+                                                                        if state.notebook_id.try_get_untracked().is_some() {
+                                                                            mutable_binding.set(None);
+                                                                        }
+                                                                        toaster.toast(
+                                                                            ToastIntent::Success,
+                                                                            "Unpublished",
+                                                                            "Back in your private list.".to_string(),
+                                                                            4,
+                                                                        );
+                                                                    }
+                                                                    Err(e) => toaster.toast(
+                                                                        ToastIntent::Error,
+                                                                        "Unpublish Failed",
+                                                                        format!("{e}"),
+                                                                        6,
+                                                                    ),
+                                                                }
+                                                            });
+                                                        }
+                                                    }
                                                 }
-                                            }
-                                        }
-                                    >
-                                        "╳ Delete"
-                                    </button>
+                                            >
+                                                "⊗ Unpublish"
+                                            </button>
+                                        }.into_any(),
+                                        None => view! {
+                                            <button
+                                                class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
+                                                on:click=move |_| {
+                                                    hamburger_open.set(false);
+                                                    #[cfg(feature = "hydrate")]
+                                                    {
+                                                        let id = state.notebook_id.get_untracked();
+                                                        let confirmed = web_sys::window()
+                                                            .unwrap()
+                                                            .confirm_with_message(
+                                                                "Delete this notebook? This cannot be undone.",
+                                                            )
+                                                            .unwrap_or(false);
+                                                        if confirmed {
+                                                            let navigate = navigate.get_value();
+                                                            leptos::task::spawn_local(async move {
+                                                                crate::storage::client::delete_notebook(&id)
+                                                                    .await;
+                                                                navigate("/", NavigateOptions::default());
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            >
+                                                "╳ Delete"
+                                            </button>
+                                        }.into_any(),
+                                    }}
                                 </div>
                             }
                                 .into_any()

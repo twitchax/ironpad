@@ -454,6 +454,92 @@ a:focus-visible {
     color: var(--ip-text-secondary);
 }
 
+/* ── Mutable shares (PRD-0049) ──────────────────────────────────────────── */
+
+.ironpad-status-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ironpad-status-key-value {
+    font-family: monospace;
+    color: var(--ip-text-tertiary);
+    max-width: 20ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ironpad-status-key-btn {
+    background: none;
+    border: none;
+    color: var(--ip-text-secondary);
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 0.85rem;
+    line-height: 1;
+
+    &:hover {
+        color: var(--ip-accent);
+    }
+}
+
+.ironpad-notebook-badge.mutable {
+    color: var(--ip-shared);
+}
+
+.ironpad-notebook-card-mutable-hint {
+    color: var(--ip-shared);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.mutable-rebind {
+    max-width: 960px;
+    margin: 0 auto 8px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.mutable-rebind-toggle,
+.mutable-rebind-submit {
+    background: none;
+    border: 1px solid var(--ip-border);
+    color: var(--ip-text-secondary);
+    border-radius: var(--ip-radius-md, 6px);
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 0.85rem;
+
+    &:hover {
+        border-color: var(--ip-shared);
+        color: var(--ip-shared);
+    }
+}
+
+.mutable-rebind-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.mutable-rebind-input {
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md, 6px);
+    padding: 4px 8px;
+    background: var(--ip-surface, transparent);
+    color: var(--ip-text-primary);
+    font-family: monospace;
+    min-width: 220px;
+}
+
+.mutable-rebind-status {
+    color: var(--ip-text-tertiary);
+    font-size: 0.8rem;
+}
+
 /* ── Home page ──────────────────────────────────────────────────────────── */
 
 .ironpad-home {
