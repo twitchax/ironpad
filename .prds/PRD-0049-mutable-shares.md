@@ -50,7 +50,7 @@ tasks:
   title: "Server: mutable share store + server fns"
   priority: 1
   status: todo
-  notes: "create_mutable_share(notebook_json, user_key, notebook_key) mints a 16-hex random id, stores {data_dir}/mutable/{id}.json plus blake3 of both keys; push_mutable(id, key, notebook_json) verifies the presented key against either hash and overwrites; get_mutable_notebook(id) -> Option; verify_mutable_key(id, key) -> bool for the rebind UX; delete_mutable(id, key) unpublishes. Keys travel plaintext over TLS and are hashed server-side, password-style. Reuse the share-notebook size caps and atomic_write_async; each successful create/push re-runs the PRD-0047 snapshot (cache-hit-only) into a {id}.manifest.json that is REPLACED, not merged."
+  notes: "create_mutable_share(notebook_json, user_key, notebook_key) mints a 16-hex random id, stores {data_dir}/mutable/{id}.json plus both key hashes; push_mutable(id, key, notebook_json) verifies the presented key against either hash and overwrites; get_mutable_notebook(id) -> Option; verify_mutable_key(id, key) -> bool for the rebind UX; delete_mutable(id, key) unpublishes. Keys travel plaintext over TLS. Hashing: blake3 derive_key with fixed context 'ironpad mutable-share auth v1' (domain separation instead of salts; keys are full-entropy so salting/argon2 buy nothing, and an unsalted user-key hash is what makes enumeration an index lookup); constant-time comparison via subtle. Reuse the share-notebook size caps and atomic_write_async; each successful create/push re-runs the PRD-0047 snapshot (cache-hit-only) into a {id}.manifest.json that is REPLACED, not merged."
 - id: T-002
   title: "Reader route: /mutable/{id} page with blob delivery"
   priority: 1
@@ -75,7 +75,7 @@ tasks:
   title: "Key surfaces: footer + share panel"
   priority: 2
   status: todo
-  notes: "Footer shows the user key masked with copy/reveal/replace (replace = local clobber, labeled as such). The notebook key for a mutable-backed notebook lives in its share panel next to the /mutable/{id} link, same masked treatment. Keys never appear in URLs."
+  notes: "Footer shows the user key masked with copy/reveal/replace (replace = local clobber, labeled as such). The notebook key for a mutable-backed notebook lives in its share panel next to the /mutable/{id} link, same masked treatment. Keys never appear in URLs. Replace validates format (64 hex chars) and rejects arbitrary strings: the no-salt hashing model depends on keys staying full-entropy, so no human-chosen passphrases may enter through this door."
 - id: T-007
   title: "My published notebooks"
   priority: 3
@@ -121,6 +121,7 @@ Shares are content-addressed and frozen: editing a shared notebook mints a new h
 # Assumptions
 
 - Plaintext-key-over-TLS with hash-at-rest is acceptable (password-model; hashes on the wire would make the hash itself the credential and buy nothing).
+- Keys are always machine-generated full-entropy 256-bit values (UI-enforced on replace), which is why unsalted domain-separated blake3 suffices and slow password hashes are unnecessary. Known trade: identical user-key hashes across shares let a volume compromise group shares by anonymous author; that linkage is also exactly the enumeration feature, and author unlinkability is a non-goal.
 - A 16-hex random id is unguessable enough to serve as the read capability, matching the existing share-hash posture.
 - The mutable store holding the working copy (rather than the private store plus a mapping) is acceptable data migration for the convert/unpublish transitions.
 
