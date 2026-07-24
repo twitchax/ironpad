@@ -451,6 +451,21 @@ pub struct PublicNotebookSummary {
     pub tags: Vec<String>,
 }
 
+// ── Mutable Share Types (PRD-0049) ──────────────────────────────────────────
+
+/// Lightweight summary of a mutable share owned by a given user key, for the
+/// home-page "Published" listing and the "find everything on a fresh machine"
+/// flow. Enumerated server-side by matching the caller's user-key hash.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutableShareSummary {
+    /// Server-minted share id (the `/mutable/{id}` path segment).
+    pub id: String,
+    pub title: String,
+    /// ISO 8601 timestamp of the last push.
+    pub pushed_at: String,
+    pub cell_count: usize,
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

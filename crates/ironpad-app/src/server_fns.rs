@@ -780,20 +780,28 @@ pub(crate) async fn snapshot_share_blobs(
     .await
 }
 
-/// Core snapshot logic with an explicit blob-dir cap (so tests can exercise
-/// the cap without writing gigabytes). See [`snapshot_share_blobs`].
+/// Write the cache-hit compiled blobs for a notebook's runnable cells into the
+/// content-addressed `{data_dir}/shares/blobs/` store, returning fresh manifest
+/// entries (`cell id → ShareBlobEntry`) for the cells that hit.
+///
+/// This is the shared blob-writing core: immutable shares MERGE the returned
+/// entries into an on-disk `{hash}.manifest.json` sidecar
+/// ([`snapshot_share_blobs_capped`]), while mutable shares (PRD-0049) REPLACE
+/// their embedded manifest with a fresh `ShareManifest` built from exactly
+/// these entries. Both classes serve the resulting blobs from the same
+/// immutable `/share-blobs/` route, since the blobs are keyed by content hash
+/// and shared across every share that references them.
 #[cfg(feature = "ssr")]
-async fn snapshot_share_blobs_capped(
+async fn write_cell_blobs_capped(
     data_dir: &std::path::Path,
     cache_dir: &std::path::Path,
     notebook: &IronpadNotebook,
     cell_type_tags: &[String],
-    share_hash: &str,
     max_total_bytes: u64,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<std::collections::BTreeMap<String, ironpad_common::ShareBlobEntry>> {
     use crate::compiler::cache::{content_hash, try_cache_hit};
     use crate::compiler::scaffold::{merged_deps_contain_rayon, uses_std_autodiff, uses_wasm_simd};
-    use ironpad_common::{ShareBlobEntry, ShareManifest};
+    use ironpad_common::ShareBlobEntry;
 
     // One positional tag per cell is the contract (empty = no tag); a
     // mismatched vector (stale client bundle) would hash garbage chains, so
@@ -865,6 +873,26 @@ async fn snapshot_share_blobs_capped(
             },
         );
     }
+
+    Ok(fresh_entries)
+}
+
+/// Core snapshot logic with an explicit blob-dir cap (so tests can exercise
+/// the cap without writing gigabytes). See [`snapshot_share_blobs`].
+#[cfg(feature = "ssr")]
+async fn snapshot_share_blobs_capped(
+    data_dir: &std::path::Path,
+    cache_dir: &std::path::Path,
+    notebook: &IronpadNotebook,
+    cell_type_tags: &[String],
+    share_hash: &str,
+    max_total_bytes: u64,
+) -> anyhow::Result<usize> {
+    use ironpad_common::ShareManifest;
+
+    let fresh_entries =
+        write_cell_blobs_capped(data_dir, cache_dir, notebook, cell_type_tags, max_total_bytes)
+            .await?;
 
     let manifest_path = share_manifest_path(data_dir, share_hash);
     let mut manifest = match tokio::fs::read(&manifest_path).await {
@@ -951,6 +979,475 @@ pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, Server
 
     let config = expect_context::<AppConfig>();
     get_shared_notebook_core(&config.data_dir, &hash)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+// ── Mutable shares (PRD-0049) ────────────────────────────────────────────────
+//
+// A third storage class: `Share Mutable` CONVERTS a private notebook into a
+// server-backed one at `/mutable/{id}`. Anyone with the link reads it; the
+// author overwrites it with an explicit Push. Authorization is two
+// device-minted keys (a per-profile user key and a per-share notebook key) —
+// the server accepts EITHER — hashed at rest with domain-separated blake3. No
+// accounts: possession of a key is the whole identity model.
+//
+// Blobs reuse the immutable content-addressed `shares/blobs/` store (served by
+// the `/share-blobs/` route), so mutable readers never trigger compiles for
+// snapshotted cells. Only the id→content resolve is mutable (and served
+// no-cache by the server's default policy). Each push RE-snapshots and REPLACES
+// the embedded manifest, versus the merge semantics of immutable shares.
+
+/// Aggregate cap on the mutable-share record directory (JSON records only;
+/// blobs live in the shared blob store under its own 2 GiB cap). Beyond it,
+/// creating a *new* mutable share is refused; pushing to an existing one
+/// overwrites in place and is always allowed.
+#[cfg(feature = "ssr")]
+const MAX_TOTAL_MUTABLE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Domain-separation context for mutable-share key hashing. A fixed string
+/// (not a per-row salt): the keys are machine-generated full-entropy 256-bit
+/// values, so salting/argon2 buy nothing, and an unsalted user-key hash is
+/// what keeps enumeration ([`list_mutable_by_user_core`]) an index match. The
+/// `v1` guards a future scheme change. See PRD-0049.
+#[cfg(feature = "ssr")]
+const MUTABLE_KEY_CONTEXT: &str = "ironpad mutable-share auth v1";
+
+/// The on-disk record for one mutable share at `{data_dir}/mutable/{id}.json`.
+/// Holds everything a reader or the author needs behind one atomic write: the
+/// notebook, the two key hashes (never served), the blob manifest, and the
+/// last-push timestamp.
+#[cfg(feature = "ssr")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MutableShareRecord {
+    version: u32,
+    notebook: IronpadNotebook,
+    /// Hex blake3 (`derive_key`) of the owner's per-profile user key.
+    user_key_hash: String,
+    /// Hex blake3 (`derive_key`) of this share's per-notebook key.
+    notebook_key_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest: Option<ironpad_common::ShareManifest>,
+    /// ISO 8601 timestamp of the last create/push.
+    pushed_at: String,
+}
+
+/// Domain-separated blake3 hash of a key, as lowercase hex.
+#[cfg(feature = "ssr")]
+fn hash_mutable_key(key: &str) -> String {
+    blake3::Hash::from(blake3::derive_key(MUTABLE_KEY_CONTEXT, key.as_bytes()))
+        .to_hex()
+        .to_string()
+}
+
+/// Constant-time check that `key` hashes to `stored_hex`. Length-guarded (a
+/// corrupt stored hash simply never matches); the compare itself is
+/// constant-time via `subtle` so a push endpoint can't become a timing oracle.
+#[cfg(feature = "ssr")]
+fn mutable_key_matches(key: &str, stored_hex: &str) -> bool {
+    use subtle::ConstantTimeEq as _;
+    let computed = hash_mutable_key(key);
+    if computed.len() != stored_hex.len() {
+        return false;
+    }
+    computed.as_bytes().ct_eq(stored_hex.as_bytes()).into()
+}
+
+#[cfg(feature = "ssr")]
+fn mutable_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("mutable")
+}
+
+#[cfg(feature = "ssr")]
+fn mutable_record_path(data_dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    mutable_dir(data_dir).join(format!("{id}.json"))
+}
+
+/// A fresh unguessable 16-hex share id (64 bits of randomness, matching the
+/// immutable-share hash posture — the id doubles as the read capability).
+#[cfg(feature = "ssr")]
+fn random_mutable_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..16].to_string()
+}
+
+/// Snapshot a notebook's warm blobs into the shared content-addressed store
+/// and build a FRESH manifest (replace semantics). Best-effort: a snapshot
+/// failure (mismatched tags, cold cache, full blob store) degrades to a
+/// live-compile mutable share rather than failing the create/push.
+#[cfg(feature = "ssr")]
+async fn snapshot_mutable_manifest(
+    data_dir: &std::path::Path,
+    cache_dir: &std::path::Path,
+    notebook: &IronpadNotebook,
+    cell_type_tags: &[String],
+) -> Option<ironpad_common::ShareManifest> {
+    match write_cell_blobs_capped(
+        data_dir,
+        cache_dir,
+        notebook,
+        cell_type_tags,
+        MAX_TOTAL_SHARE_BLOB_BYTES,
+    )
+    .await
+    {
+        Ok(cells) if !cells.is_empty() => Some(ironpad_common::ShareManifest { version: 1, cells }),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, "mutable snapshot failed; share is live-compile only");
+            None
+        }
+    }
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn create_mutable_share_core(
+    data_dir: &std::path::Path,
+    cache_dir: &std::path::Path,
+    notebook_json: &str,
+    user_key: &str,
+    notebook_key: &str,
+    cell_type_tags: &[String],
+) -> anyhow::Result<String> {
+    if notebook_json.len() > MAX_SHARE_BYTES {
+        anyhow::bail!(
+            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
+            notebook_json.len()
+        );
+    }
+    if user_key.is_empty() || notebook_key.is_empty() {
+        anyhow::bail!("both a user key and a notebook key are required");
+    }
+
+    let notebook: IronpadNotebook = serde_json::from_str(notebook_json)
+        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+
+    let mdir = mutable_dir(data_dir);
+    tokio::fs::create_dir_all(&mdir)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to create mutable dir: {e}"))?;
+
+    // Aggregate cap for a NEW share (minor TOCTOU is fine; the cap bounds
+    // steady-state disk, it is not a hard quota).
+    let existing_total = dir_total_bytes(&mdir).await?;
+    if existing_total.saturating_add(notebook_json.len() as u64) > MAX_TOTAL_MUTABLE_BYTES {
+        anyhow::bail!(
+            "mutable share store full: {existing_total} bytes stored, cap is {MAX_TOTAL_MUTABLE_BYTES}"
+        );
+    }
+
+    // Mint an id that isn't already taken. Collisions are astronomically
+    // unlikely at 64 bits; the loop is a belt-and-suspenders guard.
+    let mut id = None;
+    for _ in 0..8 {
+        let candidate = random_mutable_id();
+        if !mutable_record_path(data_dir, &candidate).exists() {
+            id = Some(candidate);
+            break;
+        }
+    }
+    let id = id.ok_or_else(|| anyhow::anyhow!("failed to mint a unique mutable id"))?;
+
+    let manifest = snapshot_mutable_manifest(data_dir, cache_dir, &notebook, cell_type_tags).await;
+    let record = MutableShareRecord {
+        version: 1,
+        notebook,
+        user_key_hash: hash_mutable_key(user_key),
+        notebook_key_hash: hash_mutable_key(notebook_key),
+        manifest,
+        pushed_at: chrono::Utc::now().to_rfc3339(),
+    };
+    atomic_write_async(
+        &mutable_record_path(data_dir, &id),
+        &serde_json::to_vec(&record)?,
+    )
+    .await?;
+
+    tracing::info!(id = %id, "mutable share created");
+    Ok(id)
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn push_mutable_core(
+    data_dir: &std::path::Path,
+    cache_dir: &std::path::Path,
+    id: &str,
+    key: &str,
+    notebook_json: &str,
+    cell_type_tags: &[String],
+) -> anyhow::Result<()> {
+    validate_safe_path_segment(id)?;
+    if notebook_json.len() > MAX_SHARE_BYTES {
+        anyhow::bail!(
+            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
+            notebook_json.len()
+        );
+    }
+
+    let path = mutable_record_path(data_dir, id);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| anyhow::anyhow!("mutable share not found"))?;
+    let mut record: MutableShareRecord = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow::anyhow!("invalid mutable share record: {e}"))?;
+
+    // Either key authorizes a push (PRD-0049). A wrong key is rejected here,
+    // before any blob work.
+    if !mutable_key_matches(key, &record.user_key_hash)
+        && !mutable_key_matches(key, &record.notebook_key_hash)
+    {
+        anyhow::bail!("unauthorized: key does not match this share");
+    }
+
+    let notebook: IronpadNotebook = serde_json::from_str(notebook_json)
+        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+    let manifest = snapshot_mutable_manifest(data_dir, cache_dir, &notebook, cell_type_tags).await;
+
+    // Key hashes are preserved; only content + manifest + timestamp change.
+    record.notebook = notebook;
+    record.manifest = manifest;
+    record.pushed_at = chrono::Utc::now().to_rfc3339();
+    atomic_write_async(&path, &serde_json::to_vec(&record)?).await?;
+
+    tracing::info!(id = %id, "mutable share pushed");
+    Ok(())
+}
+
+/// Read a mutable share record, mapping a missing file to `Ok(None)`.
+#[cfg(feature = "ssr")]
+async fn read_mutable_record(
+    data_dir: &std::path::Path,
+    id: &str,
+) -> anyhow::Result<Option<MutableShareRecord>> {
+    validate_safe_path_segment(id)?;
+    match tokio::fs::read(mutable_record_path(data_dir, id)).await {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("invalid mutable share record: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("failed to read mutable share: {e}")),
+    }
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn get_mutable_notebook_core(
+    data_dir: &std::path::Path,
+    id: &str,
+) -> anyhow::Result<Option<IronpadNotebook>> {
+    Ok(read_mutable_record(data_dir, id)
+        .await?
+        .map(|r| r.notebook))
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn get_mutable_manifest_core(
+    data_dir: &std::path::Path,
+    id: &str,
+) -> anyhow::Result<Option<ironpad_common::ShareManifest>> {
+    Ok(read_mutable_record(data_dir, id)
+        .await?
+        .and_then(|r| r.manifest))
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn verify_mutable_key_core(
+    data_dir: &std::path::Path,
+    id: &str,
+    key: &str,
+) -> anyhow::Result<bool> {
+    Ok(read_mutable_record(data_dir, id).await?.is_some_and(|r| {
+        mutable_key_matches(key, &r.user_key_hash) || mutable_key_matches(key, &r.notebook_key_hash)
+    }))
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn delete_mutable_core(
+    data_dir: &std::path::Path,
+    id: &str,
+    key: &str,
+) -> anyhow::Result<()> {
+    let record = read_mutable_record(data_dir, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("mutable share not found"))?;
+    if !mutable_key_matches(key, &record.user_key_hash)
+        && !mutable_key_matches(key, &record.notebook_key_hash)
+    {
+        anyhow::bail!("unauthorized: key does not match this share");
+    }
+    // The content-addressed blobs are shared across every share that
+    // references them and bounded by the blob-store cap, so (like immutable
+    // unshares) they are left in place; only the record is removed.
+    tokio::fs::remove_file(mutable_record_path(data_dir, id))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to delete mutable share: {e}"))?;
+    tracing::info!(id = %id, "mutable share unpublished");
+    Ok(())
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) async fn list_mutable_by_user_core(
+    data_dir: &std::path::Path,
+    user_key: &str,
+) -> anyhow::Result<Vec<ironpad_common::MutableShareSummary>> {
+    use ironpad_common::MutableShareSummary;
+
+    if user_key.is_empty() {
+        return Ok(vec![]);
+    }
+    let target = hash_mutable_key(user_key);
+
+    let mut read_dir = match tokio::fs::read_dir(mutable_dir(data_dir)).await {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(anyhow::anyhow!("failed to read mutable dir: {e}")),
+    };
+
+    let mut out = Vec::new();
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to enumerate mutable dir: {e}"))?
+    {
+        let path = entry.path();
+        // Only `{id}.json` records; atomic-write temp siblings
+        // (`{id}.json.tmp.{uuid}`) have a different final extension.
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(bytes) = tokio::fs::read(&path).await else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<MutableShareRecord>(&bytes) else {
+            continue;
+        };
+        // Enumeration match is on the user's OWN key hash — plain equality is
+        // fine (nothing secret-dependent leaks to the caller).
+        if record.user_key_hash == target {
+            let id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            out.push(MutableShareSummary {
+                id,
+                title: record.notebook.title,
+                pushed_at: record.pushed_at,
+                cell_count: record.notebook.cells.len(),
+            });
+        }
+    }
+    // Newest push first.
+    out.sort_by(|a, b| b.pushed_at.cmp(&a.pushed_at));
+    Ok(out)
+}
+
+/// Convert a notebook into a mutable share. Returns the server-minted id (the
+/// `/mutable/{id}` path segment). `user_key` and `notebook_key` are the two
+/// device-minted keys; either authorizes future pushes.
+#[server]
+pub async fn create_mutable_share(
+    notebook_json: String,
+    user_key: String,
+    notebook_key: String,
+    // Option, not Vec: an empty Vec is omitted by the URL-encoded server-fn
+    // body and would fail deserialization (see `share_notebook`).
+    cell_type_tags: Option<Vec<String>>,
+) -> Result<String, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    create_mutable_share_core(
+        &config.data_dir,
+        &config.cache_dir,
+        &notebook_json,
+        &user_key,
+        &notebook_key,
+        &cell_type_tags.unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Overwrite a mutable share's content. Requires a key matching the share's
+/// user OR notebook key.
+#[server]
+pub async fn push_mutable(
+    id: String,
+    key: String,
+    notebook_json: String,
+    cell_type_tags: Option<Vec<String>>,
+) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    push_mutable_core(
+        &config.data_dir,
+        &config.cache_dir,
+        &id,
+        &key,
+        &notebook_json,
+        &cell_type_tags.unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Retrieve a mutable share's current notebook, or `None` if the id is unknown.
+#[server]
+pub async fn get_mutable_notebook(id: String) -> Result<Option<IronpadNotebook>, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    get_mutable_notebook_core(&config.data_dir, &id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Retrieve a mutable share's blob-snapshot manifest, if one exists.
+#[server]
+pub async fn get_mutable_manifest(
+    id: String,
+) -> Result<Option<ironpad_common::ShareManifest>, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    get_mutable_manifest_core(&config.data_dir, &id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Check whether a key can edit a mutable share — powers the reader-page
+/// "enter your key" rebind flow.
+#[server]
+pub async fn verify_mutable_key(id: String, key: String) -> Result<bool, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    verify_mutable_key_core(&config.data_dir, &id, &key)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Unpublish a mutable share (authorized delete). Requires a matching key.
+#[server]
+pub async fn delete_mutable_share(id: String, key: String) -> Result<(), ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    delete_mutable_core(&config.data_dir, &id, &key)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Enumerate the mutable shares owned by a user key (the "my published
+/// notebooks" list; also how a fresh machine rediscovers them).
+#[server]
+pub async fn list_mutable_shares(
+    user_key: String,
+) -> Result<Vec<ironpad_common::MutableShareSummary>, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    list_mutable_by_user_core(&config.data_dir, &user_key)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
@@ -1536,6 +2033,295 @@ mod tests {
             let result = get_public_notebook_core(dir.path(), bad).await;
             assert!(result.is_err(), "should reject traversal: {bad}");
             assert!(result.unwrap_err().to_string().contains("invalid filename"));
+        }
+    }
+
+    // ── Mutable shares (PRD-0049) ────────────────────────────────────
+
+    #[test]
+    fn hash_mutable_key_is_domain_separated_and_deterministic() {
+        let a = hash_mutable_key("deadbeef");
+        assert_eq!(a, hash_mutable_key("deadbeef"), "same key → same hash");
+        assert_eq!(a.len(), 64);
+        assert_ne!(hash_mutable_key("deadbeef"), hash_mutable_key("deadbeee"));
+        // Domain separation: NOT a bare blake3 of the key bytes.
+        assert_ne!(a, blake3::hash("deadbeef".as_bytes()).to_hex().to_string());
+        // Constant-time matcher agrees with the hash.
+        assert!(mutable_key_matches("deadbeef", &a));
+        assert!(!mutable_key_matches("wrong", &a));
+        assert!(!mutable_key_matches("deadbeef", "not-a-64-char-hash"));
+    }
+
+    fn zero_cell_notebook_json(title: &str) -> String {
+        let mut nb = IronpadNotebook::new(title);
+        nb.cells = vec![];
+        serde_json::to_string(&nb).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mutable_create_and_get_round_trip() {
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let id = create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            VALID_NOTEBOOK_JSON,
+            "userkey",
+            "nbkey",
+            &[String::new()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(id.len(), 16, "server mints a 16-hex id");
+
+        let nb = get_mutable_notebook_core(data.path(), &id)
+            .await
+            .unwrap()
+            .expect("share exists");
+        assert_eq!(nb.title, "Test Notebook");
+
+        // Unknown id resolves to None, not an error.
+        assert!(get_mutable_notebook_core(data.path(), "0000000000000000")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn mutable_push_accepts_either_key_and_rejects_wrong() {
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let id = create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            VALID_NOTEBOOK_JSON,
+            "userkey",
+            "nbkey",
+            &[String::new()],
+        )
+        .await
+        .unwrap();
+
+        // User key authorizes.
+        push_mutable_core(
+            data.path(),
+            cache.path(),
+            &id,
+            "userkey",
+            &zero_cell_notebook_json("Via user key"),
+            &[],
+        )
+        .await
+        .expect("user key authorizes");
+        assert_eq!(
+            get_mutable_notebook_core(data.path(), &id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Via user key"
+        );
+
+        // Notebook key authorizes.
+        push_mutable_core(
+            data.path(),
+            cache.path(),
+            &id,
+            "nbkey",
+            &zero_cell_notebook_json("Via notebook key"),
+            &[],
+        )
+        .await
+        .expect("notebook key authorizes");
+
+        // Wrong key is rejected and leaves content untouched.
+        let err = push_mutable_core(
+            data.path(),
+            cache.path(),
+            &id,
+            "wrong",
+            &zero_cell_notebook_json("Should not land"),
+            &[],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unauthorized"), "unexpected error: {err}");
+        assert_eq!(
+            get_mutable_notebook_core(data.path(), &id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Via notebook key"
+        );
+
+        // Push to an unknown id fails.
+        assert!(push_mutable_core(
+            data.path(),
+            cache.path(),
+            "0000000000000000",
+            "userkey",
+            &zero_cell_notebook_json("x"),
+            &[],
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn mutable_verify_key_and_delete() {
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let id = create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            VALID_NOTEBOOK_JSON,
+            "userkey",
+            "nbkey",
+            &[String::new()],
+        )
+        .await
+        .unwrap();
+
+        assert!(verify_mutable_key_core(data.path(), &id, "userkey")
+            .await
+            .unwrap());
+        assert!(verify_mutable_key_core(data.path(), &id, "nbkey")
+            .await
+            .unwrap());
+        assert!(!verify_mutable_key_core(data.path(), &id, "wrong")
+            .await
+            .unwrap());
+        // Unknown id → false, not error (powers the rebind gate).
+        assert!(!verify_mutable_key_core(data.path(), "0000000000000000", "userkey")
+            .await
+            .unwrap());
+
+        // Wrong key can't unpublish.
+        assert!(delete_mutable_core(data.path(), &id, "wrong").await.is_err());
+        assert!(get_mutable_notebook_core(data.path(), &id)
+            .await
+            .unwrap()
+            .is_some());
+        // Right key unpublishes.
+        delete_mutable_core(data.path(), &id, "userkey")
+            .await
+            .unwrap();
+        assert!(get_mutable_notebook_core(data.path(), &id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn mutable_list_by_user_matches_only_owner() {
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            VALID_NOTEBOOK_JSON,
+            "alice",
+            "n1",
+            &[String::new()],
+        )
+        .await
+        .unwrap();
+        create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            &zero_cell_notebook_json("Alice Two"),
+            "alice",
+            "n2",
+            &[],
+        )
+        .await
+        .unwrap();
+        create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            VALID_NOTEBOOK_JSON,
+            "bob",
+            "n3",
+            &[String::new()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            list_mutable_by_user_core(data.path(), "alice")
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            list_mutable_by_user_core(data.path(), "bob")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        // Empty key never enumerates.
+        assert!(list_mutable_by_user_core(data.path(), "")
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(list_mutable_by_user_core(data.path(), "carol")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn mutable_manifest_absent_on_cold_cache_and_create_validates() {
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        // Cold cache → no snapshot → live-compile share (manifest None).
+        let id = create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            VALID_NOTEBOOK_JSON,
+            "u",
+            "n",
+            &[String::new()],
+        )
+        .await
+        .unwrap();
+        assert!(get_mutable_manifest_core(data.path(), &id)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Both keys are required.
+        assert!(create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            VALID_NOTEBOOK_JSON,
+            "",
+            "n",
+            &[String::new()],
+        )
+        .await
+        .is_err());
+        assert!(create_mutable_share_core(
+            data.path(),
+            cache.path(),
+            VALID_NOTEBOOK_JSON,
+            "u",
+            "",
+            &[String::new()],
+        )
+        .await
+        .is_err());
+
+        // Traversal ids are rejected by the read path.
+        for bad in ["../etc/passwd", "foo/bar", ".."] {
+            assert!(
+                get_mutable_notebook_core(data.path(), bad).await.is_err(),
+                "should reject traversal: {bad}"
+            );
         }
     }
 }
