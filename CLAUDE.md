@@ -173,7 +173,9 @@ The core of ironpad is a 5-stage WASM compiler:
 **Shared notebooks** use content-addressed storage:
 - Upload notebook JSON → blake3 hash (16 hex chars) → stored at `{data_dir}/shares/{hash}.json`
 - Server functions: `share_notebook(notebook_json, cell_type_tags)`, `get_shared_notebook(hash)`, `get_shared_manifest(hash)`
-- Share URL: `/shared/{hash}`
+- Share URL: `/shared/{hash}`. Immutable: editing then re-sharing mints a NEW hash; old links are frozen forever.
+
+**Mutable shares (PRD-0049)** are the author-updatable storage class. `Share Mutable` *converts* a private notebook into a server-backed one at `/mutable/{id}` (server-minted 16-hex id): anyone with the link reads it; the author overwrites it with an explicit **Push**. No accounts — authorization is two device-minted keys, a per-profile **user key** (footer, covers all your shares) and a per-notebook **notebook key**; the server accepts EITHER, hashed at rest with domain-separated blake3 (`derive_key`, fixed context) and compared in constant time (`subtle`). Record at `{data_dir}/mutable/{id}.json` holds `{notebook, user_key_hash, notebook_key_hash, manifest, pushed_at}`. Blobs reuse the immutable `shares/blobs/` store (served by `/share-blobs/`); the `write_cell_blobs_capped` core is shared with immutable shares, but mutable shares REPLACE their embedded manifest each push (immutable shares MERGE). Server fns: `create_mutable_share`, `push_mutable`, `get_mutable_notebook`, `get_mutable_manifest`, `verify_mutable_key` (rebind gate), `delete_mutable_share` (unpublish), `list_mutable_shares` (enumerate by user key). Client: a `mutable` + `meta` IndexedDB store (storage.js DB_VERSION 3); `getNotebook`/`saveNotebook` route transparently so the editor opens/saves mutable-backed notebooks at `/local/{uuid}` unchanged. The reader page has an "enter your key" rebind control; the editor swaps Share Mutable↔Push and Delete↔Unpublish on binding state. Only the id→content resolve is mutable (no-cache by default policy).
 
 **Blob delivery (PRD-0047)** — two cache layers in front of `compile_cell`:
 - **Share snapshots**: at share time the server recomputes each runnable cell's cache key (from the sharer-supplied positional type tags) and copies CACHE HITS into `{data_dir}/shares/blobs/{content_hash}.wasm/.js` plus a `{share_hash}.manifest.json` sidecar. Viewers of `/shared/*` and `/embed/shared/*` fetch blobs from the immutable `/share-blobs/{hash}.{wasm,js}` route (axum handler in `ironpad-server/src/main.rs`) instead of compiling — shares survive toolchain bumps and cache wipes, and viewers can never trigger builds. Misses are skipped (never compiled at share time); everything degrades to the live pipeline.
@@ -183,7 +185,8 @@ The core of ironpad is a 5-stage WASM compiler:
 - `/` — HomePage (lists private IndexedDB notebooks + public notebooks)
 - `/local/{id}` — NotebookEditorPage (private, IndexedDB-backed; dashed UUID)
 - `/public/{name}` — PublicNotebookPage (read-only, static `.ironpad` file; extension-less URL, `get_public_notebook` appends the extension)
-- `/shared/{hash}` — SharedNotebookPage (read-only, shared via 16-hex content hash)
+- `/shared/{hash}` — SharedNotebookPage (read-only, immutable, shared via 16-hex content hash)
+- `/mutable/{id}` — MutableNotebookPage (read-only reader + rebind control; author-updatable via Push; PRD-0049)
 - Legacy `/notebook/{id}` and `/notebook/public/{filename}` redirect to canonical forever (bookmarks + third-party embed specs never break)
 - `/embed/shared/{hash}` — EmbedSharedPage (chrome-less iframe variant; PRD-0039)
 - `/embed/public/{filename}` — EmbedPublicPage (chrome-less iframe variant; PRD-0039)
@@ -232,7 +235,7 @@ Key modules:
 
 ### Adding a New Server Function
 
-Current server functions: `compile_cell`, `check_cell` (live check-on-type, PRD-0045), `list_public_notebooks`, `get_public_notebook`, `share_notebook`, `get_shared_notebook`, `get_shared_manifest` (blob-snapshot sidecar, PRD-0047), `get_toolchain_fingerprint` (client cache keys, PRD-0047).
+Current server functions: `compile_cell`, `check_cell` (live check-on-type, PRD-0045), `list_public_notebooks`, `get_public_notebook`, `share_notebook`, `get_shared_notebook`, `get_shared_manifest` (blob-snapshot sidecar, PRD-0047), `get_toolchain_fingerprint` (client cache keys, PRD-0047), and the mutable-share set (PRD-0049): `create_mutable_share`, `push_mutable`, `get_mutable_notebook`, `get_mutable_manifest`, `verify_mutable_key`, `delete_mutable_share`, `list_mutable_shares`.
 
 1. Add to `server_fns.rs` with `#[server]` attribute:
    ```rust
@@ -563,5 +566,5 @@ Sharp edges: target features from independent concerns must merge into ONE `-C t
 
 ---
 
-**Last Updated**: 2026-07-23 — Blog-notebook voice pass + cannon rewrite with real Enzyme IR/WAT excerpts, Prism wasm/llvm grammars (v0.12.15); Canonical routes /local, /public, /shared with legacy redirects (PRD-0048); notebook menu + close in view mode; Static blob delivery (PRD-0047): share-time blob snapshots + immutable /share-blobs route + client IndexedDB blob cache, cache-key recipe moved to ironpad-common (v0.12.14); Thaw removed: native UI primitives + owned toaster (v0.12.13); session teardown on page disposal + disposal-read guards (v0.12.12); view mode renders the public notebook renderer + code-wide papercut sweep (v0.12.11); per-cell collapse defaults (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
+**Last Updated**: 2026-07-24 — Mutable shares (PRD-0049): author-updatable /mutable/{id} conversion, two-key (user + notebook) push auth hashed with domain-separated blake3, reader-page rebind, footer user key, home Published group; Blog-notebook voice pass + cannon rewrite with real Enzyme IR/WAT excerpts, Prism wasm/llvm grammars (v0.12.15); Canonical routes /local, /public, /shared with legacy redirects (PRD-0048); notebook menu + close in view mode; Static blob delivery (PRD-0047): share-time blob snapshots + immutable /share-blobs route + client IndexedDB blob cache, cache-key recipe moved to ironpad-common (v0.12.14); Thaw removed: native UI primitives + owned toaster (v0.12.13); session teardown on page disposal + disposal-read guards (v0.12.12); view mode renders the public notebook renderer + code-wide papercut sweep (v0.12.11); per-cell collapse defaults (v0.12.10); live check-on-type + completions (PRD-0045); shared cells; unified toolchains
 **Target Audience**: AI agents, developers contributing to ironpad

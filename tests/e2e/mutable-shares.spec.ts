@@ -28,15 +28,17 @@ async function rename(page: Page, title: string): Promise<void> {
   await input.press("Enter");
   await expect(page.locator(".ironpad-notebook-title--editable")).toHaveText(
     title,
-    { timeout: 10_000 }
+    { timeout: 10_000 },
   );
 }
 
 /** Share Mutable and return the minted share id from the toast. */
 async function shareMutable(page: Page): Promise<string> {
   await menuClick(page, "Share Mutable");
-  const toast = page.locator(".ironpad-toast-body");
-  await expect(toast).toContainText("/mutable/", { timeout: 30_000 });
+  // Scope to the mutable toast: the save_generation bump also raises a
+  // transient "saved" toast, so several toast bodies can be present at once.
+  const toast = page.locator(".ironpad-toast-body", { hasText: "/mutable/" });
+  await expect(toast).toBeVisible({ timeout: 30_000 });
   const text = (await toast.textContent())!;
   const id = text.match(/\/mutable\/([a-f0-9]{16})/);
   expect(id, `toast should carry a /mutable/{id} url: ${text}`).not.toBeNull();
@@ -58,21 +60,23 @@ test.describe("Mutable shares (PRD-0049)", () => {
     // The menu swaps Share Mutable → Push Update once bound.
     await page.locator(MENU).click();
     await expect(
-      page.locator(".ironpad-toolbar-dropdown-item", { hasText: "Push Update" })
+      page.locator(".ironpad-toolbar-dropdown-item", {
+        hasText: "Push Update",
+      }),
     ).toBeVisible();
     await expect(
       page.locator(".ironpad-toolbar-dropdown-item", {
         hasText: "Share Mutable",
-      })
+      }),
     ).toHaveCount(0);
     await page.locator(MENU).click(); // close
 
     // Edit, then Push the update.
     await rename(page, "Mutable One Edited");
     await menuClick(page, "Push Update");
-    await expect(page.locator(".ironpad-toast-body")).toContainText("updated", {
-      timeout: 30_000,
-    });
+    await expect(
+      page.locator(".ironpad-toast-body", { hasText: "updated" }),
+    ).toBeVisible({ timeout: 30_000 });
 
     // A fresh context (no shared IndexedDB) reads the server copy.
     const ctx = await browser.newContext();
@@ -84,7 +88,7 @@ test.describe("Mutable shares (PRD-0049)", () => {
       });
       await expect(reader.locator(".view-only-title")).toHaveText(
         "Mutable One Edited",
-        { timeout: 15_000 }
+        { timeout: 15_000 },
       );
     } finally {
       await ctx.close();
@@ -104,30 +108,29 @@ test.describe("Mutable shares (PRD-0049)", () => {
     // Delete is replaced by Unpublish while mutable-backed.
     await page.locator(MENU).click();
     await expect(
-      page.locator(".ironpad-toolbar-dropdown-item", { hasText: "Unpublish" })
+      page.locator(".ironpad-toolbar-dropdown-item", { hasText: "Unpublish" }),
     ).toBeVisible();
     page.on("dialog", (d) => d.accept());
     await page
       .locator(".ironpad-toolbar-dropdown-item", { hasText: "Unpublish" })
       .click();
-    await expect(page.locator(".ironpad-toast-body")).toContainText(
-      "private list",
-      { timeout: 30_000 }
-    );
+    await expect(
+      page.locator(".ironpad-toast-body", { hasText: "private list" }),
+    ).toBeVisible({ timeout: 30_000 });
 
     // The share is gone server-side.
     await page.goto(`/mutable/${shareId}`);
     await expect(page.locator(".ironpad-error-boundary-message")).toContainText(
       "not found",
-      { timeout: 15_000 }
+      { timeout: 15_000 },
     );
 
     // And it's back as a private notebook on home.
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
-    await expect(
-      page.locator(`a[href="/local/${notebookId}"]`)
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(`a[href="/local/${notebookId}"]`)).toBeVisible({
+      timeout: 10_000,
+    });
   });
 
   test("rebind on a fresh context with the user key; a wrong key is rejected", async ({
@@ -142,9 +145,9 @@ test.describe("Mutable shares (PRD-0049)", () => {
 
     // Read this device's user key from the status bar (either key authorizes).
     await page.locator('.ironpad-status-key-btn[title="Reveal"]').click();
-    const userKey = (
-      await page.locator(".ironpad-status-key-value").textContent()
-    )!.trim();
+    const userKey = (await page
+      .locator(".ironpad-status-key-value")
+      .textContent())!.trim();
     expect(userKey).toMatch(/^[a-f0-9]{64}$/);
 
     const ctx = await browser.newContext();
@@ -162,13 +165,15 @@ test.describe("Mutable shares (PRD-0049)", () => {
       await reader.locator(".mutable-rebind-submit").click();
       await expect(reader.locator(".mutable-rebind-status")).toContainText(
         "does not match",
-        { timeout: 15_000 }
+        { timeout: 15_000 },
       );
 
       // Correct key: pulled into local storage, editor opens.
       await reader.locator(".mutable-rebind-input").fill(userKey);
       await reader.locator(".mutable-rebind-submit").click();
-      await expect(reader).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 15_000 });
+      await expect(reader).toHaveURL(/\/local\/[a-f0-9-]+/, {
+        timeout: 15_000,
+      });
       await expect(reader.locator(".ironpad-editor")).toBeVisible({
         timeout: 15_000,
       });
@@ -176,10 +181,9 @@ test.describe("Mutable shares (PRD-0049)", () => {
       // Push works from the rebound device.
       await reader.waitForTimeout(1_000); // binding load
       await menuClick(reader, "Push Update");
-      await expect(reader.locator(".ironpad-toast-body")).toContainText(
-        "updated",
-        { timeout: 30_000 }
-      );
+      await expect(
+        reader.locator(".ironpad-toast-body", { hasText: "updated" }),
+      ).toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx.close();
     }
