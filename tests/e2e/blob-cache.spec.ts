@@ -64,7 +64,7 @@ test.describe("Blob delivery (PRD-0047)", () => {
     // Share via the hamburger menu; the success toast body carries the URL.
     await page.locator('button[title="Notebook menu"]').click();
     await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share" })
+      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
       .click();
     const toastBody = page.locator(".ironpad-toast-body");
     await expect(toastBody).toContainText("/shared/", { timeout: 30_000 });

@@ -873,7 +873,7 @@ fn NotebookContent() -> impl IntoView {
                                             );
                                         }
                                     >
-                                        "↗ Share"
+                                        "↗ Share Immutable"
                                     </button>
                                     // Share Mutable / Push Update (PRD-0049)
                                     {move || match mutable_binding.get() {

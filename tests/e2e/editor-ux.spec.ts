@@ -113,7 +113,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     // The menu's actions work from view mode: Share surfaces the share URL.
     await page.locator('button[title="Notebook menu"]').click();
     await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share" })
+      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
       .click();
     await expect(page.getByText(/\/shared\//).first()).toBeVisible({
       timeout: 30_000,
@@ -327,7 +327,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     // Open the hamburger menu and click Share.
     await page.locator("button", { hasText: "☰" }).click();
     await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share" })
+      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
       .click();
 
     // A success toast containing the shared URL should appear.
