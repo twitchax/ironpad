@@ -273,11 +273,54 @@ pub fn uses_wasm_simd(source: &str, shared_source: Option<&str>) -> bool {
     hit(source) || shared_source.is_some_and(hit)
 }
 
+/// Returns `true` if the cell (or the notebook's shared source) uses
+/// coroutines, opting the build into the crate-root
+/// `#![feature(coroutines, coroutine_trait, stmt_expr_attributes)]` gate.
+///
+/// `stmt_expr_attributes` rides along because `#[coroutine]` attaches to a
+/// closure *expression*, which is an attribute-on-expression position.
+///
+/// Same substring-detection spirit as [`uses_wasm_simd`]: using the feature IS
+/// the opt-in, and a false positive costs an unused feature gate, which is
+/// inert. Deliberately narrow (no bare `yield`, which appears in ordinary
+/// prose and string literals).
+#[must_use]
+pub fn uses_coroutines(source: &str, shared_source: Option<&str>) -> bool {
+    let hit = |s: &str| {
+        s.contains("#[coroutine]") || s.contains("CoroutineState") || s.contains("ops::Coroutine")
+    };
+    hit(source) || shared_source.is_some_and(hit)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coroutine_detection_covers_source_and_shared_but_not_bare_yield() {
+        assert!(uses_coroutines(
+            "let c = #[coroutine] |_: ()| { yield 1; };",
+            None
+        ));
+        assert!(uses_coroutines(
+            "match c.resume(()) { CoroutineState::Yielded(v) => v }",
+            None
+        ));
+        assert!(uses_coroutines("use std::ops::Coroutine;", None));
+        assert!(uses_coroutines(
+            "shared::drive()",
+            Some("use std::ops::Coroutine;")
+        ));
+        // Bare "yield" is ordinary English and must not opt a cell in.
+        assert!(!uses_coroutines(
+            "the pipeline will yield a better result",
+            None
+        ));
+        assert!(!uses_coroutines("let x = 1;", None));
+        assert!(!uses_coroutines("let x = 1;", Some("pub fn f() {}")));
+    }
 
     #[test]
     fn hash_changes_when_toolchain_fingerprint_changes() {

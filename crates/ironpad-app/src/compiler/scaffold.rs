@@ -14,7 +14,7 @@ use ironpad_common::cache_key::merge_dependencies;
 // cache keys from the same recipe.
 pub use ironpad_common::cache_key::{
     crate_name_from_dep_line, extract_user_dependencies, merged_deps_contain_rayon,
-    uses_std_autodiff, uses_wasm_simd,
+    uses_coroutines, uses_std_autodiff, uses_wasm_simd,
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -102,6 +102,16 @@ pub fn scaffold_micro_crate(
         // harmless when the cell only uses stable `std::arch::wasm32`
         // intrinsics. Same preamble bump rule as the autodiff gate above.
         lib_rs.insert_str(0, "#![feature(portable_simd)]\n");
+        preamble_lines += 1;
+    }
+    if uses_coroutines(source, shared_source) {
+        // Crate-root gate for `#[coroutine]`. `stmt_expr_attributes` is
+        // required because the attribute attaches to a closure *expression*.
+        // Same preamble bump rule as the two gates above.
+        lib_rs.insert_str(
+            0,
+            "#![feature(coroutines, coroutine_trait, stmt_expr_attributes)]\n",
+        );
         preamble_lines += 1;
     }
     std::fs::write(src_dir.join("lib.rs"), lib_rs)?;
@@ -1830,6 +1840,48 @@ impl LiveView for Dashboard {
         let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
         assert!(
             lib_rs.starts_with("#![feature(portable_simd)]\n"),
+            "feature gate must be the first crate-root line"
+        );
+        assert_eq!(
+            preamble,
+            base_preamble + 1,
+            "the injected feature line shifts diagnostics by exactly one"
+        );
+    }
+
+    #[test]
+    fn coroutine_gate_is_injected_and_bumps_the_preamble() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let (_, base_preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "no-coroutine",
+            "    1u32",
+            "[dependencies]",
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "with-coroutine",
+            "    let mut c = #[coroutine] |_: ()| { yield 1u32; 2u32 };\n    0u32",
+            "[dependencies]",
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(
+            lib_rs.starts_with("#![feature(coroutines, coroutine_trait, stmt_expr_attributes)]\n"),
             "feature gate must be the first crate-root line"
         );
         assert_eq!(

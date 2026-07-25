@@ -1,0 +1,123 @@
+{
+ "version": 1,
+ "id": "b7c1e4a2-5f38-4d61-9a07-2e8c3d5f1b64",
+ "title": "Pin, coroutines, and structs that point at themselves",
+ "description": "Self-referential structs break silently on a move. ouroboros fixes it on request, #[coroutine] creates the problem unasked, and Pin is the type system's answer.",
+ "tags": [
+  "pin",
+  "coroutines",
+  "async",
+  "unsafe",
+  "blog"
+ ],
+ "created_at": "2026-07-25T00:00:00Z",
+ "updated_at": "2026-07-25T00:00:00Z",
+ "shared_cargo_toml": "[dependencies]\nouroboros = \"0.18\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+ "shared_source": "//! Notebook shared source: one struct that points at itself by hand, and one\n//! that does the same thing safely.\n\n/// A `String` and a raw pointer aimed at that same `String`. Nothing here is\n/// `unsafe`, and building one is perfectly legal. Moving it is the problem.\npub struct Naive {\n    pub data: String,\n    pub ptr: *const String,\n}\n\nimpl Naive {\n    /// Whether the internal pointer still aims at this struct's own field.\n    /// False means the pointer is dangling and every read through it is\n    /// undefined behavior.\n    pub fn consistent(&self) -> bool {\n        std::ptr::eq(self.ptr, &self.data)\n    }\n}\n\n/// The same shape, delegated to a macro. `ouroboros` puts the owned data\n/// behind a stable allocation and hands out the borrow through a closure, so\n/// moving the outer struct moves a pointer instead of the pointee.\n#[ouroboros::self_referencing(pub_extras)]\npub struct Holder {\n    pub data: String,\n    #[borrows(data)]\n    pub slice: &'this str,\n}\n",
+ "cells": [
+  {
+   "id": "cell_0",
+   "order": 0,
+   "label": "Introduction",
+   "cell_type": "Markdown",
+   "source": "> *AI authored to showcase ironpad capabilities.*\n\n## Introduction\n\n**`Pin` exists because the compiler started generating self-referential structs on your behalf.** Once an `async fn` desugars to a state machine that holds a borrow across an await point, every Rust programmer owns self-referential values whether they asked for them or not, and the language needs a way to say *this one cannot move now*.\n\nThe bug that forces all of it takes four lines and breaks quietly. Start there.\n\nEvery cell below compiles to WebAssembly and runs on this page, including the one that fails on purpose, where the compiler's diagnostic is the output.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_1",
+   "order": 1,
+   "label": "A struct that points at itself",
+   "cell_type": "Code",
+   "source": "use shared::Naive;\n\n// Built and wired in one scope, so at this instant the self-reference is valid.\nlet mut a = Naive { data: \"hello\".to_string(), ptr: std::ptr::null() };\na.ptr = &a.data;\nlet built = format!(\"{:p} -> {:p}   valid: {}\", &a, a.ptr, a.consistent());\n\n// A move. No `unsafe`, no pointer arithmetic, just `let b = a;`.\nlet b = std::hint::black_box(a);\nlet moved = format!(\"{:p} -> {:p}   valid: {}\", &b, b.ptr, b.consistent());\n\n// Undefined behavior, and it will very likely print \"hello\" anyway.\nlet stale = unsafe { (*b.ptr).clone() };\n\nCellOutput::text(format!(\n    \"built: {built}\\nmoved: {moved}\\n\\nreading through the stale pointer: {stale:?}\"\n))",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_2",
+   "order": 2,
+   "label": "Nothing there was unsafe",
+   "cell_type": "Markdown",
+   "source": "## Nothing there was unsafe\n\nThe struct holds a `String` and a raw pointer. Aiming the pointer at the field is legal, and for one statement it is accurate. Then `let b = a;` performs a **memcpy** that the compiler is entitled to perform whenever it likes, and the pointer keeps the address it was given.\n\nReading through the stale pointer is undefined behavior, and it returns `\"hello\"` regardless, because the vacated slot has not been reused yet. **Nothing trapped and nothing warned.** A defect that reproduces on demand is tractable; this one waits for an unrelated change in stack layout, then corrupts unrelated state in a different function.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_3",
+   "order": 3,
+   "label": "The constructor is born broken",
+   "cell_type": "Code",
+   "source": "use shared::Naive;\n\n// The obvious constructor. It compiles, and it is already wrong on return.\nfn make(s: &str) -> Naive {\n    let mut n = Naive { data: s.to_string(), ptr: std::ptr::null() };\n    n.ptr = &n.data; // accurate here...\n    n                // ...and `n` moves out of the frame on this line\n}\n\nlet n = make(\"hello\");\n\nCellOutput::text(format!(\n    \"fresh from the constructor: {:p} -> {:p}   valid: {}\",\n    &n, n.ptr, n.consistent()\n))",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_4",
+   "order": 4,
+   "label": "Discipline does not scale",
+   "cell_type": "Markdown",
+   "source": "## Discipline does not scale\n\nReturning a value is a move, so the constructor invalidates the pointer on the way out. Every obvious remedy fails for the same reason. Heap-allocate and the `Box` still moves. Re-run the fixup after every move and you have to intercept every move, which Rust gives you no hook for. Forbid moves by convention and the convention is enforced by nobody.\n\nThe value has to sit at a **fixed address** for as long as the reference exists, and the type system has to know that.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_5",
+   "order": 5,
+   "label": "ouroboros: let a macro own it",
+   "cell_type": "Code",
+   "source": "use shared::Holder;\n\nlet h = Holder::new(\"hello world\".to_string(), |d: &String| &d[0..5]);\n\n// Move it as often as you like. The owned string does not move with it.\nlet h = std::hint::black_box(h);\nlet h = std::hint::black_box(h);\n\nlet len = h.with_data(|d| d.len());\nlet head = h.with_slice(|s| s.to_string());\n\nCellOutput::text(format!(\n    \"after two moves: data is {len} bytes, the borrow still reads {head:?}\"\n))",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_6",
+   "order": 6,
+   "label": "Where the compiler takes over",
+   "cell_type": "Markdown",
+   "source": "## Where the compiler takes over\n\n[`ouroboros`](https://docs.rs/ouroboros) removes the discipline problem by generating the struct for you: declare which field borrows which, and the macro emits a builder plus closure-scoped accessors. Around **74 million downloads** suggest the pattern is common enough to warrant a crate.\n\nEvery self-reference to this point was deliberate. You wrote the raw pointer, or you reached for the macro. `#[coroutine]` is where the compiler produces one without being asked.\n\nA coroutine that borrows a local and then suspends has to keep both across the suspension point: the owned value, and a reference into it. That is the struct from the first cell, generated on your behalf, and the borrow checker permits it because the compiler controls the layout.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_7",
+   "order": 7,
+   "label": "The compiler builds one for you",
+   "cell_type": "Code",
+   "source": "use std::ops::{Coroutine, CoroutineState};\nuse std::pin::pin;\n\n// `owned` and `first` both live across the yield, and `first` borrows `owned`.\n// The suspended state is therefore self-referential.\nlet mut co = #[coroutine]\n|_: ()| {\n    let owned = String::from(\"hello world\");\n    let first = &owned[0..5];\n    yield first.len();\n    owned.len()\n};\n\nlet mut co = pin!(co);\nlet mut log = Vec::new();\nloop {\n    match co.as_mut().resume(()) {\n        CoroutineState::Yielded(v) => log.push(format!(\"yielded {v}\")),\n        CoroutineState::Complete(v) => {\n            log.push(format!(\"completed {v}\"));\n            break;\n        }\n    }\n}\n\nCellOutput::text(log.join(\"\\n\"))",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_8",
+   "order": 8,
+   "label": "The signature does the enforcing",
+   "cell_type": "Markdown",
+   "source": "## The signature does the enforcing\n\n`Coroutine::resume` takes `Pin<&mut Self>`, not `&mut self`. That single choice is the whole mechanism. Advancing a coroutine requires proving it is pinned first, and pinning is the promise that the value will not move again for the rest of its life.\n\n`pin!` makes that promise on the stack by shadowing the original binding, so the coroutine is no longer reachable by a name you could move out of.\n\nCalling `resume` without pinning fails to compile, and the diagnostic is the output.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_9",
+   "order": 9,
+   "label": "Without Pin, it does not compile",
+   "cell_type": "Code",
+   "source": "// ironpad-test: compile-fail (this cell is a deliberate teaching failure)\nuse std::ops::Coroutine;\n\nlet mut co = #[coroutine]\n|_: ()| {\n    let owned = String::from(\"hello world\");\n    let first = &owned[0..5];\n    yield first.len();\n    owned.len()\n};\n\n// `resume` wants `Pin<&mut Self>`. A plain `&mut` will not do.\nlet state = co.resume(());\n\nCellOutput::text(format!(\"{state:?}\"))",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_10",
+   "order": 10,
+   "label": "async fn was a coroutine the whole time",
+   "cell_type": "Markdown",
+   "source": "## `async fn` was a coroutine the whole time\n\nAn `async fn` compiles to the same kind of state machine. Locals that survive an `.await` become fields, and a borrow held across one becomes a field pointing at a sibling field. `Future::poll` therefore takes `Pin<&mut Self>` for exactly the reason `resume` does.\n\nThat is also why a future you want to store in a `Vec`, or return as `Box<dyn Future>`, wants `Box::pin`: the heap gives it the fixed address the borrow depends on.\n\nThe next cell drives a future by hand, with no executor, to make the pinning requirement visible.",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_11",
+   "order": 11,
+   "label": "Polling a future by hand",
+   "cell_type": "Code",
+   "source": "use std::future::Future;\nuse std::pin::pin;\nuse std::task::{Context, Poll, Waker};\n\nlet fut = async {\n    let owned = String::from(\"hello world\");\n    let first = &owned[0..5]; // borrow...\n    std::future::ready(()).await; // ...held across a suspension point\n    first.len()\n};\n\nlet mut fut = pin!(fut);\nlet waker = Waker::noop();\nlet mut cx = Context::from_waker(waker);\n\nlet first_poll = match fut.as_mut().poll(&mut cx) {\n    Poll::Ready(v) => format!(\"Ready({v})\"),\n    Poll::Pending => \"Pending\".to_string(),\n};\n\nCellOutput::text(format!(\n    \"poll returned {first_poll}\\nFuture::poll signature: fn poll(self: Pin<&mut Self>, ..)\"\n))",
+   "cargo_toml": null
+  },
+  {
+   "id": "cell_12",
+   "order": 12,
+   "label": "Unpin, and why you never think about this",
+   "cell_type": "Markdown",
+   "source": "## Unpin, and why you never think about this\n\nMost types can be moved freely even after pinning, because they contain no interior references. Those get `Unpin` automatically, and `Pin<&mut T>` where `T: Unpin` hands back an ordinary `&mut T` at no cost. `Pin` is therefore inert for `Vec`, `String`, `i32`, and very nearly everything written by hand.\n\nThe types that are not `Unpin` are almost exclusively compiler-generated: coroutines, and the futures built on top of them. `Pin` is a narrow instrument aimed at a narrow problem, and the problem only became ubiquitous when `async` made generated state machines routine.\n\nThree ways to build the same broken struct, then: by hand with a raw pointer, deliberately with a macro, and accidentally by writing `.await`. Only the third is common, which is why the fix had to live in the type system rather than in a lint.",
+   "cargo_toml": null
+  }
+ ]
+}
