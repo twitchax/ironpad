@@ -20,7 +20,7 @@
    "order": 0,
    "label": "Introduction",
    "cell_type": "Markdown",
-   "source": "> *AI authored to showcase ironpad capabilities.*\n\n## Introduction\n\n**`Pin` exists because the compiler started generating self-referential structs on your behalf.** Once an `async fn` desugars to a state machine that holds a borrow across an await point, every Rust programmer owns self-referential values whether they asked for them or not, and the language needs a way to say *this one cannot move now*.\n\nThe bug that forces all of it takes four lines and breaks quietly. Start there.\n\nEvery cell below compiles to WebAssembly and runs on this page, including the one that fails on purpose, where the compiler's diagnostic is the output.",
+   "source": "> *AI authored to showcase ironpad capabilities.*\n\n## Introduction\n\n**`Pin` exists because the compiler started generating self-referential structs on your behalf.** Once an `async fn` desugars to a state machine that holds a borrow across an await point, every Rust programmer owns self-referential values, most of them unwittingly, and the language needs a way to say *this one cannot move now*.\n\nThe bug that forces all of it takes four lines and fails silently. Start there.\n\nEvery cell below compiles to WebAssembly and runs on this page, including the one that fails on purpose, where the compiler's diagnostic is the output.",
    "cargo_toml": null
   },
   {
@@ -36,7 +36,7 @@
    "order": 2,
    "label": "Nothing there was unsafe",
    "cell_type": "Markdown",
-   "source": "## Nothing there was unsafe\n\nThe struct holds a `String` and a raw pointer. Aiming the pointer at the field is legal, and for one statement it is accurate. Then `let b = a;` performs a **memcpy** that the compiler is entitled to perform whenever it likes, and the pointer keeps the address it was given.\n\nReading through the stale pointer is undefined behavior, and it returns `\"hello\"` regardless, because the vacated slot has not been reused yet. **Nothing trapped and nothing warned.** A defect that reproduces on demand is tractable; this one waits for an unrelated change in stack layout, then corrupts unrelated state in a different function.",
+   "source": "## Nothing there was unsafe\n\nThe struct holds a `String` and a raw pointer. Aiming the pointer at the field is legal, and for exactly one statement it remains accurate. Then `let b = a;` performs a **memcpy** the compiler may execute at its discretion, and the pointer keeps the address it was given.\n\nReading through the stale pointer is undefined behavior, and it returns `\"hello\"` regardless, because the vacated slot has not been reused yet. **Nothing trapped and nothing warned.** A defect that reproduces on demand is tractable; this one waits for an incidental change in stack layout, then corrupts unrelated state in a distant function.",
    "cargo_toml": null
   },
   {
@@ -52,7 +52,7 @@
    "order": 4,
    "label": "Discipline does not scale",
    "cell_type": "Markdown",
-   "source": "## Discipline does not scale\n\nReturning a value is a move, so the constructor invalidates the pointer on the way out. Every obvious remedy fails for the same reason. Heap-allocate and the `Box` still moves. Re-run the fixup after every move and you have to intercept every move, which Rust gives you no hook for. Forbid moves by convention and the convention is enforced by nobody.\n\nThe value has to sit at a **fixed address** for as long as the reference exists, and the type system has to know that.",
+   "source": "## Discipline does not scale\n\nReturning a value is a move, so the constructor invalidates the pointer on the way out. Every obvious remedy fails for the same reason. Heap-allocate and the `Box` still moves. Re-establish the pointer after every move and you must intercept every move, for which Rust exposes no hook. Forbid moves by convention and the convention is enforced by nobody.\n\nThe value must reside at a **fixed address** for as long as the reference exists, and the type system has to know that.",
    "cargo_toml": null
   },
   {
@@ -68,7 +68,7 @@
    "order": 6,
    "label": "Where the compiler takes over",
    "cell_type": "Markdown",
-   "source": "## Where the compiler takes over\n\n[`ouroboros`](https://docs.rs/ouroboros) removes the discipline problem by generating the struct for you: declare which field borrows which, and the macro emits a builder plus closure-scoped accessors. Around **74 million downloads** suggest the pattern is common enough to warrant a crate.\n\nEvery self-reference to this point was deliberate. You wrote the raw pointer, or you reached for the macro. `#[coroutine]` is where the compiler produces one without being asked.\n\nA coroutine that borrows a local and then suspends has to keep both across the suspension point: the owned value, and a reference into it. That is the struct from the first cell, generated on your behalf, and the borrow checker permits it because the compiler controls the layout.",
+   "source": "## Where the compiler takes over\n\n[`ouroboros`](https://docs.rs/ouroboros) eliminates the discipline problem by generating the struct for you: declare which field borrows which, and the macro emits a builder plus closure-scoped accessors. Around **74 million downloads** suggest the pattern is common enough to warrant a crate.\n\nEvery self-reference to this point was deliberate. You wrote the raw pointer, or you reached for the macro. `#[coroutine]` is where the compiler manufactures one unprompted.\n\nA coroutine that borrows a local and then suspends must retain both across the suspension point: the owned value, and a reference into it. That is the struct from the first cell, generated on your behalf, and the borrow checker permits it because the compiler controls the layout.",
    "cargo_toml": null
   },
   {
@@ -84,7 +84,7 @@
    "order": 8,
    "label": "The signature does the enforcing",
    "cell_type": "Markdown",
-   "source": "## The signature does the enforcing\n\n`Coroutine::resume` takes `Pin<&mut Self>`, not `&mut self`. That single choice is the whole mechanism. Advancing a coroutine requires proving it is pinned first, and pinning is the promise that the value will not move again for the rest of its life.\n\n`pin!` makes that promise on the stack by shadowing the original binding, so the coroutine is no longer reachable by a name you could move out of.\n\nCalling `resume` without pinning fails to compile, and the diagnostic is the output.",
+   "source": "## The signature does the enforcing\n\n`Coroutine::resume` takes `Pin<&mut Self>`, not `&mut self`. That single choice is the whole mechanism. Advancing a coroutine requires proving it is pinned first, and pinning is the promise that the value will not move again for the remainder of its lifetime.\n\n`pin!` makes that promise on the stack by shadowing the original binding, so the coroutine is no longer reachable by a name you could move out of.\n\nCalling `resume` without pinning fails to compile, and the diagnostic is the output.",
    "cargo_toml": null
   },
   {
@@ -100,7 +100,7 @@
    "order": 10,
    "label": "async fn was a coroutine the whole time",
    "cell_type": "Markdown",
-   "source": "## `async fn` was a coroutine the whole time\n\nAn `async fn` compiles to the same kind of state machine. Locals that survive an `.await` become fields, and a borrow held across one becomes a field pointing at a sibling field. `Future::poll` therefore takes `Pin<&mut Self>` for exactly the reason `resume` does.\n\nThat is also why a future you want to store in a `Vec`, or return as `Box<dyn Future>`, wants `Box::pin`: the heap gives it the fixed address the borrow depends on.\n\nThe next cell drives a future by hand, with no executor, to make the pinning requirement visible.",
+   "source": "## `async fn` was a coroutine the whole time\n\nAn `async fn` compiles to the same kind of state machine. Locals that survive an `.await` become fields, and a borrow held across one becomes a field pointing at a sibling field. `Future::poll` therefore takes `Pin<&mut Self>` for exactly the reason `resume` does.\n\nThat is also why a future you want to store in a `Vec`, or return as `Box<dyn Future>`, requires `Box::pin`: the heap furnishes the stable address the borrow depends on.\n\nThe next cell drives a future by hand, with no executor, to make the pinning requirement visible.",
    "cargo_toml": null
   },
   {
