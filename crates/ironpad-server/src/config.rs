@@ -38,6 +38,15 @@ pub struct CliArgs {
     #[arg(long, env = "IRONPAD_COMPILATION_PROXY")]
     pub compilation_proxy: Option<String>,
 
+    /// Origin this instance is reachable at from the public internet, e.g.
+    /// `https://ironpad.twitchax.com`. Defaults to `http://localhost:{port}`.
+    ///
+    /// Only social-preview metadata and the sitemap consume it, both of which
+    /// must emit absolute URLs because crawlers resolve them with no document
+    /// base to fall back on.
+    #[arg(long, env = "IRONPAD_PUBLIC_URL")]
+    pub public_url: Option<String>,
+
     /// Global cap on concurrent WebSocket guest (agent) connections.
     #[arg(long, default_value_t = 512, env = "IRONPAD_MAX_GUESTS")]
     pub max_guests: usize,
@@ -49,12 +58,19 @@ pub struct CliArgs {
 
 impl From<CliArgs> for AppConfig {
     fn from(args: CliArgs) -> Self {
+        // Derived from the resolved port rather than a literal clap default, so
+        // `--port 8080` alone still yields a self-consistent origin.
+        let public_url = args
+            .public_url
+            .unwrap_or_else(|| format!("http://localhost:{}", args.port));
+
         Self {
             data_dir: args.data_dir,
             cache_dir: args.cache_dir,
             port: args.port,
             ironpad_cell_path: args.ironpad_cell_path,
             compilation_proxy: args.compilation_proxy,
+            public_url,
         }
     }
 }
@@ -75,8 +91,26 @@ mod tests {
             PathBuf::from("./crates/ironpad-cell")
         );
         assert_eq!(args.compilation_proxy, None);
+        assert_eq!(args.public_url, None);
         assert_eq!(args.max_guests, 512);
         assert_eq!(args.guest_idle_timeout_secs, 1800);
+    }
+
+    #[test]
+    fn public_url_defaults_to_the_resolved_port_not_a_literal() {
+        let config: AppConfig = CliArgs::parse_from(["ironpad", "--port", "8080"]).into();
+        assert_eq!(config.public_url, "http://localhost:8080");
+    }
+
+    #[test]
+    fn public_url_overrides_the_derived_default() {
+        let config: AppConfig =
+            CliArgs::parse_from(["ironpad", "--public-url", "https://ironpad.twitchax.com"]).into();
+        assert_eq!(config.public_url, "https://ironpad.twitchax.com");
+        assert_eq!(
+            config.absolute_url("/og/public/cannon.png"),
+            "https://ironpad.twitchax.com/og/public/cannon.png"
+        );
     }
 
     #[test]

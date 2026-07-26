@@ -4,6 +4,7 @@ use leptos_router::hooks::use_params_map;
 use ironpad_common::{IronpadNotebook, ShareManifest};
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::social_meta::SocialMeta;
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::server_fns::{get_mutable_manifest, get_mutable_notebook};
 
@@ -60,6 +61,21 @@ pub fn MutableNotebookPage() -> impl IntoView {
                 Suspend::new(async move {
                     match notebook_resource.await {
                         Ok((Some(notebook), manifest)) => view! {
+                            // `noindex`: like immutable shares, a mutable
+                            // link is unlisted, so it unfurls without being
+                            // indexed.
+                            <SocialMeta
+                                title=notebook.title.clone()
+                                description=notebook.description.clone()
+                                path=format!("/mutable/{id}")
+                                image=notebook
+                                    .og_image_path()
+                                    .map_or_else(
+                                        || format!("/og/mutable/{id}.png"),
+                                        str::to_string,
+                                    )
+                                noindex=true
+                            />
                             <MutableReader id notebook manifest />
                         }.into_any(),
                         Ok((None, _)) => view! {

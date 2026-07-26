@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::social_meta::SocialMeta;
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::server_fns::get_public_notebook;
 
@@ -26,6 +27,13 @@ pub fn PublicNotebookPage() -> impl IntoView {
         .get("filename")
         .map(|f| format!("public/{f}"));
 
+    // Canonical form for `og:url` and the card path: extension-less
+    // (PRD-0048), even when the route was reached via a legacy `.ironpad` link.
+    let meta_name = filename
+        .strip_suffix(".ironpad")
+        .unwrap_or(&filename)
+        .to_string();
+
     let notebook_resource = Resource::new(move || filename.clone(), get_public_notebook);
 
     // Update footer cell count when the resource resolves (Effect runs on the
@@ -46,9 +54,21 @@ pub fn PublicNotebookPage() -> impl IntoView {
         }>
             {move || {
                 let embed_spec = embed_spec.clone();
+                let meta_name = meta_name.clone();
                 Suspend::new(async move {
                     match notebook_resource.await {
                         Ok(notebook) => view! {
+                            <SocialMeta
+                                title=notebook.title.clone()
+                                description=notebook.description.clone()
+                                path=format!("/public/{}", meta_name)
+                                image=notebook
+                                    .og_image_path()
+                                    .map_or_else(
+                                        || format!("/og/public/{meta_name}.png"),
+                                        str::to_string,
+                                    )
+                            />
                             <ViewOnlyNotebook
                                 notebook
                                 fork_label="Fork to Private".to_string()

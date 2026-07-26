@@ -48,7 +48,7 @@ use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
 use leptos_router::{
     components::{Redirect, Route, Router, Routes},
     hooks::use_params_map,
-    ParamSegment, StaticSegment,
+    ParamSegment, SsrMode, StaticSegment,
 };
 use pages::{
     EmbedPublicPage, EmbedSharedPage, HomePage, MutableNotebookPage, NotebookEditorPage,
@@ -143,11 +143,26 @@ pub fn App() -> impl IntoView {
                     // storage class — /local (private, IndexedDB), /public
                     // (bundled showcase, extension-less), /shared
                     // (content-addressed shares).
+                    //
+                    // The three server-backed notebook routes render with
+                    // `SsrMode::Async` (PRD-0050). Their `<title>` and `og:`
+                    // tags come from a Resource, and under the default
+                    // out-of-order streaming the `<head>` is flushed before
+                    // that Resource resolves — leptos_meta then patches the
+                    // tags in with a script, which every link unfurler misses
+                    // because none of them run JavaScript. Awaiting the
+                    // notebook before the first byte is what puts the metadata
+                    // in the document a crawler actually reads. All three load
+                    // from local disk, so the added latency is a file read.
+                    //
+                    // /local is deliberately left streaming: it loads from
+                    // IndexedDB in the browser, so there is nothing for the
+                    // server to await and nothing for a crawler to see.
                     <Route path=(StaticSegment("local"), ParamSegment("id")) view=NotebookEditorPage/>
-                    <Route path=(StaticSegment("public"), ParamSegment("filename")) view=PublicNotebookPage/>
-                    <Route path=(StaticSegment("shared"), ParamSegment("hash")) view=SharedNotebookPage/>
+                    <Route path=(StaticSegment("public"), ParamSegment("filename")) view=PublicNotebookPage ssr=SsrMode::Async/>
+                    <Route path=(StaticSegment("shared"), ParamSegment("hash")) view=SharedNotebookPage ssr=SsrMode::Async/>
                     // Mutable shares (PRD-0049): server-backed, author-updatable.
-                    <Route path=(StaticSegment("mutable"), ParamSegment("id")) view=MutableNotebookPage/>
+                    <Route path=(StaticSegment("mutable"), ParamSegment("id")) view=MutableNotebookPage ssr=SsrMode::Async/>
                     <Route path=(StaticSegment("embed"), StaticSegment("shared"), ParamSegment("hash")) view=EmbedSharedPage/>
                     <Route path=(StaticSegment("embed"), StaticSegment("public"), ParamSegment("filename")) view=EmbedPublicPage/>
                     // Legacy routes redirect to canonical forever: bookmarks

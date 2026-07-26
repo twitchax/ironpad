@@ -431,7 +431,7 @@ async fn check_cell_core(
 // ── Public notebooks ─────────────────────────────────────────────────────────
 
 #[cfg(feature = "ssr")]
-pub(crate) async fn list_public_notebooks_core(
+pub async fn list_public_notebooks_core(
     site_root: &std::path::Path,
 ) -> anyhow::Result<Vec<PublicNotebookSummary>> {
     let notebooks_dir = site_root.join("notebooks");
@@ -491,7 +491,7 @@ fn validate_safe_path_segment(s: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "ssr")]
-pub(crate) async fn get_public_notebook_core(
+pub async fn get_public_notebook_core(
     site_root: &std::path::Path,
     filename: &str,
 ) -> anyhow::Result<IronpadNotebook> {
@@ -956,7 +956,7 @@ pub async fn get_shared_manifest(
 }
 
 #[cfg(feature = "ssr")]
-pub(crate) async fn get_shared_notebook_core(
+pub async fn get_shared_notebook_core(
     data_dir: &std::path::Path,
     hash: &str,
 ) -> anyhow::Result<IronpadNotebook> {
@@ -1234,7 +1234,7 @@ async fn read_mutable_record(
 }
 
 #[cfg(feature = "ssr")]
-pub(crate) async fn get_mutable_notebook_core(
+pub async fn get_mutable_notebook_core(
     data_dir: &std::path::Path,
     id: &str,
 ) -> anyhow::Result<Option<IronpadNotebook>> {
@@ -1525,6 +1525,7 @@ mod tests {
             // bogus — reaching scaffold would fail before writing anything.
             ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
             compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
         };
         let request = CompileRequest {
             notebook_id: "nb".to_string(),

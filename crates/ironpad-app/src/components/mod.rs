@@ -9,5 +9,6 @@ pub mod markdown_cell;
 pub mod monaco_editor;
 pub(crate) mod output_render;
 pub mod session_panel;
+pub mod social_meta;
 pub mod toaster;
 pub mod view_only_notebook;

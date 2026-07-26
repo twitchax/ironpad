@@ -37,6 +37,7 @@ fn state_with_ws(ws: WsState) -> AppState {
             port: 0,
             ironpad_cell_path: PathBuf::from("/tmp"),
             compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
         },
         ws,
     }

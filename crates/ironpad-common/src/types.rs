@@ -245,6 +245,16 @@ pub struct IronpadNotebook {
     /// When `true`, editing a cell auto-re-executes downstream cells after a debounce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactive_mode: Option<bool>,
+    /// Root-relative path to a hand-made social-preview image, overriding the
+    /// card the server generates from this notebook's metadata.
+    ///
+    /// The generated card is text: title, description, and a code excerpt. A
+    /// notebook whose whole point is a picture (a fractal, a raymarched scene)
+    /// is better represented by a real screenshot, and this is how it says so.
+    /// Root-relative only, so a notebook can never point a crawler at an
+    /// arbitrary third-party origin under ironpad's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub og_image: Option<String>,
     // NOTE: a notebook-level `expand_code: Option<bool>` used to live here.
     // Collapse state is per-cell now (`IronpadCell::collapsed`), WYSIWYG from
     // the editor; old JSON carrying the field still parses (serde ignores
@@ -278,8 +288,24 @@ impl IronpadNotebook {
             shared_cargo_toml: Some(DEFAULT_SHARED_CARGO_TOML.to_string()),
             shared_source: None,
             reactive_mode: None,
+            og_image: None,
             cells: Vec::new(),
         }
+    }
+
+    /// The social-preview image this notebook declares, if it declares a
+    /// usable one.
+    ///
+    /// Enforces the root-relative rule at the single point of use rather than
+    /// trusting the field: notebooks arrive from shares and from `IndexedDB`,
+    /// so the value is attacker-controlled, and an `og:image` pointing at
+    /// another origin would let a shared notebook borrow ironpad's name for
+    /// whatever it liked in someone else's feed. A protocol-relative `//host`
+    /// is rejected for the same reason, since crawlers resolve it as absolute.
+    #[must_use]
+    pub fn og_image_path(&self) -> Option<&str> {
+        let raw = self.og_image.as_deref()?.trim();
+        (raw.starts_with('/') && !raw.starts_with("//")).then_some(raw)
     }
 
     /// The shared source the compiler should see: the notebook-level
@@ -498,6 +524,49 @@ mod tests {
             None,
             "[profile.release]\nopt-level = 1",
         ));
+    }
+
+    #[test]
+    fn og_image_path_admits_only_root_relative_paths() {
+        let with = |v: Option<&str>| {
+            let mut nb = IronpadNotebook::new("t");
+            nb.og_image = v.map(str::to_string);
+            nb
+        };
+
+        assert_eq!(
+            with(Some("/og-custom/mandelbrot.png")).og_image_path(),
+            Some("/og-custom/mandelbrot.png")
+        );
+        assert_eq!(with(None).og_image_path(), None);
+
+        // A shared notebook is attacker-controlled content: none of these may
+        // become the `og:image` a crawler attributes to ironpad.
+        for hostile in [
+            "https://evil.example/x.png",
+            "//evil.example/x.png",
+            "og-custom/relative.png",
+            "javascript:alert(1)",
+            "",
+        ] {
+            assert_eq!(
+                with(Some(hostile)).og_image_path(),
+                None,
+                "should have rejected {hostile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn notebook_without_og_image_field_round_trips() {
+        let json = r#"{"version":1,"id":"00000000-0000-0000-0000-000000000000",
+            "title":"t","created_at":"2026-01-01T00:00:00Z",
+            "updated_at":"2026-01-01T00:00:00Z","cells":[]}"#;
+        let nb: IronpadNotebook = serde_json::from_str(json).unwrap();
+        assert_eq!(nb.og_image, None);
+        // Absent stays absent on the way out, so adding this field does not
+        // rewrite every stored notebook the first time it is re-saved.
+        assert!(!serde_json::to_string(&nb).unwrap().contains("og_image"));
     }
 
     #[test]

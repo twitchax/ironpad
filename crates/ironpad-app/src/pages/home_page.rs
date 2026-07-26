@@ -7,6 +7,7 @@ use leptos_router::hooks::use_navigate;
 use leptos_router::NavigateOptions;
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::social_meta::SocialMeta;
 use crate::server_fns::list_public_notebooks;
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -203,6 +204,18 @@ pub fn HomePage() -> impl IntoView {
     };
 
     view! {
+        // Static, so it needs no resource and lands in the first flush of the
+        // head without the async SSR mode the notebook routes require.
+        <SocialMeta
+            title="ironpad"
+            description=Some(
+                "Write Rust in a notebook. Cells compile to WebAssembly and run in your browser."
+                    .to_string(),
+            )
+            path="/"
+            image="/og/ironpad.png"
+            kind="website"
+        />
         <div class="ironpad-home">
             <div class="ironpad-home-header">
                 <div class="ironpad-home-header-text">

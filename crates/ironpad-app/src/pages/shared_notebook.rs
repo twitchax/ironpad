@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::social_meta::SocialMeta;
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::server_fns::{get_shared_manifest, get_shared_notebook};
 
@@ -15,6 +16,7 @@ pub fn SharedNotebookPage() -> impl IntoView {
     let hash = params.read_untracked().get("hash").unwrap_or_default();
     // Spec handed to ViewOnlyNotebook so its Embed button can build snippets.
     let embed_spec = (!hash.is_empty()).then(|| format!("shared/{hash}"));
+    let meta_hash = hash.clone();
 
     // Reset layout context for shared notebook.
     let ctx = expect_context::<LayoutContext>();
@@ -50,10 +52,26 @@ pub fn SharedNotebookPage() -> impl IntoView {
         }>
             {move || {
                 let embed_spec = embed_spec.clone();
+                let meta_hash = meta_hash.clone();
                 Suspend::new(async move {
                 match notebook_resource.await {
                     Ok((notebook, share_manifest)) => {
                         view! {
+                            // `noindex`: a share link is unlisted by
+                            // construction, so it gets a preview card without
+                            // landing in a search index.
+                            <SocialMeta
+                                title=notebook.title.clone()
+                                description=notebook.description.clone()
+                                path=format!("/shared/{meta_hash}")
+                                image=notebook
+                                    .og_image_path()
+                                    .map_or_else(
+                                        || format!("/og/shared/{meta_hash}.png"),
+                                        str::to_string,
+                                    )
+                                noindex=true
+                            />
                             <ViewOnlyNotebook
                                 notebook
                                 fork_label="Fork to Private".to_string()

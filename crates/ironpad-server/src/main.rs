@@ -24,7 +24,7 @@ use tracing_subscriber::Layer as _;
 use ironpad_app::*;
 use ironpad_common::AppConfig;
 use ironpad_server::state::{AppState, WsState};
-use ironpad_server::ws;
+use ironpad_server::{crawl, og, ws};
 
 use crate::config::CliArgs;
 
@@ -132,6 +132,12 @@ async fn main() {
         .route("/ws/host", get(ws::ws_host_handler))
         .route("/ws/connect", get(ws::ws_connect_handler))
         .route("/share-blobs/{file}", get(share_blob_handler))
+        // Social-preview cards and crawler files (PRD-0050). These sit outside
+        // the Leptos routes because a crawler wants bytes, not an SSR page.
+        .route("/og/ironpad.png", get(og::site_card_handler))
+        .route("/og/{class}/{file}", get(og::notebook_card_handler))
+        .route("/robots.txt", get(crawl::robots_handler))
+        .route("/sitemap.xml", get(crawl::sitemap_handler))
         .leptos_routes_with_context(
             &app_state,
             routes,
