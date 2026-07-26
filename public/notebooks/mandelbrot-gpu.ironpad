@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# GPU Mandelbrot Set 🖥️\n\nThis notebook renders the Mandelbrot set using **WebGPU compute shaders**, with an automatic CPU fallback for browsers without WebGPU support.\n\nThe GPU version runs a WGSL compute shader that evaluates each pixel in parallel on the GPU, delivering massive speedups over CPU rendering.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# GPU Mandelbrot Set 🖥️\n\nThis notebook renders the Mandelbrot set using **WebGPU compute shaders**, with an automatic CPU fallback for browsers without WebGPU support.\n\nThe GPU version runs a WGSL compute shader that evaluates each pixel in parallel on the GPU, delivering massive speedups over CPU rendering.",
       "cargo_toml": null
     },
     {

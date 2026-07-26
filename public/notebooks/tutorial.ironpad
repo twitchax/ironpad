@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Welcome",
       "cell_type": "Markdown",
-      "source": "# Welcome to ironpad! \ud83e\udd80\n\n**ironpad** is an interactive Rust notebook that compiles each cell to WebAssembly and runs it in your browser.\n\n## Getting Started\n- Each **code cell** contains Rust code that gets compiled and executed\n- The last expression in a cell becomes its output\n- Outputs are automatically passed to later cells as typed variables",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Welcome to ironpad! \ud83e\udd80\n\n**ironpad** is an interactive Rust notebook that compiles each cell to WebAssembly and runs it in your browser.\n\n## Getting Started\n- Each **code cell** contains Rust code that gets compiled and executed\n- The last expression in a cell becomes its output\n- Outputs are automatically passed to later cells as typed variables",
       "cargo_toml": null
     },
     {

@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Sierpinski Triangle \u25b2\n\nThe **Sierpinski triangle** is a fractal that emerges from a surprisingly simple random process called the **chaos game**.\n\n## The Chaos Game\n\n1. Pick three vertices of an equilateral triangle\n2. Start at any point in the plane\n3. Repeat:\n   - Randomly choose one of the three vertices\n   - Move **halfway** toward that vertex\n   - Plot your new position\n\nDespite the randomness, the plotted points converge to a self-similar fractal \u2014 the Sierpinski triangle \u2014 with Hausdorff dimension $\\log 3 / \\log 2 \\approx 1.585$.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Sierpinski Triangle \u25b2\n\nThe **Sierpinski triangle** is a fractal that emerges from a surprisingly simple random process called the **chaos game**.\n\n## The Chaos Game\n\n1. Pick three vertices of an equilateral triangle\n2. Start at any point in the plane\n3. Repeat:\n   - Randomly choose one of the three vertices\n   - Move **halfway** toward that vertex\n   - Plot your new position\n\nDespite the randomness, the plotted points converge to a self-similar fractal \u2014 the Sierpinski triangle \u2014 with Hausdorff dimension $\\log 3 / \\log 2 \\approx 1.585$.",
       "cargo_toml": null
     },
     {

@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Intro",
       "cell_type": "Markdown",
-      "source": "# Fetching Data from the Web\n\nThis notebook demonstrates making HTTP requests from ironpad cells using async Rust.\nCells that use `.await` are automatically compiled as async functions.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Fetching Data from the Web\n\nThis notebook demonstrates making HTTP requests from ironpad cells using async Rust.\nCells that use `.await` are automatically compiled as async functions.",
       "cargo_toml": null
     },
     {

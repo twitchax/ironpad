@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Interactive Button \u25b6\ufe0f\n\nThe **button** widget lets you trigger downstream cell execution on demand. Pair it with other widgets like sliders to build interactive compute-on-click workflows.\n\nTry changing the slider value, then click the button to recalculate.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Interactive Button \u25b6\ufe0f\n\nThe **button** widget lets you trigger downstream cell execution on demand. Pair it with other widgets like sliders to build interactive compute-on-click workflows.\n\nTry changing the slider value, then click the button to recalculate.",
       "cargo_toml": null
     },
     {

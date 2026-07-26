@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Charts with `Plot` \ud83d\udcca\n\nironpad includes a built-in `Plot` helper that makes it easy to create charts. Under the hood it uses the **plotters** crate, but you don't need to set up backends or boilerplate \u2014 just call `Plot::line`, `Plot::bar`, or `Plot::scatter`.\n\nAll charts render as SVG with a dark theme that matches ironpad's UI.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Charts with `Plot` \ud83d\udcca\n\nironpad includes a built-in `Plot` helper that makes it easy to create charts. Under the hood it uses the **plotters** crate, but you don't need to set up backends or boilerplate \u2014 just call `Plot::line`, `Plot::bar`, or `Plot::scatter`.\n\nAll charts render as SVG with a dark theme that matches ironpad's UI.",
       "cargo_toml": null
     },
     {

@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Interactive Widgets \ud83c\udf9b\ufe0f\n\nironpad supports **interactive widgets** that let you build reactive notebooks. Each widget produces a typed value that flows to downstream cells. Adjust the inputs, then press the **button** to re-run all downstream cells with the new values.\n\nThis notebook builds a **Tip Calculator** using all seven widget types: `slider`, `dropdown`, `number`, `switch`, `button`, `text_input`, and `checkbox`.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Interactive Widgets \ud83c\udf9b\ufe0f\n\nironpad supports **interactive widgets** that let you build reactive notebooks. Each widget produces a typed value that flows to downstream cells. Adjust the inputs, then press the **button** to re-run all downstream cells with the new values.\n\nThis notebook builds a **Tip Calculator** using all seven widget types: `slider`, `dropdown`, `number`, `switch`, `button`, `text_input`, and `checkbox`.",
       "cargo_toml": null
     },
     {

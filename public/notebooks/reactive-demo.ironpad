@@ -12,7 +12,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# ⚡ Reactive Dataflow\n\nThis notebook has **reactive mode** enabled. When you edit an upstream cell, all downstream cells that depend on its output are automatically re-executed after a short debounce.\n\nTry editing the **Parameters** cell below and watch the downstream cells update instantly!"
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# ⚡ Reactive Dataflow\n\nThis notebook has **reactive mode** enabled. When you edit an upstream cell, all downstream cells that depend on its output are automatically re-executed after a short debounce.\n\nTry editing the **Parameters** cell below and watch the downstream cells update instantly!"
     },
     {
       "id": "cell_1",

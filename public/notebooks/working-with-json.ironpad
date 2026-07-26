@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Working with JSON \ud83d\udd2e\n\nironpad has a built-in `Json` display type that pretty-prints JSON with syntax highlighting. It's great for exploring API responses, configuration data, or any structured data.\n\nThe `Json` type wraps a `serde_json::Value` and renders it with color-coded keys, strings, numbers, and booleans.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Working with JSON \ud83d\udd2e\n\nironpad has a built-in `Json` display type that pretty-prints JSON with syntax highlighting. It's great for exploring API responses, configuration data, or any structured data.\n\nThe `Json` type wraps a `serde_json::Value` and renders it with color-coded keys, strings, numbers, and booleans.",
       "cargo_toml": null
     },
     {

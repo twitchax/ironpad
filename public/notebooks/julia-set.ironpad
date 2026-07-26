@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Julia Sets *\n\n**Julia sets** are close relatives of the Mandelbrot set. While the Mandelbrot iterates $z \\mapsto z^2 + c$ with $z_0 = 0$ and *varies* $c$ across the image, a Julia set *fixes* $c$ and varies the starting point $z_0$.\n\nEach point $c$ in the complex plane defines a unique Julia set. Points inside the Mandelbrot set produce *connected* Julia sets; points outside produce disconnected \"Fatou dust.\"\n\n## The Connection\n\nThe Mandelbrot set is essentially a *map* of all Julia sets \u2014 each pixel of the Mandelbrot tells you what the Julia set at that $c$ value looks like:\n- **Inside the Mandelbrot** \u2192 connected Julia set\n- **On the boundary** \u2192 maximally intricate Julia set\n- **Outside the Mandelbrot** \u2192 disconnected dust",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Julia Sets *\n\n**Julia sets** are close relatives of the Mandelbrot set. While the Mandelbrot iterates $z \\mapsto z^2 + c$ with $z_0 = 0$ and *varies* $c$ across the image, a Julia set *fixes* $c$ and varies the starting point $z_0$.\n\nEach point $c$ in the complex plane defines a unique Julia set. Points inside the Mandelbrot set produce *connected* Julia sets; points outside produce disconnected \"Fatou dust.\"\n\n## The Connection\n\nThe Mandelbrot set is essentially a *map* of all Julia sets \u2014 each pixel of the Mandelbrot tells you what the Julia set at that $c$ value looks like:\n- **Inside the Mandelbrot** \u2192 connected Julia set\n- **On the boundary** \u2192 maximally intricate Julia set\n- **Outside the Mandelbrot** \u2192 disconnected dust",
       "cargo_toml": null
     },
     {

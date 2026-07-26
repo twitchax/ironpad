@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "# Progress Bar Demo \u23f3\n\nThis notebook demonstrates the **progress bar** widget with real-time updates.\n\n- **Cell 1** creates a progress bar at 25%.\n- **Cell 2** adds a button that bumps the bar to 75% on click.\n\nThe progress bar outputs its ID so downstream cells can update it via `ProgressHandle`.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Progress Bar Demo \u23f3\n\nThis notebook demonstrates the **progress bar** widget with real-time updates.\n\n- **Cell 1** creates a progress bar at 25%.\n- **Cell 2** adds a button that bumps the bar to 75% on click.\n\nThe progress bar outputs its ID so downstream cells can update it via `ProgressHandle`.",
       "cargo_toml": null
     },
     {
