@@ -16,9 +16,10 @@ test.describe("Welcome public notebook", () => {
       .filter({ has: page.locator(".ironpad-notebook-card-title", { hasText: "Welcome to ironpad" }) });
     await expect(welcomeCard).toBeVisible({ timeout: 10_000 });
 
-    // Verify the card shows 4 cells.
+    // Verify the card shows 5 cells: four Fibonacci code cells plus the
+    // leading AI-authorship banner every public notebook carries.
     const cellCount = welcomeCard.locator(".ironpad-notebook-card-cells");
-    await expect(cellCount).toHaveText("4 cells");
+    await expect(cellCount).toHaveText("5 cells");
 
     // Click into the notebook — it's a public notebook, so it opens in view-only mode.
     await welcomeCard.click();

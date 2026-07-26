@@ -440,6 +440,7 @@ git push origin feature/my-feature
 - [ ] Code style follows conventions (spacing, naming, comments)
 - [ ] If compiler changes, `cargo make test-integration` passes
 - [ ] If UI changes, Playwright tests updated
+- [ ] **If a public notebook's cell count or order changes, run `cargo make playwright`.** `cargo make ci` cannot see it. Several specs assert on notebook structure (`seed.spec.ts` hard-codes welcome's cell count; `public-notebooks.spec.ts` asserts collapsed-cell counts and autorun behavior), so adding or reordering a cell breaks e2e while unit tests stay green.
 
 ---
 
