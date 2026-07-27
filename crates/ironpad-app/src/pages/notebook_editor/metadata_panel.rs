@@ -1,0 +1,317 @@
+//! Notebook presentation metadata: description, tags, and the social-preview
+//! image override (PRD-0051).
+//!
+//! These fields have existed on [`IronpadNotebook`] since PRD-0050 wired up
+//! link unfurls, but nothing could set them: they were reachable only by
+//! hand-editing a `.ironpad` file, so every notebook authored *in* ironpad
+//! unfurled with a generic description and no tags. This is the panel that
+//! closes that loop.
+//!
+//! Structured like [`super::shared_editor_panel`], and mounted beside it below
+//! the cell list, on the same reasoning: the cells are the story, and this is
+//! the colophon.
+
+use ironpad_common::protocol::{ClientId, Mutation, NotebookMetaPatch};
+use ironpad_common::{OG_IMAGE_MAX_PX, OG_IMAGE_MIN_PX};
+use leptos::ev;
+use leptos::prelude::*;
+
+use crate::components::toaster::{ToastIntent, Toaster};
+use crate::model::NotebookModel;
+
+#[cfg(not(feature = "hydrate"))]
+use super::state::persist_notebook;
+use super::state::NotebookState;
+
+/// Floors the visible Saving… state, matching the shared-source panel: the
+/// `IndexedDB` write is usually faster than a blink.
+#[cfg(feature = "hydrate")]
+const MIN_SAVING_MS: i32 = 500;
+
+/// Collapsed-by-default metadata section. Expanding lazily mounts the form.
+#[component]
+pub(super) fn NotebookMetadataSection() -> impl IntoView {
+    let collapsed = RwSignal::new(true);
+    let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
+
+    view! {
+        <div class="view-only-shared-section">
+            <button
+                class="view-only-shared-header"
+                on:click=move |_| collapsed.update(|c| *c = !*c)
+            >
+                <span class="ironpad-output-toggle">{toggle_icon}</span>
+                <span>"\u{1f5c2} Notebook Metadata (link previews)"</span>
+            </button>
+            {move || {
+                (!collapsed.get())
+                    .then(|| {
+                        view! {
+                            <div class="view-only-shared-body">
+                                <NotebookMetadataPanel />
+                            </div>
+                        }
+                    })
+            }}
+        </div>
+    }
+}
+
+/// The form body.
+#[component]
+#[allow(clippy::too_many_lines)] // One form, read top to bottom.
+fn NotebookMetadataPanel() -> impl IntoView {
+    let state = expect_context::<NotebookState>();
+    let model = expect_context::<NotebookModel>();
+    let toaster = Toaster::expect_context();
+
+    // Seeded untracked from the notebook, then owned by the form until Save.
+    // The panel is only mounted while expanded, so it re-seeds from current
+    // state every time it opens.
+    let notebook = state.notebook.get_untracked();
+    let seed = |f: fn(&ironpad_common::IronpadNotebook) -> Option<String>| {
+        notebook.as_ref().and_then(f).unwrap_or_default()
+    };
+
+    let description = RwSignal::new(seed(|nb| nb.description.clone()));
+    let tags = RwSignal::new(
+        notebook
+            .as_ref()
+            .and_then(|nb| nb.tags.clone())
+            .unwrap_or_default()
+            .join(", "),
+    );
+    let og_image = RwSignal::new(seed(|nb| nb.og_image.clone()));
+    let og_width = RwSignal::new(seed(|nb| nb.og_image_width.map(|v| v.to_string())));
+    let og_height = RwSignal::new(seed(|nb| nb.og_image_height.map(|v| v.to_string())));
+    let saving = RwSignal::new(false);
+
+    // The dimension fields describe the override, so they are meaningless
+    // without one: the generated card is always 1200x630 and says so from a
+    // constant.
+    let has_override = move || !og_image.get().trim().is_empty();
+
+    // Mirrors `IronpadNotebook::og_image_path`, which is the real gate. Shown
+    // inline because a rejected path fails silently at unfurl time, which is
+    // the worst possible moment to discover it.
+    let og_image_problem = move || {
+        let raw = og_image.get();
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        if !raw.starts_with('/') || raw.starts_with("//") {
+            return Some(
+                "Must be a root-relative path starting with a single \"/\", such as \
+                 /og-custom/mandelbrot.png. Another origin would let this notebook \
+                 put someone else's picture under ironpad's name."
+                    .to_string(),
+            );
+        }
+        None
+    };
+
+    let dimension_problem = move || {
+        if !has_override() {
+            return None;
+        }
+        let (w, h) = (og_width.get(), og_height.get());
+        let (w, h) = (w.trim().to_string(), h.trim().to_string());
+        if w.is_empty() && h.is_empty() {
+            return None;
+        }
+        let parse = |s: &str| {
+            s.parse::<u32>()
+                .ok()
+                .filter(|px| (OG_IMAGE_MIN_PX..=OG_IMAGE_MAX_PX).contains(px))
+        };
+        if w.is_empty() || h.is_empty() {
+            return Some("Set both width and height, or neither.".to_string());
+        }
+        if parse(&w).is_none() || parse(&h).is_none() {
+            return Some(format!(
+                "Each side must be a whole number between {OG_IMAGE_MIN_PX} and {OG_IMAGE_MAX_PX} pixels."
+            ));
+        }
+        None
+    };
+
+    let on_save = move |_| {
+        if saving.get_untracked() {
+            return;
+        }
+
+        // Empty means cleared, so every field is `Some(...)`: this form owns
+        // all of them, and a blank box has to be able to remove a value.
+        let text = |sig: RwSignal<String>| {
+            let v = sig.get_untracked().trim().to_string();
+            Some((!v.is_empty()).then_some(v))
+        };
+        let pixels = |sig: RwSignal<String>| Some(sig.get_untracked().trim().parse::<u32>().ok());
+
+        let tag_list: Vec<String> = tags
+            .get_untracked()
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        let has_image = !og_image.get_untracked().trim().is_empty();
+        let meta = NotebookMetaPatch {
+            description: text(description),
+            tags: Some((!tag_list.is_empty()).then_some(tag_list)),
+            og_image: text(og_image),
+            // Dimensions describe the override; dropping them with it keeps a
+            // stale size from being reattached to a later image.
+            og_image_width: if has_image {
+                pixels(og_width)
+            } else {
+                Some(None)
+            },
+            og_image_height: if has_image {
+                pixels(og_height)
+            } else {
+                Some(None)
+            },
+            ..Default::default()
+        };
+
+        if model
+            .apply(Mutation::NotebookUpdateMeta { meta }, ClientId::browser())
+            .is_err()
+        {
+            return;
+        }
+
+        let dispatch_saved_toast = move || {
+            toaster.toast(
+                ToastIntent::Success,
+                "Notebook metadata saved",
+                "Shared and published copies update on the next share or push.",
+                3,
+            );
+        };
+
+        #[cfg(feature = "hydrate")]
+        {
+            saving.set(true);
+            leptos::task::spawn_local(async move {
+                let started = js_sys::Date::now();
+                super::state::persist_notebook_durable(&state).await;
+                #[allow(clippy::cast_possible_truncation)]
+                let remaining = MIN_SAVING_MS - (js_sys::Date::now() - started) as i32;
+                if remaining > 0 {
+                    super::yield_for_cell_flush(remaining).await;
+                }
+                // The panel may have been disposed mid-save (navigation, or a
+                // collapse); try_set keeps this continuation panic-free.
+                let _ = saving.try_set(false);
+                dispatch_saved_toast();
+            });
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            persist_notebook(&state);
+            dispatch_saved_toast();
+        }
+    };
+
+    view! {
+        <div class="ironpad-shared-editor-body">
+            <p class="ironpad-metadata-intro">
+                "Used for the page title, search, and the preview card that Reddit, \
+                 X, Slack, and Discord build when someone pastes a link to this notebook."
+            </p>
+
+            <label class="ironpad-metadata-field">
+                <span class="ironpad-metadata-label">"Description"</span>
+                <textarea
+                    class="ironpad-metadata-textarea"
+                    rows="3"
+                    placeholder="One or two sentences. Shown on the home page and in link previews."
+                    prop:value=move || description.get()
+                    on:input=move |ev| description.set(event_target_value(&ev))
+                ></textarea>
+            </label>
+
+            <label class="ironpad-metadata-field">
+                <span class="ironpad-metadata-label">"Tags"</span>
+                <input
+                    class="ironpad-search-input"
+                    r#type="text"
+                    placeholder="Comma separated, e.g. simulation, autodiff"
+                    prop:value=move || tags.get()
+                    on:input=move |ev| tags.set(event_target_value(&ev))
+                />
+            </label>
+
+            <label class="ironpad-metadata-field">
+                <span class="ironpad-metadata-label">"Preview image (optional)"</span>
+                <input
+                    class="mutable-rebind-input"
+                    r#type="text"
+                    placeholder="/og-custom/my-notebook.png"
+                    prop:value=move || og_image.get()
+                    on:input=move |ev| og_image.set(event_target_value(&ev))
+                />
+                <span class="ironpad-metadata-hint">
+                    "Leave blank to use the card ironpad generates from the title, \
+                     description, and first code cell."
+                </span>
+                {move || {
+                    og_image_problem()
+                        .map(|msg| {
+                            view! { <span class="ironpad-metadata-problem">{msg}</span> }
+                        })
+                }}
+            </label>
+
+            // Only meaningful alongside an override, and actively harmful
+            // without one: unfurlers lay the preview out from the declared
+            // size before the image loads.
+            <Show when=has_override>
+                <div class="ironpad-metadata-field">
+                    <span class="ironpad-metadata-label">"Preview image size"</span>
+                    <div class="ironpad-metadata-dimensions">
+                        <input
+                            class="ironpad-metadata-number"
+                            r#type="number"
+                            min=OG_IMAGE_MIN_PX.to_string()
+                            max=OG_IMAGE_MAX_PX.to_string()
+                            placeholder="width"
+                            prop:value=move || og_width.get()
+                            on:input=move |ev: ev::Event| og_width.set(event_target_value(&ev))
+                        />
+                        <span class="ironpad-metadata-times">"\u{00d7}"</span>
+                        <input
+                            class="ironpad-metadata-number"
+                            r#type="number"
+                            min=OG_IMAGE_MIN_PX.to_string()
+                            max=OG_IMAGE_MAX_PX.to_string()
+                            placeholder="height"
+                            prop:value=move || og_height.get()
+                            on:input=move |ev: ev::Event| og_height.set(event_target_value(&ev))
+                        />
+                        <span class="ironpad-metadata-hint">"pixels"</span>
+                    </div>
+                    {move || {
+                        dimension_problem()
+                            .map(|msg| {
+                                view! { <span class="ironpad-metadata-problem">{msg}</span> }
+                            })
+                    }}
+                </div>
+            </Show>
+
+            <div class="ironpad-shared-editor-actions">
+                <button
+                    class="ironpad-btn ironpad-btn--primary"
+                    on:click=on_save
+                    prop:disabled=move || saving.get()
+                >
+                    {move || if saving.get() { "Saving\u{2026}" } else { "Save" }}
+                </button>
+            </div>
+        </div>
+    }
+}

@@ -255,12 +255,34 @@ pub struct IronpadNotebook {
     /// arbitrary third-party origin under ironpad's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub og_image: Option<String>,
+    /// Pixel size of [`og_image`](Self::og_image), declared to unfurlers.
+    ///
+    /// Only meaningful alongside an override: the generated card is always
+    /// 1200x630 and says so from a constant. An override of any other shape
+    /// still advertised 1200x630 before these existed, and unfurlers lay the
+    /// preview out from the *declared* size, so a tall screenshot came out
+    /// letterboxed or cropped. Read them through
+    /// [`og_image_dimensions`](Self::og_image_dimensions), never directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub og_image_width: Option<u32>,
+    /// See [`og_image_width`](Self::og_image_width).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub og_image_height: Option<u32>,
     // NOTE: a notebook-level `expand_code: Option<bool>` used to live here.
     // Collapse state is per-cell now (`IronpadCell::collapsed`), WYSIWYG from
     // the editor; old JSON carrying the field still parses (serde ignores
     // unknown fields).
     pub cells: Vec<IronpadCell>,
 }
+
+/// Smallest edge length an `og_image` override may declare. Most unfurlers
+/// discard a card below roughly 200px rather than showing a tiny one.
+pub const OG_IMAGE_MIN_PX: u32 = 200;
+
+/// Largest edge length an `og_image` override may declare. Well above any real
+/// screenshot; the point is that a declared 100000px reserves a layout box in
+/// someone's feed before the image itself is ever fetched.
+pub const OG_IMAGE_MAX_PX: u32 = 8192;
 
 /// Default shared `Cargo.toml` for new notebooks. Provides `ironpad-cell`
 /// and relaxed release-profile settings so cells compile quickly.
@@ -289,6 +311,8 @@ impl IronpadNotebook {
             shared_source: None,
             reactive_mode: None,
             og_image: None,
+            og_image_width: None,
+            og_image_height: None,
             cells: Vec::new(),
         }
     }
@@ -306,6 +330,29 @@ impl IronpadNotebook {
     pub fn og_image_path(&self) -> Option<&str> {
         let raw = self.og_image.as_deref()?.trim();
         (raw.starts_with('/') && !raw.starts_with("//")).then_some(raw)
+    }
+
+    /// The declared size of this notebook's override image, if it declares a
+    /// usable one.
+    ///
+    /// Gated at the point of use for the same reason as
+    /// [`og_image_path`](Self::og_image_path): the numbers arrive from shares
+    /// and from `IndexedDB`, so they are attacker-controlled. Three conditions,
+    /// each of which has a failure mode behind it.
+    ///
+    /// Both dimensions must be present, because a preview laid out from one
+    /// axis and a stale constant on the other is worse than no declaration at
+    /// all. They must be within [`OG_IMAGE_MIN_PX`]..=[`OG_IMAGE_MAX_PX`],
+    /// because most unfurlers reject a card below roughly 200px and a declared
+    /// 100000px reserves a viewport-breaking box before the image ever loads.
+    /// And there must be an override image at all: dimensions without one would
+    /// mislabel the generated card, which is always 1200x630.
+    #[must_use]
+    pub fn og_image_dimensions(&self) -> Option<(u32, u32)> {
+        self.og_image_path()?;
+        let (w, h) = (self.og_image_width?, self.og_image_height?);
+        let ok = |px: u32| (OG_IMAGE_MIN_PX..=OG_IMAGE_MAX_PX).contains(&px);
+        (ok(w) && ok(h)).then_some((w, h))
     }
 
     /// The shared source the compiler should see: the notebook-level
@@ -564,9 +611,75 @@ mod tests {
             "updated_at":"2026-01-01T00:00:00Z","cells":[]}"#;
         let nb: IronpadNotebook = serde_json::from_str(json).unwrap();
         assert_eq!(nb.og_image, None);
+        assert_eq!(nb.og_image_width, None);
+        assert_eq!(nb.og_image_height, None);
         // Absent stays absent on the way out, so adding this field does not
         // rewrite every stored notebook the first time it is re-saved.
         assert!(!serde_json::to_string(&nb).unwrap().contains("og_image"));
+    }
+
+    #[test]
+    fn og_image_dimensions_require_a_usable_override_and_both_axes() {
+        let with = |image: Option<&str>, w: Option<u32>, h: Option<u32>| {
+            let mut nb = IronpadNotebook::new("t");
+            nb.og_image = image.map(str::to_string);
+            nb.og_image_width = w;
+            nb.og_image_height = h;
+            nb
+        };
+        let good = Some("/og-custom/mandelbrot.png");
+
+        assert_eq!(
+            with(good, Some(1024), Some(1024)).og_image_dimensions(),
+            Some((1024, 1024))
+        );
+
+        // One axis alone would be laid out against the stale 1200x630
+        // constant on the other, which is worse than declaring nothing.
+        assert_eq!(with(good, Some(1024), None).og_image_dimensions(), None);
+        assert_eq!(with(good, None, Some(1024)).og_image_dimensions(), None);
+
+        // Dimensions with no override, or with a rejected one, would mislabel
+        // the generated card, which is always 1200x630.
+        assert_eq!(with(None, Some(800), Some(800)).og_image_dimensions(), None);
+        assert_eq!(
+            with(Some("https://evil.example/x.png"), Some(800), Some(800)).og_image_dimensions(),
+            None
+        );
+    }
+
+    #[test]
+    fn og_image_dimensions_reject_implausible_pixel_counts() {
+        let with = |w: u32, h: u32| {
+            let mut nb = IronpadNotebook::new("t");
+            nb.og_image = Some("/og-custom/x.png".to_string());
+            nb.og_image_width = Some(w);
+            nb.og_image_height = Some(h);
+            nb
+        };
+
+        assert!(with(OG_IMAGE_MIN_PX, OG_IMAGE_MIN_PX)
+            .og_image_dimensions()
+            .is_some());
+        assert!(with(OG_IMAGE_MAX_PX, OG_IMAGE_MAX_PX)
+            .og_image_dimensions()
+            .is_some());
+
+        // A declared size reserves a layout box in someone's feed before the
+        // image is fetched, so these are bounded rather than trusted.
+        for (w, h) in [
+            (0, 630),
+            (1200, 0),
+            (OG_IMAGE_MIN_PX - 1, 630),
+            (OG_IMAGE_MAX_PX + 1, 630),
+            (1200, u32::MAX),
+        ] {
+            assert_eq!(
+                with(w, h).og_image_dimensions(),
+                None,
+                "should have rejected {w}x{h}"
+            );
+        }
     }
 
     #[test]

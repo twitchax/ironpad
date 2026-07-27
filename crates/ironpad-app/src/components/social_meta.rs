@@ -18,34 +18,46 @@
 use leptos::prelude::*;
 use leptos_meta::{Link, Meta, Title};
 
-/// The absolute origin to resolve root-relative paths against.
+/// Resolves a root-relative `path` against this instance's public origin.
 ///
-/// Server-side this is the configured `IRONPAD_PUBLIC_URL`, because a crawler
-/// has no other way to learn it. Client-side it is the live origin, which
-/// matches the configured value on any correctly-deployed instance and keeps
-/// the hydrated tags identical to the rendered ones.
+/// Server-side the origin is the configured `IRONPAD_PUBLIC_URL`, because a
+/// crawler has no other way to learn it. Client-side it is the live origin,
+/// which matches the configured value on any correctly-deployed instance and
+/// keeps the hydrated tags identical to the rendered ones.
+///
+/// Falls back to `path` unchanged when no origin is available, which is a
+/// root-relative URL: wrong for a crawler but harmless in a browser, and
+/// strictly better than emitting a bare path glued to an empty string.
+/// Takes `path` by value so the no-origin fallback returns it without a copy.
 #[cfg(feature = "ssr")]
-fn origin() -> String {
+fn absolute(path: String) -> String {
     // `use_context` rather than `expect_context`: `generate_route_list` walks
     // the component tree at startup with no context provided, and a panic
     // there would take down the server before it ever binds a port.
-    use_context::<ironpad_common::AppConfig>()
-        .map(|c| c.public_url.trim_end_matches('/').to_string())
-        .unwrap_or_default()
+    match use_context::<ironpad_common::AppConfig>() {
+        Some(config) => config.absolute_url(&path),
+        None => path,
+    }
 }
 
 #[cfg(not(feature = "ssr"))]
-fn origin() -> String {
-    web_sys::window()
-        .and_then(|w| w.location().origin().ok())
-        .unwrap_or_default()
+fn absolute(path: String) -> String {
+    match web_sys::window().and_then(|w| w.location().origin().ok()) {
+        Some(origin) => ironpad_common::absolute_url(&origin, &path),
+        None => path,
+    }
 }
 
 /// Card size the server renders, declared so unfurlers can lay out the
 /// preview before the image finishes downloading. Must track
 /// `ironpad_server::og::svg::{WIDTH, HEIGHT}`.
-const IMAGE_WIDTH: &str = "1200";
-const IMAGE_HEIGHT: &str = "630";
+///
+/// Only correct for the *generated* card. A notebook overriding `og_image`
+/// with a screenshot of another shape passes its own size through the
+/// `image_size` prop; before that existed, a tall image was still announced as
+/// 1200x630 and came out letterboxed or cropped in the feed.
+const IMAGE_WIDTH: u32 = 1200;
+const IMAGE_HEIGHT: u32 = 630;
 
 /// Longest `og:description` worth emitting. Most unfurlers truncate somewhere
 /// between 200 and 300 characters; clipping here means *we* choose where the
@@ -70,9 +82,21 @@ pub fn SocialMeta(
     /// Root-relative path to the preview image.
     #[prop(into)]
     image: String,
+    /// Pixel size of `image`, when it is an override of a non-standard shape.
+    /// `None` means the generated card, which is always [`IMAGE_WIDTH`] x
+    /// [`IMAGE_HEIGHT`].
+    #[prop(optional_no_strip)]
+    image_size: Option<(u32, u32)>,
     /// `og:type`: `"website"` for the home page, `"article"` for a notebook.
     #[prop(into, default = "article".to_string())]
     kind: String,
+    /// Advertise an oEmbed endpoint for this page (PRD-0051).
+    ///
+    /// Set on the routes that have a matching `/embed/*` renderer, which is
+    /// `/public` and `/shared`. A consumer that follows this link embeds the
+    /// running notebook rather than a picture of it.
+    #[prop(optional)]
+    oembed: bool,
     /// Ask search engines not to index this page.
     ///
     /// Used for `/shared` and `/mutable`, which are unlisted by construction:
@@ -83,14 +107,14 @@ pub fn SocialMeta(
     #[prop(optional)]
     noindex: bool,
 ) -> impl IntoView {
-    let origin = origin();
-    // Prefixing in place consumes the props rather than borrowing them, which
-    // is both what clippy wants and one allocation fewer than `format!`.
-    let mut url = path;
-    url.insert_str(0, &origin);
-    let mut image_url = image;
-    image_url.insert_str(0, &origin);
+    let url = absolute(path);
+    let image_url = absolute(image);
+    let (image_width, image_height) = image_size.unwrap_or((IMAGE_WIDTH, IMAGE_HEIGHT));
     let title = sanitize_title(title);
+    // The consumer re-fetches this URL, so the page URL travels as a query
+    // parameter and must be percent-encoded.
+    let oembed_href =
+        oembed.then(|| absolute(format!("/oembed?url={}&format=json", encode_query(&url))));
     let page_title = format!("{title} \u{b7} ironpad");
     let description = description.map_or_else(
         || "An interactive Rust notebook on ironpad.".to_string(),
@@ -110,8 +134,8 @@ pub fn SocialMeta(
         <Meta property="og:url" content=url/>
         <Meta property="og:image" content=image_url.clone()/>
         <Meta property="og:image:type" content="image/png"/>
-        <Meta property="og:image:width" content=IMAGE_WIDTH/>
-        <Meta property="og:image:height" content=IMAGE_HEIGHT/>
+        <Meta property="og:image:width" content=image_width.to_string()/>
+        <Meta property="og:image:height" content=image_height.to_string()/>
         <Meta property="og:image:alt" content=alt/>
 
         // Without an explicit card type, X renders a small square thumbnail
@@ -121,8 +145,42 @@ pub fn SocialMeta(
         <Meta name="twitter:description" content=description/>
         <Meta name="twitter:image" content=image_url/>
 
+        {oembed_href
+            .map(|href| {
+                view! {
+                    <Link
+                        rel="alternate"
+                        type_="application/json+oembed"
+                        href=href
+                        title="ironpad notebook"
+                    />
+                }
+            })}
+
         {noindex.then(|| view! { <Meta name="robots" content="noindex, follow"/> })}
     }
+}
+
+/// Percent-encodes a URL for use as a query-parameter *value*.
+///
+/// Deliberately conservative: everything outside the unreserved set goes,
+/// including `/` and `:`, so the encoded page URL cannot be mistaken for
+/// structure in the endpoint's own query string.
+fn encode_query(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(value.len() + 16);
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
 }
 
 /// Marks the current response as a 404.

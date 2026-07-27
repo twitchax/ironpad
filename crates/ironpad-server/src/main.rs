@@ -24,7 +24,7 @@ use tracing_subscriber::Layer as _;
 use ironpad_app::*;
 use ironpad_common::AppConfig;
 use ironpad_server::state::{AppState, WsState};
-use ironpad_server::{crawl, og, ws};
+use ironpad_server::{crawl, oembed, og, ws};
 
 use crate::config::CliArgs;
 
@@ -138,6 +138,9 @@ async fn main() {
         .route("/og/{class}/{file}", get(og::notebook_card_handler))
         .route("/robots.txt", get(crawl::robots_handler))
         .route("/sitemap.xml", get(crawl::sitemap_handler))
+        // oEmbed provider (PRD-0051): consumers that support discovery embed
+        // the live notebook instead of the static card.
+        .route("/oembed", get(oembed::oembed_handler))
         .leptos_routes_with_context(
             &app_state,
             routes,
@@ -163,6 +166,10 @@ async fn main() {
         // largest legitimate body (a max-size shared notebook) so real uploads
         // pass while a truly huge body is rejected before it reaches a handler.
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+        ))
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("cross-origin-opener-policy"),
             HeaderValue::from_static("same-origin"),
@@ -195,6 +202,27 @@ async fn main() {
         .await
         .expect("server");
 }
+
+/// Content Security Policy applied to every response.
+///
+/// Deliberately says nothing about `script-src`. Leptos hydration emits an
+/// inline module script and Monaco ships its own AMD loader, so a script
+/// policy here means either `'unsafe-inline'`, which would have permitted the
+/// exact injection this is meant to blunt, or per-request nonce plumbing
+/// through `leptos_meta` and the Monaco bootstrap. The second is the right
+/// answer and is worth its own change; shipping the first would be theatre.
+///
+/// What is here is the set that costs nothing and closes real amplification
+/// paths for an injection that does land:
+///
+/// - `object-src 'none'` retires the `<object>`/`<embed>` script vectors.
+/// - `base-uri 'self'` stops an injected `<base href>` from silently
+///   repointing every relative URL on the page, including the pkg bundle.
+/// - `form-action 'self'` stops an injected form from posting elsewhere,
+///   which is how a stolen mutable-share key would actually leave the page.
+/// - `frame-ancestors` is **intentionally absent**: `/embed/*` exists to be
+///   framed by third parties (PRD-0039), and any value here would break it.
+const CONTENT_SECURITY_POLICY: &str = "object-src 'none'; base-uri 'self'; form-action 'self'";
 
 /// Maximum percentage of the cache filesystem that may be in use before the
 /// startup pressure valve clears the rebuildable caches. The compile cache
@@ -548,6 +576,45 @@ mod embed_header_tests {
         assert!(!is_embeddable_path("/notebook/public/welcome.ironpad"));
         assert!(!is_embeddable_path("/embedx"));
         assert!(!is_embeddable_path("/api/embed/whatever"));
+    }
+}
+
+#[cfg(test)]
+mod csp_tests {
+    use super::CONTENT_SECURITY_POLICY;
+
+    #[test]
+    fn the_policy_is_a_valid_header_value() {
+        assert!(
+            axum::http::HeaderValue::from_static(CONTENT_SECURITY_POLICY)
+                .to_str()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_policy_closes_the_amplification_paths() {
+        for directive in ["object-src 'none'", "base-uri 'self'", "form-action 'self'"] {
+            assert!(
+                CONTENT_SECURITY_POLICY.contains(directive),
+                "missing {directive}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_policy_does_not_restrict_framing_or_scripts() {
+        // `/embed/*` exists to be framed by third parties (PRD-0039), so any
+        // frame-ancestors value breaks the feature outright.
+        assert!(
+            !CONTENT_SECURITY_POLICY.contains("frame-ancestors"),
+            "this would break embedding"
+        );
+        // `script-src` without a nonce would mean 'unsafe-inline', which
+        // permits exactly the injection a CSP is supposed to blunt. Left out
+        // on purpose until the nonce work happens.
+        assert!(!CONTENT_SECURITY_POLICY.contains("unsafe-inline"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("script-src"));
     }
 }
 

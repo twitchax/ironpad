@@ -5,5 +5,5 @@ pub mod config;
 pub mod protocol;
 pub mod types;
 
-pub use config::AppConfig;
+pub use config::{absolute_url, AppConfig};
 pub use types::*;

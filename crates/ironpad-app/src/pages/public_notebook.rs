@@ -68,6 +68,8 @@ pub fn PublicNotebookPage() -> impl IntoView {
                                         || format!("/og/public/{meta_name}.png"),
                                         str::to_string,
                                     )
+                                image_size=notebook.og_image_dimensions()
+                                oembed=true
                             />
                             <ViewOnlyNotebook
                                 notebook

@@ -851,6 +851,99 @@ a:focus-visible {
     margin-top: 24px;
 }
 
+/* ── Notebook metadata appendix (editor, PRD-0051) ──────────────────── */
+
+// Its own wrapper rather than a third child of the shared appendix: the
+// shared-appendix e2e spec indexes that container positionally.
+.ironpad-editor-metadata-appendix {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.ironpad-metadata-intro {
+    margin: 0;
+    color: var(--ip-text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
+.ironpad-metadata-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ironpad-metadata-label {
+    color: var(--ip-text-secondary);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.ironpad-metadata-hint {
+    color: var(--ip-text-muted);
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+.ironpad-metadata-problem {
+    color: var(--ip-accent);
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+// The app's first textarea; every other multi-line field is a Monaco editor.
+.ironpad-metadata-textarea {
+    padding: 8px 12px;
+    background: var(--ip-bg-surface);
+    color: var(--ip-text-primary);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md);
+    font-family: inherit;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    resize: vertical;
+
+    &::placeholder {
+        color: var(--ip-text-muted);
+    }
+
+    &:focus {
+        outline: none;
+        border-color: var(--ip-accent);
+    }
+}
+
+.ironpad-metadata-dimensions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ironpad-metadata-number {
+    padding: 8px 12px;
+    width: 7rem;
+    background: var(--ip-bg-surface);
+    color: var(--ip-text-primary);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md);
+    font-size: 0.9rem;
+
+    &::placeholder {
+        color: var(--ip-text-muted);
+    }
+
+    &:focus {
+        outline: none;
+        border-color: var(--ip-accent);
+    }
+}
+
+.ironpad-metadata-times {
+    color: var(--ip-text-muted);
+}
+
 // Interactive "button" widget emitted by cells (was unstyled → raw native button).
 .ironpad-widget-button {
     padding: 6px 14px;

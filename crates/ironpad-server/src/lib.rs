@@ -7,6 +7,7 @@
 //! [`state`] for shared connection state.
 
 pub mod crawl;
+pub mod oembed;
 pub mod og;
 pub mod sessions;
 pub mod state;

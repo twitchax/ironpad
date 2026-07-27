@@ -92,22 +92,17 @@ fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
         }
         let content = editor_text.get_untracked();
 
-        let mutation = match kind {
-            SharedEditorKind::Dependencies => {
-                ironpad_common::protocol::Mutation::NotebookUpdateMeta {
-                    title: None,
-                    shared_cargo_toml: Some(Some(content)),
-                    shared_source: None,
-                    reactive_mode: None,
-                }
-            }
-            SharedEditorKind::Source => ironpad_common::protocol::Mutation::NotebookUpdateMeta {
-                title: None,
-                shared_cargo_toml: None,
+        let meta = match kind {
+            SharedEditorKind::Dependencies => ironpad_common::protocol::NotebookMetaPatch {
+                shared_cargo_toml: Some(Some(content)),
+                ..Default::default()
+            },
+            SharedEditorKind::Source => ironpad_common::protocol::NotebookMetaPatch {
                 shared_source: Some(Some(content)),
-                reactive_mode: None,
+                ..Default::default()
             },
         };
+        let mutation = ironpad_common::protocol::Mutation::NotebookUpdateMeta { meta };
 
         if model
             .apply(mutation, ironpad_common::protocol::ClientId::browser())

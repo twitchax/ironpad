@@ -22,7 +22,7 @@ cargo make install-tools
 # Start development server with hot reload (http://localhost:3111)
 cargo make dev
 
-# Run CI locally (formatting + clippy + tests)
+# Run CI locally (fmt-check + gen-completions-check + clippy + tests)
 cargo make ci
 
 # Full validation gate (CI + integration tests + Playwright)
@@ -31,24 +31,31 @@ cargo make uat
 
 ### All cargo-make Tasks
 
-| Task               | Purpose                                            |
-| ------------------ | -------------------------------------------------- |
-| `install-tools`    | Install all required dev tools + wasm target       |
-| `dev`              | Start cargo-leptos watch (dev server, live reload) |
-| `build`            | Release build via cargo-leptos                     |
-| `build-cli`        | Build ironpad-cli binary (release)                 |
-| `fmt`              | Auto-format all Rust code                          |
-| `fmt-check`        | Check formatting (no changes)                      |
-| `clippy`           | Run clippy lints (`-D warnings`)                   |
-| `test`             | Unit/integration tests via cargo-nextest           |
-| `test-integration` | Slow tests (requires wasm32 target)                |
-| `ci`               | fmt-check + clippy + test                          |
-| `playwright`       | Build CLI + run Playwright e2e tests               |
-| `uat`              | ci + test-integration + playwright                 |
-| `docker-build`     | Build Docker image                                 |
-| `docker-up`        | Start container via docker-compose                 |
-| `docker-down`      | Stop container                                     |
-| `docker-uat`       | Build, start, run Playwright, tear down            |
+| Task                    | Purpose                                                      |
+| ----------------------- | ------------------------------------------------------------ |
+| `install-tools`         | Install all required dev tools + wasm target                 |
+| `setup-monaco`          | Install monaco-editor from npm, copy dist to `public/monaco/` |
+| `dev`                   | Start cargo-leptos watch (dev server, live reload)           |
+| `build`                 | Release build via cargo-leptos                               |
+| `build-cli`             | Build ironpad-cli binary (release)                           |
+| `fmt`                   | Auto-format all Rust code                                    |
+| `fmt-check`             | Check formatting (no changes)                                |
+| `gen-completions`       | Regenerate the Monaco completions index from ironpad-cell source |
+| `gen-completions-check` | Fail if the committed completions index is stale             |
+| `clippy`                | Run clippy lints (`-D warnings`)                             |
+| `test`                  | Unit/integration tests via cargo-nextest                     |
+| `test-integration`      | Slow tests (requires wasm32 target)                          |
+| `warmup-atomics`        | Pre-build std with atomics for rayon cells (one-time)        |
+| `warm-prod`             | Converge a deployed instance's compile/check caches          |
+| `ci`                    | fmt-check + gen-completions-check + clippy + test            |
+| `playwright-install`    | Install Playwright browsers                                  |
+| `playwright`            | Build CLI + run Playwright e2e tests                         |
+| `uat`                   | ci + test-integration + playwright                           |
+| `coverage`              | Coverage report via cargo-llvm-cov                           |
+| `docker-build`          | Build Docker image                                           |
+| `docker-up`             | Start container via docker-compose                           |
+| `docker-down`           | Stop container                                               |
+| `docker-uat`            | Build, start, run Playwright, tear down                      |
 
 ---
 
@@ -84,19 +91,22 @@ crates/
 The heart of the application, split between SSR server code and hydrate (client) code.
 
 **Key modules**:
-- `compiler/` — Full WASM compilation pipeline (scaffold → build → optimize → cache)
-- `components/` — Leptos UI components (Monaco editor, executor, error panel, layout, view-only notebook)
+- `compiler/` — Full WASM compilation pipeline (scaffold → cache → build → diagnostics → optimize)
+- `components/` — Leptos UI components (Monaco editor, executor, error panel, layout, view-only notebook, session panel, social metadata)
 - `storage/` — Client-side IndexedDB bindings (wasm-bindgen to `window.IronpadStorage`)
-- `pages/` — Route pages: home, notebook editor, public notebook viewer, shared notebook viewer
-- `server_fns.rs` — Leptos server functions for compilation, public notebooks, and sharing
+- `pages/` — Route pages: home, notebook editor, public/shared/mutable notebook viewers, embed variants
+- `session/` — Browser-side WebSocket session management for agent collaboration
+- `server_fns.rs` — Leptos server functions for compilation, live checks, public notebooks, sharing, and mutable shares
 
 #### ironpad-server
 
-Minimal binary that starts the Axum + Leptos SSR server.
+Binary that starts the Axum + Leptos SSR server, the WebSocket relay, and the social-preview endpoints.
 
 **Files**:
-- `main.rs` — Tokio runtime, route generation, public notebook index setup
-- `config.rs` — CLI argument parsing (data_dir, cache_dir, port, ironpad_cell_path)
+- `main.rs`: Tokio runtime, route generation, `/share-blobs/` handler, cache-control middleware
+- `config.rs`: CLI argument parsing (data dir, cache dir, port, cell path, proxy, public URL, guest limits)
+- `ws.rs` / `sessions.rs` / `state.rs`: WebSocket relay, session/token store, shared server state
+- `og/` / `crawl.rs`: generated social-preview cards, robots.txt + sitemap.xml (PRD-0050)
 
 #### ironpad-frontend
 
@@ -113,7 +123,7 @@ Types used by both server and client (compile requests/responses, notebook forma
 - `CompileRequest` / `CompileResponse` — RPC contract
 - `Diagnostic` / `Severity` / `Span` — Compiler diagnostics with source mapping
 - `IronpadNotebook` / `IronpadCell` / `IronpadMarkdownCell` — Canonical notebook JSON format
-- `PublicNotebookSummary` — Public notebook index entry
+- `PublicNotebookSummary` — Public notebook listing entry
 - `ExecutionResult` — Execution output with timing
 - `AppConfig` — Server configuration
 
@@ -142,33 +152,60 @@ ironpad/
 │   │   └── src/
 │   │       ├── lib.rs              # App root (shell + routes)
 │   │       ├── server_fns.rs       # Leptos server functions (RPC endpoints)
+│   │       ├── model.rs            # NotebookModel (all mutations, UI + agent)
+│   │       ├── blob_cache.rs       # Client-side IndexedDB blob cache (PRD-0047)
+│   │       ├── sanitize.rs         # HTML sanitization (ammonia)
 │   │       ├── compiler/           # WASM compilation pipeline
 │   │       │   ├── mod.rs          # Pipeline integration + tests
 │   │       │   ├── scaffold.rs     # Micro-crate generation
 │   │       │   ├── cache.rs        # blake3 caching
 │   │       │   ├── build.rs        # cargo build invocation
 │   │       │   ├── diagnostics.rs  # rustc JSON parsing
-│   │       │   └── optimize.rs     # wasm-opt
+│   │       │   ├── optimize.rs     # wasm-opt
+│   │       │   └── toolchain.rs    # Toolchain fingerprinting
 │   │       ├── components/         # UI components
 │   │       │   ├── monaco_editor.rs
 │   │       │   ├── executor.rs     # WASM executor bindings
 │   │       │   ├── error_panel.rs
 │   │       │   ├── markdown_cell.rs
 │   │       │   ├── view_only_notebook.rs  # Read-only notebook viewer
+│   │       │   ├── session_panel.rs       # Agent session UI
+│   │       │   ├── social_meta.rs         # Open Graph/Twitter metadata (PRD-0050)
 │   │       │   └── app_layout.rs
 │   │       ├── storage/            # Client-side storage
-│   │       │   └── client.rs       # IndexedDB bindings (wasm-bindgen)
+│   │       │   ├── client.rs       # IndexedDB bindings (wasm-bindgen)
+│   │       │   └── validate.rs     # Notebook import validation
+│   │       ├── session/            # Browser-side WebSocket session management
 │   │       └── pages/              # Routes
 │   │           ├── home_page.rs
-│   │           ├── notebook_editor.rs
+│   │           ├── notebook_editor/
 │   │           ├── public_notebook.rs
-│   │           └── shared_notebook.rs
+│   │           ├── shared_notebook.rs
+│   │           ├── mutable_notebook.rs
+│   │           └── embed_notebook.rs
 │   │
 │   ├── ironpad-server/             # HTTP server entry
 │   │   ├── Cargo.toml
+│   │   ├── assets/fonts/           # Embedded fonts for preview cards (PRD-0050)
 │   │   └── src/
 │   │       ├── main.rs             # Tokio + Axum + Leptos setup
-│   │       └── config.rs           # CLI args
+│   │       ├── config.rs           # CLI args
+│   │       ├── ws.rs               # WebSocket relay handlers
+│   │       ├── sessions.rs         # Session store + token management
+│   │       ├── state.rs            # Shared server state
+│   │       ├── og/                 # Social-preview card renderer (PRD-0050)
+│   │       └── crawl.rs            # robots.txt + sitemap.xml (PRD-0050)
+│   │
+│   ├── ironpad-proxy/              # Domain-filtering forward proxy
+│   │   ├── Cargo.toml
+│   │   └── src/main.rs             # CONNECT-only proxy with allowlist
+│   │
+│   ├── ironpad-cli/                # CLI daemon + agent commands
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── main.rs             # CLI subcommands
+│   │       ├── daemon.rs           # WS connection, state cache
+│   │       └── ipc.rs              # Unix socket IPC
 │   │
 │   ├── ironpad-frontend/           # WASM hydration
 │   │   ├── Cargo.toml
@@ -176,49 +213,59 @@ ironpad/
 │   │
 │   ├── ironpad-common/             # Shared types
 │   │   ├── Cargo.toml
-│   │   ├── src/lib.rs
-│   │   ├── types.rs                # IronpadNotebook, CompileRequest/Response, etc.
-│   │   └── config.rs               # AppConfig
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── types.rs            # IronpadNotebook, CompileRequest/Response, etc.
+│   │       ├── config.rs           # AppConfig
+│   │       ├── protocol.rs         # Collaboration protocol messages
+│   │       └── cache_key.rs        # Shared cache-key recipe + CACHE_EPOCH
 │   │
 │   └── ironpad-cell/               # Cell runtime (injected as dep)
 │       ├── Cargo.toml
-│       └── src/lib.rs              # CellInput, CellOutput, FFI
+│       └── src/                    # lib.rs (CellInput/CellOutput, FFI) + feature
+│                                   # modules (canvas, ui, plot, sim, gpu, http,
+│                                   # blocking, timing)
 │
 ├── docker/
-│   ├── Dockerfile                  # Multi-stage build
+│   ├── Dockerfile                  # Multi-stage build (cargo-chef)
 │   ├── docker-compose.yml
-│   └── warmup-Cargo.toml           # Cargo cache warmup
+│   ├── entrypoint.sh               # Seeds warmed caches into the volume
+│   ├── warmup-Cargo.toml           # Cargo cache warmup (default target)
+│   └── warmup-atomics-Cargo.toml   # Cargo cache warmup (atomics target)
 │
 ├── public/
-│   ├── executor.js                 # WASM executor (client-side)
+│   ├── executor-bridge.js          # window.IronpadExecutor (delegates to worker)
+│   ├── executor-core.js            # Executor logic shared by main thread + worker
+│   ├── executor-worker.js          # Web Worker entry (+ executor-worker-core.js)
+│   ├── executor.js                 # Main-thread executor wrapper
+│   ├── embed.js                    # Third-party embed loader (+ embed-frame.js)
 │   ├── storage.js                  # IndexedDB storage API (IIFE)
-│   ├── notebooks/                  # Static public .ironpad files
-│   │   ├── index.json
+│   ├── katex/                      # Math rendering for markdown cells
+│   ├── prism/                      # Syntax highlighting for markdown cells
+│   ├── notebooks/                  # Static public .ironpad files (no index file)
 │   │   ├── welcome.ironpad
 │   │   ├── tutorial.ironpad
-│   │   └── async-http.ironpad
+│   │   └── ... (45 in total)
 │   └── monaco/
 │       ├── vs/                     # Monaco dist (copied from npm)
 │       ├── init.js                 # AMD loader config
 │       ├── languages.js            # Language definitions
+│       ├── completions-index.json  # Generated completions (gen-completions)
 │       └── bridge.js               # JS ↔ Rust FFI bridge
 │
 ├── style/
 │   └── main.scss                   # Dark theme styles
 │
-├── data/
-│   ├── public_notebooks/           # Public notebook index
-│   │   └── index.json
-│   └── shares/                     # Shared notebook blobs
-│       └── {hash}.json
+├── data/                           # Runtime server data ({data_dir}, not tracked)
+│   ├── shares/                     # Shared notebook JSON + blobs/ snapshots
+│   ├── mutable/                    # Mutable share records (PRD-0049)
+│   └── og/                         # Cached social-preview PNGs (PRD-0050)
 │
 ├── tests/
-│   └── e2e/
-│       ├── home.spec.ts
-│       ├── notebook.spec.ts
-│       └── sanity.spec.ts
+│   └── e2e/                        # Playwright specs (home, notebook, execution,
+│                                   # embed, mutable-shares, social-preview, ...)
 │
-├── AGENTS.md                       # Agent guidance
+├── CLAUDE.md                       # Agent guidance
 └── DEVELOPMENT.md                  # This file
 ```
 
@@ -236,11 +283,11 @@ scaffold → cache check → cargo build → diagnostics → wasm-opt
 
 2. **Cache Check** (`compiler/cache.rs`) — Computes a blake3 content hash over (source ‖ Cargo.toml ‖ previous cell types ‖ shared deps). On cache hit, skips compilation entirely.
 
-3. **Build** (`compiler/build.rs`) — Runs `cargo build --target wasm32-unknown-unknown --release` with JSON message output and a 30-second timeout.
+3. **Build** (`compiler/build.rs`) — Runs `cargo build --target wasm32-unknown-unknown --release` with JSON message output and a 300-second timeout (override with `IRONPAD_BUILD_TIMEOUT_SECS`).
 
 4. **Diagnostics** (`compiler/diagnostics.rs`) — Parses rustc JSON output and adjusts line numbers by subtracting `WRAPPER_PREAMBLE_LINES` (4) to map errors back to user source.
 
-5. **Optimize** (`compiler/optimize.rs`) — Best-effort `wasm-opt -Oz` (binaryen). Failures are non-fatal.
+5. **Optimize** (`compiler/optimize.rs`) — Best-effort `wasm-opt -O3` (binaryen; runtime speed over size). Failures are non-fatal.
 
 ### Key Details
 
@@ -290,13 +337,13 @@ cargo build --target wasm32-unknown-unknown --release --message-format=json
 All cells compile to **`wasm32-unknown-unknown`**:
 - No WASI or browser APIs
 - Self-contained binary with exports: `memory`, `ironpad_alloc`, `ironpad_dealloc`, `cell_main`
-- Optimized with `wasm-opt -Oz` for minimal size
+- Optimized with `wasm-opt -O3` for runtime speed (cells execute repeatedly in the browser, so size matters less)
 
 ### Caching Strategy
 
-- **Cache key**: `blake3(source || cargo_toml || "wasm32-unknown-unknown")`
-- **Cache path**: `{cache_dir}/blobs/{64-char-hex}.wasm`
-- **Hit rate**: High for deterministic user code; misses trigger full compilation (~30s timeout)
+- **Cache key**: blake3 over source, Cargo.toml, previous cell types, shared source/Cargo.toml, and the feature-detection flags (atomics, simd, autodiff, ...), bound to a toolchain fingerprint and `CACHE_EPOCH` (recipe in `ironpad-common/src/cache_key.rs`)
+- **Cache path**: `{cache_dir}/blobs/{hash}.wasm` (plus `.js` glue and `.diag.json` sidecars where applicable)
+- **Hit rate**: High for deterministic user code; misses trigger full compilation (300-second timeout)
 
 ### Diagnostic Mapping
 
@@ -315,7 +362,7 @@ Cells use **linear WASM memory** with FFI at the boundaries:
 
 ```javascript
 // Public executor API (JavaScript)
-loadBlob(cellId, hash, wasmBytes)           // Load + instantiate module
+loadBlob(cellId, hash, wasmBytes, jsGlue)   // Load + instantiate module
 execute(cellId, inputBytes) -> result        // Run cell_main
   -> { outputBytes: Uint8Array, displayText: string | null }
 ```
@@ -358,7 +405,7 @@ let decoded: T = bincode::serde::decode_from_slice(&bytes, bincode::config::stan
 
 ## Rayon / Multi-Core Parallelism
 
-ironpad supports multi-core parallelism in cells via [rayon](https://docs.rs/rayon) and [wasm-bindgen-rayon](https://github.com/nickhobbs94/nickhobbs94.github.io).
+ironpad supports multi-core parallelism in cells via [rayon](https://docs.rs/rayon) and [wasm-bindgen-rayon](https://github.com/RReverser/wasm-bindgen-rayon).
 
 ### How It Works
 
@@ -419,6 +466,7 @@ Defined in `ironpad-common/src/types.rs`, the `IronpadNotebook` JSON format is u
 
 ```json
 {
+  "version": 1,
   "id": "uuid",
   "title": "My Notebook",
   "created_at": "2026-03-07T...",
@@ -428,6 +476,7 @@ Defined in `ironpad-common/src/types.rs`, the `IronpadNotebook` JSON format is u
       "id": "cell_0",
       "order": 0,
       "label": "Cell Label",
+      "cell_type": "Code",
       "source": "let x = 42;\nCellOutput::new(&x)?.with_display(\"42\").into()",
       "cargo_toml": "[dependencies]\nserde = \"1\""
     }
@@ -435,13 +484,19 @@ Defined in `ironpad-common/src/types.rs`, the `IronpadNotebook` JSON format is u
 }
 ```
 
+Optional notebook fields (`description`, `tags`, `shared_source`, `shared_cargo_toml`, `reactive_mode`, `og_image`) and optional cell fields (`shared`, `collapsed`, `output_collapsed`) are omitted when unset; see `ironpad-common/src/types.rs` for the full definitions.
+
 ### Public Notebooks
 
-Static `.ironpad` JSON files in `public/notebooks/` (e.g., `welcome.ironpad`, `tutorial.ironpad`). An index at `{data_dir}/public_notebooks/index.json` is read by `list_public_notebooks()`.
+Static `.ironpad` JSON files in `public/notebooks/` (bundled into `{site_root}/notebooks/` at build time). There is no index file: `list_public_notebooks()` enumerates `{site_root}/notebooks/*.ironpad` at runtime and reads each notebook's own `title`/`description`.
 
 ### Shared Notebooks
 
-Upload notebook JSON via `share_notebook()` → blake3 content hash (first 16 hex chars) → stored at `{data_dir}/shares/{hash}.json`. Retrieve via `get_shared_notebook(hash)` at URL `/shared/{hash}`.
+Upload notebook JSON via `share_notebook()` → blake3 content hash (first 16 hex chars) → stored at `{data_dir}/shares/{hash}.json`. Retrieve via `get_shared_notebook(hash)` at URL `/shared/{hash}`. Shares are immutable: editing and re-sharing mints a new hash, and old links stay frozen. At share time the server also snapshots compiled blobs for cache-hit cells into `{data_dir}/shares/blobs/` with a `{hash}.manifest.json` sidecar (PRD-0047), retrievable via `get_shared_manifest(hash)`, so viewers replay blobs instead of compiling.
+
+### Mutable Shares (PRD-0049)
+
+"Share Mutable" converts a private notebook into a server-backed one at `/mutable/{id}` (server-minted 16-hex id). Anyone with the link reads it; the author overwrites it with an explicit Push. There are no accounts: authorization is two device-minted keys, a per-profile user key and a per-notebook notebook key, and the server accepts either. Keys are hashed at rest with domain-separated blake3 and compared in constant time. The record at `{data_dir}/mutable/{id}.json` holds the notebook, both key hashes, the blob manifest, and the push timestamp. Server functions: `create_mutable_share`, `push_mutable`, `get_mutable_notebook`, `get_mutable_manifest`, `verify_mutable_key` (rebind gate), `delete_mutable_share` (unpublish), `list_mutable_shares` (enumerate by user key).
 
 ---
 
@@ -449,7 +504,7 @@ Upload notebook JSON via `share_notebook()` → blake3 content hash (first 16 he
 
 - **Leptos 0.8** with SSR + WASM hydration — server renders HTML, client hydrates into a reactive SPA.
 - **Monaco editor** with a custom dark theme, Rust syntax highlighting, and inline diagnostic markers. Loaded from `public/monaco/` via AMD loader.
-- **Cell execution** runs entirely in the browser — compiled WASM modules are loaded and invoked via `public/executor.js`, with FFI-based memory management for I/O piping.
+- **Cell execution** runs entirely in the browser: compiled WASM modules are loaded and invoked via the executor scripts in `public/` (`executor-bridge.js` exposes `window.IronpadExecutor` and delegates to a Web Worker built on `executor-core.js`; `executor.js` is the main-thread wrapper), with FFI-based memory management for I/O piping.
 
 ### Client-Side APIs
 
@@ -466,10 +521,14 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 ```
 /                              → HomePage (private + public notebook list)
 /local/{id}                    → NotebookEditorPage (private, IndexedDB-backed)
-/public/{name}                 → PublicNotebookPage (read-only, static .ironpad file; legacy /notebook/* paths redirect)
+/public/{name}                 → PublicNotebookPage (read-only, static .ironpad file)
 /shared/{hash}                 → SharedNotebookPage (read-only, immutable, shared via hash)
 /mutable/{id}                  → MutableNotebookPage (read-only reader + rebind; author-updatable via Push; PRD-0049)
+/embed/shared/{hash}           → EmbedSharedPage (chrome-less iframe variant; PRD-0039)
+/embed/public/{filename}       → EmbedPublicPage (chrome-less iframe variant; PRD-0039)
 ```
+
+Legacy `/notebook/{id}` and `/notebook/public/{filename}` paths redirect to the canonical routes. The three server-backed notebook routes (`/public`, `/shared`, `/mutable`) render with `SsrMode::Async` so crawlers see their metadata (see Social Previews below). Outside Leptos, the server also handles `/share-blobs/{file}`, `/og/{class}/{id}.png`, `/og/ironpad.png`, `/robots.txt`, and `/sitemap.xml` as plain axum routes.
 
 ### Key Components
 
@@ -535,58 +594,76 @@ CSS (SCSS) at `style/main.scss` with dark theme:
 pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, ServerFnError>
 
 #[server]
+pub async fn check_cell(request: CompileRequest) -> Result<CheckResponse, ServerFnError>
+
+#[server]
+pub async fn get_toolchain_fingerprint() -> Result<String, ServerFnError>
+
+#[server]
 pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, ServerFnError>
 
 #[server]
 pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, ServerFnError>
 
 #[server]
-pub async fn share_notebook(notebook_json: String) -> Result<String, ServerFnError>
+pub async fn share_notebook(notebook_json: String, cell_type_tags: Option<Vec<String>>) -> Result<String, ServerFnError>
 
 #[server]
 pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, ServerFnError>
+
+#[server]
+pub async fn get_shared_manifest(hash: String) -> Result<Option<ShareManifest>, ServerFnError>
 ```
+
+`check_cell` backs live check-on-type (PRD-0045); `get_toolchain_fingerprint` feeds the client-side blob cache keys (PRD-0047). The mutable-share set (PRD-0049) adds `create_mutable_share`, `push_mutable`, `get_mutable_notebook`, `get_mutable_manifest`, `verify_mutable_key`, `delete_mutable_share`, and `list_mutable_shares`.
 
 They run on the server and are automatically serialized/called from the client.
 
 ### CLI Flags
 
 ```
---data-dir <PATH>           (env: IRONPAD_DATA_DIR, default: ./data)
---cache-dir <PATH>          (env: IRONPAD_CACHE_DIR, default: ./cache)
---port <PORT>               (env: IRONPAD_PORT, default: 3111)
---ironpad-cell-path <PATH>  (env: IRONPAD_CELL_PATH, default: ./crates/ironpad-cell)
+--data-dir <PATH>                 (env: IRONPAD_DATA_DIR, default: ./data)
+--cache-dir <PATH>                (env: IRONPAD_CACHE_DIR, default: ./cache)
+--port <PORT>                     (env: IRONPAD_PORT, default: 3111)
+--ironpad-cell-path <PATH>        (env: IRONPAD_CELL_PATH, default: ./crates/ironpad-cell)
+--compilation-proxy <URL>         (env: IRONPAD_COMPILATION_PROXY, default: unset)
+--public-url <ORIGIN>             (env: IRONPAD_PUBLIC_URL, default: http://localhost:{port})
+--max-guests <N>                  (env: IRONPAD_MAX_GUESTS, default: 512)
+--guest-idle-timeout-secs <SECS>  (env: IRONPAD_GUEST_IDLE_TIMEOUT_SECS, default: 1800)
 ```
 
 ### Docker Deployment
 
 **Multi-stage Dockerfile** (`docker/Dockerfile`):
 
-1. **Builder stage** (rust:1.93.0):
+1. **Planner stage** (rust:1.93.0):
+   - Generates a cargo-chef recipe so compiled dependencies cache in their own layer
+
+2. **Builder stage** (rust:1.93.0):
    - Install `wasm32-unknown-unknown` target + binaryen
-   - Install `cargo-leptos`
-   - `cargo leptos build --release` → compiles server + frontend WASM
+   - Install `cargo-leptos` + `wasm-bindgen-cli` (via cargo-binstall)
+   - `cargo chef cook`, then `cargo leptos build --release` → compiles server + frontend WASM
 
-2. **Runtime stage** (rust:1.93.0):
-   - Rust toolchain (needed for compiling user cells)
-   - `wasm32-unknown-unknown` target
-   - Binaryen (`wasm-opt`)
-   - Pre-warm cargo registry with ironpad-cell dependencies
-   - Copy built server binary + site assets
-   - Expose port 3111
+3. **Runtime stage** (rust:1.93.0-slim):
+   - Installs the three pinned nightly cell toolchains (`CELL_TOOLCHAIN`, `AUTODIFF_TOOLCHAIN` + enzyme, `ATOMICS_TOOLCHAIN`), then uninstalls the base image's stable toolchain (nothing uses it)
+   - `wasm-opt` copied from the builder
+   - Pre-warms the cargo registry and target dirs with ironpad-cell dependencies; `entrypoint.sh` seeds them into the volume
+   - Copies the server binary + site assets, enables the compilation proxy, exposes port 3111
 
-**docker-compose.yml**:
+**docker-compose.yml** (`docker/docker-compose.yml`):
 ```yaml
 services:
   ironpad:
-    build: .
+    image: ironpad:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     ports: ["3111:3111"]
     volumes:
-      - notebooks:/data
-      - cache:/cache
+      - ironpad:/ironpad
     environment:
-      - IRONPAD_DATA_DIR=/data
-      - IRONPAD_CACHE_DIR=/cache
+      - IRONPAD_DATA_DIR=/ironpad/data
+      - IRONPAD_CACHE_DIR=/ironpad/cache
       - IRONPAD_PORT=3111
       - IRONPAD_CELL_PATH=/app/crates/ironpad-cell
 ```
@@ -605,6 +682,59 @@ fly secrets set -c .hidden/fly.toml \
 ```
 
 For local testing, export the same two vars in your shell before `cargo make dev` (there is no `.env` auto-loading). TLS uses rustls with bundled webpki roots, so no system OpenSSL or cert store is required in the container. Metrics/logs export are easy follow-ons once traces are confirmed flowing.
+
+---
+
+## Social Previews (PRD-0050)
+
+Every shareable URL serves per-page `<title>`, `og:*`, and `twitter:*` metadata plus a generated 1200x630 card image, so a pasted link unfurls with a real title, description, and picture on Reddit, X, Slack, and Discord.
+
+### Metadata
+
+The `SocialMeta` component (`ironpad-app/src/components/social_meta.rs`) emits the tag block on `/`, `/public/{name}`, `/shared/{hash}`, and `/mutable/{id}`.
+
+**`SsrMode::Async` on the three server-backed notebook routes is load-bearing.** Their titles come from a `Resource`, and under Leptos's default out-of-order streaming the `<head>` is flushed before the resource resolves; `leptos_meta` then patches the tags in with a script. That is correct for a browser and invisible to every unfurler, since none of them run JavaScript. The tags would look right in devtools and not exist for crawlers, which is why `tests/e2e/social-preview.spec.ts` asserts against raw response bodies, never the hydrated DOM. Keep it that way.
+
+`og:image` and `og:url` must be absolute URLs. `IRONPAD_PUBLIC_URL` (`AppConfig::public_url`, applied via `absolute_url`) supplies the origin server-side; the client falls back to `window.location.origin`.
+
+### Card Generation
+
+`GET /og/{class}/{id}.png` (plus `/og/ironpad.png` for the home page) renders a card from notebook metadata in `ironpad-server/src/og/`:
+
+- `text.rs`: embedded fonts + advance-width measurement (SVG has no text wrapping, so every line is positioned explicitly)
+- `svg.rs`: pure Card-to-SVG layout, unit-testable with no filesystem or rasterizer
+- `mod.rs`: notebook extraction, disk cache, axum handlers
+
+The SVG is rasterized with `resvg` and cached at `{data_dir}/og/{blake3-of-svg}.png`. The fonts (Inter + JetBrains Mono, under `crates/ironpad-server/assets/fonts/`) are embedded with `include_bytes!`, and `resvg` is built with `default-features = false, features = ["text"]` (no `system-fonts`): the runtime image is `rust:1.93.0-slim` and ships no fonts, so font discovery would work on a dev box and find nothing in prod.
+
+Notebook text is attacker-controlled on `/shared` and `/mutable`. It is XML-escaped before it reaches the SVG, and a notebook's optional `og_image` override is forced root-relative by `IronpadNotebook::og_image_path()` so a share cannot point a crawler at another origin.
+
+### Crawler Files
+
+`/robots.txt` and `/sitemap.xml` are served by `ironpad-server/src/crawl.rs`. The sitemap enumerates public notebooks at request time by their canonical extension-less routes. Unlisted is not the same as blocked: `/shared` and `/mutable` pages carry a `noindex` robots meta tag rather than a `robots.txt` `Disallow`, because several unfurlers honour robots.txt and would then refuse to build a preview at all. `robots.txt` disallows only `/embed/` (duplicate content).
+
+### Editing the Metadata (PRD-0051)
+
+The fields the unfurl reads (`description`, `tags`, `og_image`, and the new `og_image_width`/`og_image_height`) are editable from a collapsible panel below the cell list, in `pages/notebook_editor/metadata_panel.rs`. It sits in its own `.ironpad-editor-metadata-appendix` wrapper rather than joining the shared-source appendix, because `shared-appendix.spec.ts` indexes that container positionally.
+
+Both the panel and the agent protocol go through one struct. `NotebookMetaPatch` is `#[serde(flatten)]`-ed into both `Mutation::NotebookUpdateMeta` and `Event::NotebookMetaUpdated`, which keeps the two from drifting; `Mutation` is internally tagged, so the fields still sit beside `action` and the wire format is unchanged (regression-locked by `flattening_the_patch_left_the_wire_format_alone`). `NotebookMetaPatch::apply_to` is the single application of a patch to a notebook, used by the browser model and by the CLI daemon's cached copy.
+
+Two things to know before touching this:
+
+- **Every clearable field is `Option<Option<T>>`, and serde's default decode is wrong for it.** `None` means unchanged, `Some(None)` means clear, `Some(Some(v))` means set. Plain serde collapses an explicit `null` back to `None`, so a clear crossing the WebSocket arrived as "unchanged". `explicit_null_is_a_clear` fixes the decode; an absent key still means unchanged because `skip_serializing_if` keeps it off the wire entirely.
+- **Validate at the point of use.** `og_image_dimensions()` follows `og_image_path()`: notebooks arrive from unauthenticated shares and from IndexedDB, so both axes must be present, both within `OG_IMAGE_MIN_PX..=OG_IMAGE_MAX_PX`, and an override image must actually exist. A declared size reserves a layout box in someone's feed before the image is fetched.
+
+### oEmbed (PRD-0051)
+
+`GET /oembed?url=…` (`ironpad-server/src/oembed.rs`) maps a canonical `/public` or `/shared` URL to its `/embed/*` route and returns a `rich` oEmbed response, so a consumer that supports discovery embeds the running notebook rather than the static card. The pages advertise it with a `<link rel="alternate" type="application/json+oembed">`.
+
+It is locked to `public_url`: a provider that embedded arbitrary URLs would be an open redirect wearing an iframe, since the consumer trusts the returned HTML on the strength of trusting the provider. `/mutable` is excluded because no `/embed/mutable` route exists, and resolving it would hand back a frame pointing at a 404. Note that X, Reddit, and Slack use their own allowlists rather than discovery, so this changes nothing about how a link looks there; that is what the Open Graph tags are for.
+
+### Content Security Policy
+
+Every response carries `object-src 'none'; base-uri 'self'; form-action 'self'` (`CONTENT_SECURITY_POLICY` in `ironpad-server/src/main.rs`).
+
+Two deliberate omissions. There is no `script-src`, because Leptos hydration emits an inline module script and Monaco ships its own loader, so any policy today would need `'unsafe-inline'`, which permits exactly the kind of injection a CSP is meant to blunt; per-request nonces through `leptos_meta` and the Monaco bootstrap are the real fix. And there is no `frame-ancestors`, because `/embed/*` exists to be framed by third parties.
 
 ---
 
@@ -629,9 +759,9 @@ cargo build  ──HTTPS_PROXY──►  ironpad-proxy (127.0.0.1:3112)
 | Env Var | Purpose | Default |
 |---|---|---|
 | `IRONPAD_COMPILATION_PROXY` | Proxy URL (e.g., `http://127.0.0.1:3112`). Set to enable; unset to disable. | *unset* |
-| `IRONPAD_PROXY_ALLOWLIST` | Comma-separated domains. Uses suffix matching: `crates.io` also allows `static.crates.io`. | `crates.io,github.com,githubusercontent.com` |
+| `IRONPAD_PROXY_ALLOWLIST` | Comma-separated domains. Uses suffix matching: `crates.io` also allows `static.crates.io`. | *empty* (fail-closed: all connections denied) |
 
-The default allowlist covers the standard Cargo ecosystem:
+The Docker image sets `IRONPAD_PROXY_ALLOWLIST=crates.io,github.com,githubusercontent.com`, which covers the standard Cargo ecosystem:
 - `crates.io` → `static.crates.io`, `index.crates.io`
 - `github.com` → git dependencies
 - `githubusercontent.com` → `raw.githubusercontent.com`, `objects.githubusercontent.com`
@@ -725,8 +855,6 @@ Note: The host project builds fine with `clang`+`mold` (native target), but cell
 
 ## TODO / Future Ideas
 
-
-```
 - UI cleanup.
 - CI cleanup.
 

@@ -74,6 +74,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                         || format!("/og/mutable/{id}.png"),
                                         str::to_string,
                                     )
+                                image_size=notebook.og_image_dimensions()
                                 noindex=true
                             />
                             <MutableReader id notebook manifest />

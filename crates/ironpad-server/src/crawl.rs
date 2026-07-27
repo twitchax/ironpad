@@ -16,6 +16,7 @@ use std::fmt::Write as _;
 use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
+use ironpad_common::absolute_url;
 
 use crate::state::AppState;
 
@@ -32,11 +33,7 @@ pub fn robots_txt(public_url: &str) -> String {
         let _ = writeln!(out, "Disallow: {path}");
     }
     out.push_str("Allow: /\n\n");
-    let _ = writeln!(
-        out,
-        "Sitemap: {}/sitemap.xml",
-        public_url.trim_end_matches('/')
-    );
+    let _ = writeln!(out, "Sitemap: {}", absolute_url(public_url, "/sitemap.xml"));
     out
 }
 
@@ -48,25 +45,28 @@ pub fn robots_txt(public_url: &str) -> String {
 /// and `/mutable` are unlisted by design.
 #[must_use]
 pub fn sitemap_xml(public_url: &str, filenames: &[String]) -> String {
-    let origin = public_url.trim_end_matches('/');
     let mut out = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     out.push('\n');
     out.push_str(r#"<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"#);
     out.push('\n');
-    let _ = writeln!(out, "  <url><loc>{}/</loc></url>", escape(origin));
+    push_url(&mut out, public_url, "/");
 
     for filename in filenames {
         let name = filename.strip_suffix(".ironpad").unwrap_or(filename);
-        let _ = writeln!(
-            out,
-            "  <url><loc>{}/public/{}</loc></url>",
-            escape(origin),
-            escape(name)
-        );
+        push_url(&mut out, public_url, &format!("/public/{name}"));
     }
 
     out.push_str("</urlset>\n");
     out
+}
+
+/// Appends one `<url>` entry for a root-relative path.
+fn push_url(out: &mut String, public_url: &str, path: &str) {
+    let _ = writeln!(
+        out,
+        "  <url><loc>{}</loc></url>",
+        escape(&absolute_url(public_url, path))
+    );
 }
 
 /// XML-escapes a URL for inclusion in a `<loc>`.
@@ -103,10 +103,11 @@ pub async fn robots_handler(State(state): State<AppState>) -> Response {
 /// `GET /sitemap.xml`
 pub async fn sitemap_handler(State(state): State<AppState>) -> Response {
     let site_root = std::path::Path::new(state.leptos_options.site_root.as_ref()).to_path_buf();
-    let filenames = ironpad_app::server_fns::list_public_notebooks_core(&site_root)
+    let filenames = ironpad_app::server_fns::list_public_notebooks_cached(&site_root)
         .await
-        .map(|list| list.into_iter().map(|n| n.filename).collect::<Vec<_>>())
-        .unwrap_or_default();
+        .iter()
+        .map(|n| n.filename.clone())
+        .collect::<Vec<_>>();
 
     (
         [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],

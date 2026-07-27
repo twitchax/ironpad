@@ -314,6 +314,35 @@ async fn evict_if_needed(dir: &Path, incoming: u64) {
     );
 }
 
+/// Per-key locks that collapse concurrent renders of the same card.
+///
+/// Posting a link makes several unfurlers fetch it at once, and they all miss
+/// a cold cache together. Without this, one Slack message costs N full
+/// rasterizes of byte-identical output; with it, the first request renders and
+/// the rest wait and then read the file it just wrote.
+///
+/// Deliberately not `ironpad_app::compiler::CompileLocks`, which is the same
+/// shape: that type's name and its `try_acquire` skip-when-busy semantics both
+/// belong to the compile pipeline, and coupling the preview path to it would
+/// make a future change there a change here.
+static RENDER_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Acquires the render lock for `key`, waiting out any in-flight render of it.
+fn render_lock(key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let mut table = RENDER_LOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Prune keys nobody holds so the table can't grow without bound across
+    // distinct shared notebooks. `strong_count == 1` means only the table has
+    // it, so no render is inside the critical section; a concurrent acquirer
+    // for a pruned key just makes a fresh lock. Runs under the table lock, so
+    // mutual exclusion survives the prune.
+    table.retain(|k, lock| k == key || std::sync::Arc::strong_count(lock) > 1);
+    table.entry(key.to_string()).or_default().clone()
+}
+
 /// Renders `card`, serving a cached PNG when one exists.
 ///
 /// A cache write that fails is logged and ignored: the bytes are already in
@@ -321,9 +350,19 @@ async fn evict_if_needed(dir: &Path, incoming: u64) {
 /// a housekeeping problem into a visible one.
 async fn render_cached(data_dir: &Path, card: &Card) -> anyhow::Result<Vec<u8>> {
     let document = svg::render(card);
+    let key = cache_key(&document);
     let dir = cache_dir(data_dir);
-    let path = dir.join(format!("{}.png", cache_key(&document)));
+    let path = dir.join(format!("{key}.png"));
 
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        return Ok(bytes);
+    }
+
+    let lock = render_lock(&key);
+    let _guard = lock.lock().await;
+
+    // Re-check under the lock: whoever we queued behind has written the file
+    // by now, and reading it is the entire point of having waited.
     if let Ok(bytes) = tokio::fs::read(&path).await {
         return Ok(bytes);
     }
@@ -429,9 +468,9 @@ pub async fn notebook_card_handler(
 /// `GET /og/ironpad.png` — the site-wide card, used by the home page.
 pub async fn site_card_handler(State(state): State<AppState>) -> Response {
     let site_root = Path::new(state.leptos_options.site_root.as_ref()).to_path_buf();
-    let notebooks = ironpad_app::server_fns::list_public_notebooks_core(&site_root)
+    let notebooks = ironpad_app::server_fns::list_public_notebooks_cached(&site_root)
         .await
-        .map_or(0, |list| list.len());
+        .len();
 
     let card = site_card(host_of(&state.config.public_url), notebooks);
     match render_cached(&state.config.data_dir, &card).await {

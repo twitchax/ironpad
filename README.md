@@ -12,8 +12,8 @@ An interactive Rust notebook environment that compiles cells to WebAssembly and 
 - **WebAssembly execution** — cells compile to WASM and run entirely in the browser; no server-side execution
 - **Rich output** — HTML, Canvas, animations, interactive widgets, and real-time simulations
 - **Data piping** — pass bincode-serialized data between cells with typed `cell0`, `cell1`, ... variables
-- **30+ showcase notebooks** — Fourier series, nuclear reactor sim, double pendulum, Game of Life, ray marching, sorting visualizer, and [many more](https://ironpad.twitchax.com)
-- **Shareable notebooks** — share any notebook via content-addressed links
+- **45 showcase notebooks** — Fourier series, nuclear reactor sim, double pendulum, Game of Life, ray marching, sorting visualizer, and [many more](https://ironpad.twitchax.com)
+- **Shareable notebooks** — share any notebook via immutable content-addressed links, or publish a mutable share you can push updates to
 - **AI agent collaboration** — real-time co-editing via WebSocket relay + CLI daemon
 - **Self-hostable** — run your own instance with a single Docker command
 
@@ -83,7 +83,7 @@ ironpad compiles each cell into a standalone WASM module via a 5-stage pipeline:
 2. **Cache** — blake3 hash lookup; identical cells compile once
 3. **Build** — `cargo build --target wasm32-unknown-unknown --release`
 4. **Diagnostics** — parses rustc JSON output and maps errors back to user source lines
-5. **Optimize** — best-effort `wasm-opt -Oz` (binaryen)
+5. **Optimize** — best-effort `wasm-opt -O3` (binaryen; runtime speed over size)
 
 The compiled WASM is sent to the browser, instantiated, and executed — all output (text, HTML, Canvas) renders inline.
 
@@ -112,7 +112,7 @@ The `ironpad-cli` binary connects to a running ironpad server as an AI agent col
 ### Connect to a Session
 
 ```bash
-$ ironpad --host ws://localhost:3111 --token <session-token> status
+$ ironpad-cli --host ws://localhost:3111 --token <session-token> status
 
 Status
   Daemon:     running (pid 12345)
@@ -124,22 +124,22 @@ Status
 
 ```bash
 # List all cells.
-$ ironpad cells list
+$ ironpad-cli cells list
 
 # Get a cell's source.
-$ ironpad cells get <cell-id>
+$ ironpad-cli cells get <cell-id>
 
 # Add a new cell.
-$ ironpad cells add --source 'let x = 42; x' --label "answer"
+$ ironpad-cli cells add --source 'let x = 42; x' --label "answer"
 
 # Update a cell.
-$ ironpad cells update <cell-id> --source 'let x = 43; x'
+$ ironpad-cli cells update <cell-id> --source 'let x = 43; x'
 
 # Delete a cell.
-$ ironpad cells delete <cell-id>
+$ ironpad-cli cells delete <cell-id>
 
 # Reorder cells.
-$ ironpad cells reorder <cell-id-1> <cell-id-2> <cell-id-3>
+$ ironpad-cli cells reorder <cell-id-1> <cell-id-2> <cell-id-3>
 ```
 
 ### Agent Architecture
@@ -174,7 +174,7 @@ crates/
 ```bash
 cargo make install-tools    # install dev tools + wasm target
 cargo make dev              # start dev server with hot reload
-cargo make ci               # fmt-check + clippy + tests
+cargo make ci               # fmt-check + gen-completions-check + clippy + tests
 cargo make test-integration # full compiler pipeline tests (slow)
 cargo make playwright       # e2e browser tests
 cargo make uat              # the one true gate: ci + integration + e2e

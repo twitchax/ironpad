@@ -471,14 +471,52 @@ pub async fn list_public_notebooks_core(
     Ok(summaries)
 }
 
+/// Process-lifetime cache behind [`list_public_notebooks_cached`].
+#[cfg(feature = "ssr")]
+static PUBLIC_NOTEBOOKS: tokio::sync::OnceCell<Vec<PublicNotebookSummary>> =
+    tokio::sync::OnceCell::const_new();
+
+/// [`list_public_notebooks_core`], computed once per process.
+///
+/// The public notebooks are static files baked into `{site_root}/notebooks` at
+/// build time, so the listing cannot change while the server runs; a deploy is
+/// what replaces them, and that restarts the process. Enumerating them means
+/// reading and JSON-parsing every one, which was happening on each home-page
+/// load, each `/sitemap.xml`, and each `/og/ironpad.png` — several megabytes of
+/// parsing per request for a value that is fixed at startup.
+///
+/// The core function stays uncached so its unit tests can each point at their
+/// own `TempDir`. That is also why the `site_root` of the first caller wins
+/// here: there is exactly one for the lifetime of a real server, and baking
+/// that assumption into the shared cache instead of the pure function keeps the
+/// tested code honest.
+///
+/// A read failure is cached as an empty list rather than retried. Missing
+/// `notebooks/` is a build problem, not a transient one, and it already
+/// degrades to an empty list one layer down.
+#[cfg(feature = "ssr")]
+pub async fn list_public_notebooks_cached(
+    site_root: &std::path::Path,
+) -> &'static [PublicNotebookSummary] {
+    PUBLIC_NOTEBOOKS
+        .get_or_init(|| async {
+            list_public_notebooks_core(site_root)
+                .await
+                .unwrap_or_default()
+        })
+        .await
+}
+
 /// Lists all available public notebooks by enumerating `*.ironpad` files at runtime.
 #[server]
 pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, ServerFnError> {
     let leptos_options = expect_context::<LeptosOptions>();
     let site_root = leptos_options.site_root.as_ref();
-    list_public_notebooks_core(std::path::Path::new(site_root))
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))
+    Ok(
+        list_public_notebooks_cached(std::path::Path::new(site_root))
+            .await
+            .to_vec(),
+    )
 }
 
 /// Rejects path segments that contain directory separators or `..` traversal.

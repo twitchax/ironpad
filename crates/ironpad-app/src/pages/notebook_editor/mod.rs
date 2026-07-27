@@ -1,6 +1,7 @@
 mod cell_item;
 mod cell_output;
 mod export;
+mod metadata_panel;
 mod shared_editor_panel;
 mod skeleton;
 pub(crate) mod state;
@@ -22,6 +23,7 @@ use crate::components::session_panel::SessionButton;
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 
 use self::cell_item::CellItem;
+use self::metadata_panel::NotebookMetadataSection;
 use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
 
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
@@ -507,10 +509,10 @@ pub fn NotebookEditorPage() -> impl IntoView {
             let title = layout.notebook_title.get_untracked().unwrap_or_default();
             let _ = model.apply(
                 ironpad_common::protocol::Mutation::NotebookUpdateMeta {
-                    title: Some(title),
-                    shared_cargo_toml: None,
-                    shared_source: None,
-                    reactive_mode: None,
+                    meta: ironpad_common::protocol::NotebookMetaPatch {
+                        title: Some(title),
+                        ..Default::default()
+                    },
                 },
                 ironpad_common::protocol::ClientId::browser(),
             );
@@ -1126,10 +1128,10 @@ fn NotebookContent() -> impl IntoView {
                                             if model
                                                 .apply(
                                                     ironpad_common::protocol::Mutation::NotebookUpdateMeta {
-                                                        title: None,
-                                                        shared_cargo_toml: None,
-                                                        shared_source: None,
-                                                        reactive_mode: Some(on),
+                                                        meta: ironpad_common::protocol::NotebookMetaPatch {
+                                                            reactive_mode: Some(on),
+                                                            ..Default::default()
+                                                        },
                                                     },
                                                     ironpad_common::protocol::ClientId::browser(),
                                                 )
@@ -1202,6 +1204,13 @@ fn NotebookContent() -> impl IntoView {
         <div class="ironpad-editor-shared-appendix">
             <SharedEditorSection kind=SharedEditorKind::Source />
             <SharedEditorSection kind=SharedEditorKind::Dependencies />
+        </div>
+
+        // Its own wrapper rather than a third child of the appendix above:
+        // the shared-appendix e2e spec indexes that container positionally,
+        // so adding a sibling there would silently retarget its assertions.
+        <div class="ironpad-editor-metadata-appendix">
+            <NotebookMetadataSection />
         </div>
         </Show>
 

@@ -19,7 +19,7 @@ use crate::types::{CellManifest, CellType, Diagnostic, IronpadCell, IronpadNoteb
 /// schema changes in a way a peer should be able to notice (a new payload
 /// variant, an added field, …). Decode sites (in the server/CLI crates) may
 /// log a warning when a received version differs from this constant.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Top-level message envelope. Every frame on the wire is one of these.
 ///
@@ -96,6 +96,137 @@ impl ClientId {
     }
 }
 
+// ── Notebook metadata ───────────────────────────────────────────────────────
+
+/// The notebook-level fields one metadata mutation can change.
+///
+/// Every field is tri-state: `None` leaves it alone, `Some(None)` clears it,
+/// and `Some(Some(v))` sets it. `title` is the exception, since a notebook
+/// cannot be untitled, and `reactive_mode` because `false` is its cleared form.
+///
+/// Flattened into both [`Mutation::NotebookUpdateMeta`] and
+/// [`Event::NotebookMetaUpdated`], which is what keeps the two from drifting: a
+/// connected guest rebuilds its cached notebook from the event, so a field the
+/// mutation can carry and the event cannot is silent data loss. They used to be
+/// two hand-maintained copies of the same list. Flattening leaves the wire
+/// format byte-identical, since the fields still sit directly beside `action`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NotebookMetaPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_null_is_a_clear"
+    )]
+    pub shared_cargo_toml: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_null_is_a_clear"
+    )]
+    pub shared_source: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactive_mode: Option<bool>,
+
+    // ── Presentation metadata ───────────────────────────────────────────
+    // What a link unfurl is built from. Clearable, hence the doubled option:
+    // these are the fields a user is most likely to set once and then want
+    // gone.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_null_is_a_clear"
+    )]
+    pub description: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_null_is_a_clear"
+    )]
+    pub tags: Option<Option<Vec<String>>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_null_is_a_clear"
+    )]
+    pub og_image: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_null_is_a_clear"
+    )]
+    pub og_image_width: Option<Option<u32>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_null_is_a_clear"
+    )]
+    pub og_image_height: Option<Option<u32>>,
+}
+
+impl NotebookMetaPatch {
+    /// Applies this patch to `notebook`, leaving untouched every field the
+    /// patch says nothing about.
+    ///
+    /// Lives here rather than in either caller because there are two: the
+    /// browser's model applies it as the authoritative mutation, and the CLI
+    /// daemon applies the mirrored event to its cached copy. Those were
+    /// separate hand-written field-by-field copies, which is exactly how an
+    /// agent's view of a notebook drifts from the browser's.
+    pub fn apply_to(&self, notebook: &mut crate::types::IronpadNotebook) {
+        if let Some(title) = &self.title {
+            notebook.title.clone_from(title);
+        }
+        if let Some(value) = &self.shared_cargo_toml {
+            notebook.shared_cargo_toml.clone_from(value);
+        }
+        if let Some(value) = &self.shared_source {
+            notebook.shared_source.clone_from(value);
+        }
+        if let Some(on) = self.reactive_mode {
+            // `false` is stored as absent, which is what every reader already
+            // treats as off.
+            notebook.reactive_mode = on.then_some(true);
+        }
+        if let Some(value) = &self.description {
+            notebook.description.clone_from(value);
+        }
+        if let Some(value) = &self.tags {
+            notebook.tags.clone_from(value);
+        }
+        if let Some(value) = &self.og_image {
+            notebook.og_image.clone_from(value);
+        }
+        if let Some(value) = self.og_image_width {
+            notebook.og_image_width = value;
+        }
+        if let Some(value) = self.og_image_height {
+            notebook.og_image_height = value;
+        }
+    }
+}
+
+/// Distinguishes an absent key from an explicit `null` for a doubled option.
+///
+/// Serde's default for `Option<Option<T>>` collapses both to `None`, which
+/// silently drops every clear that crosses the wire: the sender means "unset
+/// this", serializes `null`, and the receiver decodes "unchanged" and keeps the
+/// old value. Nothing sent `Some(None)` before the presentation fields existed,
+/// so the bug was latent; clearing a description is the first case that would
+/// have hit it. Paired with `skip_serializing_if`, an absent key still means
+/// unchanged, because the field never reaches this function at all.
+// The doubled option IS the point here: three states, and clippy's suggested
+// `Option<T>` collapses the two this function exists to tell apart.
+#[allow(clippy::option_option)]
+fn explicit_null_is_a_clear<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
 // ── Mutations (client → model) ──────────────────────────────────────────────
 
 /// A request to change notebook state. Any client can send these
@@ -139,14 +270,8 @@ pub enum Mutation {
         cell_ids: Vec<String>,
     },
     NotebookUpdateMeta {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        shared_cargo_toml: Option<Option<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        shared_source: Option<Option<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reactive_mode: Option<bool>,
+        #[serde(flatten)]
+        meta: NotebookMetaPatch,
     },
     /// An unrecognised mutation from a newer peer (see the [`Message`] forward-compat docs).
     #[serde(other)]
@@ -250,14 +375,8 @@ pub enum Event {
         execution_time_ms: f64,
     },
     NotebookMetaUpdated {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        shared_cargo_toml: Option<Option<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        shared_source: Option<Option<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reactive_mode: Option<bool>,
+        #[serde(flatten)]
+        meta: NotebookMetaPatch,
     },
     Error {
         code: ErrorCode,
@@ -472,13 +591,107 @@ mod tests {
         let msg = Message {
             id: "req-5".into(),
             kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
-                title: Some("New Title".into()),
-                shared_cargo_toml: Some(Some("toml content".into())),
-                shared_source: None,
-                reactive_mode: None,
+                meta: NotebookMetaPatch {
+                    title: Some("New Title".into()),
+                    shared_cargo_toml: Some(Some("toml content".into())),
+                    ..Default::default()
+                },
             }),
         };
         round_trip(&msg);
+    }
+
+    #[test]
+    fn mutation_notebook_update_meta_carries_the_presentation_fields() {
+        let msg = Message {
+            id: "req-5b".into(),
+            kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
+                meta: NotebookMetaPatch {
+                    description: Some(Some("A description.".into())),
+                    tags: Some(Some(vec!["blog".into(), "autodiff".into()])),
+                    og_image: Some(Some("/og-custom/x.png".into())),
+                    og_image_width: Some(Some(1024)),
+                    og_image_height: Some(Some(1024)),
+                    ..Default::default()
+                },
+            }),
+        };
+        round_trip(&msg);
+    }
+
+    #[test]
+    fn flattening_the_patch_left_the_wire_format_alone() {
+        // The fields moved into a struct for the Rust API's sake; a peer built
+        // before that must still read this frame, so they have to stay beside
+        // `action` rather than nesting under a `meta` key.
+        let json = serde_json::to_value(Message {
+            id: "req-5c".into(),
+            kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
+                meta: NotebookMetaPatch {
+                    title: Some("T".into()),
+                    ..Default::default()
+                },
+            }),
+        })
+        .unwrap();
+
+        let payload = &json["payload"];
+        assert_eq!(payload["action"], "NotebookUpdateMeta");
+        assert_eq!(payload["title"], "T");
+        assert!(
+            payload.get("meta").is_none(),
+            "the patch must be flattened, not nested: {payload}"
+        );
+        // Untouched fields stay off the wire entirely.
+        assert!(payload.get("description").is_none(), "{payload}");
+    }
+
+    #[test]
+    fn an_explicit_null_clears_and_an_absent_key_does_not() {
+        // Serde's default for Option<Option<T>> collapses both to `None`,
+        // which drops every clear that crosses the wire: the sender means
+        // "unset this" and the receiver decodes "unchanged".
+        let parse = |payload: &str| -> NotebookMetaPatch {
+            let msg: Message = serde_json::from_str(&format!(
+                r#"{{"id":"x","type":"Mutation","payload":{payload}}}"#
+            ))
+            .unwrap();
+            match msg.kind {
+                MessageKind::Mutation(Mutation::NotebookUpdateMeta { meta }) => meta,
+                other => panic!("unexpected: {other:?}"),
+            }
+        };
+
+        let cleared = parse(r#"{"action":"NotebookUpdateMeta","description":null}"#);
+        assert_eq!(cleared.description, Some(None), "null must mean clear");
+
+        let untouched = parse(r#"{"action":"NotebookUpdateMeta","title":"T"}"#);
+        assert_eq!(
+            untouched.description, None,
+            "an absent key must mean unchanged"
+        );
+    }
+
+    #[test]
+    fn a_patch_applies_only_the_fields_it_names() {
+        use crate::types::IronpadNotebook;
+
+        let mut nb = IronpadNotebook::new("Original");
+        nb.description = Some("keep me".into());
+        nb.og_image = Some("/a.png".into());
+
+        NotebookMetaPatch {
+            title: Some("Renamed".into()),
+            og_image: Some(None),
+            og_image_width: Some(Some(800)),
+            ..Default::default()
+        }
+        .apply_to(&mut nb);
+
+        assert_eq!(nb.title, "Renamed");
+        assert_eq!(nb.description.as_deref(), Some("keep me"), "not named");
+        assert_eq!(nb.og_image, None, "Some(None) clears");
+        assert_eq!(nb.og_image_width, Some(800));
     }
 
     #[test]
@@ -747,10 +960,10 @@ mod tests {
         let msg = Message {
             id: "req-reactive".into(),
             kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
-                title: None,
-                shared_cargo_toml: None,
-                shared_source: None,
-                reactive_mode: Some(true),
+                meta: NotebookMetaPatch {
+                    reactive_mode: Some(true),
+                    ..Default::default()
+                },
             }),
         };
         round_trip(&msg);
@@ -764,10 +977,10 @@ mod tests {
         let msg = Message {
             id: "req-no-reactive".into(),
             kind: MessageKind::Mutation(Mutation::NotebookUpdateMeta {
-                title: Some("Title".into()),
-                shared_cargo_toml: None,
-                shared_source: None,
-                reactive_mode: None,
+                meta: NotebookMetaPatch {
+                    title: Some("Title".into()),
+                    ..Default::default()
+                },
             }),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -785,10 +998,10 @@ mod tests {
             kind: MessageKind::Event(EventEnvelope {
                 by: ClientId::browser(),
                 event: Event::NotebookMetaUpdated {
-                    title: None,
-                    shared_cargo_toml: None,
-                    shared_source: None,
-                    reactive_mode: Some(false),
+                    meta: NotebookMetaPatch {
+                        reactive_mode: Some(false),
+                        ..Default::default()
+                    },
                 },
             }),
         };
@@ -803,9 +1016,13 @@ mod tests {
     #[test]
     fn protocol_version_is_advisory_constant() {
         // The version travels for observability / negotiation, not rejection.
-        // Bumping it is a deliberate, reviewed act — lock the current value so
-        // an accidental change is caught.
-        assert_eq!(PROTOCOL_VERSION, 1);
+        // Bumping it is a deliberate, reviewed act, so the current value is
+        // locked here and an accidental change is caught.
+        //
+        // 2: `NotebookUpdateMeta` / `NotebookMetaUpdated` gained the
+        // presentation fields (description, tags, og_image + dimensions) when
+        // they became editable (PRD-0051).
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 
     /// Forward-compat (new → old), envelope level: a frame minted by a newer
@@ -901,10 +1118,10 @@ mod tests {
             kind: MessageKind::Event(EventEnvelope {
                 by: ClientId::agent("bot"),
                 event: Event::NotebookMetaUpdated {
-                    title: Some("New".into()),
-                    shared_cargo_toml: None,
-                    shared_source: None,
-                    reactive_mode: None,
+                    meta: NotebookMetaPatch {
+                        title: Some("New".into()),
+                        ..Default::default()
+                    },
                 },
             }),
         };

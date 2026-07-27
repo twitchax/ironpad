@@ -70,6 +70,8 @@ pub fn SharedNotebookPage() -> impl IntoView {
                                         || format!("/og/shared/{meta_hash}.png"),
                                         str::to_string,
                                     )
+                                image_size=notebook.og_image_dimensions()
+                                oembed=true
                                 noindex=true
                             />
                             <ViewOnlyNotebook

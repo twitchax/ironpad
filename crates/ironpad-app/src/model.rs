@@ -126,14 +126,7 @@ impl NotebookModel {
             })?,
             Mutation::CellDelete { cell_id, version } => self.cell_delete(cell_id, version)?,
             Mutation::CellReorder { cell_ids } => self.cell_reorder(cell_ids)?,
-            Mutation::NotebookUpdateMeta {
-                title,
-                shared_cargo_toml,
-                shared_source,
-                reactive_mode,
-            } => {
-                self.notebook_update_meta(title, shared_cargo_toml, shared_source, reactive_mode)?
-            }
+            Mutation::NotebookUpdateMeta { meta } => self.notebook_update_meta(meta)?,
             // A mutation from a newer peer this build doesn't recognise. It
             // can't be applied — surface an error rather than silently acting.
             Mutation::Unknown => {
@@ -534,42 +527,24 @@ impl NotebookModel {
     }
 
     #[allow(clippy::unnecessary_wraps)] // Consistent with other mutation methods.
-    #[allow(clippy::option_option)] // None = unchanged, Some(None) = clear, Some(Some(v)) = set.
     fn notebook_update_meta(
         &self,
-        title: Option<String>,
-        shared_cargo_toml: Option<Option<String>>,
-        shared_source: Option<Option<String>>,
-        reactive_mode: Option<bool>,
+        meta: NotebookMetaPatch,
     ) -> Result<(MutationResult, Event), ModelError> {
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
-            if let Some(ref t) = title {
-                nb.title.clone_from(t);
-            }
-            if let Some(ref sct) = shared_cargo_toml {
-                nb.shared_cargo_toml.clone_from(sct);
-            }
-            if let Some(ref ss) = shared_source {
-                nb.shared_source.clone_from(ss);
-            }
-            if let Some(rm) = reactive_mode {
-                nb.reactive_mode = if rm { Some(true) } else { None };
-            }
+            meta.apply_to(nb);
         });
 
-        if shared_cargo_toml.is_some() || shared_source.is_some() {
+        // Only the compilation inputs invalidate built cells. The presentation
+        // fields are read by crawlers and the home page, never by the compiler.
+        if meta.shared_cargo_toml.is_some() || meta.shared_source.is_some() {
             self.mark_all_code_cells_stale();
         }
 
         Ok((
             MutationResult::NotebookMetaUpdated,
-            Event::NotebookMetaUpdated {
-                title,
-                shared_cargo_toml,
-                shared_source,
-                reactive_mode,
-            },
+            Event::NotebookMetaUpdated { meta },
         ))
     }
 }

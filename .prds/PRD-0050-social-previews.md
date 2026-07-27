@@ -31,7 +31,7 @@ acceptance_tests:
   uat_status: verified
 - id: uat-002
   name: "/og/{class}/{id}.png returns a 1200x630 PNG for public, shared, and mutable notebooks"
-  command: npx playwright test social-preview
+  command: npx playwright test social-preview mutable-shares
   uat_status: verified
 - id: uat-003
   name: "Card routes 404 on unknown storage classes, missing notebooks, and path traversal"
@@ -43,7 +43,7 @@ acceptance_tests:
   uat_status: verified
 - id: uat-005
   name: "Shared notebooks unfurl but carry noindex"
-  command: npx playwright test social-preview
+  command: npx playwright test social-preview mutable-shares
   uat_status: verified
 - id: uat-006
   name: "A hostile notebook title cannot inject markup into the card SVG"
@@ -219,3 +219,11 @@ share that previews when pasted but does not land in Google.
   `cargo make playwright` 80 passed / 1 skipped. Verified against a live
   server that `/public/cannon` now serves 16 `og:`/`twitter:` tags in the
   first response where it previously served zero.
+- 2026-07-27: Review follow-up (shipped as v0.13.1, see PRD-0051). A five-agent
+  review found a stored XSS in the `<title>` splice, a quadratic `ellipsize`
+  giving a one-GET remote DoS, C0 controls turning a card into a permanent 500,
+  a card cache that refused writes at capacity and never evicted, and soft-404s
+  on the three async routes. All fixed with regression tests. uat-002 and
+  uat-005 named `/mutable` but ran only `social-preview`, which does not touch
+  it; their commands now also run `mutable-shares`, which gained the missing
+  unfurl assertion.

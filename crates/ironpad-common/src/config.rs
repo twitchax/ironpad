@@ -30,14 +30,26 @@ pub struct AppConfig {
 
 impl AppConfig {
     /// Absolute URL for a root-relative `path` (which must start with `/`).
-    ///
-    /// Tolerates a trailing slash on `public_url` rather than trusting callers
-    /// to have normalized it: an operator typo would otherwise ship `//og/...`
-    /// into every crawler's cache, where it is expensive to walk back.
     #[must_use]
     pub fn absolute_url(&self, path: &str) -> String {
-        format!("{}{}", self.public_url.trim_end_matches('/'), path)
+        absolute_url(&self.public_url, path)
     }
+}
+
+/// Joins an origin and a root-relative `path`.
+///
+/// Tolerates a trailing slash on `origin` rather than trusting callers to have
+/// normalized it: an operator typo would otherwise ship `//og/...` into every
+/// crawler's cache, where it is expensive to walk back.
+///
+/// Exists as a free function as well as an [`AppConfig`] method because the
+/// crawler files are built by pure functions that take an origin string and
+/// have no config to hand; both spellings must round to the same bytes, since
+/// a sitemap that disagrees with `og:url` about a trailing slash is two URLs
+/// to a crawler.
+#[must_use]
+pub fn absolute_url(origin: &str, path: &str) -> String {
+    format!("{}{}", origin.trim_end_matches('/'), path)
 }
 
 #[cfg(test)]
@@ -69,5 +81,24 @@ mod tests {
             config("https://ironpad.twitchax.com/").absolute_url("/og/public/cannon.png"),
             "https://ironpad.twitchax.com/og/public/cannon.png"
         );
+    }
+
+    #[test]
+    fn the_method_and_the_free_function_agree() {
+        // They serve the meta tags and the sitemap respectively, and a crawler
+        // treats a trailing-slash difference between them as two distinct URLs.
+        for origin in [
+            "https://ironpad.twitchax.com",
+            "https://ironpad.twitchax.com/",
+            "http://localhost:3111",
+        ] {
+            for path in ["/", "/public/cannon", "/og/ironpad.png"] {
+                assert_eq!(
+                    config(origin).absolute_url(path),
+                    super::absolute_url(origin, path),
+                    "{origin} + {path}"
+                );
+            }
+        }
     }
 }

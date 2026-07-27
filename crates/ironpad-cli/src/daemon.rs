@@ -343,18 +343,7 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
         ),
         protocol::Event::CellDeleted { cell_id } => apply_cell_deleted(nb, cell_id),
         protocol::Event::CellReordered { cell_ids } => apply_cell_reordered(nb, cell_ids),
-        protocol::Event::NotebookMetaUpdated {
-            title,
-            shared_cargo_toml,
-            shared_source,
-            reactive_mode,
-        } => apply_notebook_meta_updated(
-            nb,
-            title.as_ref(),
-            shared_cargo_toml.as_ref(),
-            shared_source.as_ref(),
-            *reactive_mode,
-        ),
+        protocol::Event::NotebookMetaUpdated { meta } => meta.apply_to(nb),
         // Compilation/execution events don't affect the notebook structure; an
         // unknown event from a newer peer is likewise ignored here.
         protocol::Event::CellCompiling { .. }
@@ -442,26 +431,10 @@ fn apply_cell_reordered(nb: &mut IronpadNotebook, cell_ids: &[String]) {
     renumber(&mut nb.cells);
 }
 
-fn apply_notebook_meta_updated(
-    nb: &mut IronpadNotebook,
-    title: Option<&String>,
-    shared_cargo_toml: Option<&Option<String>>,
-    shared_source: Option<&Option<String>>,
-    reactive_mode: Option<bool>,
-) {
-    if let Some(t) = title {
-        nb.title.clone_from(t);
-    }
-    if let Some(sct) = shared_cargo_toml {
-        nb.shared_cargo_toml.clone_from(sct);
-    }
-    if let Some(ss) = shared_source {
-        nb.shared_source.clone_from(ss);
-    }
-    if let Some(rm) = reactive_mode {
-        nb.reactive_mode = if rm { Some(true) } else { None };
-    }
-}
+// `apply_notebook_meta_updated` used to live here as a hand-written mirror of
+// the browser model's version. It is now `NotebookMetaPatch::apply_to` in
+// ironpad-common, so the daemon's cached notebook and the authoritative one
+// cannot disagree about what a metadata event means.
 
 fn renumber(cells: &mut [ironpad_common::IronpadCell]) {
     for (i, cell) in cells.iter_mut().enumerate() {

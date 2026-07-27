@@ -1,4 +1,4 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, APIRequestContext, Page } from "@playwright/test";
 import { createNotebook } from "./helpers/session";
 
 /**
@@ -6,9 +6,61 @@ import { createNotebook } from "./helpers/session";
  * mutable share at /mutable/{id}, push updates, rebind on a fresh device with
  * a key, and unpublish. Keys are device-minted; the reader page is view-only
  * with an "enter your key" rebind control.
+ *
+ * Also the /mutable half of the PRD-0050 unfurl contract (social-preview
+ * .spec.ts owns the /public and /shared halves): the metadata assertions here
+ * MUST run against raw response bodies via `request`, never the hydrated DOM.
+ * Reddit, X, Slack, and Discord fetch the HTML and run no JavaScript, so tags
+ * that leptos_meta patches in client-side do not exist for an unfurler.
  */
 
 const MENU = '.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]';
+
+const BASE = "http://localhost:3111";
+
+/** Value of a `<meta>` whose `property` or `name` is `key`, from raw HTML. */
+function metaContent(html: string, key: string): string | null {
+  const pattern = new RegExp(
+    `<meta[^>]+(?:property|name)="${key.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    )}"[^>]*>`,
+    "i",
+  );
+  const tag = html.match(pattern)?.[0];
+  if (!tag) return null;
+  return tag.match(/content="([^"]*)"/i)?.[1] ?? null;
+}
+
+/** Raw SSR body — what an unfurler sees. Asserts the resolve is a 200. */
+async function rawHtml(
+  request: APIRequestContext,
+  path: string,
+): Promise<string> {
+  const res = await request.get(`${BASE}${path}`);
+  expect(res.status()).toBe(200);
+  return res.text();
+}
+
+/**
+ * Asserts /og/mutable/{id}.png is a real card: PNG magic bytes plus the IHDR
+ * width/height, because that is what an unfurler reads to size the preview. A
+ * 200 with a broken or wrongly-sized body would silently kill the wide card.
+ */
+async function expectLiveCard(
+  request: APIRequestContext,
+  shareId: string,
+): Promise<void> {
+  const res = await request.get(`${BASE}/og/mutable/${shareId}.png`);
+  expect(res.status()).toBe(200);
+  expect(res.headers()["content-type"]).toBe("image/png");
+  const body = await res.body();
+  expect(body.subarray(0, 8)).toEqual(
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  );
+  expect(body.readUInt32BE(16)).toBe(1200);
+  expect(body.readUInt32BE(20)).toBe(630);
+}
 
 /** Open the notebook (hamburger) menu and click an item by its label. */
 async function menuClick(page: Page, label: string): Promise<void> {
@@ -95,8 +147,60 @@ test.describe("Mutable shares (PRD-0049)", () => {
     }
   });
 
+  test("a mutable share unfurls from the raw body and a push updates the unfurl", async ({
+    page,
+    request,
+  }) => {
+    // Two server round-trips that snapshot blobs (create + push), so the
+    // suite-standard generous budget.
+    test.setTimeout(120_000);
+    await createNotebook(page);
+    await page.waitForTimeout(1_500); // user key + binding load (hydration)
+
+    // Unique title so a stale server-side record from an earlier run can
+    // never satisfy the assertion by accident.
+    const title = `Mutable unfurl ${Date.now()}`;
+    await rename(page, title);
+    // shareMutable enforces the minted id's 16-hex shape (PRD-0049 contract).
+    const shareId = await shareMutable(page);
+
+    const html = await rawHtml(request, `/mutable/${shareId}`);
+    // The regression this guards: /mutable renders its metadata from an async
+    // Resource, and under the default streaming SSR the head is flushed
+    // before it resolves — the tags then look right in devtools and are
+    // invisible to every unfurler. SsrMode::Async on this route is
+    // load-bearing, and only the raw body can prove it.
+    expect(metaContent(html, "og:title")).toBe(title);
+    // Absolute, because a crawler has no document base to resolve against.
+    expect(metaContent(html, "og:url")).toBe(`${BASE}/mutable/${shareId}`);
+    expect(metaContent(html, "og:image")).toBe(
+      `${BASE}/og/mutable/${shareId}.png`,
+    );
+    // Unlisted, not secret (PRD-0050 uat-005 for the mutable class): noindex
+    // on the page rather than a robots.txt Disallow, because several
+    // unfurlers honour robots.txt and would refuse to build a preview at all.
+    expect(metaContent(html, "robots")).toContain("noindex");
+
+    // The advertised card must actually exist at 1200x630 (uat-002).
+    await expectLiveCard(request, shareId);
+
+    // Push an edit. The card URL is stable across edits by design, so the
+    // unfurl content must track the server copy: a pasted link should preview
+    // what the author last pushed, not what they first shared.
+    const updated = `${title} v2`;
+    await rename(page, updated);
+    await menuClick(page, "Push Update");
+    await expect(
+      page.locator(".ironpad-toast-body", { hasText: "updated" }),
+    ).toBeVisible({ timeout: 30_000 });
+
+    const pushed = await rawHtml(request, `/mutable/${shareId}`);
+    expect(metaContent(pushed, "og:title")).toBe(updated);
+  });
+
   test("unpublish returns the notebook to the private list and 404s the link", async ({
     page,
+    request,
   }) => {
     test.setTimeout(90_000);
     await createNotebook(page);
@@ -104,6 +208,12 @@ test.describe("Mutable shares (PRD-0049)", () => {
     const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
 
     const shareId = await shareMutable(page);
+
+    // Render the card while the share is live. This also warms the og disk
+    // cache, which makes the 404-after-unpublish assertion below strict: the
+    // handler must re-check the share's existence rather than serve the
+    // cached PNG.
+    await expectLiveCard(request, shareId);
 
     // Delete is replaced by Unpublish while mutable-backed.
     await page.locator(MENU).click();
@@ -118,7 +228,18 @@ test.describe("Mutable shares (PRD-0049)", () => {
       page.locator(".ironpad-toast-body", { hasText: "private list" }),
     ).toBeVisible({ timeout: 30_000 });
 
-    // The share is gone server-side.
+    // The share is gone server-side, and the resolve is a hard HTTP 404
+    // (mark_not_found sets the status), not a 200 error shell: crawlers and
+    // unfurlers drop the link instead of caching a "not found" preview.
+    const gone = await request.get(`${BASE}/mutable/${shareId}`);
+    expect(gone.status()).toBe(404);
+
+    // The card 404s with it — despite the warmed disk cache above. Otherwise
+    // a notebook the author explicitly took down would keep unfurling.
+    const card = await request.get(`${BASE}/og/mutable/${shareId}.png`);
+    expect(card.status()).toBe(404);
+
+    // And the reader page tells a human why.
     await page.goto(`/mutable/${shareId}`);
     await expect(page.locator(".ironpad-error-boundary-message")).toContainText(
       "not found",

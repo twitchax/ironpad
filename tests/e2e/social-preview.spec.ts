@@ -169,6 +169,26 @@ test.describe("Social preview metadata (PRD-0050)", () => {
     }
   });
 
+  test("every response carries a CSP that does not break embedding", async ({
+    request,
+  }) => {
+    // PRD-0051. Deliberately narrow: no script-src, because without nonce
+    // plumbing through leptos_meta and Monaco it could only be
+    // 'unsafe-inline', which permits the very injection a CSP is for.
+    for (const path of ["/", "/public/welcome", "/embed/public/welcome"]) {
+      const res = await request.get(`${BASE}${path}`);
+      const csp = res.headers()["content-security-policy"];
+      expect(csp, `no CSP on ${path}`).toBeTruthy();
+      expect(csp).toContain("object-src 'none'");
+      expect(csp).toContain("base-uri 'self'");
+      expect(csp).toContain("form-action 'self'");
+      // /embed/* exists to be framed by third parties (PRD-0039); any
+      // frame-ancestors value would break that outright.
+      expect(csp).not.toContain("frame-ancestors");
+      expect(csp).not.toContain("unsafe-inline");
+    }
+  });
+
   test("robots.txt points crawlers at the sitemap", async ({ request }) => {
     const res = await request.get(`${BASE}/robots.txt`);
     expect(res.status()).toBe(200);
