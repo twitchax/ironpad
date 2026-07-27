@@ -51,33 +51,38 @@ impl Font {
         }
     }
 
-    /// Rendered width of `text` at `size` pixels.
-    #[must_use]
-    pub fn width(&self, text: &str, size: f64) -> f64 {
-        let upem = f64::from(self.face.units_per_em());
-        if upem == 0.0 {
-            return 0.0;
-        }
-
-        // Missing glyphs fall back to `.notdef`'s advance, which is what will
-        // actually be drawn, so the measurement matches the render.
+    /// Advance of a single char, in font units.
+    ///
+    /// Missing glyphs fall back to `.notdef`'s advance, which is what will
+    /// actually be drawn, so the measurement matches the render.
+    fn advance_units(&self, c: char) -> f64 {
         let notdef = self
             .face
             .glyph_hor_advance(ttf_parser::GlyphId(0))
             .unwrap_or(0);
 
-        let units: f64 = text
-            .chars()
-            .map(|c| {
-                self.face
-                    .glyph_index(c)
-                    .and_then(|g| self.face.glyph_hor_advance(g))
-                    .unwrap_or(notdef)
-            })
-            .map(f64::from)
-            .sum();
+        f64::from(
+            self.face
+                .glyph_index(c)
+                .and_then(|g| self.face.glyph_hor_advance(g))
+                .unwrap_or(notdef),
+        )
+    }
 
-        units / upem * size
+    /// Pixels per font unit at `size`, or `None` for a degenerate face.
+    fn scale(&self, size: f64) -> Option<f64> {
+        let upem = f64::from(self.face.units_per_em());
+        (upem != 0.0).then(|| size / upem)
+    }
+
+    /// Rendered width of `text` at `size` pixels.
+    #[must_use]
+    pub fn width(&self, text: &str, size: f64) -> f64 {
+        let Some(scale) = self.scale(size) else {
+            return 0.0;
+        };
+        let units: f64 = text.chars().map(|c| self.advance_units(c)).sum();
+        units * scale
     }
 
     /// Greedy word wrap into at most `max_lines` lines of at most `max_width`
@@ -151,20 +156,43 @@ impl Font {
     }
 
     /// Clips `text` so that it plus a trailing ellipsis fits `max_width`.
+    ///
+    /// Measures **forward**, accumulating advances until the budget runs out.
+    /// The obvious implementation (push the whole string, `pop` a char, re-measure,
+    /// repeat) is quadratic, and this text is attacker-controlled: notebook
+    /// titles arrive through unauthenticated share uploads, so a 200 KB title
+    /// pinned a worker for minutes and the disk cache could not absorb it,
+    /// because the cache key is a hash of the very SVG this produces.
     #[must_use]
     pub fn ellipsize(&self, text: &str, size: f64, max_width: f64) -> String {
-        let ellipsis_w = self.width(ELLIPSIS, size);
-        let mut s = text.to_string();
+        let Some(scale) = self.scale(size) else {
+            return ELLIPSIS.to_string();
+        };
 
-        // `pop` is char-wise, so this can never split a multi-byte sequence.
-        while !s.is_empty() && self.width(&s, size) + ellipsis_w > max_width {
-            s.pop();
+        let budget = max_width - self.width(ELLIPSIS, size);
+        if budget <= 0.0 {
+            return ELLIPSIS.to_string();
         }
 
-        // Trailing space before an ellipsis reads as a typo.
-        let trimmed = s.trim_end();
-        let mut out = String::with_capacity(trimmed.len() + ELLIPSIS.len());
-        out.push_str(trimmed);
+        let mut used = 0.0;
+        let mut end = 0;
+        for (offset, c) in text.char_indices() {
+            let advance = self.advance_units(c) * scale;
+            if used + advance > budget {
+                break;
+            }
+            used += advance;
+            end = offset + c.len_utf8();
+        }
+
+        // Trailing space before an ellipsis reads as a typo. Strip a trailing
+        // ellipsis too: `wrap` re-clips a line its own wrapping already
+        // clipped, which otherwise renders a visible "……".
+        let kept = text[..end].trim_end();
+        let kept = kept.strip_suffix(ELLIPSIS).unwrap_or(kept).trim_end();
+
+        let mut out = String::with_capacity(kept.len() + ELLIPSIS.len());
+        out.push_str(kept);
         out.push_str(ELLIPSIS);
         out
     }
@@ -327,6 +355,45 @@ mod tests {
         let clipped = f.ellipsize("→→→→→→→→→→→→→→→→→→→→", 40.0, 60.0);
         assert!(clipped.ends_with(ELLIPSIS));
         assert!(f.width(&clipped, 40.0) <= 60.0);
+    }
+
+    #[test]
+    fn ellipsize_is_linear_not_quadratic() {
+        // Regression guard for a remote DoS: `ellipsize` used to re-measure the
+        // whole string after popping each char, so an attacker-supplied 200 KB
+        // notebook title pinned a worker for minutes. 200k chars finished in
+        // ~150 s before this fix; the budget below is ~1000x slack on the
+        // linear version while still failing the quadratic one decisively.
+        let f = sans_bold();
+        let hostile = "W".repeat(200_000);
+
+        let start = std::time::Instant::now();
+        let out = f.ellipsize(&hostile, 60.0, 1056.0);
+        let elapsed = start.elapsed();
+
+        assert!(out.ends_with(ELLIPSIS));
+        assert!(f.width(&out, 60.0) <= 1056.0);
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "ellipsize took {elapsed:?} on 200k chars, which means it went quadratic again"
+        );
+    }
+
+    #[test]
+    fn wrap_never_emits_a_double_ellipsis() {
+        // `wrap` re-clips the last line that `wrap_all` may already have
+        // clipped. Whenever the char dropped is wider than U+2026 the budget
+        // reopens and a second one lands, rendering a visible "……".
+        let f = sans_bold();
+        let text = format!("hello {} tail", "W".repeat(40));
+        let lines = f.wrap(&text, 60.0, 1056.0, 2);
+
+        for line in &lines {
+            assert!(
+                !line.contains("\u{2026}\u{2026}"),
+                "doubled ellipsis in {line:?}"
+            );
+        }
     }
 
     #[test]

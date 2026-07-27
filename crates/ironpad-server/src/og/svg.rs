@@ -428,22 +428,36 @@ fn expand_tabs(line: &str) -> String {
         return line.to_string();
     }
     let mut out = String::with_capacity(line.len() + 8);
+    // Column is carried, not recounted. `out.chars().count()` inside the loop
+    // made this quadratic in the line length, on cell source that arrives
+    // through unauthenticated share uploads.
+    let mut column = 0_usize;
     for ch in line.chars() {
         if ch == '\t' {
-            let pad = TAB_WIDTH - (out.chars().count() % TAB_WIDTH);
+            let pad = TAB_WIDTH - (column % TAB_WIDTH);
             out.extend(std::iter::repeat_n(' ', pad));
+            column += pad;
         } else {
             out.push(ch);
+            column += 1;
         }
     }
     out
 }
 
-/// XML-escapes text and attribute content.
+/// XML-escapes text and attribute content, dropping characters XML cannot
+/// represent at all.
 ///
 /// Notebook titles are attacker-controlled on `/shared` and `/mutable`, so an
 /// unescaped `<` would let a share inject arbitrary SVG (including a
 /// `<script>`) into an image the server signs with its own hostname.
+///
+/// Escaping alone is not enough. XML 1.0 forbids the C0 controls outright, and
+/// no entity can encode them, so a title carrying one made `usvg` reject the
+/// whole document: `/og/{class}/{id}.png` answered 500 for that notebook
+/// permanently, since the failure is deterministic in its content. They are
+/// dropped rather than escaped for that reason. Tab, newline, and carriage
+/// return are the three XML permits and are kept.
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -453,6 +467,9 @@ fn escape(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
+            // XML 1.0 §2.2: only these three C0 controls are legal.
+            '\t' | '\n' | '\r' => out.push(c),
+            c if c.is_control() => {}
             _ => out.push(c),
         }
     }
@@ -591,6 +608,39 @@ mod tests {
         // cannot paint the whole panel brown.
         let after = tokenize("let x = 1;");
         assert!(after.iter().all(|(_, c)| *c != TOK_COMMENT));
+    }
+
+    #[test]
+    fn a_control_character_still_produces_a_parseable_document() {
+        // XML 1.0 forbids the C0 controls and no entity can encode them, so
+        // one in a title made usvg reject the whole card and the route
+        // answered 500 for that notebook permanently.
+        let card = Card {
+            title: "bad\u{1}title\u{0}".to_string(),
+            description: Some("desc\u{b}with\u{1f}controls".to_string()),
+            ..sample()
+        };
+        let svg = render(&card);
+        assert!(!svg
+            .chars()
+            .any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r'));
+        assert!(svg.contains("badtitle"));
+    }
+
+    #[test]
+    fn expand_tabs_is_linear_not_quadratic() {
+        // Recounting the output column per char made this quadratic in the
+        // line length, on cell source that arrives via share uploads.
+        let line = "\t".repeat(80_000);
+        let start = std::time::Instant::now();
+        let out = expand_tabs(&line);
+        let elapsed = start.elapsed();
+
+        assert_eq!(out.len(), 80_000 * TAB_WIDTH);
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "expand_tabs took {elapsed:?} on 80k tabs, which means it went quadratic again"
+        );
     }
 
     #[test]

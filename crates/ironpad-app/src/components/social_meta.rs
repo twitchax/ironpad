@@ -90,6 +90,7 @@ pub fn SocialMeta(
     url.insert_str(0, &origin);
     let mut image_url = image;
     image_url.insert_str(0, &origin);
+    let title = sanitize_title(title);
     let page_title = format!("{title} \u{b7} ironpad");
     let description = description.map_or_else(
         || "An interactive Rust notebook on ironpad.".to_string(),
@@ -124,6 +125,48 @@ pub fn SocialMeta(
     }
 }
 
+/// Marks the current response as a 404.
+///
+/// The notebook routes render with `SsrMode::Async`, which buffers the whole
+/// document before the first byte, so a status set from inside the resolved
+/// `Suspend` is still applied. That was **not** true under the previous
+/// streaming mode, where the shell was long gone by then: switching to Async
+/// for the meta tags is what made an honest status code reachable at all.
+///
+/// Without it a missing notebook answers 200 with an error body, which
+/// unfurlers cache as a valid preview and search engines index as a soft-404.
+pub fn mark_not_found() {
+    #[cfg(feature = "ssr")]
+    if let Some(response) = use_context::<leptos_axum::ResponseOptions>() {
+        response.set_status(http::StatusCode::NOT_FOUND);
+    }
+}
+
+/// Strips characters that must never reach a notebook title.
+///
+/// **This is a security control, not cosmetics.** `leptos_meta` splices the
+/// title into the SSR head as raw text (`buf.push_str(&title)` in its
+/// `inject_meta_context`), and `<title>` is RCDATA, so an injected `</title>`
+/// closes the element and anything after it becomes live markup in the head.
+/// Notebook titles are attacker-controlled on `/shared` and `/mutable` (both
+/// accept unauthenticated uploads), which made that a stored XSS on ironpad's
+/// own origin, where `window.IronpadStorage` exposes the mutable-share user
+/// key. Every other tag here is escaped by the framework's attribute writer;
+/// the title is the one text node and therefore the one hole.
+///
+/// Removing rather than entity-escaping is deliberate: on the client
+/// `leptos_meta` assigns through `document().set_title()`, a DOM property that
+/// does not decode entities, so `&lt;` would render literally in the browser
+/// tab after hydration.
+///
+/// C0 controls go too. XML 1.0 forbids them, and one in a title made
+/// `usvg::Tree::from_str` reject the preview card, turning `/og/...png` into a
+/// permanent 500 for that notebook.
+fn sanitize_title(mut title: String) -> String {
+    title.retain(|c| !matches!(c, '<' | '>') && (!c.is_control() || c == '\t'));
+    title.trim().to_string()
+}
+
 /// Truncates on a word boundary and marks the cut, so a clipped description
 /// does not end mid-word.
 fn clamp(text: &str, max: usize) -> String {
@@ -145,7 +188,40 @@ fn clamp(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::clamp;
+    use super::{clamp, sanitize_title};
+
+    #[test]
+    fn a_title_cannot_break_out_of_the_title_element() {
+        // The shipped vulnerability: leptos_meta splices the title into the
+        // SSR head as raw text, and `<title>` is RCDATA, so this closed the
+        // element and ran script on ironpad's own origin. Notebook titles
+        // arrive through unauthenticated share uploads.
+        let out = sanitize_title("</title><script>window.PWNED=1</script>".to_string());
+        assert!(!out.contains('<'), "{out:?}");
+        assert!(!out.contains('>'), "{out:?}");
+        assert_eq!(out, "/titlescriptwindow.PWNED=1/script");
+    }
+
+    #[test]
+    fn control_characters_are_stripped_but_tabs_survive() {
+        assert_eq!(sanitize_title("bad\u{1}title".to_string()), "badtitle");
+        assert_eq!(sanitize_title("null\u{0}byte".to_string()), "nullbyte");
+        assert_eq!(sanitize_title("a\tb".to_string()), "a\tb");
+        // Leading and trailing whitespace goes; a title is a display string.
+        assert_eq!(sanitize_title("  spaced  ".to_string()), "spaced");
+    }
+
+    #[test]
+    fn ordinary_titles_pass_through_untouched() {
+        // Including the non-ASCII that legitimate notebooks carry.
+        for title in [
+            "The compiler fires a cannon",
+            "Pin, coroutines, and structs that point at themselves",
+            "Conformal maps: z \u{21a6} z\u{b2}",
+        ] {
+            assert_eq!(sanitize_title(title.to_string()), title);
+        }
+    }
 
     #[test]
     fn short_text_is_untouched() {

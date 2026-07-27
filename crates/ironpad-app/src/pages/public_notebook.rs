@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::app_layout::LayoutContext;
-use crate::components::social_meta::SocialMeta;
+use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::server_fns::get_public_notebook;
 
@@ -81,6 +81,7 @@ pub fn PublicNotebookPage() -> impl IntoView {
                         .into_any(),
 
                         Err(e) => view! {
+                            {mark_not_found()}
                             <div class="ironpad-error-boundary">
                                 <div class="ironpad-error-boundary-icon">"△"</div>
                                 <p class="ironpad-error-boundary-message">

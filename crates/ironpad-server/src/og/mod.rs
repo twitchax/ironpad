@@ -33,6 +33,11 @@ use svg::Card;
 /// fill the same volume the compile cache and share store live on.
 const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Low-water mark the reaper evicts down to once [`MAX_CACHE_BYTES`] is hit.
+/// Reclaiming a quarter at a time amortizes the directory walk instead of
+/// paying it on every write once the cache is warm.
+const EVICT_TO_BYTES: u64 = MAX_CACHE_BYTES * 3 / 4;
+
 /// Lines of source pulled from the notebook. More than the panel can show, so
 /// layout can pick after it knows how much room the title and description left.
 const CODE_EXCERPT_LINES: usize = 8;
@@ -103,19 +108,43 @@ fn count_note(n: usize, noun: &str) -> String {
     }
 }
 
+/// Hard ceiling on any single text field taken from a notebook.
+///
+/// Defence in depth for the layout code downstream. A share upload is capped
+/// at 4 MiB in total (`MAX_SHARE_BYTES`) but nothing bounds an *individual*
+/// field, so a notebook could carry a 200 KB title. The card shows at most two
+/// wrapped lines of it, and clipping here means no amount of hostile input can
+/// make the measuring and wrapping passes expensive in the first place.
+const MAX_FIELD_CHARS: usize = 512;
+
+/// Clips a field to [`MAX_FIELD_CHARS`], char-wise so it cannot split a code point.
+fn bounded(text: &str) -> String {
+    text.chars().take(MAX_FIELD_CHARS).collect()
+}
+
 /// Builds the card for `notebook`.
 #[must_use]
 pub fn card_for(notebook: &IronpadNotebook, class: Class, host: &str) -> Card {
     Card {
         kind_label: class.label().to_string(),
-        title: notebook.title.clone(),
-        description: notebook.description.clone(),
-        tags: notebook.tags.clone().unwrap_or_default(),
+        title: bounded(&notebook.title),
+        description: notebook.description.as_deref().map(bounded),
+        tags: notebook
+            .tags
+            .iter()
+            .flatten()
+            .take(MAX_TAGS_CONSIDERED)
+            .map(|t| bounded(t))
+            .collect(),
         footer_note: count_note(notebook.cells.len(), "cell"),
         code: code_excerpt(notebook),
         host: host.to_string(),
     }
 }
+
+/// Tags read from a notebook before the layout picks the few that fit. Bounds
+/// the work a notebook carrying thousands of tags can ask for.
+const MAX_TAGS_CONSIDERED: usize = 16;
 
 /// The site-wide card, used for the home page and anywhere a specific
 /// notebook isn't the subject. `notebooks` is the showcase count shown in the
@@ -159,7 +188,9 @@ fn code_excerpt(notebook: &IronpadNotebook) -> Vec<String> {
         .lines()
         .skip_while(|l| l.trim().is_empty())
         .take(CODE_EXCERPT_LINES)
-        .map(str::to_string)
+        // Bounded per line for the same reason the other fields are: a minified
+        // cell is one enormous line, and only the first ~100 columns can fit.
+        .map(bounded)
         .collect()
 }
 
@@ -216,20 +247,71 @@ fn cache_key(document: &str) -> String {
     hasher.finalize().to_hex()[..32].to_string()
 }
 
-/// Sum of the sizes of regular files directly under `dir`; `0` when absent.
-async fn dir_total_bytes(dir: &Path) -> u64 {
+/// One cached card, as seen by the reaper.
+struct CachedCard {
+    path: PathBuf,
+    bytes: u64,
+    modified: std::time::SystemTime,
+}
+
+/// Every regular file directly under `dir`, with size and mtime.
+async fn cache_entries(dir: &Path) -> Vec<CachedCard> {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-        return 0;
+        return Vec::new();
     };
-    let mut total = 0_u64;
+    let mut out = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
-        if let Ok(meta) = entry.metadata().await {
-            if meta.is_file() {
-                total = total.saturating_add(meta.len());
-            }
+        let Ok(meta) = entry.metadata().await else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        out.push(CachedCard {
+            path: entry.path(),
+            bytes: meta.len(),
+            modified: meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+        });
+    }
+    out
+}
+
+/// Deletes the oldest cards until the directory fits under [`EVICT_TO_BYTES`].
+///
+/// Without this the cache was a one-way ratchet: it refused *writes* past the
+/// cap but never removed anything, so once full it stayed full and every card
+/// rasterized from scratch forever. The key mixes the release version, so each
+/// deploy also strands a whole generation of entries that nothing can ever hit
+/// again — the directory would have reached capacity on garbage alone.
+///
+/// Oldest-by-mtime is the right order precisely because of that: stranded
+/// entries from previous releases stop being touched, so they age out first.
+async fn evict_if_needed(dir: &Path, incoming: u64) {
+    let mut entries = cache_entries(dir).await;
+    let total: u64 = entries.iter().map(|e| e.bytes).sum();
+    if total.saturating_add(incoming) <= MAX_CACHE_BYTES {
+        return;
+    }
+
+    entries.sort_by_key(|e| e.modified);
+
+    let mut remaining = total.saturating_add(incoming);
+    let mut removed = 0_usize;
+    for entry in entries {
+        if remaining <= EVICT_TO_BYTES {
+            break;
+        }
+        if tokio::fs::remove_file(&entry.path).await.is_ok() {
+            remaining = remaining.saturating_sub(entry.bytes);
+            removed += 1;
         }
     }
-    total
+
+    tracing::info!(
+        removed,
+        remaining_bytes = remaining,
+        "evicted social cards to stay under the cache cap"
+    );
 }
 
 /// Renders `card`, serving a cached PNG when one exists.
@@ -250,12 +332,9 @@ async fn render_cached(data_dir: &Path, card: &Card) -> anyhow::Result<Vec<u8>> 
         .await
         .map_err(|e| anyhow::anyhow!("card render task panicked: {e}"))??;
 
-    if dir_total_bytes(&dir).await + png.len() as u64 <= MAX_CACHE_BYTES {
-        if let Err(e) = write_atomic(&dir, &path, &png).await {
-            tracing::warn!(error = %e, "could not cache social card");
-        }
-    } else {
-        tracing::warn!("social card cache at capacity; serving without caching");
+    evict_if_needed(&dir, png.len() as u64).await;
+    if let Err(e) = write_atomic(&dir, &path, &png).await {
+        tracing::warn!(error = %e, "could not cache social card");
     }
 
     Ok(png)
@@ -546,7 +625,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_full_cache_still_serves_the_card() {
+    async fn a_full_cache_evicts_and_keeps_caching() {
+        // The regression this guards: the cache used to refuse writes at
+        // capacity and never delete anything, so it stayed full forever and
+        // every card rasterized from scratch from then on. Because the key
+        // mixes the release version, each deploy strands a whole generation,
+        // and the directory would reach capacity on unreachable entries alone.
         let dir = tempfile::TempDir::new().unwrap();
         let og = cache_dir(dir.path());
         std::fs::create_dir_all(&og).unwrap();
@@ -560,8 +644,39 @@ mod tests {
         let png = render_cached(dir.path(), &card).await.unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
-        // Over capacity, so nothing new was written.
-        let entries = std::fs::read_dir(&og).unwrap().count();
-        assert_eq!(entries, 1);
+        // The ballast aged out and the fresh card took its place.
+        let path = cache_dir(dir.path()).join(format!("{}.png", cache_key(&svg::render(&card))));
+        assert!(path.exists(), "the new card should have been cached");
+        assert!(
+            !og.join("ballast.png").exists(),
+            "stale bytes should be gone"
+        );
+
+        let total: u64 = cache_entries(&og).await.iter().map(|e| e.bytes).sum();
+        assert!(total <= MAX_CACHE_BYTES, "cache still over cap: {total}");
+    }
+
+    #[tokio::test]
+    async fn eviction_removes_the_oldest_first() {
+        // Oldest-first is what makes cards stranded by a previous release age
+        // out ahead of ones still being served.
+        let dir = tempfile::TempDir::new().unwrap();
+        let og = cache_dir(dir.path());
+        std::fs::create_dir_all(&og).unwrap();
+
+        // Written in order with a real gap between them, so the mtimes the
+        // reaper sorts on are genuine rather than stamped by a test helper.
+        let half = usize::try_from(MAX_CACHE_BYTES).unwrap() / 2;
+        std::fs::write(og.join("old.png"), vec![0_u8; half]).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        std::fs::write(og.join("new.png"), vec![0_u8; half]).unwrap();
+
+        evict_if_needed(&og, 1024).await;
+
+        assert!(
+            !og.join("old.png").exists(),
+            "the older card should go first"
+        );
+        assert!(og.join("new.png").exists(), "the newer card should survive");
     }
 }

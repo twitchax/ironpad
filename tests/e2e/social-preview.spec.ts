@@ -1,4 +1,4 @@
-import { test, expect, APIRequestContext } from "@playwright/test";
+import { test, expect, APIRequestContext, Page } from "@playwright/test";
 import { createNotebook } from "./helpers/session";
 
 /**
@@ -34,6 +34,42 @@ async function rawHtml(
   const res = await request.get(`${BASE}${path}`);
   expect(res.status()).toBe(200);
   return res.text();
+}
+
+/**
+ * Creates a private notebook, gives it `title`, shares it immutably, and
+ * returns the minted 16-hex hash.
+ *
+ * A share needs no compiled cells, which is what makes this cheap enough to
+ * run per-test. `fill` rather than `pressSequentially` because these titles
+ * are deliberately hostile and must land verbatim, not as keystrokes an
+ * editor might interpret.
+ */
+async function shareNotebookTitled(page: Page, title: string): Promise<string> {
+  await createNotebook(page);
+
+  await page.locator(".ironpad-notebook-title--editable").click();
+  const titleInput = page.locator(".ironpad-header-title-input");
+  await expect(titleInput).toBeVisible();
+  await titleInput.fill(title);
+  await titleInput.press("Enter");
+  await expect(page.locator(".ironpad-notebook-title--editable")).toHaveText(
+    title,
+    { timeout: 10_000 }
+  );
+
+  await page.locator('button[title="Notebook menu"]').click();
+  await page
+    .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
+    .click();
+
+  // Filtered, not just `.ironpad-toast-body`: renaming fires its own "changes
+  // saved" toast, so two are on screen and a bare locator is not strict-safe.
+  const toastBody = page.locator(".ironpad-toast-body", {
+    hasText: "/shared/",
+  });
+  await expect(toastBody).toBeVisible({ timeout: 60_000 });
+  return (await toastBody.textContent())!.match(/\/shared\/([0-9a-f]{16})/)![1];
 }
 
 test.describe("Social preview metadata (PRD-0050)", () => {
@@ -161,41 +197,51 @@ test.describe("Social preview metadata (PRD-0050)", () => {
     expect(body).not.toContain(".ironpad");
   });
 
+  test("a hostile notebook title cannot inject markup into the head", async ({
+    page,
+    request,
+  }) => {
+    // Regression guard for a stored XSS shipped in v0.13.0. leptos_meta
+    // splices the title into the SSR head as raw text and `<title>` is
+    // RCDATA, so an injected `</title>` closed the element and the script
+    // after it ran on ironpad's own origin — where IndexedDB holds the
+    // mutable-share user key. Share uploads are unauthenticated, so any
+    // visitor could be handed such a link.
+    test.setTimeout(120_000);
+
+    const hash = await shareNotebookTitled(
+      page,
+      "</title><script>window.PWNED=1</script>"
+    );
+    const html = await rawHtml(request, `/shared/${hash}`);
+
+    // The text between <title> and the FIRST </title>. If the payload broke
+    // out, that boundary lands early and the rest of the payload is markup.
+    const open = html.indexOf("<title>") + "<title>".length;
+    const inner = html.slice(open, html.indexOf("</title>", open));
+
+    // The property is that no MARKUP survived, not that the payload's text is
+    // gone: "window.PWNED=1" stays as inert characters in the title, which is
+    // exactly right. What must not exist is a tag.
+    expect(inner).not.toContain("<");
+    expect(inner).not.toContain(">");
+    expect(inner).toContain("ironpad");
+    // And nothing anywhere in the document became a live script.
+    expect(html).not.toContain("<script>window.PWNED");
+
+    // The card for the same notebook must still render rather than 500.
+    const card = await request.get(`${BASE}/og/shared/${hash}.png`);
+    expect(card.status()).toBe(200);
+  });
+
   test("a shared notebook unfurls but stays out of search indexes", async ({
     page,
     request,
   }) => {
     test.setTimeout(120_000);
 
-    // A share needs no compiled cells, so this is the cheap path: create an
-    // empty notebook, name it, share it.
-    await createNotebook(page);
     const title = `Preview subject ${Date.now()}`;
-    await page.locator(".ironpad-notebook-title--editable").click();
-    const titleInput = page.locator(".ironpad-header-title-input");
-    await expect(titleInput).toBeVisible();
-    await titleInput.fill("");
-    await titleInput.pressSequentially(title, { delay: 15 });
-    await titleInput.press("Enter");
-    await expect(page.locator(".ironpad-notebook-title--editable")).toHaveText(
-      title,
-      { timeout: 10_000 }
-    );
-
-    await page.locator('button[title="Notebook menu"]').click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
-      .click();
-    // Filtered, not just `.ironpad-toast-body`: renaming above fires its own
-    // "changes saved" toast, so two are on screen and a bare locator is not
-    // strict-mode safe.
-    const toastBody = page.locator(".ironpad-toast-body", {
-      hasText: "/shared/",
-    });
-    await expect(toastBody).toBeVisible({ timeout: 60_000 });
-    const hash = (await toastBody.textContent())!.match(
-      /\/shared\/([0-9a-f]{16})/
-    )![1];
+    const hash = await shareNotebookTitled(page, title);
 
     const html = await rawHtml(request, `/shared/${hash}`);
     expect(metaContent(html, "og:title")).toBe(title);

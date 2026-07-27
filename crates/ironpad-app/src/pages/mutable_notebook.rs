@@ -4,7 +4,7 @@ use leptos_router::hooks::use_params_map;
 use ironpad_common::{IronpadNotebook, ShareManifest};
 
 use crate::components::app_layout::LayoutContext;
-use crate::components::social_meta::SocialMeta;
+use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::server_fns::{get_mutable_manifest, get_mutable_notebook};
 
@@ -79,6 +79,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
                             <MutableReader id notebook manifest />
                         }.into_any(),
                         Ok((None, _)) => view! {
+                            {mark_not_found()}
                             <div class="ironpad-error-boundary">
                                 <div class="ironpad-error-boundary-icon">"△"</div>
                                 <p class="ironpad-error-boundary-message">
