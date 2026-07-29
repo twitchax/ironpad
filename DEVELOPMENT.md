@@ -670,7 +670,20 @@ services:
 
 ### Observability (OpenTelemetry)
 
-The server always logs to stdout via `tracing` (level controlled by `RUST_LOG`, default `info`). OTLP **trace** export is **opt-in** and off by default — it turns on only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. A `tower-http` `TraceLayer` emits one span per HTTP request, which is what gets exported.
+The server always logs to stdout via `tracing` (level controlled by `RUST_LOG`, default `info`). OTLP **trace** export is **opt-in** and off by default — it turns on only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. A `tower-http` `TraceLayer` emits the root span per HTTP request, named by route template via `otel.name` (`POST /api/{*fn_name}`, `GET /og/{class}/{file}`) and carrying the request path only — never the query string, which holds the session token on `/ws/connect`.
+
+Beneath the root span, the request paths that actually spend time are instrumented (`#[tracing::instrument]` at `info`, always `skip_all` — request payloads carry full user source and must never be Debug-dumped into span fields):
+
+| Path | Spans (nested) |
+| --- | --- |
+| Compile | `compile_cell` → `compile_lock_wait`, `cache_lookup`, `scaffold`, `cargo_build`, `wasm_bindgen`, `wasm_opt`, `cache_store` |
+| Live check | `check_cell` → `scaffold`, `cargo_check` |
+| Share | `share_notebook` → `dir_size_scan`; `snapshot_share_blobs` → `snapshot_cell_blobs` → per-cell `cache_lookup` |
+| Mutable shares | `create_mutable_share`, `push_mutable`, `read_mutable_record`, `list_mutable_shares` |
+| Notebook loads | `list_public_notebooks`, `get_public_notebook`, `get_shared_notebook`, `get_shared_manifest` |
+| OG cards | `render_card` → `render_lock_wait`, `rasterize` (entered inside the `spawn_blocking` closure so the resvg CPU time still lands under the request trace), `og_cache_evict` |
+
+Outcome fields are recorded on the spans themselves (`cache = hit\|miss\|bypassed` on `compile_cell`, `status` on `check_cell`, `hit` on `cache_lookup`, `snapshotted` on `snapshot_cell_blobs`), so traces are filterable by result, not just by duration. `server_fns::tests::compile_pipeline_emits_stage_spans` guards the mechanism.
 
 To export to Grafana Cloud (or any OTLP backend), set the standard env vars — the exporter reads them itself, so **no credentials live in code or config**. On Fly, use secrets so the token stays in Fly's encrypted store:
 

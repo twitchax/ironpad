@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use tokio::process::Command;
+use tracing::Instrument as _;
 
 use crate::CELL_TOOLCHAIN;
 
@@ -208,33 +209,36 @@ pub async fn build_micro_crate(
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let child = cmd.spawn().map_err(|e| {
-        tracing::error!(cell_id = %cell_id, error = %e, "failed to spawn cargo");
-        anyhow::anyhow!("failed to spawn cargo: {e}")
-    })?;
-    let child_pid = child.id();
+    // Child span around the cargo subprocess, so a trace separates compile
+    // time from the scaffold/wasm-bindgen/wasm-opt stages around it.
+    let output = async {
+        let child = cmd.spawn().map_err(|e| {
+            tracing::error!(cell_id = %cell_id, error = %e, "failed to spawn cargo");
+            anyhow::anyhow!("failed to spawn cargo: {e}")
+        })?;
+        let child_pid = child.id();
 
-    let Ok(wait_result) = tokio::time::timeout(timeout, child.wait_with_output()).await else {
-        // Timed out: kill the whole process group (cargo + rustc + build
-        // scripts). The negated pgid equals cargo's pid because we made it the
-        // group leader; SIGKILL can't be caught, so the tree dies.
-        #[cfg(unix)]
-        if let Some(pid) = child_pid.and_then(|p| i32::try_from(p).ok()) {
-            // SAFETY: kill(2) with a negative pid signals the process group.
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
+        let Ok(wait_result) = tokio::time::timeout(timeout, child.wait_with_output()).await else {
+            // Timed out: kill the whole process group (cargo + rustc + build
+            // scripts). The negated pgid equals cargo's pid because we made it
+            // the group leader; SIGKILL can't be caught, so the tree dies.
+            #[cfg(unix)]
+            if let Some(pid) = child_pid.and_then(|p| i32::try_from(p).ok()) {
+                // SAFETY: kill(2) with a negative pid signals the process group.
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
             }
-        }
-        tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", timeout.as_secs());
-        return Err(anyhow::anyhow!(
-            "compilation timed out after {}s",
-            timeout.as_secs()
-        ));
-    };
-    let output = wait_result.map_err(|e| {
-        tracing::error!(cell_id = %cell_id, error = %e, "cargo build failed to complete");
-        anyhow::anyhow!("cargo build failed: {e}")
-    })?;
+            tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", timeout.as_secs());
+            anyhow::bail!("compilation timed out after {}s", timeout.as_secs());
+        };
+        wait_result.map_err(|e| {
+            tracing::error!(cell_id = %cell_id, error = %e, "cargo build failed to complete");
+            anyhow::anyhow!("cargo build failed: {e}")
+        })
+    }
+    .instrument(tracing::info_span!("cargo_build", cell_id = %cell_id))
+    .await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -272,6 +276,7 @@ pub async fn build_micro_crate(
         .arg("--no-typescript")
         .arg(&wasm_path)
         .output()
+        .instrument(tracing::info_span!("wasm_bindgen", cell_id = %cell_id))
         .await
         .context("wasm-bindgen CLI not found. Install it with: cargo install wasm-bindgen-cli")?;
 
@@ -471,6 +476,7 @@ pub async fn check_micro_crate(
         cmd.kill_on_drop(true);
         cmd.output()
     })
+    .instrument(tracing::info_span!("cargo_check", cell_id = %cell_id))
     .await
     .map_err(|_| CheckTimedOut(timeout))?
     .map_err(|e| anyhow::anyhow!("failed to spawn cargo: {e}"))?;

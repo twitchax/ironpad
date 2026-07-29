@@ -63,6 +63,12 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 /// and [`CompileLocks`] instead of Leptos context, which keeps it unit-testable
 /// (mirrors the `*_core` helpers for the other server functions).
 #[cfg(feature = "ssr")]
+#[tracing::instrument(
+    name = "compile_cell",
+    level = "info",
+    skip_all,
+    fields(cell_id = %request.cell_id, force = request.force, cache = tracing::field::Empty)
+)]
 async fn compile_cell_core(
     config: &ironpad_common::AppConfig,
     compile_locks: &crate::compiler::CompileLocks,
@@ -93,8 +99,13 @@ async fn compile_cell_core(
     // Serialize concurrent compiles of the same cell so their shared scaffold
     // dir can't be overwritten mid-build (which would cache one source's output
     // under another's hash). Held for the whole compile. Distinct cells don't
-    // contend — they scaffold into distinct directories.
-    let _compile_guard = compile_locks.acquire(&request.cell_id).await;
+    // contend — they scaffold into distinct directories. The span makes queue
+    // time behind another compile of this cell visible in traces.
+    let _compile_guard = tracing::Instrument::instrument(
+        compile_locks.acquire(&request.cell_id),
+        tracing::info_span!("compile_lock_wait"),
+    )
+    .await;
 
     // `needs_atomics` is a pure function of the inputs (no I/O), so the cache key
     // can be derived before scaffolding. Scaffolding writes Cargo.toml + lib.rs
@@ -122,6 +133,7 @@ async fn compile_cell_core(
 
     if !request.force {
         if let Some(cache_hit) = try_cache_hit(&config.cache_dir, &hash) {
+            tracing::Span::current().record("cache", "hit");
             tracing::info!(cell_id = %request.cell_id, blob_size = cache_hit.wasm_bytes.len(), "cache hit");
             return Ok(CompileResponse {
                 wasm_blob: cache_hit.wasm_bytes,
@@ -137,8 +149,10 @@ async fn compile_cell_core(
     }
 
     if request.force {
+        tracing::Span::current().record("cache", "bypassed");
         tracing::info!(cell_id = %request.cell_id, "force recompile requested — skipping cache");
     } else {
+        tracing::Span::current().record("cache", "miss");
         tracing::info!(cell_id = %request.cell_id, "cache miss — compiling");
     }
 
@@ -331,6 +345,12 @@ fn live_check_timeout() -> std::time::Duration {
 
 /// Server-side live-check pipeline behind [`check_cell`].
 #[cfg(feature = "ssr")]
+#[tracing::instrument(
+    name = "check_cell",
+    level = "info",
+    skip_all,
+    fields(cell_id = %request.cell_id, status = tracing::field::Empty)
+)]
 async fn check_cell_core(
     config: &ironpad_common::AppConfig,
     compile_locks: &crate::compiler::CompileLocks,
@@ -358,6 +378,7 @@ async fn check_cell_core(
     // check) of the same cell: skip and let the client try again after the
     // next quiet period. The post-compile diagnostics cover this window.
     let Some(_check_guard) = compile_locks.try_acquire(&request.cell_id) else {
+        tracing::Span::current().record("status", "skipped");
         return Ok(CheckResponse {
             status: CheckStatus::Skipped,
             diagnostics: vec![],
@@ -396,11 +417,15 @@ async fn check_cell_core(
     .await;
 
     match result {
-        Ok(CheckResult::Ok) => Ok(CheckResponse {
-            status: CheckStatus::Clean,
-            diagnostics: vec![],
-        }),
+        Ok(CheckResult::Ok) => {
+            tracing::Span::current().record("status", "clean");
+            Ok(CheckResponse {
+                status: CheckStatus::Clean,
+                diagnostics: vec![],
+            })
+        }
         Ok(CheckResult::Failure { stdout, .. }) => {
+            tracing::Span::current().record("status", "errors");
             // A shared-cell check (PRD-0046) anchors only diagnostics landing
             // inside the target cell's slice of shared.rs, remapped to
             // cell-local lines; an ordinary check maps the cell body. An
@@ -418,6 +443,7 @@ async fn check_cell_core(
             })
         }
         Err(e) if e.is::<CheckTimedOut>() => {
+            tracing::Span::current().record("status", "timed_out");
             tracing::info!(cell_id = %request.cell_id, "live check timed out — cold cache");
             Ok(CheckResponse {
                 status: CheckStatus::TimedOut,
@@ -431,6 +457,7 @@ async fn check_cell_core(
 // ── Public notebooks ─────────────────────────────────────────────────────────
 
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "list_public_notebooks", level = "info", skip_all)]
 pub async fn list_public_notebooks_core(
     site_root: &std::path::Path,
 ) -> anyhow::Result<Vec<PublicNotebookSummary>> {
@@ -529,6 +556,7 @@ fn validate_safe_path_segment(s: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "get_public_notebook", level = "info", skip_all, fields(filename = %filename))]
 pub async fn get_public_notebook_core(
     site_root: &std::path::Path,
     filename: &str,
@@ -598,6 +626,7 @@ pub(crate) async fn share_notebook_core(
 /// Sum of the sizes of all regular files directly under `dir`. Returns `Ok(0)`
 /// if the directory doesn't exist yet.
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "dir_size_scan", level = "info", skip_all, fields(dir = %dir.display()))]
 async fn dir_total_bytes(dir: &std::path::Path) -> anyhow::Result<u64> {
     let mut total: u64 = 0;
     let mut read_dir = match tokio::fs::read_dir(dir).await {
@@ -622,6 +651,7 @@ async fn dir_total_bytes(dir: &std::path::Path) -> anyhow::Result<u64> {
 /// Core share logic with an explicit aggregate cap (so tests can exercise the
 /// cap without writing hundreds of MiB).
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "share_notebook", level = "info", skip_all, fields(bytes = notebook_json.len()))]
 async fn share_notebook_core_capped(
     data_dir: &std::path::Path,
     notebook_json: &str,
@@ -830,6 +860,12 @@ pub(crate) async fn snapshot_share_blobs(
 /// immutable `/share-blobs/` route, since the blobs are keyed by content hash
 /// and shared across every share that references them.
 #[cfg(feature = "ssr")]
+#[tracing::instrument(
+    name = "snapshot_cell_blobs",
+    level = "info",
+    skip_all,
+    fields(cells = notebook.cells.len(), snapshotted = tracing::field::Empty)
+)]
 async fn write_cell_blobs_capped(
     data_dir: &std::path::Path,
     cache_dir: &std::path::Path,
@@ -912,12 +948,14 @@ async fn write_cell_blobs_capped(
         );
     }
 
+    tracing::Span::current().record("snapshotted", fresh_entries.len());
     Ok(fresh_entries)
 }
 
 /// Core snapshot logic with an explicit blob-dir cap (so tests can exercise
 /// the cap without writing gigabytes). See [`snapshot_share_blobs`].
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "snapshot_share_blobs", level = "info", skip_all, fields(share_hash = %share_hash))]
 async fn snapshot_share_blobs_capped(
     data_dir: &std::path::Path,
     cache_dir: &std::path::Path,
@@ -957,6 +995,7 @@ async fn snapshot_share_blobs_capped(
 }
 
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "get_shared_manifest", level = "info", skip_all, fields(hash = %hash))]
 pub(crate) async fn get_shared_manifest_core(
     data_dir: &std::path::Path,
     hash: &str,
@@ -994,6 +1033,7 @@ pub async fn get_shared_manifest(
 }
 
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "get_shared_notebook", level = "info", skip_all, fields(hash = %hash))]
 pub async fn get_shared_notebook_core(
     data_dir: &std::path::Path,
     hash: &str,
@@ -1143,6 +1183,7 @@ async fn snapshot_mutable_manifest(
 }
 
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "create_mutable_share", level = "info", skip_all, fields(bytes = notebook_json.len()))]
 pub(crate) async fn create_mutable_share_core(
     data_dir: &std::path::Path,
     cache_dir: &std::path::Path,
@@ -1210,6 +1251,7 @@ pub(crate) async fn create_mutable_share_core(
 }
 
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "push_mutable", level = "info", skip_all, fields(id = %id, bytes = notebook_json.len()))]
 pub(crate) async fn push_mutable_core(
     data_dir: &std::path::Path,
     cache_dir: &std::path::Path,
@@ -1257,6 +1299,7 @@ pub(crate) async fn push_mutable_core(
 
 /// Read a mutable share record, mapping a missing file to `Ok(None)`.
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "read_mutable_record", level = "info", skip_all, fields(id = %id))]
 async fn read_mutable_record(
     data_dir: &std::path::Path,
     id: &str,
@@ -1325,6 +1368,7 @@ pub(crate) async fn delete_mutable_core(
 }
 
 #[cfg(feature = "ssr")]
+#[tracing::instrument(name = "list_mutable_shares", level = "info", skip_all)]
 pub(crate) async fn list_mutable_by_user_core(
     data_dir: &std::path::Path,
     user_key: &str,
@@ -1598,6 +1642,84 @@ mod tests {
             "cache hit must not scaffold the micro-crate on disk: {} exists",
             workspace.display()
         );
+    }
+
+    /// The compile pipeline emits the stage spans traces are built from
+    /// (`compile_cell` → `compile_lock_wait` → `cache_lookup`). Cache-hit
+    /// path only, so no cargo is involved; the deeper stages (`cargo_build`,
+    /// `wasm_opt`, …) hang off the same mechanism.
+    #[tokio::test]
+    async fn compile_pipeline_emits_stage_spans() {
+        use crate::compiler::cache::{content_hash, store_blob};
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        /// Collects the name of every span opened while installed.
+        #[derive(Clone, Default)]
+        struct SpanNames(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanNames {
+            fn on_new_span(
+                &self,
+                attrs: &tracing::span::Attributes<'_>,
+                _id: &tracing::span::Id,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(attrs.metadata().name().to_owned());
+            }
+        }
+
+        let names = SpanNames::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(names.clone()));
+
+        let cache = tempfile::tempdir().unwrap();
+        let source = "    CellOutput::empty()";
+        let cargo_toml = "[dependencies]";
+        let hash = content_hash(source, cargo_toml, &[], None, None, false, false, false);
+        store_blob(
+            cache.path(),
+            &hash,
+            b"\x00asm\x01\x00\x00\x00spans",
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let config = AppConfig {
+            data_dir: cache.path().to_path_buf(),
+            cache_dir: cache.path().to_path_buf(),
+            port: 0,
+            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
+            compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
+        };
+        let request = CompileRequest {
+            notebook_id: "nb".to_string(),
+            cell_id: "span-cell".to_string(),
+            source: source.to_string(),
+            cargo_toml: cargo_toml.to_string(),
+            previous_cell_types: vec![],
+            shared_cargo_toml: None,
+            shared_source: None,
+            force: false,
+            shared_check: None,
+        };
+
+        let locks = CompileLocks::default();
+        compile_cell_core(&config, &locks, request).await.unwrap();
+
+        let seen = names.0.lock().unwrap().clone();
+        for expected in ["compile_cell", "compile_lock_wait", "cache_lookup"] {
+            assert!(
+                seen.iter().any(|n| n == expected),
+                "expected a {expected:?} span; saw {seen:?}"
+            );
+        }
     }
 
     const VALID_NOTEBOOK_JSON: &str = r#"{

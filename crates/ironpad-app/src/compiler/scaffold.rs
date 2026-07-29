@@ -52,6 +52,7 @@ pub fn is_valid_cell_id(cell_id: &str) -> bool {
 /// - `is_simulation`: whether the cell uses the tick infrastructure (a
 ///   `Simulation` or `LiveView` trait impl)
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(name = "scaffold", level = "info", skip_all, fields(cell_id = %cell_id))]
 pub fn scaffold_micro_crate(
     cache_dir: &Path,
     ironpad_cell_path: &Path,

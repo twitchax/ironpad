@@ -76,20 +76,24 @@ pub struct CacheHit {
 /// Returns `Some(CacheHit)` on cache hit, `None` on miss.
 /// Filesystem errors (permission denied, corrupt reads) are treated as misses
 /// and logged at warn level.
+#[tracing::instrument(name = "cache_lookup", level = "info", skip_all, fields(hash = %hash, hit = tracing::field::Empty))]
 pub fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
     let path = cache_blob_path(cache_dir, hash);
 
     let wasm_bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::Span::current().record("hit", false);
             tracing::info!(hash, "cache miss");
             return None;
         }
         Err(e) => {
+            tracing::Span::current().record("hit", false);
             tracing::warn!(hash, error = %e, "cache read error — treating as miss");
             return None;
         }
     };
+    tracing::Span::current().record("hit", true);
 
     // JS glue is optional — older cache entries may not have it.
     let js_glue_path = cache_js_glue_path(cache_dir, hash);
@@ -138,6 +142,7 @@ fn atomic_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
 ///
 /// Creates the `blobs/` directory if it doesn't already exist. Diagnostics
 /// (warnings from a successful compile) are cached so they survive a cache hit.
+#[tracing::instrument(name = "cache_store", level = "info", skip_all, fields(hash = %hash, bytes = wasm_bytes.len()))]
 pub fn store_blob(
     cache_dir: &Path,
     hash: &str,

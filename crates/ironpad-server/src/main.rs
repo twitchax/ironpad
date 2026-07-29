@@ -16,7 +16,7 @@ use clap::Parser;
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
 use tower_http::set_header::SetResponseHeaderLayer;
-use tower_http::trace::{DefaultMakeSpan, TraceLayer};
+use tower_http::trace::TraceLayer;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::Layer as _;
@@ -188,11 +188,26 @@ async fn main() {
         .layer(axum::middleware::from_fn(cache_control_header))
         // One span per HTTP request (at INFO so it passes the default filter),
         // which is what OpenTelemetry exports as a trace. Outermost layer so it
-        // spans the whole request.
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO)),
-        );
+        // spans the whole request. `otel.name` names the exported span by its
+        // route template (`GET /og/{class}/{file}`) so a trace list reads as
+        // endpoints instead of a wall of identical "request"s; the raw path is
+        // the fallback for the leptos fallback handler, which has no template.
+        // Path only, never the full URI: `/ws/connect` carries its session
+        // token in the query string, and span fields are exported.
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                let route = request
+                    .extensions()
+                    .get::<axum::extract::MatchedPath>()
+                    .map_or_else(|| request.uri().path(), axum::extract::MatchedPath::as_str);
+                tracing::info_span!(
+                    "request",
+                    otel.name = %format!("{} {route}", request.method()),
+                    method = %request.method(),
+                    path = request.uri().path(),
+                )
+            },
+        ));
 
     tracing::info!("listening on http://{}", &addr);
     let listener = tokio::net::TcpListener::bind(&addr)

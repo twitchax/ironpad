@@ -23,6 +23,7 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ironpad_common::IronpadNotebook;
+use tracing::Instrument as _;
 
 use crate::state::AppState;
 use svg::Card;
@@ -286,6 +287,7 @@ async fn cache_entries(dir: &Path) -> Vec<CachedCard> {
 ///
 /// Oldest-by-mtime is the right order precisely because of that: stranded
 /// entries from previous releases stop being touched, so they age out first.
+#[tracing::instrument(name = "og_cache_evict", level = "info", skip_all)]
 async fn evict_if_needed(dir: &Path, incoming: u64) {
     let mut entries = cache_entries(dir).await;
     let total: u64 = entries.iter().map(|e| e.bytes).sum();
@@ -348,6 +350,7 @@ fn render_lock(key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 /// A cache write that fails is logged and ignored: the bytes are already in
 /// hand, and refusing to serve a preview because the disk is full would turn
 /// a housekeeping problem into a visible one.
+#[tracing::instrument(name = "render_card", level = "info", skip_all, fields(cache = tracing::field::Empty))]
 async fn render_cached(data_dir: &Path, card: &Card) -> anyhow::Result<Vec<u8>> {
     let document = svg::render(card);
     let key = cache_key(&document);
@@ -355,19 +358,30 @@ async fn render_cached(data_dir: &Path, card: &Card) -> anyhow::Result<Vec<u8>> 
     let path = dir.join(format!("{key}.png"));
 
     if let Ok(bytes) = tokio::fs::read(&path).await {
+        tracing::Span::current().record("cache", "hit");
         return Ok(bytes);
     }
 
+    // The wait span makes single-flight queueing behind a concurrent render
+    // of the same card visible in traces.
     let lock = render_lock(&key);
-    let _guard = lock.lock().await;
+    let _guard = lock
+        .lock()
+        .instrument(tracing::info_span!("render_lock_wait"))
+        .await;
 
     // Re-check under the lock: whoever we queued behind has written the file
     // by now, and reading it is the entire point of having waited.
     if let Ok(bytes) = tokio::fs::read(&path).await {
+        tracing::Span::current().record("cache", "hit_after_wait");
         return Ok(bytes);
     }
 
-    let png = tokio::task::spawn_blocking(move || rasterize(&document))
+    tracing::Span::current().record("cache", "miss");
+    // Entered inside the closure so the CPU-bound resvg work lands under this
+    // request's trace despite running on the blocking pool.
+    let rasterize_span = tracing::info_span!("rasterize");
+    let png = tokio::task::spawn_blocking(move || rasterize_span.in_scope(|| rasterize(&document)))
         .await
         .map_err(|e| anyhow::anyhow!("card render task panicked: {e}"))??;
 

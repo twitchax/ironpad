@@ -26,9 +26,11 @@ const WASM_OPT_TIMEOUT: Duration = Duration::from_secs(120);
 ///
 /// Returns the (possibly optimized) bytes. If `wasm-opt` is unavailable
 /// or fails, returns the original bytes unchanged.
+#[tracing::instrument(name = "wasm_opt", level = "info", skip_all, fields(original_size = wasm_bytes.len(), optimized_size = tracing::field::Empty))]
 pub async fn optimize_wasm(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bool) -> Vec<u8> {
     match try_optimize(wasm_bytes, work_dir, needs_atomics).await {
         Ok(optimized) => {
+            tracing::Span::current().record("optimized_size", optimized.len());
             // WASM blob sizes are always well within i64 range.
             #[allow(clippy::cast_possible_wrap)]
             let saved = wasm_bytes.len() as i64 - optimized.len() as i64;
