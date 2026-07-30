@@ -628,6 +628,7 @@ They run on the server and are automatically serialized/called from the client.
 --ironpad-cell-path <PATH>        (env: IRONPAD_CELL_PATH, default: ./crates/ironpad-cell)
 --compilation-proxy <URL>         (env: IRONPAD_COMPILATION_PROXY, default: unset)
 --public-url <ORIGIN>             (env: IRONPAD_PUBLIC_URL, default: http://localhost:{port})
+--max-concurrent-builds <N>       (env: IRONPAD_MAX_CONCURRENT_BUILDS, default: 3)
 --max-guests <N>                  (env: IRONPAD_MAX_GUESTS, default: 512)
 --guest-idle-timeout-secs <SECS>  (env: IRONPAD_GUEST_IDLE_TIMEOUT_SECS, default: 1800)
 ```
@@ -676,7 +677,7 @@ Beneath the root span, the request paths that actually spend time are instrument
 
 | Path | Spans (nested) |
 | --- | --- |
-| Compile | `compile_cell` → `compile_lock_wait`, `cache_lookup`, `scaffold`, `cargo_build`, `wasm_bindgen`, `wasm_opt`, `cache_store` |
+| Compile | `compile_cell` → `compile_lock_wait`, `cache_lookup`, `build_permit_wait` (admission, PRD-0052), `scaffold`, `cargo_build`, `wasm_bindgen`, `wasm_opt`, `cache_store` |
 | Live check | `check_cell` → `scaffold`, `cargo_check` |
 | Share | `share_notebook` → `dir_size_scan`; `snapshot_share_blobs` → `snapshot_cell_blobs` → per-cell `cache_lookup` |
 | Mutable shares | `create_mutable_share`, `push_mutable`, `read_mutable_record`, `list_mutable_shares` |
@@ -832,9 +833,55 @@ cargo make build-cli
 
 # 5. In a third terminal, interact with the notebook
 ./target/release/ironpad-cli cells list
-./target/release/ironpad-cli cells add --source 'let x = 42;' --label "My Cell"
+./target/release/ironpad-cli cells add --source 'CellOutput::text(format!("{}", 42))' --label "My Cell"
 ./target/release/ironpad-cli cells update <CELL_ID> --source 'let x = 99;'
+
+# 6. Run a cell and read its result (PRD-0052)
+./target/release/ironpad-cli cells run <CELL_ID>
+# → {"status":"executed","cell_id":"…","display_text":"…","type_tag":"…","execution_time_ms":…}
 ```
+
+### Agent-Triggered Execution (PRD-0052)
+
+`cells run` closes the loop: an agent can edit a cell, run it in the hosting
+browser, and read the output — no human click required.
+
+- `Mutation::CellRun` rides the mutation envelope for the relay's
+  write-permission gate, but it is **not** a state mutation: the browser
+  intercepts it before `model.apply` and appends the cell to the same run
+  queue Run All uses. Unexecuted prerequisites cascade first, exactly as they
+  do for a human.
+- Results are **events, not a response**: the browser emits `CellCompiling`,
+  `CellCompiled { success }`, and `CellExecuted { success }` (session-gated —
+  nothing is emitted without a live session, so no stale backlog flushes at
+  the next session start). The daemon correlates by `cell_id`, because a
+  message id cannot follow a cascade.
+- Terminal outcomes reported by `cells run`: `executed`, `execution_error`,
+  `compile_error`, and `prerequisite_failed` (a compile failure of ANY cell
+  while waiting — the browser clears the run queue on compile failure, so the
+  queued run is dead). `--no-wait` returns at the ack; `--timeout-secs`
+  defaults to 360.
+
+### Build Admission Control (PRD-0052)
+
+The scarce resource is a cargo process, not an HTTP request — so admission is
+consulted only after a confirmed cache miss, and cache hits stay free (warmed
+notebooks, e2e, classrooms on the blog posts).
+
+- **Global concurrency cap** (`--max-concurrent-builds`, default 3): compiles
+  queue for a slot (bounded by `IRONPAD_BUILD_QUEUE_TIMEOUT_SECS`, default
+  180s, surfaced as a clear "at capacity" error); live checks `try_acquire`
+  a separate pool and degrade to `Skipped`, the status the client already
+  retries — typing never blocks on capacity.
+- **Per-client rate limit** on build *starts*: a token bucket keyed by
+  `Fly-Client-IP` (then `X-Forwarded-For`, then a shared `local` bucket),
+  `IRONPAD_BUILD_RATE_BURST` (default 20) refilling at
+  `IRONPAD_BUILD_RATE_PER_MIN` (default 30) — sized for the error loop, since
+  failed compiles are never cached and each debugging attempt is a miss. The
+  Playwright suite raises both via the webServer env: its deliberate
+  always-miss compiles share one "local" bucket and would trip production
+  limits at suite scale.
+- The queue wait is visible in traces as the `build_permit_wait` span.
 
 ### WebSocket Routes
 

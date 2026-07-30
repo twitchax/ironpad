@@ -47,6 +47,11 @@ pub struct CliArgs {
     #[arg(long, env = "IRONPAD_PUBLIC_URL")]
     pub public_url: Option<String>,
 
+    /// Global cap on concurrent cargo builds (PRD-0052). Compiles queue for a
+    /// slot (bounded); live checks shed to Skipped. Cache hits never take one.
+    #[arg(long, default_value_t = 3, env = "IRONPAD_MAX_CONCURRENT_BUILDS")]
+    pub max_concurrent_builds: usize,
+
     /// Global cap on concurrent WebSocket guest (agent) connections.
     #[arg(long, default_value_t = 512, env = "IRONPAD_MAX_GUESTS")]
     pub max_guests: usize,

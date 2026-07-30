@@ -154,6 +154,35 @@ impl NotebookState {
     #[cfg(not(feature = "hydrate"))]
     pub(super) fn init_reactive_timer(&self) {}
 
+    /// Queue a cell for execution on behalf of a session agent (PRD-0052).
+    ///
+    /// Appends to the same [`run_all_queue`](Self::run_all_queue) the Run All
+    /// button and cascading execution use, so unexecuted prerequisites cascade
+    /// exactly as they do for a human click. Returns `Err` for a cell that
+    /// does not exist or cannot run on its own (markdown, shared).
+    pub(crate) fn request_cell_run(&self, cell_id: &str) -> Result<(), String> {
+        use ironpad_common::types::CellType;
+
+        let runnable = self
+            .cells
+            .try_get_untracked()
+            .ok_or("editor is shutting down")?
+            .iter()
+            .any(|c| c.id == cell_id && c.cell_type == CellType::Code && !c.shared);
+        if !runnable {
+            return Err(format!(
+                "cell {cell_id} not found or not runnable (markdown and shared cells cannot run on their own)"
+            ));
+        }
+
+        self.run_all_queue.update(|q| {
+            if !q.iter().any(|id| id == cell_id) {
+                q.push(cell_id.to_string());
+            }
+        });
+        Ok(())
+    }
+
     /// Schedule reactive re-execution of stale downstream cells after a 500 ms
     /// debounce window. Cancels any pending timer before starting a new one, and
     /// reuses the cached callback built by [`Self::init_reactive_timer`].

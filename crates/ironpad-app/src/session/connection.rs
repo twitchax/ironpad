@@ -99,11 +99,21 @@ impl SessionSocket {
 /// Sets up message handlers that bridge agent messages to the `NotebookModel`.
 /// Returns `Ok(())` if the WebSocket opens; session details arrive asynchronously
 /// via `SessionState` signals.
+// `NotebookState` is a Copy bundle of signal handles that must be OWNED by the
+// message closure below — passing by reference would just copy it one line
+// later.
+#[allow(clippy::large_types_passed_by_value)]
 pub(crate) fn start_session(
     notebook_id: &str,
     permissions: Permissions,
     model: NotebookModel,
     state: SessionState,
+    // Captured HERE, under the page's reactive owner, and moved into the
+    // message closure. A context lookup at message time
+    // (`expect_context::<NotebookState>()` inside the WS callback) has no
+    // reliable owner to resolve against — which is how the CellRun intercept
+    // silently died without ever acking (PRD-0052).
+    nb_state: crate::pages::notebook_editor::state::NotebookState,
 ) -> Result<(), String> {
     let window = web_sys::window().ok_or("no window")?;
     let location = window.location();
@@ -181,7 +191,7 @@ pub(crate) fn start_session(
             let Some(text) = event.data().as_string() else {
                 return;
             };
-            handle_incoming(&text, &model, &state, &ws_for_msg);
+            handle_incoming(&text, &model, &state, &nb_state, &ws_for_msg);
         });
     ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
 
@@ -319,6 +329,7 @@ fn handle_incoming(
     text: &str,
     model: &NotebookModel,
     state: &SessionState,
+    nb_state: &crate::pages::notebook_editor::state::NotebookState,
     ws: &web_sys::WebSocket,
 ) {
     let Ok(msg) = serde_json::from_str::<protocol::Message>(text) else {
@@ -327,6 +338,30 @@ fn handle_incoming(
     };
 
     match msg.kind {
+        // Agent asked to run a cell (PRD-0052). Execution is an editor action,
+        // not a state mutation — dispatch to the run queue (the same one Run
+        // All and cascading execution use), never through `model.apply`. The
+        // ack is immediate; results arrive as execution events keyed by
+        // cell_id, because one run can cascade into prerequisites.
+        MessageKind::Mutation(protocol::Mutation::CellRun { cell_id }) => {
+            let reply = match nb_state.request_cell_run(&cell_id) {
+                Ok(()) => MessageKind::Response(Response::MutationOk {
+                    detail: protocol::MutationResult::CellRunStarted { cell_id },
+                }),
+                Err(message) => MessageKind::Response(Response::Error {
+                    code: protocol::ErrorCode::CellNotFound,
+                    message,
+                }),
+            };
+            ws_send(
+                ws,
+                &protocol::Message {
+                    id: msg.id,
+                    kind: reply,
+                },
+            );
+        }
+
         // Agent sent a mutation → apply via model (same path as UI edits).
         MessageKind::Mutation(mutation) => {
             // The server relay forwards the raw message; extract a client
@@ -342,11 +377,9 @@ fn handle_incoming(
                             kind: MessageKind::Event(envelope),
                         },
                     );
-                    // Persist the change.
-                    let nb_state = leptos::prelude::expect_context::<
-                        crate::pages::notebook_editor::state::NotebookState,
-                    >();
-                    crate::pages::notebook_editor::state::persist_notebook(&nb_state);
+                    // Persist the change (captured state, same rationale as
+                    // the CellRun arm: no context lookup in a WS callback).
+                    crate::pages::notebook_editor::state::persist_notebook(nb_state);
                 }
                 Err(err) => {
                     ws_send(

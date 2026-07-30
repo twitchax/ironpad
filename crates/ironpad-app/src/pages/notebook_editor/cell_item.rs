@@ -373,6 +373,20 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let run_trigger = RwSignal::new(0u64);
     let cell_id_for_run = StoredValue::new(cell.id.clone());
 
+    // ── Session execution events (PRD-0052) ─────────────────────────────
+    //
+    // Compile/execution status for connected agents. Emitted only while a
+    // session is live — otherwise the events would pile into the model's
+    // buffer and flush as a stale backlog the moment a session starts.
+    // `use_context` (not expect_): CellItem must not require session wiring
+    // to render.
+    let session_for_events = use_context::<crate::session::SessionState>();
+    let emit_session_event = move |event: ironpad_common::protocol::Event| {
+        if session_for_events.is_some_and(|s| s.active.try_get_untracked() == Some(true)) {
+            model.emit_event(event);
+        }
+    };
+
     // ── Run-all queue watcher ───────────────────────────────────────────
     //
     // When this cell appears at the front of the run-all queue, trigger
@@ -584,6 +598,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         // (see below) can tell this cell's own re-run (status == Compiling) apart from
         // an upstream re-run that invalidated us (status still Idle/Success/Error).
         cell_status.set(CellStatus::Compiling);
+        emit_session_event(ironpad_common::protocol::Event::CellCompiling {
+            cell_id: cid.clone(),
+        });
 
         // Invalidate downstream Code cells' cached outputs (this cell and all after it).
         {
@@ -684,6 +701,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         .iter()
                         .any(|d| d.severity == Severity::Error);
 
+                    emit_session_event(ironpad_common::protocol::Event::CellCompiled {
+                        cell_id: cell_id_for_exec.clone(),
+                        diagnostics: response.diagnostics.clone(),
+                        success: !has_errors,
+                    });
+
                     // A clean compile proves this manifest's dependency tree
                     // is built — custom-deps cells become live-check eligible
                     // (PRD-0045 warmth policy).
@@ -765,11 +788,20 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                                     });
                                                 }
 
+                                                let exec_ms = js_sys::Date::now() - exec_start;
+                                                emit_session_event(
+                                                    ironpad_common::protocol::Event::CellExecuted {
+                                                        cell_id: cell_id_for_exec.clone(),
+                                                        display_text: display_text.clone(),
+                                                        type_tag: type_tag.clone(),
+                                                        execution_time_ms: exec_ms,
+                                                        success: true,
+                                                    },
+                                                );
                                                 execution_result.set(Some(ExecutionResult {
                                                     display_text,
                                                     output_bytes,
-                                                    execution_time_ms: js_sys::Date::now()
-                                                        - exec_start,
+                                                    execution_time_ms: exec_ms,
                                                     type_tag,
                                                     ran_on_main_thread,
                                                 }));
@@ -811,6 +843,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             }
 
                             if let Some(err_msg) = exec_err {
+                                // Terminal for a waiting agent either way: the
+                                // run will not produce a success event.
+                                emit_session_event(ironpad_common::protocol::Event::CellExecuted {
+                                    cell_id: cell_id_for_exec.clone(),
+                                    display_text: Some(err_msg.clone()),
+                                    type_tag: None,
+                                    execution_time_ms: 0.0,
+                                    success: false,
+                                });
                                 // AbortError means the user cancelled via terminate().
                                 if err_msg.contains("AbortError") {
                                     cell_status.set(CellStatus::Idle);
@@ -884,14 +925,20 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 }
                 Err(e) => {
                     cell_status.set(CellStatus::Error);
+                    let diagnostics = vec![Diagnostic {
+                        message: format!("Server error: {e}"),
+                        severity: Severity::Error,
+                        spans: vec![],
+                        code: None,
+                    }];
+                    emit_session_event(ironpad_common::protocol::Event::CellCompiled {
+                        cell_id: cell_id_for_exec.clone(),
+                        diagnostics: diagnostics.clone(),
+                        success: false,
+                    });
                     last_compile.set(Some(CompileResponse {
                         wasm_blob: vec![],
-                        diagnostics: vec![Diagnostic {
-                            message: format!("Server error: {e}"),
-                            severity: Severity::Error,
-                            spans: vec![],
-                            code: None,
-                        }],
+                        diagnostics,
                         cached: false,
                         preamble_lines: 0,
                         js_glue: None,

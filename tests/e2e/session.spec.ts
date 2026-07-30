@@ -160,6 +160,62 @@ test.describe.serial("Agent Session", () => {
     expect(cell.source).toContain("let x = 99;");
   });
 
+  test("agent runs a cell and reads its output (PRD-0052)", async ({
+    page,
+  }) => {
+    // Compile-scale timeout: the run blocks on a real (possibly cold) build.
+    test.setTimeout(240_000);
+
+    const jsErrors = trackJsErrors(page);
+
+    await createNotebook(page);
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+
+    // Author the cell from the agent side too — the full loop is write,
+    // run, read. Same source as execution.spec.ts, so the compile cache is
+    // usually warm.
+    const addResult = cliExecRaw([
+      "cells",
+      "add",
+      "--source",
+      'CellOutput::text(format!("{}", 42))',
+      "--label",
+      "Agent Run",
+    ]);
+    expect(addResult.exitCode).toBe(0);
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1, {
+      timeout: 15_000,
+    });
+
+    const cells = cliExec(["cells", "list"]);
+    const cellId = cells[0].id;
+
+    // Run and block until the browser reports the terminal event.
+    const result = cliExec(["cells", "run", cellId], 180_000);
+    expect(result.status).toBe("executed");
+    expect(result.cell_id).toBe(cellId);
+    expect(result.display_text).toContain("42");
+    expect(result.execution_time_ms).toBeGreaterThanOrEqual(0);
+
+    // The browser really executed it: success badge + rendered output — the
+    // CLI result and the page must agree.
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(cell.locator(".ironpad-output-display-text")).toContainText(
+      "42"
+    );
+
+    // A cell that doesn't exist is refused up front, not queued into a
+    // timeout.
+    const bogus = cliExecRaw(["cells", "run", "no-such-cell"]);
+    expect(bogus.exitCode).not.toBe(0);
+
+    expect(jsErrors).toEqual([]);
+  });
+
   test("navigating away ends the session instead of poisoning the page", async ({
     page,
   }) => {

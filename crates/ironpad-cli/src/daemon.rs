@@ -13,7 +13,7 @@ use anyhow::Context;
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tokio_tungstenite::tungstenite;
 
 use ironpad_common::protocol::{self, MessageKind, Query};
@@ -57,6 +57,10 @@ struct DaemonState {
     pending: RwLock<HashMap<String, oneshot::Sender<String>>>,
     /// Channel to send messages over the WebSocket. `None` until connected.
     ws_tx: RwLock<Option<mpsc::UnboundedSender<String>>>,
+    /// Fan-out of every incoming event envelope (PRD-0052). `cells.run`
+    /// subscribes here to await execution results, which are correlated by
+    /// `cell_id` rather than message id (a run can cascade into prerequisites).
+    events: broadcast::Sender<protocol::EventEnvelope>,
 }
 
 // ── Run daemon ──────────────────────────────────────────────────────────────
@@ -102,6 +106,9 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
         notebook: RwLock::new(None),
         pending: RwLock::new(HashMap::new()),
         ws_tx: RwLock::new(None),
+        // Capacity sized for bursts of execution events; a slow `cells.run`
+        // waiter that lags simply skips ahead (handled at the recv site).
+        events: broadcast::channel(256).0,
     });
 
     // ── Task: Unix socket listener ──────────────────────────────────────
@@ -291,6 +298,9 @@ async fn handle_ws_message(text: &str, state: &DaemonState) {
         // mutation we sent — resolve the pending request as well.
         MessageKind::Event(envelope) => {
             update_cache_from_event(&envelope.event, state).await;
+            // Fan out to any `cells.run` waiters (PRD-0052). An error just
+            // means nobody is subscribed right now.
+            let _ = state.events.send(envelope.clone());
             if !msg.id.is_empty() {
                 let mut pending = state.pending.write().await;
                 if let Some(tx) = pending.remove(&msg.id) {
@@ -480,6 +490,7 @@ async fn handle_ipc_request(line: &str, state: &DaemonState) -> IpcResponse {
         "notebook.get" => serve_notebook_get(state).await,
         "cells.list" => serve_cells_list(state).await,
         "cells.get" => serve_cells_get(&req, state).await,
+        "cells.run" => serve_cells_run(&req, state).await,
         "status" => serve_status(state).await,
         _ => forward_to_server(&req, state).await,
     }
@@ -544,6 +555,102 @@ async fn serve_status(state: &DaemonState) -> IpcResponse {
         "connected": *state.connected.read().await,
         "cached": state.notebook.read().await.is_some(),
     }))
+}
+
+/// Default wait for a `cells.run` execution result: the build timeout (300s)
+/// plus headroom for queueing, wasm-opt, and the run itself.
+const RUN_WAIT_DEFAULT_SECS: u64 = 360;
+
+/// `cells.run` (PRD-0052): ask the hosting browser to run a cell, then wait
+/// for its terminal execution event.
+///
+/// Subscribes to the event fan-out BEFORE sending — a cache-hit compile of a
+/// trivial cell can finish fast enough to race a late subscription — then
+/// confirms the `CellRunStarted` ack and waits for the outcome, correlated by
+/// `cell_id` (see [`run_outcome`]).
+async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
+    let Some(cell_id) = req.args.get("cell_id").and_then(|v| v.as_str()) else {
+        return IpcResponse::error("missing cell_id argument");
+    };
+    let wait = req
+        .args
+        .get("wait")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let timeout_secs = req
+        .args
+        .get("timeout_secs")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(RUN_WAIT_DEFAULT_SECS);
+
+    let mut events = state.events.subscribe();
+
+    let ack = forward_to_server(req, state).await;
+    if !ack.ok || !wait {
+        return ack;
+    }
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        let event = match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(envelope)) => envelope.event,
+            // Lagged: older events were dropped from the ring; ours may be
+            // among the survivors, so keep reading.
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(broadcast::error::RecvError::Closed)) => {
+                return IpcResponse::error_with_code(
+                    "event stream closed before the run finished",
+                    "connection_error",
+                )
+            }
+            Err(_) => {
+                return IpcResponse::error_with_code(
+                    format!("timed out after {timeout_secs}s waiting for the run to finish"),
+                    "timeout",
+                )
+            }
+        };
+        if let Some(outcome) = run_outcome(cell_id, &event) {
+            return IpcResponse::success(outcome);
+        }
+    }
+}
+
+/// Maps an incoming event to the terminal outcome of a run of `cell_id`, or
+/// `None` if the run is still in flight.
+///
+/// Three terminal shapes:
+/// - `CellExecuted` for our cell — done, successfully or not.
+/// - `CellCompiled { success: false }` for our cell — compile failure.
+/// - `CellCompiled { success: false }` for ANY other cell — a prerequisite in
+///   the cascade failed. The browser clears the run queue on compile failure,
+///   so our queued run is dead and waiting longer would only hit the timeout.
+fn run_outcome(cell_id: &str, event: &protocol::Event) -> Option<serde_json::Value> {
+    match event {
+        protocol::Event::CellExecuted {
+            cell_id: id,
+            display_text,
+            type_tag,
+            execution_time_ms,
+            success,
+        } if id == cell_id => Some(serde_json::json!({
+            "status": if *success { "executed" } else { "execution_error" },
+            "cell_id": id,
+            "display_text": display_text,
+            "type_tag": type_tag,
+            "execution_time_ms": execution_time_ms,
+        })),
+        protocol::Event::CellCompiled {
+            cell_id: id,
+            diagnostics,
+            success: false,
+        } => Some(serde_json::json!({
+            "status": if id == cell_id { "compile_error" } else { "prerequisite_failed" },
+            "cell_id": id,
+            "diagnostics": diagnostics,
+        })),
+        _ => None,
+    }
 }
 
 /// Forward an IPC command to the server via the WebSocket and wait for the response.
@@ -733,6 +840,17 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 cell_ids,
             }))
         }
+        "cells.run" => {
+            let cell_id = req
+                .args
+                .get("cell_id")
+                .and_then(|v| v.as_str())
+                .ok_or("missing cell_id")?
+                .to_string();
+            Ok(MessageKind::Mutation(protocol::Mutation::CellRun {
+                cell_id,
+            }))
+        }
         cmd => Err(format!("unknown command: {cmd}")),
     }
 }
@@ -800,6 +918,106 @@ mod tests {
             output_collapsed: false,
             version: 1,
         }
+    }
+
+    // ── cells.run (PRD-0052) ─────────────────────────────────────────────
+
+    #[test]
+    fn translate_cells_run() {
+        let req = ipc("cells.run", json!({ "cell_id": "cell-3" }));
+        let kind = translate_command(&req).unwrap();
+        match kind {
+            MessageKind::Mutation(protocol::Mutation::CellRun { cell_id }) => {
+                assert_eq!(cell_id, "cell-3");
+            }
+            other => panic!("expected CellRun, got {other:?}"),
+        }
+        assert!(translate_command(&ipc("cells.run", json!({}))).is_err());
+    }
+
+    #[test]
+    fn run_outcome_terminal_shapes() {
+        // Still in flight: compiling, or someone else's success.
+        assert!(run_outcome(
+            "mine",
+            &Event::CellCompiling {
+                cell_id: "mine".into()
+            }
+        )
+        .is_none());
+        assert!(run_outcome(
+            "mine",
+            &Event::CellCompiled {
+                cell_id: "mine".into(),
+                diagnostics: vec![],
+                success: true,
+            }
+        )
+        .is_none());
+        assert!(run_outcome(
+            "mine",
+            &Event::CellExecuted {
+                cell_id: "other".into(),
+                display_text: None,
+                type_tag: None,
+                execution_time_ms: 1.0,
+                success: true,
+            }
+        )
+        .is_none());
+
+        // Terminal: our execution, either way.
+        let ok = run_outcome(
+            "mine",
+            &Event::CellExecuted {
+                cell_id: "mine".into(),
+                display_text: Some("42".into()),
+                type_tag: Some("u32".into()),
+                execution_time_ms: 3.5,
+                success: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(ok["status"], "executed");
+        assert_eq!(ok["display_text"], "42");
+
+        let failed = run_outcome(
+            "mine",
+            &Event::CellExecuted {
+                cell_id: "mine".into(),
+                display_text: Some("boom".into()),
+                type_tag: None,
+                execution_time_ms: 0.0,
+                success: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(failed["status"], "execution_error");
+
+        // Terminal: our compile failure, and — because the browser clears the
+        // run queue on any compile failure — a prerequisite's too.
+        let compile_err = run_outcome(
+            "mine",
+            &Event::CellCompiled {
+                cell_id: "mine".into(),
+                diagnostics: vec![],
+                success: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(compile_err["status"], "compile_error");
+
+        let prereq = run_outcome(
+            "mine",
+            &Event::CellCompiled {
+                cell_id: "upstream".into(),
+                diagnostics: vec![],
+                success: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(prereq["status"], "prerequisite_failed");
+        assert_eq!(prereq["cell_id"], "upstream");
     }
 
     // ── translate_command ────────────────────────────────────────────────

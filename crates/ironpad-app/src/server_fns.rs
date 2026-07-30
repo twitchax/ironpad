@@ -54,7 +54,15 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 
     let config = expect_context::<AppConfig>();
     let compile_locks = expect_context::<crate::compiler::CompileLocks>();
-    compile_cell_core(&config, &compile_locks, request).await
+    let admission = expect_context::<crate::compiler::admission::BuildAdmission>();
+    // Client identity for the build rate limiter (PRD-0052). Header-derived so
+    // it survives the Fly edge; a missing map (non-HTTP test harness) shares
+    // the "local" bucket.
+    let client_ip = leptos_axum::extract::<http::HeaderMap>().await.map_or_else(
+        |_| "local".to_string(),
+        |headers| crate::compiler::admission::client_ip(&headers),
+    );
+    compile_cell_core(&config, &compile_locks, &admission, &client_ip, request).await
 }
 
 /// Server-side compilation pipeline behind [`compile_cell`].
@@ -72,6 +80,8 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
 async fn compile_cell_core(
     config: &ironpad_common::AppConfig,
     compile_locks: &crate::compiler::CompileLocks,
+    admission: &crate::compiler::admission::BuildAdmission,
+    client_ip: &str,
     request: CompileRequest,
 ) -> Result<CompileResponse, ServerFnError> {
     use crate::compiler::{
@@ -155,6 +165,16 @@ async fn compile_cell_core(
         tracing::Span::current().record("cache", "miss");
         tracing::info!(cell_id = %request.cell_id, "cache miss — compiling");
     }
+
+    // Admission (PRD-0052): this request is about to spawn cargo. Sits AFTER
+    // the cache lookup on purpose — hits are free, so warmed notebooks and
+    // repeat runs never touch the rate limiter or occupy a build slot. The
+    // permit is held for the whole miss path (scaffold → build → wasm-opt →
+    // store), which is the actual footprint on the machine.
+    let _build_permit = admission
+        .admit_compile(client_ip)
+        .await
+        .map_err(|denied| ServerFnError::new(denied.to_string()))?;
 
     // Cache miss (or forced recompile): scaffold the micro-crate now — the
     // on-disk work a cache hit skips. Its returned `needs_atomics` matches the
@@ -325,7 +345,8 @@ pub async fn check_cell(request: CompileRequest) -> Result<CheckResponse, Server
 
     let config = expect_context::<AppConfig>();
     let compile_locks = expect_context::<crate::compiler::CompileLocks>();
-    check_cell_core(&config, &compile_locks, request).await
+    let admission = expect_context::<crate::compiler::admission::BuildAdmission>();
+    check_cell_core(&config, &compile_locks, &admission, request).await
 }
 
 /// Time budget for a single live check (default 10s, override with
@@ -354,6 +375,7 @@ fn live_check_timeout() -> std::time::Duration {
 async fn check_cell_core(
     config: &ironpad_common::AppConfig,
     compile_locks: &crate::compiler::CompileLocks,
+    admission: &crate::compiler::admission::BuildAdmission,
     request: CompileRequest,
 ) -> Result<CheckResponse, ServerFnError> {
     use crate::compiler::{
@@ -378,6 +400,17 @@ async fn check_cell_core(
     // check) of the same cell: skip and let the client try again after the
     // next quiet period. The post-compile diagnostics cover this window.
     let Some(_check_guard) = compile_locks.try_acquire(&request.cell_id) else {
+        tracing::Span::current().record("status", "skipped");
+        return Ok(CheckResponse {
+            status: CheckStatus::Skipped,
+            diagnostics: vec![],
+        });
+    };
+
+    // Admission (PRD-0052): shed load instead of queueing — Skipped is the
+    // status the client already retries after the next quiet period, so a
+    // busy server degrades to fewer live markers, never to blocked typing.
+    let Some(_check_permit) = admission.try_admit_check() else {
         tracing::Span::current().record("status", "skipped");
         return Ok(CheckResponse {
             status: CheckStatus::Skipped,
@@ -1622,7 +1655,18 @@ mod tests {
         };
 
         let locks = CompileLocks::default();
-        let response = compile_cell_core(&config, &locks, request).await.unwrap();
+        // A ZERO-token bucket, so this test also proves the PRD-0052 claim
+        // that cache hits never consult admission: were the limiter in the
+        // hit path, this unwrap would trip it.
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            1,
+            0.0,
+            0.0,
+            std::time::Duration::from_millis(50),
+        );
+        let response = compile_cell_core(&config, &locks, &admission, "test", request)
+            .await
+            .unwrap();
 
         assert!(response.cached, "response should be served from cache");
         assert_eq!(
@@ -1711,7 +1755,15 @@ mod tests {
         };
 
         let locks = CompileLocks::default();
-        compile_cell_core(&config, &locks, request).await.unwrap();
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            1,
+            10.0,
+            600.0,
+            std::time::Duration::from_secs(1),
+        );
+        compile_cell_core(&config, &locks, &admission, "test", request)
+            .await
+            .unwrap();
 
         let seen = names.0.lock().unwrap().clone();
         for expected in ["compile_cell", "compile_lock_wait", "cache_lookup"] {
@@ -1720,6 +1772,100 @@ mod tests {
                 "expected a {expected:?} span; saw {seen:?}"
             );
         }
+    }
+
+    // ── Build admission (PRD-0052) ───────────────────────────────────────
+
+    fn admission_test_request(cell_id: &str) -> CompileRequest {
+        CompileRequest {
+            notebook_id: "nb".to_string(),
+            cell_id: cell_id.to_string(),
+            source: "    CellOutput::empty()".to_string(),
+            cargo_toml: "[dependencies]".to_string(),
+            previous_cell_types: vec![],
+            shared_cargo_toml: None,
+            shared_source: None,
+            force: false,
+            shared_check: None,
+        }
+    }
+
+    /// A cache MISS from an empty-bucket client is refused before any cargo
+    /// or filesystem work — the error is the limiter's, not a scaffold
+    /// failure from the deliberately bogus ironpad-cell path.
+    #[tokio::test]
+    async fn compile_cache_miss_from_rate_limited_client_is_refused() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            cache_dir: dir.path().to_path_buf(),
+            port: 0,
+            ironpad_cell_path: dir.path().join("nonexistent-ironpad-cell"),
+            compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
+        };
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            1,
+            0.0,
+            0.0,
+            std::time::Duration::from_millis(50),
+        );
+
+        let err = compile_cell_core(
+            &config,
+            &CompileLocks::default(),
+            &admission,
+            "9.9.9.9",
+            admission_test_request("rate-limited-cell"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("rate limited"),
+            "expected the limiter's message, got: {err}"
+        );
+    }
+
+    /// A live check with every slot busy degrades to `Skipped` — the status
+    /// the client already retries — instead of queueing behind capacity.
+    #[tokio::test]
+    async fn check_with_no_free_slot_returns_skipped() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+        use ironpad_common::CheckStatus;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            cache_dir: dir.path().to_path_buf(),
+            port: 0,
+            ironpad_cell_path: dir.path().join("nonexistent-ironpad-cell"),
+            compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
+        };
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            1,
+            10.0,
+            600.0,
+            std::time::Duration::from_millis(50),
+        );
+        let _held = admission.try_admit_check().expect("the single check slot");
+
+        let response = check_cell_core(
+            &config,
+            &CompileLocks::default(),
+            &admission,
+            admission_test_request("busy-check-cell"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status, CheckStatus::Skipped);
+        assert!(response.diagnostics.is_empty());
     }
 
     const VALID_NOTEBOOK_JSON: &str = r#"{

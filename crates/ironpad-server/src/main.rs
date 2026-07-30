@@ -75,6 +75,7 @@ async fn main() {
     // AppConfig), so pull them out before the conversion consumes args.
     let max_guests = args.max_guests;
     let guest_idle_timeout = std::time::Duration::from_secs(args.guest_idle_timeout_secs);
+    let max_concurrent_builds = args.max_concurrent_builds;
     let config: AppConfig = args.into();
 
     tracing::info!(data_dir = %config.data_dir.display(), "data directory");
@@ -127,6 +128,11 @@ async fn main() {
 
     // Shared across all compile requests; serializes same-cell compiles.
     let compile_locks = ironpad_app::compiler::CompileLocks::default();
+    // Build admission (PRD-0052): global cargo-concurrency cap + per-client
+    // rate limit on build starts. Cache hits never pass through it.
+    let build_admission =
+        ironpad_app::compiler::admission::BuildAdmission::from_env(max_concurrent_builds);
+    tracing::info!(max_concurrent_builds, "build admission configured");
 
     let app = Router::new()
         .route("/ws/host", get(ws::ws_host_handler))
@@ -148,10 +154,12 @@ async fn main() {
                 let config = config.clone();
                 let leptos_options = leptos_options.clone();
                 let compile_locks = compile_locks.clone();
+                let build_admission = build_admission.clone();
                 move || {
                     provide_context(config.clone());
                     provide_context(leptos_options.clone());
                     provide_context(compile_locks.clone());
+                    provide_context(build_admission.clone());
                 }
             },
             {

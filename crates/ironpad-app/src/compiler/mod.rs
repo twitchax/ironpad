@@ -1,5 +1,6 @@
 //! Server-side compilation pipeline.
 
+pub mod admission;
 pub mod build;
 pub mod cache;
 pub mod diagnostics;

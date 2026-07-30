@@ -152,6 +152,21 @@ enum CellsCommand {
         /// Cell IDs in desired order.
         cell_ids: Vec<String>,
     },
+    /// Run a cell in the hosting browser and wait for its result.
+    ///
+    /// Unexecuted prerequisite cells cascade first, exactly as they do for a
+    /// click on Run. The result reports one of: executed, `execution_error`,
+    /// `compile_error`, or `prerequisite_failed`.
+    Run {
+        /// Cell ID.
+        cell_id: String,
+        /// Return as soon as the run is queued, without waiting for a result.
+        #[arg(long)]
+        no_wait: bool,
+        /// Seconds to wait for the execution result (covers a cold compile).
+        #[arg(long, default_value_t = 360)]
+        timeout_secs: u64,
+    },
 }
 
 // ── Exit codes ──────────────────────────────────────────────────────────────
@@ -313,7 +328,25 @@ async fn handle_cells_command(cmd: CellsCommand) {
             handle_cells_delete(cell_id, version).await;
         }
         CellsCommand::Reorder { cell_ids } => handle_cells_reorder(cell_ids).await,
+        CellsCommand::Run {
+            cell_id,
+            no_wait,
+            timeout_secs,
+        } => handle_cells_run(&cell_id, no_wait, timeout_secs).await,
     }
+}
+
+async fn handle_cells_run(cell_id: &str, no_wait: bool, timeout_secs: u64) {
+    let response = send_ipc(
+        "cells.run",
+        serde_json::json!({
+            "cell_id": cell_id,
+            "wait": !no_wait,
+            "timeout_secs": timeout_secs,
+        }),
+    )
+    .await;
+    print_response(&response);
 }
 
 async fn handle_cells_list() {

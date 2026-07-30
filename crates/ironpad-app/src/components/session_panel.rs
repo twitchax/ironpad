@@ -192,6 +192,7 @@ fn start_session_flow() {
             ironpad_common::protocol::Permissions::default(),
             model,
             session,
+            nb_state,
         ) {
             web_sys::console::error_1(&format!("Failed to start session: {e}").into());
         }

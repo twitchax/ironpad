@@ -56,13 +56,18 @@ export async function connectCli(
   return { process: child, token };
 }
 
-/** Execute a CLI command and return parsed JSON response. */
-export function cliExec(command: string[]): any {
+/**
+ * Execute a CLI command and return parsed JSON response.
+ *
+ * `timeoutMs` covers the whole invocation; `cells run` blocks until the
+ * browser reports the execution result, so it needs compile-scale patience.
+ */
+export function cliExec(command: string[], timeoutMs: number = 15_000): any {
   // execFileSync (no shell) passes each element as a literal argv entry, so
   // callers never need to shell-quote args that contain spaces.
   const result = execFileSync(CLI_BIN, command, {
     encoding: "utf-8",
-    timeout: 15_000,
+    timeout: timeoutMs,
     env: CLI_ENV,
   });
   return JSON.parse(result.trim());
@@ -70,12 +75,13 @@ export function cliExec(command: string[]): any {
 
 /** Execute a CLI command, returning { stdout, stderr, exitCode }. */
 export function cliExecRaw(
-  command: string[]
+  command: string[],
+  timeoutMs: number = 15_000
 ): { stdout: string; stderr: string; exitCode: number } {
   try {
     const stdout = execFileSync(CLI_BIN, command, {
       encoding: "utf-8",
-      timeout: 15_000,
+      timeout: timeoutMs,
       env: CLI_ENV,
     });
     return { stdout: stdout.trim(), stderr: "", exitCode: 0 };

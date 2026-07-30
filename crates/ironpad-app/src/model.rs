@@ -127,6 +127,15 @@ impl NotebookModel {
             Mutation::CellDelete { cell_id, version } => self.cell_delete(cell_id, version)?,
             Mutation::CellReorder { cell_ids } => self.cell_reorder(cell_ids)?,
             Mutation::NotebookUpdateMeta { meta } => self.notebook_update_meta(meta)?,
+            // Not a state mutation: the session layer intercepts CellRun and
+            // dispatches it to the run queue (PRD-0052). Reaching the model
+            // is a routing bug, so refuse rather than silently no-op.
+            Mutation::CellRun { .. } => {
+                return Err(ModelError {
+                    code: ErrorCode::InvalidMessage,
+                    message: "CellRun is dispatched by the session layer, not the model".into(),
+                });
+            }
             // A mutation from a newer peer this build doesn't recognise. It
             // can't be applied — surface an error rather than silently acting.
             Mutation::Unknown => {
@@ -219,6 +228,23 @@ impl NotebookModel {
             events = std::mem::take(e);
         });
         events
+    }
+
+    /// Push a browser-originated event that did not come from a mutation —
+    /// execution status (PRD-0052). Same buffer cap and generation bump as
+    /// [`apply`](Self::apply), so the WebSocket bridge forwards it like any
+    /// other event.
+    pub(crate) fn emit_event(&self, event: Event) {
+        let envelope = EventEnvelope {
+            by: ClientId::browser(),
+            event,
+        };
+        self.pending_events.update(|events| {
+            if events.len() < MAX_EVENT_BUFFER {
+                events.push(envelope);
+            }
+        });
+        self.event_generation.update(|g| *g += 1);
     }
 
     // ── Internal helpers ────────────────────────────────────────────────
@@ -749,6 +775,40 @@ mod collapse_tests {
                 }
                 other => panic!("unexpected event: {other:?}"),
             }
+        });
+    }
+
+    /// `emit_event` (PRD-0052) feeds the same buffer the WebSocket bridge
+    /// drains: the envelope is browser-attributed, and the generation bump is
+    /// what wakes the bridge Effect.
+    #[test]
+    fn emit_event_buffers_a_browser_envelope_and_bumps_generation() {
+        Owner::new().with(|| {
+            let model = NotebookModel::new(
+                RwSignal::new(Some(notebook_with_one_cell())),
+                RwSignal::new(Vec::new()),
+                RwSignal::new(HashMap::new()),
+                RwSignal::new(0),
+            );
+            let before = model.event_generation().get_untracked();
+
+            model.emit_event(Event::CellExecuted {
+                cell_id: "c1".into(),
+                display_text: Some("42".into()),
+                type_tag: Some("u32".into()),
+                execution_time_ms: 1.0,
+                success: true,
+            });
+
+            assert_eq!(model.event_generation().get_untracked(), before + 1);
+            let drained = model.drain_events();
+            assert_eq!(drained.len(), 1);
+            assert_eq!(drained[0].by, ClientId::browser());
+            assert!(matches!(
+                drained[0].event,
+                Event::CellExecuted { success: true, .. }
+            ));
+            assert!(model.drain_events().is_empty(), "drain must consume");
         });
     }
 }

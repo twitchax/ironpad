@@ -19,7 +19,7 @@ use crate::types::{CellManifest, CellType, Diagnostic, IronpadCell, IronpadNoteb
 /// schema changes in a way a peer should be able to notice (a new payload
 /// variant, an added field, …). Decode sites (in the server/CLI crates) may
 /// log a warning when a received version differs from this constant.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Top-level message envelope. Every frame on the wire is one of these.
 ///
@@ -273,6 +273,16 @@ pub enum Mutation {
         #[serde(flatten)]
         meta: NotebookMetaPatch,
     },
+    /// Run a cell in the hosting browser (PRD-0052).
+    ///
+    /// Rides the `Mutation` envelope for the relay's write-permission gate,
+    /// but it is NOT a state mutation: the browser dispatches it to the run
+    /// queue instead of `model.apply`. Acked with
+    /// [`MutationResult::CellRunStarted`]; results arrive as
+    /// [`Event::CellCompiling`]/[`Event::CellCompiled`]/[`Event::CellExecuted`],
+    /// correlated by `cell_id` (one run can cascade into prerequisites, so a
+    /// message id cannot follow it).
+    CellRun { cell_id: String },
     /// An unrecognised mutation from a newer peer (see the [`Message`] forward-compat docs).
     #[serde(other)]
     Unknown,
@@ -299,6 +309,12 @@ pub const DEFAULT_CELL_LABEL: &str = "New Cell";
 
 fn default_cell_label() -> String {
     DEFAULT_CELL_LABEL.to_string()
+}
+
+/// Serde default for fields added after their event shipped, where absent
+/// must mean the old (success-only) semantics.
+fn default_true() -> bool {
+    true
 }
 
 // ── Queries (client → model) ────────────────────────────────────────────────
@@ -373,6 +389,12 @@ pub enum Event {
         display_text: Option<String>,
         type_tag: Option<String>,
         execution_time_ms: f64,
+        /// Whether execution completed without a runtime error (PRD-0052).
+        /// Defaults to `true` so a legacy event without the field keeps its
+        /// old success-only semantics; an agent waiting on a run needs a
+        /// terminal event on the failure path too.
+        #[serde(default = "default_true")]
+        success: bool,
     },
     NotebookMetaUpdated {
         #[serde(flatten)]
@@ -432,6 +454,11 @@ pub enum MutationResult {
     },
     CellReordered,
     NotebookMetaUpdated,
+    /// A [`Mutation::CellRun`] was accepted and queued (PRD-0052). The run's
+    /// outcome arrives separately as execution events for the cell.
+    CellRunStarted {
+        cell_id: String,
+    },
     /// An unrecognised result from a newer peer (see the [`Message`]
     /// forward-compat docs). Without this arm, a new result variant nested
     /// in `Response::MutationOk` failed the whole message parse and the
@@ -762,10 +789,50 @@ mod tests {
                     display_text: Some("42".into()),
                     type_tag: Some("u32".into()),
                     execution_time_ms: 1.5,
+                    success: true,
                 },
             }),
         };
         round_trip(&msg);
+    }
+
+    /// A legacy `CellExecuted` (pre-PRD-0052, no `success` field) must parse
+    /// as a success — that was the only case the old event ever reported.
+    #[test]
+    fn event_cell_executed_without_success_defaults_to_true() {
+        let json = r#"{"id":"","type":"Event","payload":{"by":"browser","event":{"event":"CellExecuted","cell_id":"c1","display_text":null,"type_tag":null,"execution_time_ms":2.0}}}"#;
+        let msg: Message = serde_json::from_str(json).expect("legacy event parses");
+        let MessageKind::Event(envelope) = msg.kind else {
+            panic!("expected event");
+        };
+        let Event::CellExecuted { success, .. } = envelope.event else {
+            panic!("expected CellExecuted");
+        };
+        assert!(
+            success,
+            "absent success must mean the old success-only case"
+        );
+    }
+
+    #[test]
+    fn mutation_cell_run_round_trips_and_acks() {
+        let msg = Message {
+            id: "req-run".into(),
+            kind: MessageKind::Mutation(Mutation::CellRun {
+                cell_id: "cell-3".into(),
+            }),
+        };
+        round_trip(&msg);
+
+        let ack = Message {
+            id: "req-run".into(),
+            kind: MessageKind::Response(Response::MutationOk {
+                detail: MutationResult::CellRunStarted {
+                    cell_id: "cell-3".into(),
+                },
+            }),
+        };
+        round_trip(&ack);
     }
 
     #[test]
@@ -1022,7 +1089,9 @@ mod tests {
         // 2: `NotebookUpdateMeta` / `NotebookMetaUpdated` gained the
         // presentation fields (description, tags, og_image + dimensions) when
         // they became editable (PRD-0051).
-        assert_eq!(PROTOCOL_VERSION, 2);
+        // 3: `Mutation::CellRun` + `MutationResult::CellRunStarted`, and
+        // `CellExecuted` gained `success` (PRD-0052).
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 
     /// Forward-compat (new → old), envelope level: a frame minted by a newer

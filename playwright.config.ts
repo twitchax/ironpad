@@ -33,6 +33,14 @@ export default defineConfig({
       // them), so the first live check would blow the 10s production budget
       // and silently skip. Tests get a patient budget instead.
       IRONPAD_LIVE_CHECK_TIMEOUT_SECS: "300",
+      // The suite's compiles include deliberate always-misses (failed
+      // compiles are never cached; Force Recompile bypasses every layer),
+      // all sharing one "local" bucket — production limits would trip on
+      // suite scale, not on a real fault (this happened: notebook.spec and
+      // shared-cells.spec failed only in the full run). The limiter itself
+      // is covered by unit tests in compiler/admission.rs.
+      IRONPAD_BUILD_RATE_BURST: "100000",
+      IRONPAD_BUILD_RATE_PER_MIN: "100000",
     },
     url: "http://localhost:3111",
     reuseExistingServer: !process.env.CI,
