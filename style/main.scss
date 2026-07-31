@@ -554,6 +554,53 @@ a:focus-visible {
     font-size: 0.8rem;
 }
 
+// Author-only notice on /mutable: the local working copy differs from the
+// published one (unpushed edits here, or a push from another device).
+.mutable-author-banner {
+    max-width: 960px;
+    margin: 0 auto 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    border: 1px solid var(--ip-shared);
+    border-radius: var(--ip-radius-md, 6px);
+    background: var(--ip-shared-tint);
+    color: var(--ip-text-secondary);
+    font-size: 0.85rem;
+}
+
+.mutable-author-banner-link {
+    color: var(--ip-shared);
+    text-decoration: none;
+    white-space: nowrap;
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
+
+// "✎ Edit" — the authoring device's shortcut from the published page back
+// into the editor. Amber like the rest of the mutable chrome.
+.view-only-edit-button {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.5rem 1.5rem;
+    background: none;
+    border: 1px solid var(--ip-shared);
+    color: var(--ip-shared);
+    border-radius: var(--ip-radius-md);
+    font-size: 1rem;
+    text-decoration: none;
+    cursor: pointer;
+
+    &:hover {
+        background: var(--ip-shared-tint);
+    }
+}
+
 /* ── Home page ──────────────────────────────────────────────────────────── */
 
 .ironpad-home {
@@ -933,6 +980,23 @@ a:focus-visible {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+// The mutable share's /mutable/{id} URL (relative for the CopyButton).
+.ironpad-metadata-published-url {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 6px 48px 6px 10px;
+    background: var(--ip-bg-surface);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md);
+
+    code {
+        font-size: 0.8rem;
+        color: var(--ip-text-secondary);
+        overflow-wrap: anywhere;
+    }
 }
 
 .ironpad-metadata-number {
@@ -2686,6 +2750,10 @@ code[class*="language-"] {
 .ironpad-toolbar-dropdown-item {
     display: block;
     width: 100%;
+    // Anchors use this class too (View Published, Open in editor); the
+    // box-sizing + text-decoration lines exist for them, not the buttons.
+    box-sizing: border-box;
+    text-decoration: none;
     padding: 8px 16px;
     border: none;
     background: transparent;

@@ -16,6 +16,7 @@ use ironpad_common::{OG_IMAGE_MAX_PX, OG_IMAGE_MIN_PX};
 use leptos::ev;
 use leptos::prelude::*;
 
+use crate::components::copy_button::CopyButton;
 use crate::components::toaster::{ToastIntent, Toaster};
 use crate::model::NotebookModel;
 
@@ -30,7 +31,12 @@ const MIN_SAVING_MS: i32 = 500;
 
 /// Collapsed-by-default metadata section. Expanding lazily mounts the form.
 #[component]
-pub(super) fn NotebookMetadataSection() -> impl IntoView {
+pub(super) fn NotebookMetadataSection(
+    /// `Some((share_id, edit_key))` while the notebook is mutable-backed on
+    /// this device (PRD-0049); drives the published-URL row, so the share
+    /// link is findable after its one appearance in the share toast.
+    mutable_binding: RwSignal<Option<(String, String)>>,
+) -> impl IntoView {
     let collapsed = RwSignal::new(true);
     let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
 
@@ -48,7 +54,7 @@ pub(super) fn NotebookMetadataSection() -> impl IntoView {
                     .then(|| {
                         view! {
                             <div class="view-only-shared-body">
-                                <NotebookMetadataPanel />
+                                <NotebookMetadataPanel mutable_binding=mutable_binding />
                             </div>
                         }
                     })
@@ -57,10 +63,26 @@ pub(super) fn NotebookMetadataSection() -> impl IntoView {
     }
 }
 
+/// The deployment origin for building the published URL. Empty during SSR:
+/// the panel body only mounts client-side, but the code must compile there,
+/// and a root-relative URL is a sane fallback.
+fn published_origin() -> String {
+    #[cfg(feature = "hydrate")]
+    {
+        leptos::web_sys::window()
+            .and_then(|w| w.location().origin().ok())
+            .unwrap_or_default()
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        String::new()
+    }
+}
+
 /// The form body.
 #[component]
 #[allow(clippy::too_many_lines)] // One form, read top to bottom.
-fn NotebookMetadataPanel() -> impl IntoView {
+fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<(String, String)>>) -> impl IntoView {
     let state = expect_context::<NotebookState>();
     let model = expect_context::<NotebookModel>();
     let toaster = Toaster::expect_context();
@@ -222,6 +244,19 @@ fn NotebookMetadataPanel() -> impl IntoView {
                 "Used for the page title, search, and the preview card that Reddit, \
                  X, Slack, and Discord build when someone pastes a link to this notebook."
             </p>
+
+            {move || mutable_binding.get().map(|(share_id, _)| {
+                let url = format!("{}/mutable/{share_id}", published_origin());
+                view! {
+                    <div class="ironpad-metadata-field">
+                        <span class="ironpad-metadata-label">"Published at"</span>
+                        <div class="ironpad-metadata-published-url">
+                            <code>{url.clone()}</code>
+                            <CopyButton text=url />
+                        </div>
+                    </div>
+                }
+            })}
 
             <label class="ironpad-metadata-field">
                 <span class="ironpad-metadata-label">"Description"</span>

@@ -295,6 +295,43 @@ fn push_mutable_current_notebook(
     });
 }
 
+/// Replace the local working copy with the published copy of its mutable
+/// share — the missing half of Push, for a device whose copy has gone stale
+/// (or whose local experiments should be discarded). Destructive by design;
+/// the caller confirms first. Finishes with a full reload, the one reliable
+/// way to rebuild editor state (cells, Monaco instances, outputs) from
+/// storage.
+#[cfg(feature = "hydrate")]
+fn pull_mutable_current_notebook(toaster: Toaster, share_id: String) {
+    leptos::task::spawn_local(async move {
+        match crate::server_fns::get_mutable_notebook(share_id).await {
+            Ok(Some(nb)) => {
+                // save_notebook routes to the mutable store (the record for
+                // this uuid exists), preserving the share binding.
+                if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+                    toaster.toast(
+                        ToastIntent::Error,
+                        "Pull Failed",
+                        format!("Could not update local storage: {e:?}"),
+                        6,
+                    );
+                    return;
+                }
+                if let Some(window) = web_sys::window() {
+                    let _ = window.location().reload();
+                }
+            }
+            Ok(None) => toaster.toast(
+                ToastIntent::Error,
+                "Pull Failed",
+                "The published copy was not found; it may have been unpublished.".to_string(),
+                6,
+            ),
+            Err(e) => toaster.toast(ToastIntent::Error, "Pull Failed", format!("{e}"), 6),
+        }
+    });
+}
+
 // ── Notebook editor page ────────────────────────────────────────────────────
 
 /// Route component for `/notebook/{id}`.
@@ -895,23 +932,57 @@ fn NotebookContent() -> impl IntoView {
                                                 "⇅ Share Mutable"
                                             </button>
                                         }.into_any(),
-                                        Some((share_id, edit_key)) => view! {
-                                            <button
-                                                class="ironpad-toolbar-dropdown-item"
-                                                on:click=move |_| {
-                                                    hamburger_open.set(false);
-                                                    state.save_generation.update(|g| *g += 1);
-                                                    push_mutable_current_notebook(
-                                                        &state,
-                                                        Toaster::expect_context(),
-                                                        share_id.clone(),
-                                                        edit_key.clone(),
-                                                    );
-                                                }
-                                            >
-                                                "⬆ Push Update"
-                                            </button>
-                                        }.into_any(),
+                                        Some((share_id, edit_key)) => {
+                                            let published_href = format!("/mutable/{share_id}");
+                                            let pull_share_id = share_id.clone();
+                                            view! {
+                                                <button
+                                                    class="ironpad-toolbar-dropdown-item"
+                                                    on:click=move |_| {
+                                                        hamburger_open.set(false);
+                                                        state.save_generation.update(|g| *g += 1);
+                                                        push_mutable_current_notebook(
+                                                            &state,
+                                                            Toaster::expect_context(),
+                                                            share_id.clone(),
+                                                            edit_key.clone(),
+                                                        );
+                                                    }
+                                                >
+                                                    "⬆ Push Update"
+                                                </button>
+                                                <button
+                                                    class="ironpad-toolbar-dropdown-item"
+                                                    on:click=move |_| {
+                                                        hamburger_open.set(false);
+                                                        #[cfg(feature = "hydrate")]
+                                                        {
+                                                            let confirmed = web_sys::window()
+                                                                .unwrap()
+                                                                .confirm_with_message(
+                                                                    "Replace your local working copy with the published copy? Unpushed local changes will be lost.",
+                                                                )
+                                                                .unwrap_or(false);
+                                                            if confirmed {
+                                                                pull_mutable_current_notebook(
+                                                                    Toaster::expect_context(),
+                                                                    pull_share_id.clone(),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                >
+                                                    "⬇ Pull Latest"
+                                                </button>
+                                                <a
+                                                    class="ironpad-toolbar-dropdown-item"
+                                                    href=published_href
+                                                    on:click=move |_| hamburger_open.set(false)
+                                                >
+                                                    "◎ View Published"
+                                                </a>
+                                            }.into_any()
+                                        },
                                     }}
                                     // Export HTML
                                     <button
@@ -1210,7 +1281,7 @@ fn NotebookContent() -> impl IntoView {
         // the shared-appendix e2e spec indexes that container positionally,
         // so adding a sibling there would silently retarget its assertions.
         <div class="ironpad-editor-metadata-appendix">
-            <NotebookMetadataSection />
+            <NotebookMetadataSection mutable_binding=mutable_binding />
         </div>
         </Show>
 

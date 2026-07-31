@@ -227,7 +227,7 @@ impl CellManifest {
 ///
 /// Carries everything needed to render or fork a notebook
 /// in a single value. Used for `IndexedDB` storage and view-only/shared pages.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct IronpadNotebook {
     pub version: u32,
     pub id: Uuid,
@@ -330,6 +330,20 @@ impl IronpadNotebook {
     pub fn og_image_path(&self) -> Option<&str> {
         let raw = self.og_image.as_deref()?.trim();
         (raw.starts_with('/') && !raw.starts_with("//")).then_some(raw)
+    }
+
+    /// Whether two copies of this notebook carry the same content.
+    ///
+    /// Ignores `updated_at`, which the storage layer bumps on *every* save
+    /// (pushed or not), so raw equality between a local working copy and the
+    /// published copy of a mutable share would report a difference that no
+    /// reader could see. Everything else — including future fields, via the
+    /// `PartialEq` derive — participates.
+    #[must_use]
+    pub fn content_matches(&self, other: &Self) -> bool {
+        let mut other = other.clone();
+        other.updated_at = self.updated_at;
+        *self == other
     }
 
     /// The declared size of this notebook's override image, if it declares a
@@ -440,7 +454,7 @@ pub fn shared_cell_line_offset(
 }
 
 /// A single cell within an [`IronpadNotebook`], including its source code.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct IronpadCell {
     pub id: String,
     pub order: u32,
@@ -571,6 +585,38 @@ mod tests {
             None,
             "[profile.release]\nopt-level = 1",
         ));
+    }
+
+    #[test]
+    fn content_matches_ignores_updated_at_but_not_content() {
+        // The divergence check behind the mutable reader's author banner:
+        // storage bumps updated_at on every save, so it must not count as a
+        // difference — while any real edit must.
+        let base = IronpadNotebook::new("t");
+
+        let mut resaved = base.clone();
+        resaved.updated_at += chrono::Duration::seconds(90);
+        assert!(base.content_matches(&resaved));
+        assert!(resaved.content_matches(&base));
+
+        let mut retitled = base.clone();
+        retitled.title = "t2".to_string();
+        assert!(!base.content_matches(&retitled));
+
+        let mut cell_added = base.clone();
+        cell_added.cells.push(IronpadCell {
+            id: "c1".to_string(),
+            order: 0,
+            label: "Cell 1".to_string(),
+            cell_type: CellType::Code,
+            source: "1 + 1".to_string(),
+            cargo_toml: None,
+            shared: false,
+            collapsed: false,
+            output_collapsed: false,
+            version: 0,
+        });
+        assert!(!base.content_matches(&cell_added));
     }
 
     #[test]

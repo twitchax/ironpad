@@ -4,7 +4,7 @@ title: "Mutable shares: author-updatable notebooks at /mutable/{id}, no accounts
 status: done
 owner: "Aaron Roney"
 created: 2026-07-24
-updated: 2026-07-24
+updated: 2026-07-31
 
 principles:
 - "No accounts: identity is a key. The server verifies and never custodies; it stores blake3 hashes, and plaintext keys exist only in the author's IndexedDB and on the TLS wire."
@@ -152,3 +152,4 @@ Shares are content-addressed and frozen: editing a shared notebook mints a new h
 
 - 2026-07-24: Created from the design discussion (2026-07-23/24): capability-URL exploration collapsed to the conversion paradigm with two either-works keys after four rounds of descoping (live collaboration, read keys, CAS publishing, and per-share-only keys all considered and deliberately deferred).
 - 2026-07-24: Implemented end to end. Server layer (T-001) with 6 unit tests; refactored the blob-snapshot core (write_cell_blobs_capped) so mutable shares reuse the immutable /share-blobs store. Client storage DB_VERSION 3 with transparent get/save routing (T-003); reader page /mutable/{id} + rebind (T-002/T-005); editor Share Mutable / Push / Unpublish menu swaps (T-004); footer user key (T-006); home Published group with local + user-key-enumerated shares (T-004/T-007); docs (T-009). e2e mutable-shares.spec.ts (T-008): convert+push+fresh-reader, unpublish, rebind+wrong-key. ci green (674 tests); mutable-shares.spec.ts green (3/3). All four UATs verified. NOTE: T-004's open-time staleness check is deferred (current push behavior is last-write-wins); see the T-004 note.
+- 2026-07-31: Author round-trip follow-up. The /mutable reader is binding-aware (hydrate-time get_mutable check): the authoring device gets an amber "✎ Edit" toolbar shortcut and an "Open in editor" menu item (unbound devices keep the rebind entry, whose form now always verifies the key server-side and never clobbers an existing local working copy); an author-only divergence banner shows when the local working copy differs from the published copy (IronpadNotebook::content_matches, ignoring updated_at — deliberately symmetric wording, since content comparison cannot tell unpushed local edits from a remote push, per the T-004 note). Editor gains Pull Latest (confirm-gated overwrite of the local working copy + reload — the manual remedy for a stale device) and View Published; the metadata panel shows the published URL with a copy control. ViewOnlyNotebook gains a `controls` slot prop. e2e: author round-trip test (edit shortcut, banner appears on unpushed edit and clears after Pull, View Published, published-URL row). T-004's pushed_at sync-baseline (auto-detecting REMOTE-newer on open and guarding Push) remains deferred.

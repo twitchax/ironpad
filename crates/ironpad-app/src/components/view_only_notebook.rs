@@ -99,6 +99,12 @@ pub(crate) fn ViewOnlyNotebook(
     /// `share_manifest`.
     #[prop(default = None)]
     menu: Option<AnyView>,
+    /// Page-specific toolbar controls, rendered inline before the "☰" menu
+    /// (the mutable reader's "✎ Edit" link for the authoring device). The
+    /// slot itself is static; put reactivity *inside* the `AnyView` when the
+    /// control appears from hydrate-time state.
+    #[prop(default = None)]
+    controls: Option<AnyView>,
 ) -> impl IntoView {
     // Leptos's optional-prop setter takes the bare String, so callers with no
     // spec pass ""; normalize that back to None here.
@@ -343,6 +349,7 @@ pub(crate) fn ViewOnlyNotebook(
                         })}
                     </div>
                 })}
+                {controls}
                 {menu.map(|items| {
                     let menu_open = RwSignal::new(false);
                     view! {

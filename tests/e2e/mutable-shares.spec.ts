@@ -254,6 +254,93 @@ test.describe("Mutable shares (PRD-0049)", () => {
     });
   });
 
+  test("author round-trip: edit shortcut, divergence banner, pull, view published", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await createNotebook(page);
+    await page.waitForTimeout(1_500); // user key + binding load (hydration)
+
+    const title = `Round trip ${Date.now()}`;
+    await rename(page, title);
+    const shareId = await shareMutable(page);
+
+    // The published URL is findable after its one appearance in the share
+    // toast: the metadata panel shows it with a copy control.
+    await page
+      .locator(".view-only-shared-header", { hasText: "Notebook Metadata" })
+      .click();
+    await expect(
+      page.locator(".ironpad-metadata-published-url code"),
+    ).toContainText(`/mutable/${shareId}`);
+
+    // View Published closes the loop from the editor to the reader page.
+    await menuClick(page, "View Published");
+    await expect(page).toHaveURL(new RegExp(`/mutable/${shareId}`));
+
+    // The authoring device gets a first-class Edit shortcut, and no banner:
+    // the working copy matches what was just published. (The edit button
+    // appearing proves the binding check resolved, which makes the banner
+    // absence assertion strict rather than a race.)
+    const edit = page.locator(".view-only-edit-button");
+    await expect(edit).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".mutable-author-banner")).toHaveCount(0);
+
+    // The menu offers the editor, not a key prompt, on the authoring device.
+    const readerMenuToggle = page.locator(
+      ".view-only-menu .ironpad-toolbar-dropdown-toggle",
+    );
+    await readerMenuToggle.click();
+    await expect(page.locator(".mutable-edit-menu-item")).toBeVisible();
+    await expect(page.locator(".mutable-rebind-menu-item")).toHaveCount(0);
+    await readerMenuToggle.click(); // close
+
+    // Edit drops straight into the editor; no key required.
+    await edit.click();
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
+    await expect(page.locator(".ironpad-editor")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // An unpushed edit: the reader keeps showing the published title (the
+    // reader renders the server copy, not the local one) and raises the
+    // divergence banner for the author.
+    const draft = `${title} draft`;
+    await rename(page, draft);
+    await page.waitForTimeout(1_500); // let the IndexedDB save land
+    await page.goto(`/mutable/${shareId}`);
+    await expect(page.locator(".view-only-title")).toHaveText(title, {
+      timeout: 30_000,
+    });
+    await expect(page.locator(".mutable-author-banner")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // The banner's editor link works.
+    await page.locator(".mutable-author-banner-link").click();
+    await expect(page.locator(".ironpad-editor")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Pull Latest discards the local draft in favor of the published copy;
+    // it confirms first and ends in a full reload.
+    await page.waitForTimeout(1_000); // binding load
+    page.on("dialog", (d) => d.accept());
+    await menuClick(page, "Pull Latest");
+    await expect(page.locator(".ironpad-notebook-title--editable")).toHaveText(
+      title,
+      { timeout: 30_000 },
+    );
+
+    // Local and published agree again, so the banner is gone. Gate on the
+    // edit shortcut (binding resolved) before asserting absence.
+    await page.goto(`/mutable/${shareId}`);
+    await expect(page.locator(".view-only-edit-button")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".mutable-author-banner")).toHaveCount(0);
+  });
+
   test("rebind on a fresh context with the user key; a wrong key is rejected", async ({
     page,
     browser,
