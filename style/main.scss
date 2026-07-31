@@ -502,7 +502,6 @@ a:focus-visible {
     justify-content: flex-end;
 }
 
-.mutable-rebind-toggle,
 .mutable-rebind-submit {
     background: none;
     border: 1px solid var(--ip-border);
@@ -515,6 +514,21 @@ a:focus-visible {
     &:hover {
         border-color: var(--ip-shared);
         color: var(--ip-shared);
+    }
+}
+
+.mutable-rebind-cancel {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--ip-text-tertiary);
+    border-radius: var(--ip-radius-md, 6px);
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 0.85rem;
+
+    &:hover {
+        border-color: var(--ip-border);
+        color: var(--ip-text-secondary);
     }
 }
 

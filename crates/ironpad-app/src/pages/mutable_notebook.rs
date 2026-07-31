@@ -186,44 +186,52 @@ fn MutableReader(
     };
 
     view! {
-        <div class="mutable-rebind">
-            {move || if rebind_open.get() {
-                view! {
-                    <div class="mutable-rebind-form">
-                        <input
-                            class="mutable-rebind-input"
-                            r#type="text"
-                            placeholder="Paste your edit key"
-                            prop:value=move || key_input.get()
-                            on:input=move |ev| key_input.set(event_target_value(&ev))
-                        />
-                        <button
-                            class="mutable-rebind-submit"
-                            on:click=submit_key
-                            disabled=move || busy.get()
-                        >
-                            {move || if busy.get() { "Checking…" } else { "Edit" }}
-                        </button>
-                        {move || rebind_status.get().map(|msg| view! {
-                            <span class="mutable-rebind-status">{msg}</span>
-                        })}
-                    </div>
-                }.into_any()
-            } else {
-                view! {
+        // The form bar exists only while rebinding; the entry point lives in
+        // the toolbar's "☰" menu below, so ordinary readers (who have no key)
+        // never see rebind chrome at all.
+        {move || rebind_open.get().then(|| view! {
+            <div class="mutable-rebind">
+                <div class="mutable-rebind-form">
+                    <input
+                        class="mutable-rebind-input"
+                        r#type="text"
+                        placeholder="Paste your edit key"
+                        prop:value=move || key_input.get()
+                        on:input=move |ev| key_input.set(event_target_value(&ev))
+                    />
                     <button
-                        class="mutable-rebind-toggle"
-                        on:click=move |_| rebind_open.set(true)
+                        class="mutable-rebind-submit"
+                        on:click=submit_key
+                        disabled=move || busy.get()
                     >
-                        "✎ Have an edit key?"
+                        {move || if busy.get() { "Checking…" } else { "Edit" }}
                     </button>
-                }.into_any()
-            }}
-        </div>
+                    // A dismiss matters more now that reopening is a menu
+                    // trip away, not a click on the same spot.
+                    <button
+                        class="mutable-rebind-cancel"
+                        on:click=move |_| rebind_open.set(false)
+                    >
+                        "Cancel"
+                    </button>
+                    {move || rebind_status.get().map(|msg| view! {
+                        <span class="mutable-rebind-status">{msg}</span>
+                    })}
+                </div>
+            </div>
+        })}
         <ViewOnlyNotebook
             notebook
             fork_label="Fork to Private".to_string()
             share_manifest=manifest
+            menu=Some(view! {
+                <button
+                    class="ironpad-toolbar-dropdown-item mutable-rebind-menu-item"
+                    on:click=move |_| rebind_open.set(true)
+                >
+                    "✎ Have an edit key?"
+                </button>
+            }.into_any())
         />
     }
 }

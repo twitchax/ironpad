@@ -280,7 +280,12 @@ test.describe("Mutable shares (PRD-0049)", () => {
       });
       await reader.waitForTimeout(2_500); // hydrate the rebind handler
 
-      await reader.locator(".mutable-rebind-toggle").click();
+      // The rebind entry lives in the toolbar's "☰" menu; ordinary readers
+      // see no rebind chrome until they go looking for it.
+      await reader
+        .locator(".view-only-menu .ironpad-toolbar-dropdown-toggle")
+        .click();
+      await reader.locator(".mutable-rebind-menu-item").click();
       // Wrong key: valid format, no match.
       await reader.locator(".mutable-rebind-input").fill("0".repeat(64));
       await reader.locator(".mutable-rebind-submit").click();

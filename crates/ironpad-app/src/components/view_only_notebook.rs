@@ -93,6 +93,12 @@ pub(crate) fn ViewOnlyNotebook(
     /// Option-props strip to the bare inner type).
     #[prop(default = None)]
     share_manifest: Option<ironpad_common::ShareManifest>,
+    /// Page-specific actions, rendered inside a "☰" dropdown at the end of
+    /// the toolbar (the mutable reader's rebind entry, PRD-0049). `None`
+    /// hides the menu entirely; same `default`-not-`optional` reasoning as
+    /// `share_manifest`.
+    #[prop(default = None)]
+    menu: Option<AnyView>,
 ) -> impl IntoView {
     // Leptos's optional-prop setter takes the bare String, so callers with no
     // spec pass ""; normalize that back to None here.
@@ -336,6 +342,35 @@ pub(crate) fn ViewOnlyNotebook(
                             </div>
                         })}
                     </div>
+                })}
+                {menu.map(|items| {
+                    let menu_open = RwSignal::new(false);
+                    view! {
+                        <div class="ironpad-toolbar-dropdown view-only-menu">
+                            <button
+                                class="ironpad-toolbar-dropdown-toggle"
+                                title="Notebook menu"
+                                aria-label="Notebook menu"
+                                on:click=move |_| menu_open.update(|v| *v = !*v)
+                            >
+                                "☰"
+                            </button>
+                            // Display-toggled rather than conditionally
+                            // rendered: the slot's AnyView is consumed once,
+                            // so it can't be rebuilt per open the way the
+                            // editor's inline menu is. Any click inside
+                            // (i.e. choosing an item) closes it.
+                            <div
+                                class="ironpad-toolbar-dropdown-menu"
+                                style:display=move || {
+                                    if menu_open.get() { "block" } else { "none" }
+                                }
+                                on:click=move |_| menu_open.set(false)
+                            >
+                                {items}
+                            </div>
+                        </div>
+                    }
                 })}
                 </div>
             </div>
