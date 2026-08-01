@@ -204,6 +204,10 @@ pub(crate) fn ViewOnlyNotebook(
     let fork_label_clone = fork_label.clone();
     let navigate = leptos_router::hooks::use_navigate();
     let forking = RwSignal::new(false);
+    // Resolved under this component's owner; Copy, app-root-owned, so the
+    // async fork continuation can carry it safely.
+    #[cfg(feature = "hydrate")]
+    let fork_toaster = crate::components::toaster::Toaster::expect_context();
     let fork_action = move |_| {
         // Guard against a double-click starting a second fork (which would
         // create a duplicate notebook and navigate twice).
@@ -223,12 +227,28 @@ pub(crate) fn ViewOnlyNotebook(
                 nb.updated_at = chrono::Utc::now();
 
                 match crate::storage::client::save_notebook(&nb).await {
-                    Ok(()) => navigate(
-                        &format!("/local/{}", nb.id),
-                        leptos_router::NavigateOptions::default(),
-                    ),
+                    Ok(()) => {
+                        // Same copy as Import's toast; the silent navigation
+                        // used to read as a no-op.
+                        fork_toaster.toast(
+                            crate::components::toaster::ToastIntent::Success,
+                            "Forked",
+                            format!("\"{}\" has been added to your notebooks.", nb.title),
+                            4,
+                        );
+                        navigate(
+                            &format!("/local/{}", nb.id),
+                            leptos_router::NavigateOptions::default(),
+                        );
+                    }
                     Err(e) => {
                         forking.set(false); // allow a retry
+                        fork_toaster.toast(
+                            crate::components::toaster::ToastIntent::Error,
+                            "Fork Failed",
+                            "Could not save the fork locally. Try again.",
+                            5,
+                        );
                         leptos::logging::error!(
                             "failed to persist forked notebook to IndexedDB: {e:?}"
                         );

@@ -96,6 +96,14 @@ fn destroy_sortable(instance: StoredValue<Option<wasm_bindgen::JsValue>, LocalSt
 /// notebook is re-read.
 fn share_current_notebook(state: &NotebookState, toaster: Toaster) {
     let state = *state;
+    // Immediate ack: the menu closes on click, and the upload plus blob
+    // snapshotting can take a few seconds of visible nothing otherwise.
+    toaster.toast(
+        ToastIntent::Info,
+        "Sharing…",
+        "Uploading the notebook and snapshotting compiled cells.",
+        3,
+    );
     leptos::task::spawn_local(async move {
         #[cfg(feature = "hydrate")]
         yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
@@ -215,6 +223,13 @@ fn share_mutable_current_notebook(
     binding: RwSignal<Option<(String, String)>>,
 ) {
     let state = *state;
+    // Same immediate ack as Share Immutable.
+    toaster.toast(
+        ToastIntent::Info,
+        "Publishing…",
+        "Creating the mutable share and snapshotting compiled cells.",
+        3,
+    );
     leptos::task::spawn_local(async move {
         let Some((json, tags)) = flush_serialize_tags(&state, toaster, "Share Failed").await else {
             return;
@@ -279,6 +294,14 @@ fn push_mutable_current_notebook(
     edit_key: String,
 ) {
     let state = *state;
+    // Immediate ack: the push re-snapshots blobs server-side, which can take
+    // a few seconds of visible nothing otherwise.
+    toaster.toast(
+        ToastIntent::Info,
+        "Pushing…",
+        "Updating the published copy.",
+        3,
+    );
     leptos::task::spawn_local(async move {
         let Some((json, tags)) = flush_serialize_tags(&state, toaster, "Push Failed").await else {
             return;
@@ -287,7 +310,7 @@ fn push_mutable_current_notebook(
             Ok(()) => toaster.toast(
                 ToastIntent::Success,
                 "Pushed",
-                "The mutable notebook is updated.".to_string(),
+                "The published copy is updated; readers see this version now.",
                 4,
             ),
             Err(e) => toaster.toast(ToastIntent::Error, "Push Failed", format!("{e}"), 6),
@@ -297,18 +320,45 @@ fn push_mutable_current_notebook(
 
 /// Replace the local working copy with the published copy of its mutable
 /// share — the missing half of Push, for a device whose copy has gone stale
-/// (or whose local experiments should be discarded). Destructive by design;
-/// the caller confirms first. Finishes with a full reload, the one reliable
-/// way to rebuild editor state (cells, Monaco instances, outputs) from
-/// storage.
+/// (or whose local experiments should be discarded). Fetches first and
+/// short-circuits with an "Up to Date" toast when the copies already agree,
+/// so the destructive confirm only ever guards a real overwrite. Finishes
+/// with a full reload, the one reliable way to rebuild editor state (cells,
+/// Monaco instances, outputs) from storage; the success toast rides
+/// `sessionStorage` across it.
 #[cfg(feature = "hydrate")]
-fn pull_mutable_current_notebook(toaster: Toaster, share_id: String) {
+fn pull_mutable_current_notebook(state: &NotebookState, toaster: Toaster, share_id: String) {
+    let state = *state;
     leptos::task::spawn_local(async move {
         match crate::server_fns::get_mutable_notebook(share_id).await {
-            Ok(Some(nb)) => {
+            Ok(Some(published)) => {
+                let already_matches = state
+                    .notebook
+                    .try_get_untracked()
+                    .flatten()
+                    .is_some_and(|local| local.content_matches(&published));
+                if already_matches {
+                    toaster.toast(
+                        ToastIntent::Success,
+                        "Up to Date",
+                        "Your working copy already matches the published notebook.",
+                        4,
+                    );
+                    return;
+                }
+                let confirmed = web_sys::window().is_some_and(|w| {
+                    w.confirm_with_message(
+                        "Replace your local working copy with the published copy? \
+                         Unpushed local changes will be lost.",
+                    )
+                    .unwrap_or(false)
+                });
+                if !confirmed {
+                    return;
+                }
                 // save_notebook routes to the mutable store (the record for
                 // this uuid exists), preserving the share binding.
-                if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+                if let Err(e) = crate::storage::client::save_notebook(&published).await {
                     toaster.toast(
                         ToastIntent::Error,
                         "Pull Failed",
@@ -317,6 +367,12 @@ fn pull_mutable_current_notebook(toaster: Toaster, share_id: String) {
                     );
                     return;
                 }
+                Toaster::toast_after_reload(
+                    ToastIntent::Success,
+                    "Pulled",
+                    "Your working copy now matches the published notebook.",
+                    4,
+                );
                 if let Some(window) = web_sys::window() {
                     let _ = window.location().reload();
                 }
@@ -324,7 +380,7 @@ fn pull_mutable_current_notebook(toaster: Toaster, share_id: String) {
             Ok(None) => toaster.toast(
                 ToastIntent::Error,
                 "Pull Failed",
-                "The published copy was not found; it may have been unpublished.".to_string(),
+                "The published copy was not found. It may have been unpublished.".to_string(),
                 6,
             ),
             Err(e) => toaster.toast(ToastIntent::Error, "Pull Failed", format!("{e}"), 6),
@@ -955,21 +1011,14 @@ fn NotebookContent() -> impl IntoView {
                                                     class="ironpad-toolbar-dropdown-item"
                                                     on:click=move |_| {
                                                         hamburger_open.set(false);
+                                                        // The destructive confirm lives inside:
+                                                        // it only fires when the copies differ.
                                                         #[cfg(feature = "hydrate")]
-                                                        {
-                                                            let confirmed = web_sys::window()
-                                                                .unwrap()
-                                                                .confirm_with_message(
-                                                                    "Replace your local working copy with the published copy? Unpushed local changes will be lost.",
-                                                                )
-                                                                .unwrap_or(false);
-                                                            if confirmed {
-                                                                pull_mutable_current_notebook(
-                                                                    Toaster::expect_context(),
-                                                                    pull_share_id.clone(),
-                                                                );
-                                                            }
-                                                        }
+                                                        pull_mutable_current_notebook(
+                                                            &state,
+                                                            Toaster::expect_context(),
+                                                            pull_share_id.clone(),
+                                                        );
                                                     }
                                                 >
                                                     "⬇ Pull Latest"

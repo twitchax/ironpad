@@ -71,10 +71,14 @@ test.describe("Public notebooks", () => {
     // hydration wired the button — give hydration the suite-convention beat.
     await page.waitForTimeout(3_000); // hydration (suite convention)
 
-    // Click the fork button.
+    // Click the fork button. The fork now confirms with a toast — the
+    // silent navigation used to read as a no-op.
     const forkButton = page.locator(".fork-button");
     await expect(forkButton).toBeVisible();
     await forkButton.click();
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Forked" }),
+    ).toBeVisible({ timeout: 15_000 });
 
     // Verify navigation to a new private notebook editor.
     // The fork URL must NOT match /notebook/public/ (it should be /notebook/{uuid}).

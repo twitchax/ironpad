@@ -9,9 +9,33 @@ use leptos::prelude::*;
 
 /// Visual intent of a toast; colors the title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "hydrate", derive(serde::Serialize, serde::Deserialize))]
 pub enum ToastIntent {
     Success,
     Error,
+    /// Neutral progress notice ("Pushing…"): something started, and nothing
+    /// has succeeded or failed yet.
+    Info,
+}
+
+/// `sessionStorage` key for a toast queued to survive a full page reload.
+#[cfg(feature = "hydrate")]
+const PENDING_TOAST_KEY: &str = "ironpad-pending-toast";
+
+/// A toast serialized across a reload (Pull Latest ends in one): the live
+/// toast list dies with the page, so the message rides `sessionStorage`.
+#[cfg(feature = "hydrate")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PendingToast {
+    intent: ToastIntent,
+    title: String,
+    body: String,
+    timeout_secs: u32,
+}
+
+#[cfg(feature = "hydrate")]
+fn session_storage() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|w| w.session_storage().ok().flatten())
 }
 
 /// One live toast.
@@ -94,12 +118,57 @@ impl Toaster {
         #[cfg(not(all(feature = "hydrate", target_arch = "wasm32")))]
         let _ = timeout_secs;
     }
+
+    /// Queues a toast to show after the next full page load, for flows that
+    /// end in `location.reload()` (Pull Latest): the live toast list dies
+    /// with the page, so the message rides `sessionStorage` and [`ToastHost`]
+    /// drains it on the next hydrate. Associated rather than a method — the
+    /// toast targets the *next* page's toaster, not this one.
+    #[cfg(feature = "hydrate")]
+    pub fn toast_after_reload(
+        intent: ToastIntent,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        timeout_secs: u32,
+    ) {
+        let pending = PendingToast {
+            intent,
+            title: title.into(),
+            body: body.into(),
+            timeout_secs,
+        };
+        let Some(storage) = session_storage() else {
+            return;
+        };
+        if let Ok(json) = serde_json::to_string(&pending) {
+            let _ = storage.set_item(PENDING_TOAST_KEY, &json);
+        }
+    }
+
+    /// Shows (and clears) a queued after-reload toast, if one exists.
+    #[cfg(feature = "hydrate")]
+    fn drain_pending(self) {
+        let Some(storage) = session_storage() else {
+            return;
+        };
+        let Ok(Some(json)) = storage.get_item(PENDING_TOAST_KEY) else {
+            return;
+        };
+        let _ = storage.remove_item(PENDING_TOAST_KEY);
+        if let Ok(p) = serde_json::from_str::<PendingToast>(&json) {
+            self.toast(p.intent, p.title, p.body, p.timeout_secs);
+        }
+    }
 }
 
 /// Fixed overlay rendering the live toasts; mounted once at the app root.
 #[component]
 pub fn ToastHost() -> impl IntoView {
     let toaster = Toaster::expect_context();
+
+    // Show any toast queued across a reload (Pull Latest ends in one).
+    #[cfg(feature = "hydrate")]
+    Effect::new(move || toaster.drain_pending());
 
     view! {
         <div class="ironpad-toaster">
@@ -112,6 +181,7 @@ pub fn ToastHost() -> impl IntoView {
                             "ironpad-toast-title ironpad-toast-title--success"
                         }
                         ToastIntent::Error => "ironpad-toast-title ironpad-toast-title--error",
+                        ToastIntent::Info => "ironpad-toast-title ironpad-toast-title--info",
                     };
                     view! {
                         <div class="ironpad-toast">

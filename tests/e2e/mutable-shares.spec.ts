@@ -123,9 +123,13 @@ test.describe("Mutable shares (PRD-0049)", () => {
     ).toHaveCount(0);
     await page.locator(MENU).click(); // close
 
-    // Edit, then Push the update.
+    // Edit, then Push the update. The immediate "Pushing…" ack shows while
+    // the snapshot round-trips, then the success toast replaces it.
     await rename(page, "Mutable One Edited");
     await menuClick(page, "Push Update");
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Pushing" }),
+    ).toBeVisible();
     await expect(
       page.locator(".ironpad-toast-body", { hasText: "updated" }),
     ).toBeVisible({ timeout: 30_000 });
@@ -323,10 +327,14 @@ test.describe("Mutable shares (PRD-0049)", () => {
     });
 
     // Pull Latest discards the local draft in favor of the published copy;
-    // it confirms first and ends in a full reload.
+    // it confirms first and ends in a full reload. The success toast rides
+    // sessionStorage across the reload (a live toast dies with the page).
     await page.waitForTimeout(1_000); // binding load
     page.on("dialog", (d) => d.accept());
     await menuClick(page, "Pull Latest");
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Pulled" }),
+    ).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(".ironpad-notebook-title--editable")).toHaveText(
       title,
       { timeout: 30_000 },
@@ -339,6 +347,19 @@ test.describe("Mutable shares (PRD-0049)", () => {
       timeout: 15_000,
     });
     await expect(page.locator(".mutable-author-banner")).toHaveCount(0);
+
+    // Pulling again is a no-op and says so; the destructive confirm never
+    // fires for matching copies (the accept-all dialog handler above would
+    // reload if it did, and the Up to Date toast would never appear).
+    await page.locator(".view-only-edit-button").click();
+    await expect(page.locator(".ironpad-editor")).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.waitForTimeout(1_000); // binding load
+    await menuClick(page, "Pull Latest");
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Up to Date" }),
+    ).toBeVisible({ timeout: 15_000 });
   });
 
   test("rebind on a fresh context with the user key; a wrong key is rejected", async ({
@@ -381,9 +402,14 @@ test.describe("Mutable shares (PRD-0049)", () => {
         { timeout: 15_000 },
       );
 
-      // Correct key: pulled into local storage, editor opens.
+      // Correct key: pulled into local storage, editor opens, and the
+      // acceptance is confirmed with a toast (asserted before the editor —
+      // the toast auto-dismisses after a few seconds).
       await reader.locator(".mutable-rebind-input").fill(userKey);
       await reader.locator(".mutable-rebind-submit").click();
+      await expect(
+        reader.locator(".ironpad-toast-title", { hasText: "Key Accepted" }),
+      ).toBeVisible({ timeout: 15_000 });
       await expect(reader).toHaveURL(/\/local\/[a-f0-9-]+/, {
         timeout: 15_000,
       });

@@ -133,6 +133,11 @@ fn MutableReader(
     #[cfg(feature = "hydrate")]
     let navigate = StoredValue::new_local(leptos_router::hooks::use_navigate());
 
+    // Resolved under the page's owner; `Toaster` is Copy and app-root-owned,
+    // so moving it into the async continuation below is disposal-safe.
+    #[cfg(feature = "hydrate")]
+    let toaster = crate::components::toaster::Toaster::expect_context();
+
     #[cfg(feature = "hydrate")]
     Effect::new(move || {
         // Capture under the page's owner; the async block outlives it and
@@ -188,6 +193,14 @@ fn MutableReader(
                                 return;
                             }
                         }
+                        // The toast survives the client-side navigation: the
+                        // toast list is owned by the app root, not this page.
+                        toaster.toast(
+                            crate::components::toaster::ToastIntent::Success,
+                            "Key Accepted",
+                            "This notebook is editable on this device now.",
+                            4,
+                        );
                         navigate(
                             &format!("/local/{local_uuid}"),
                             leptos_router::NavigateOptions::default(),
