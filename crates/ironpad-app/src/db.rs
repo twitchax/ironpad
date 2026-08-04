@@ -64,6 +64,17 @@ pub struct OwnedShareRow {
     pub pushed_at: String,
 }
 
+/// The owner's editing view of a share (PRD-0054): the draft when one
+/// exists, else the published copy, plus whether they differ.
+#[derive(Debug, Clone)]
+pub struct ShareEditRow {
+    /// Draft content if a draft exists, otherwise the published content.
+    pub notebook_json: String,
+    /// True when a draft exists (draft may differ from published).
+    pub dirty: bool,
+    pub pushed_at: String,
+}
+
 // ── Handle ──────────────────────────────────────────────────────────────────
 
 /// Cloneable handle to the embedded database. Provided as leptos context (for
@@ -109,6 +120,7 @@ impl Db {
                 DEFINE TABLE IF NOT EXISTS mutable_share SCHEMAFULL;
                 DEFINE FIELD IF NOT EXISTS notebook_json ON mutable_share TYPE string;
                 DEFINE FIELD IF NOT EXISTS manifest_json ON mutable_share TYPE option<string>;
+                DEFINE FIELD IF NOT EXISTS draft_json ON mutable_share TYPE option<string>;
                 DEFINE FIELD IF NOT EXISTS private ON mutable_share TYPE bool DEFAULT false;
                 DEFINE FIELD IF NOT EXISTS bytes ON mutable_share TYPE int;
                 DEFINE FIELD IF NOT EXISTS pushed_at ON mutable_share TYPE string;
@@ -398,6 +410,94 @@ impl Db {
             .context("share update failed")?
             .check()
             .context("share update returned an error")?;
+        Ok(())
+    }
+
+    // ── Draft slot (PRD-0054) ───────────────────────────────────────────
+
+    /// Write the draft slot (an autosave). Ownership is checked by the
+    /// caller; a nonexistent id is a silent no-op (UPDATE semantics), which
+    /// cannot occur behind the ownership gate.
+    #[tracing::instrument(name = "db_save_draft", level = "debug", skip_all, fields(id = %id))]
+    pub async fn save_draft(&self, id: &str, notebook_json: &str) -> Result<()> {
+        self.inner
+            .query("UPDATE type::record('mutable_share', $id) SET draft_json = $nb")
+            .bind(("id", id.to_string()))
+            .bind(("nb", notebook_json.to_string()))
+            .await
+            .context("draft save failed")?
+            .check()
+            .context("draft save returned an error")?;
+        Ok(())
+    }
+
+    /// The owner's editing view: the draft when one exists, else published.
+    #[tracing::instrument(name = "db_get_share_for_edit", level = "info", skip_all, fields(id = %id))]
+    pub async fn get_share_for_edit(&self, id: &str) -> Result<Option<ShareEditRow>> {
+        #[derive(SurrealValue)]
+        struct Row {
+            notebook_json: String,
+            draft_json: Option<String>,
+            pushed_at: String,
+        }
+        let row: Option<Row> = self
+            .inner
+            .query(
+                "SELECT notebook_json, draft_json, pushed_at \
+                 FROM ONLY type::record('mutable_share', $id)",
+            )
+            .bind(("id", id.to_string()))
+            .await
+            .context("edit fetch failed")?
+            .take(0)
+            .context("edit row malformed")?;
+        Ok(row.map(|r| ShareEditRow {
+            dirty: r.draft_json.is_some(),
+            notebook_json: r.draft_json.unwrap_or(r.notebook_json),
+            pushed_at: r.pushed_at,
+        }))
+    }
+
+    /// Clear the draft slot without promoting (Discard draft).
+    #[tracing::instrument(name = "db_discard_draft", level = "info", skip_all, fields(id = %id))]
+    pub async fn discard_draft(&self, id: &str) -> Result<()> {
+        self.inner
+            .query("UPDATE type::record('mutable_share', $id) SET draft_json = NONE")
+            .bind(("id", id.to_string()))
+            .await
+            .context("draft discard failed")?
+            .check()
+            .context("draft discard returned an error")?;
+        Ok(())
+    }
+
+    /// Promote the draft to published (a Push): published := draft, manifest
+    /// replaced, `pushed_at` bumped, draft cleared — one statement, so a
+    /// concurrent autosave either lands before (and is promoted) or after
+    /// (and stays a fresh draft). No-op when no draft exists.
+    ///
+    /// The WHERE guard makes this promote-or-nothing; the caller decides "was
+    /// there anything to push" via [`get_share_for_edit`](Self::get_share_for_edit)
+    /// beforehand (a benign race, last-write-wins by design, PRD-0054).
+    #[tracing::instrument(name = "db_promote_draft", level = "info", skip_all, fields(id = %id))]
+    pub async fn promote_draft(&self, id: &str, manifest_json: Option<String>) -> Result<()> {
+        self.inner
+            .query(
+                "UPDATE type::record('mutable_share', $id) SET \
+                    notebook_json = draft_json ?? notebook_json, \
+                    manifest_json = $mf, \
+                    bytes = string::len(draft_json ?? notebook_json), \
+                    pushed_at = $now, \
+                    draft_json = NONE \
+                 WHERE draft_json != NONE",
+            )
+            .bind(("id", id.to_string()))
+            .bind(("mf", manifest_json))
+            .bind(("now", now_rfc3339()))
+            .await
+            .context("draft promote failed")?
+            .check()
+            .context("draft promote returned an error")?;
         Ok(())
     }
 
@@ -721,6 +821,92 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 15);
+    }
+
+    #[tokio::test]
+    async fn draft_lifecycle_save_promote_discard() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        db.create_mutable_share("aaaaaaaaaaaaaaaa", "1", "{\"v\":1}", None)
+            .await
+            .unwrap();
+
+        // Fresh share: clean, and the edit view serves the published copy.
+        let edit = db
+            .get_share_for_edit("aaaaaaaaaaaaaaaa")
+            .await
+            .unwrap()
+            .expect("share exists");
+        assert!(!edit.dirty);
+        assert_eq!(edit.notebook_json, "{\"v\":1}");
+        // Unknown id: None, not an error.
+        assert!(db
+            .get_share_for_edit("ffffffffffffffff")
+            .await
+            .unwrap()
+            .is_none());
+
+        // An autosave lands in the draft slot; readers keep seeing published.
+        db.save_draft("aaaaaaaaaaaaaaaa", "{\"v\":2}")
+            .await
+            .unwrap();
+        let edit = db
+            .get_share_for_edit("aaaaaaaaaaaaaaaa")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(edit.dirty);
+        assert_eq!(edit.notebook_json, "{\"v\":2}");
+        let reader = db
+            .get_mutable_share("aaaaaaaaaaaaaaaa")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reader.notebook_json, "{\"v\":1}", "readers see published");
+
+        // Promote: published := draft, manifest replaced, clean again.
+        let before = reader.pushed_at.clone();
+        db.promote_draft("aaaaaaaaaaaaaaaa", Some("{\"m\":1}".into()))
+            .await
+            .unwrap();
+        let reader = db
+            .get_mutable_share("aaaaaaaaaaaaaaaa")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reader.notebook_json, "{\"v\":2}");
+        assert_eq!(reader.manifest_json.as_deref(), Some("{\"m\":1}"));
+        assert!(reader.pushed_at >= before);
+        assert!(
+            !db.get_share_for_edit("aaaaaaaaaaaaaaaa")
+                .await
+                .unwrap()
+                .unwrap()
+                .dirty
+        );
+
+        // Promote with no draft: a no-op (published and manifest untouched).
+        db.promote_draft("aaaaaaaaaaaaaaaa", None).await.unwrap();
+        let reader = db
+            .get_mutable_share("aaaaaaaaaaaaaaaa")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reader.notebook_json, "{\"v\":2}");
+        assert_eq!(reader.manifest_json.as_deref(), Some("{\"m\":1}"));
+
+        // Discard: the draft evaporates; published is untouched.
+        db.save_draft("aaaaaaaaaaaaaaaa", "{\"v\":3}")
+            .await
+            .unwrap();
+        db.discard_draft("aaaaaaaaaaaaaaaa").await.unwrap();
+        let edit = db
+            .get_share_for_edit("aaaaaaaaaaaaaaaa")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!edit.dirty);
+        assert_eq!(edit.notebook_json, "{\"v\":2}");
     }
 
     #[test]

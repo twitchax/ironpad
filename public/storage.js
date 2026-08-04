@@ -14,17 +14,16 @@
  */
 window.IronpadStorage = (function () {
     const DB_NAME = 'ironpad';
-    const DB_VERSION = 4;
+    const DB_VERSION = 5;
     const STORE_NAME = 'notebooks';
     // Local compiled-WASM blob cache (PRD-0047), content-addressed by the
     // same cache key the server uses. LRU-pruned to MAX_BLOB_ENTRIES.
     const BLOB_STORE = 'blobs';
     const MAX_BLOB_ENTRIES = 64;
-    // Mutable-share working copies (PRD-0049), keyed by the notebook's own
-    // uuid. A "Share Mutable" conversion MOVES a notebook here from
-    // STORE_NAME; each record is { id (uuid), share_id, notebook }. Push
-    // authorization is the GitHub session (PRD-0053), so no keys are stored.
-    const MUTABLE_STORE = 'mutable';
+    // Retired stores, deleted by migration: 'mutable' held PRD-0049/0053
+    // working copies of published notebooks — those live entirely on the
+    // server now (PRD-0054).
+    const RETIRED_MUTABLE_STORE = 'mutable';
     // Device-scoped metadata, keyed by 'name'. Held over from PRD-0049 (it
     // stored the user key); kept as an empty store for future device prefs.
     const META_STORE = 'meta';
@@ -43,28 +42,18 @@ window.IronpadStorage = (function () {
                     const blobs = db.createObjectStore(BLOB_STORE, { keyPath: 'hash' });
                     blobs.createIndex('lastUsed', 'lastUsed');
                 }
-                if (!db.objectStoreNames.contains(MUTABLE_STORE)) {
-                    db.createObjectStore(MUTABLE_STORE, { keyPath: 'id' });
-                }
                 if (!db.objectStoreNames.contains(META_STORE)) {
                     db.createObjectStore(META_STORE, { keyPath: 'name' });
                 }
-                // v4 (PRD-0053): the key mechanism is gone. Strip edit_key
-                // from mutable records and drop the stored user key. Runs in
-                // the versionchange transaction, so it's atomic with the
-                // version bump.
-                if (e.oldVersion > 0 && e.oldVersion < 4) {
-                    const t = e.target.transaction;
-                    const mut = t.objectStore(MUTABLE_STORE);
-                    mut.getAll().onsuccess = (ev) => {
-                        for (const record of ev.target.result) {
-                            if ('edit_key' in record) {
-                                delete record.edit_key;
-                                mut.put(record);
-                            }
-                        }
-                    };
-                    t.objectStore(META_STORE).delete('user_key');
+                // v5 (PRD-0054): published notebooks live on the server, so
+                // the local working-copy store dies. Any 0.15.0-era working
+                // copies are discarded (scorched earth; nothing real existed).
+                // Also covers the v4 cleanup for skipped versions.
+                if (db.objectStoreNames.contains(RETIRED_MUTABLE_STORE)) {
+                    db.deleteObjectStore(RETIRED_MUTABLE_STORE);
+                }
+                if (e.oldVersion > 0 && e.oldVersion < 5) {
+                    e.target.transaction.objectStore(META_STORE).delete('user_key');
                 }
             };
             req.onsuccess = (e) => resolve(e.target.result);
@@ -79,10 +68,6 @@ window.IronpadStorage = (function () {
 
     function blobTx(db, mode) {
         return db.transaction(BLOB_STORE, mode).objectStore(BLOB_STORE);
-    }
-
-    function mutableTx(db, mode) {
-        return db.transaction(MUTABLE_STORE, mode).objectStore(MUTABLE_STORE);
     }
 
     function reqToPromise(request) {
@@ -125,24 +110,16 @@ window.IronpadStorage = (function () {
             const db = await openDb();
             try {
                 const result = await reqToPromise(tx(db, 'readonly').get(id));
-                if (result) return result;
-                // Mutable-backed notebooks (PRD-0049) live in MUTABLE_STORE.
-                // Route transparently so the editor loads them by the same
-                // /local/{uuid} path with no special-casing.
-                const record = await reqToPromise(mutableTx(db, 'readonly').get(id));
-                return record ? record.notebook : null;
+                return result || null;
             } finally {
                 db.close();
             }
         },
 
         /**
-         * Save (upsert) a notebook. Sets updated_at to now.
-         *
-         * Routes transparently: if the id is a mutable-backed notebook
-         * (PRD-0049), the nested working copy is updated in MUTABLE_STORE and
-         * its share_id is preserved; otherwise the notebook is
-         * written to the private store.
+         * Save (upsert) a notebook to the private store. Sets updated_at to
+         * now. (Published notebooks persist server-side — PRD-0054 — and
+         * never pass through here.)
          * @param {Object} notebook - IronpadNotebook object. Must have an `id` field.
          * @returns {Promise<void>}
          */
@@ -151,13 +128,7 @@ window.IronpadStorage = (function () {
             const nb = { ...notebook, updated_at: new Date().toISOString() };
             const db = await openDb();
             try {
-                const existing = await reqToPromise(mutableTx(db, 'readonly').get(nb.id));
-                if (existing) {
-                    existing.notebook = nb;
-                    await reqToPromise(mutableTx(db, 'readwrite').put(existing));
-                } else {
-                    await reqToPromise(tx(db, 'readwrite').put(nb));
-                }
+                await reqToPromise(tx(db, 'readwrite').put(nb));
             } finally {
                 db.close();
             }
@@ -221,117 +192,6 @@ window.IronpadStorage = (function () {
             };
             await this.saveNotebook(nb);
             return nb;
-        },
-
-        // ── Mutable shares (PRD-0049; keys removed by PRD-0053) ────────
-
-        /**
-         * Convert a private notebook into a mutable-share working copy: move it
-         * from the private store into MUTABLE_STORE under the same uuid,
-         * carrying its server share id. Atomic across both stores.
-         * @param {string} id - Notebook uuid.
-         * @param {string} shareId - Server-minted mutable share id.
-         * @returns {Promise<void>}
-         */
-        convertToMutable: async function (id, shareId) {
-            const db = await openDb();
-            try {
-                const t = db.transaction([STORE_NAME, MUTABLE_STORE], 'readwrite');
-                const priv = t.objectStore(STORE_NAME);
-                const mut = t.objectStore(MUTABLE_STORE);
-                const notebook = await reqToPromise(priv.get(id));
-                if (!notebook) throw new Error(`notebook ${id} not found`);
-                await reqToPromise(mut.put({ id, share_id: shareId, notebook }));
-                await reqToPromise(priv.delete(id));
-            } finally {
-                db.close();
-            }
-        },
-
-        /**
-         * Move a mutable-backed notebook back to the private store (unpublish),
-         * dropping its share binding. Atomic across both stores.
-         * @param {string} id - Notebook uuid.
-         * @returns {Promise<void>}
-         */
-        convertToPrivate: async function (id) {
-            const db = await openDb();
-            try {
-                const t = db.transaction([STORE_NAME, MUTABLE_STORE], 'readwrite');
-                const priv = t.objectStore(STORE_NAME);
-                const mut = t.objectStore(MUTABLE_STORE);
-                const record = await reqToPromise(mut.get(id));
-                if (!record) return;
-                await reqToPromise(priv.put(record.notebook));
-                await reqToPromise(mut.delete(id));
-            } finally {
-                db.close();
-            }
-        },
-
-        /**
-         * Insert or replace a mutable-share record directly (the owner's
-         * clone-to-local flow on a fresh device).
-         * @param {Object} record - { id, share_id, notebook }.
-         * @returns {Promise<void>}
-         */
-        saveMutable: async function (record) {
-            const db = await openDb();
-            try {
-                await reqToPromise(mutableTx(db, 'readwrite').put(record));
-            } finally {
-                db.close();
-            }
-        },
-
-        /**
-         * Get a mutable-share record (with its share_id) by uuid.
-         * @param {string} id - Notebook uuid.
-         * @returns {Promise<Object|null>} { id, share_id, notebook } or null.
-         */
-        getMutable: async function (id) {
-            const db = await openDb();
-            try {
-                const record = await reqToPromise(mutableTx(db, 'readonly').get(id));
-                return record || null;
-            } finally {
-                db.close();
-            }
-        },
-
-        /**
-         * List all mutable-share records bound on this device, most-recently-
-         * updated first.
-         * @returns {Promise<Array>} Array of { id, share_id, notebook }.
-         */
-        listMutable: async function () {
-            const db = await openDb();
-            try {
-                const all = await reqToPromise(mutableTx(db, 'readonly').getAll());
-                all.sort((a, b) => {
-                    const ta = new Date(a.notebook && a.notebook.updated_at).getTime() || 0;
-                    const tb = new Date(b.notebook && b.notebook.updated_at).getTime() || 0;
-                    return tb - ta;
-                });
-                return all;
-            } finally {
-                db.close();
-            }
-        },
-
-        /**
-         * Delete a mutable-share record's local working copy by uuid (does not
-         * touch the server).
-         * @param {string} id - Notebook uuid.
-         * @returns {Promise<void>}
-         */
-        deleteMutable: async function (id) {
-            const db = await openDb();
-            try {
-                await reqToPromise(mutableTx(db, 'readwrite').delete(id));
-            } finally {
-                db.close();
-            }
         },
 
         // ── Compiled-blob cache (PRD-0047) ─────────────────────────────

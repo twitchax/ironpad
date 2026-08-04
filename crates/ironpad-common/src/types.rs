@@ -591,6 +591,15 @@ pub struct MutableNotebookResponse {
     pub is_owner: bool,
 }
 
+/// The owner's editing payload for a mutable share (PRD-0054): the server
+/// draft when one exists (else the published copy), and whether they differ
+/// (which is what arms the Push button on load).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MutableEditResponse {
+    pub notebook: IronpadNotebook,
+    pub dirty: bool,
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

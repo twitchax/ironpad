@@ -13,6 +13,16 @@ pub(super) use crate::components::output_render::CellOutputData;
 /// Debounce delay (ms) before reactive re-evaluation after a cell edit.
 const REACTIVE_DEBOUNCE_MS: i32 = 500;
 
+/// Debounce (ms) for server-draft autosaves (PRD-0054): long enough to
+/// coalesce a typing burst, short enough that closing the tab rarely loses
+/// more than a moment of work.
+#[cfg(feature = "hydrate")]
+const DRAFT_SAVE_DEBOUNCE_MS: i32 = 1500;
+
+/// Retry delay (ms) after a failed draft autosave.
+#[cfg(feature = "hydrate")]
+const DRAFT_SAVE_RETRY_MS: i32 = 5000;
+
 // ── Cell status ─────────────────────────────────────────────────────────────
 
 /// Reactive cell execution status for the UI.
@@ -26,6 +36,15 @@ pub(super) enum CellStatus {
     Error,
     /// Downstream cell blocked by an upstream error during reactive/run-all execution.
     Blocked,
+}
+
+/// Autosave state of the server draft (PRD-0054), shown beside the Push
+/// button. `Failed` self-heals: the save is rescheduled on a retry delay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DraftSaveState {
+    Synced,
+    Saving,
+    Failed,
 }
 
 // ── Notebook-level reactive state ───────────────────────────────────────────
@@ -94,6 +113,16 @@ pub(crate) struct NotebookState {
     /// `Closure::once` on every edit (the previous `forget()` behaviour).
     #[cfg(feature = "hydrate")]
     pub(super) reactive_timer_fn: StoredValue<Option<js_sys::Function>, LocalStorage>,
+    /// `ServerDraft` mode (PRD-0054): `Some(share_id)` when this editor
+    /// persists to the share's server-side draft instead of `IndexedDB`.
+    pub(crate) server_draft_share: RwSignal<Option<String>>,
+    /// The server draft differs from published — arms the Push button.
+    pub(super) draft_dirty: RwSignal<bool>,
+    /// Autosave indicator state for `ServerDraft` mode.
+    pub(super) draft_save_state: RwSignal<DraftSaveState>,
+    /// Monotonic epoch coalescing debounced draft saves: each schedule bumps
+    /// it, and a firing task saves only if its epoch is still current.
+    pub(super) draft_save_epoch: RwSignal<u64>,
 }
 
 // ── Reactive execution scheduling ───────────────────────────────────────────
@@ -213,13 +242,19 @@ impl NotebookState {
 
 // ── Notebook state helpers ──────────────────────────────────────────────────
 
-/// Persists the current notebook to `IndexedDB` (client-only),
-/// fire-and-forget. Callers that need to know when the write actually
-/// lands (e.g. a Saving… indicator) use [`persist_notebook_durable`].
+/// Persists the current notebook, fire-and-forget (client-only). Local
+/// notebooks write `IndexedDB`; `ServerDraft` notebooks (PRD-0054) schedule a
+/// debounced draft autosave instead. Callers that need to know the write
+/// landed use [`persist_notebook_durable`].
 #[allow(unused_variables)]
 pub(crate) fn persist_notebook(state: &NotebookState) {
     #[cfg(feature = "hydrate")]
     {
+        if state.server_draft_share.get_untracked().is_some() {
+            let _ = state.draft_dirty.try_set(true);
+            schedule_draft_save(state, DRAFT_SAVE_DEBOUNCE_MS);
+            return;
+        }
         let state = *state;
         leptos::task::spawn_local(async move {
             persist_notebook_durable(&state).await;
@@ -227,9 +262,10 @@ pub(crate) fn persist_notebook(state: &NotebookState) {
     }
 }
 
-/// Awaitable persist: resolves after the `IndexedDB` write completes
-/// (failures are logged, not surfaced — same policy as the
-/// fire-and-forget path).
+/// Awaitable persist: resolves after the write completes (failures are
+/// logged, not surfaced — same policy as the fire-and-forget path). In
+/// `ServerDraft` mode this saves the draft IMMEDIATELY (no debounce): durable
+/// callers (the pre-Push flush) need the server to hold current content.
 #[cfg(feature = "hydrate")]
 pub(super) async fn persist_notebook_durable(state: &NotebookState) {
     if let Some(mut nb) = state.notebook.get_untracked() {
@@ -237,8 +273,70 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) {
         state
             .notebook
             .update_untracked(|existing| *existing = Some(nb.clone()));
-        if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+        if state.server_draft_share.get_untracked().is_some() {
+            let _ = state.draft_dirty.try_set(true);
+            // Supersede any pending debounce so it can't double-write after us.
+            state.draft_save_epoch.update_untracked(|e| *e += 1);
+            save_draft_now(state).await;
+        } else if let Err(e) = crate::storage::client::save_notebook(&nb).await {
             leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
+        }
+    }
+}
+
+/// Schedule a coalesced draft save `after_ms` from now. Every call bumps the
+/// epoch; only the task holding the newest epoch actually writes, so a typing
+/// burst produces one server round trip.
+#[cfg(feature = "hydrate")]
+pub(super) fn schedule_draft_save(state: &NotebookState, after_ms: i32) {
+    let state = *state;
+    let epoch = state
+        .draft_save_epoch
+        .try_get_untracked()
+        .unwrap_or(0)
+        .wrapping_add(1);
+    state.draft_save_epoch.update_untracked(|e| *e = epoch);
+    leptos::task::spawn_local(async move {
+        super::yield_for_cell_flush(after_ms).await;
+        if state.draft_save_epoch.try_get_untracked() != Some(epoch) {
+            return; // superseded by a newer edit or an immediate save
+        }
+        save_draft_now(&state).await;
+    });
+}
+
+/// Serialize the current notebook and write the server draft, updating the
+/// indicator. A failure schedules a retry (epoch-guarded, so an intervening
+/// edit's own save wins).
+#[cfg(feature = "hydrate")]
+pub(super) async fn save_draft_now(state: &NotebookState) {
+    let Some(share_id) = state.server_draft_share.try_get_untracked().flatten() else {
+        return;
+    };
+    let Some(nb) = state.notebook.try_get_untracked().flatten() else {
+        return;
+    };
+    let json = match serde_json::to_string(&nb) {
+        Ok(json) => json,
+        Err(e) => {
+            leptos::logging::error!("draft serialize failed: {e}");
+            return;
+        }
+    };
+    let _ = state.draft_save_state.try_set(DraftSaveState::Saving);
+    match crate::server_fns::save_mutable_draft(share_id, json).await {
+        Ok(()) => {
+            let _ = state.draft_save_state.try_set(DraftSaveState::Synced);
+        }
+        Err(e) => {
+            leptos::logging::warn!("draft autosave failed (will retry): {e}");
+            if state
+                .draft_save_state
+                .try_set(DraftSaveState::Failed)
+                .is_none()
+            {
+                schedule_draft_save(state, DRAFT_SAVE_RETRY_MS);
+            }
         }
     }
 }

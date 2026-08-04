@@ -8,7 +8,7 @@ pub(crate) mod state;
 
 use std::collections::HashMap;
 
-use ironpad_common::CellType;
+use ironpad_common::{CellType, IronpadNotebook};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_navigate, use_params_map};
 use leptos_router::NavigateOptions;
@@ -27,7 +27,7 @@ use self::metadata_panel::NotebookMetadataSection;
 use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
 
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
-use self::state::{persist_notebook, NotebookState};
+use self::state::{persist_notebook, DraftSaveState, NotebookState};
 
 // ── Flush-before-serialize helper (PRD-0032 T-007) ──────────────────────────
 //
@@ -213,15 +213,12 @@ async fn flush_serialize_tags(
     Some((json, tags))
 }
 
-/// Convert the current notebook into a mutable share (PRD-0049): create the
-/// share server-side under the signed-in account (PRD-0053), move the
-/// notebook into the local mutable store, update `binding`, and copy the
-/// `/mutable/{id}` link. The caller bumps `save_generation` first.
-fn share_mutable_current_notebook(
-    state: &NotebookState,
-    toaster: Toaster,
-    binding: RwSignal<Option<String>>,
-) {
+/// Convert the current notebook into a mutable share (PRD-0054): create the
+/// share server-side under the signed-in account, DELETE the local copy (the
+/// notebook now lives at its public URL), and hard-navigate to
+/// `/mutable/{id}`, which mounts the `ServerDraft` editor. The caller bumps
+/// `save_generation` first.
+fn share_mutable_current_notebook(state: &NotebookState, toaster: Toaster) {
     let state = *state;
     // Same immediate ack as Share Immutable.
     toaster.toast(
@@ -239,21 +236,9 @@ fn share_mutable_current_notebook(
             let uuid = state.notebook_id.get_untracked();
             match crate::server_fns::create_mutable_share(json, Some(tags)).await {
                 Ok(share_id) => {
-                    if let Err(e) =
-                        crate::storage::client::convert_to_mutable(&uuid, &share_id).await
-                    {
-                        toaster.toast(
-                            ToastIntent::Error,
-                            "Share Failed",
-                            format!("Published, but could not update local storage: {e:?}"),
-                            6,
-                        );
-                        return;
-                    }
-                    // The page may have been disposed during the awaits.
-                    if state.notebook_id.try_get_untracked().is_some() {
-                        binding.set(Some(share_id.clone()));
-                    }
+                    // The notebook's home is the share now; the local copy
+                    // would only drift (PRD-0054).
+                    crate::storage::client::delete_notebook(&uuid).await;
                     let origin = web_sys::window()
                         .and_then(|w| w.location().origin().ok())
                         .unwrap_or_default();
@@ -263,128 +248,132 @@ fn share_mutable_current_notebook(
                         let _ =
                             wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&url)).await;
                     }
-                    toaster.toast(ToastIntent::Success, "Mutable Link Copied!", url, 6);
+                    // Hard navigation (the URL and storage class both change);
+                    // the toast rides sessionStorage across it.
+                    Toaster::toast_after_reload(
+                        ToastIntent::Success,
+                        "Published! Link Copied",
+                        url,
+                        6,
+                    );
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.location().set_href(&format!("/mutable/{share_id}"));
+                    }
                 }
                 Err(e) => toaster.toast(ToastIntent::Error, "Share Failed", format!("{e}"), 5),
             }
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (json, tags, binding, state);
+            let _ = (json, tags, state);
         }
     });
 }
 
-/// Push the current notebook to its existing mutable share, overwriting the
-/// server copy. The signed-in session must hold the OWNER grant (PRD-0053).
+/// Push (PRD-0054): flush edits into the server draft, then promote it to
+/// published. Uploads no notebook — the server already holds the draft.
 fn push_mutable_current_notebook(state: &NotebookState, toaster: Toaster, share_id: String) {
     let state = *state;
     // Immediate ack: the push re-snapshots blobs server-side, which can take
     // a few seconds of visible nothing otherwise.
-    toaster.toast(
-        ToastIntent::Info,
-        "Pushing…",
-        "Updating the published copy.",
-        3,
-    );
+    toaster.toast(ToastIntent::Info, "Pushing…", "Publishing your draft.", 3);
     leptos::task::spawn_local(async move {
-        let Some((json, tags)) = flush_serialize_tags(&state, toaster, "Push Failed").await else {
+        // Flush cell edits into the model, then write the draft NOW (the
+        // debounced autosave may still be pending, and the promote must see
+        // current content). flush_serialize_tags also yields for the flush.
+        let Some((_json, tags)) = flush_serialize_tags(&state, toaster, "Push Failed").await else {
             return;
         };
-        match crate::server_fns::push_mutable(share_id, json, Some(tags)).await {
-            Ok(()) => toaster.toast(
-                ToastIntent::Success,
-                "Pushed",
-                "The published copy is updated; readers see this version now.",
-                4,
-            ),
+        #[cfg(feature = "hydrate")]
+        state::persist_notebook_durable(&state).await;
+        match crate::server_fns::push_mutable(share_id, Some(tags)).await {
+            Ok(promoted) => {
+                let _ = state.draft_dirty.try_set(false);
+                if promoted {
+                    toaster.toast(
+                        ToastIntent::Success,
+                        "Pushed",
+                        "The published copy is updated; readers see this version now.",
+                        4,
+                    );
+                } else {
+                    toaster.toast(
+                        ToastIntent::Success,
+                        "Up to Date",
+                        "The published copy already matches your draft.",
+                        4,
+                    );
+                }
+            }
             Err(e) => toaster.toast(ToastIntent::Error, "Push Failed", format!("{e}"), 6),
         }
     });
 }
 
-/// Replace the local working copy with the published copy of its mutable
-/// share — the missing half of Push, for a device whose copy has gone stale
-/// (or whose local experiments should be discarded). Fetches first and
-/// short-circuits with an "Up to Date" toast when the copies already agree,
-/// so the destructive confirm only ever guards a real overwrite. Finishes
-/// with a full reload, the one reliable way to rebuild editor state (cells,
-/// Monaco instances, outputs) from storage; the success toast rides
-/// `sessionStorage` across it.
+/// Discard the server draft (PRD-0054): confirm, clear it server-side, and
+/// reload — the page remounts from published, which is the one reliable way
+/// to rebuild editor state (cells, Monaco instances, outputs).
 #[cfg(feature = "hydrate")]
-fn pull_mutable_current_notebook(state: &NotebookState, toaster: Toaster, share_id: String) {
-    let state = *state;
+fn discard_draft_current_notebook(state: &NotebookState, toaster: Toaster, share_id: String) {
+    if !state.draft_dirty.get_untracked() {
+        toaster.toast(
+            ToastIntent::Success,
+            "Nothing to Discard",
+            "Your draft already matches the published copy.",
+            4,
+        );
+        return;
+    }
+    let confirmed = web_sys::window().is_some_and(|w| {
+        w.confirm_with_message(
+            "Discard your draft and return to the published copy? \
+             Unpushed changes will be lost.",
+        )
+        .unwrap_or(false)
+    });
+    if !confirmed {
+        return;
+    }
     leptos::task::spawn_local(async move {
-        match crate::server_fns::get_mutable_notebook(share_id).await {
-            Ok(Some(response)) => {
-                let published = response.notebook;
-                let already_matches = state
-                    .notebook
-                    .try_get_untracked()
-                    .flatten()
-                    .is_some_and(|local| local.content_matches(&published));
-                if already_matches {
-                    toaster.toast(
-                        ToastIntent::Success,
-                        "Up to Date",
-                        "Your working copy already matches the published notebook.",
-                        4,
-                    );
-                    return;
-                }
-                let confirmed = web_sys::window().is_some_and(|w| {
-                    w.confirm_with_message(
-                        "Replace your local working copy with the published copy? \
-                         Unpushed local changes will be lost.",
-                    )
-                    .unwrap_or(false)
-                });
-                if !confirmed {
-                    return;
-                }
-                // save_notebook routes to the mutable store (the record for
-                // this uuid exists), preserving the share binding.
-                if let Err(e) = crate::storage::client::save_notebook(&published).await {
-                    toaster.toast(
-                        ToastIntent::Error,
-                        "Pull Failed",
-                        format!("Could not update local storage: {e:?}"),
-                        6,
-                    );
-                    return;
-                }
+        match crate::server_fns::discard_mutable_draft(share_id).await {
+            Ok(()) => {
                 Toaster::toast_after_reload(
                     ToastIntent::Success,
-                    "Pulled",
-                    "Your working copy now matches the published notebook.",
+                    "Draft Discarded",
+                    "Back to the published copy.",
                     4,
                 );
                 if let Some(window) = web_sys::window() {
                     let _ = window.location().reload();
                 }
             }
-            Ok(None) => toaster.toast(
-                ToastIntent::Error,
-                "Pull Failed",
-                "The published copy was not found. It may have been unpublished.".to_string(),
-                6,
-            ),
-            Err(e) => toaster.toast(ToastIntent::Error, "Pull Failed", format!("{e}"), 6),
+            Err(e) => toaster.toast(ToastIntent::Error, "Discard Failed", format!("{e}"), 6),
         }
     });
 }
 
-// ── Notebook editor page ────────────────────────────────────────────────────
-
-/// Route component for `/notebook/{id}`.
-///
-/// Fetches the notebook manifest, sets up reactive state, wires up the
-/// `LayoutContext` header/status bar, and renders the cell list skeleton.
+/// Route component for `/local/{id}`: the editor in Local (`IndexedDB`)
+/// mode.
 #[component]
 pub fn NotebookEditorPage() -> impl IntoView {
     let params = use_params_map();
     let notebook_id = params.read_untracked().get("id").unwrap_or_default();
+    view! { <NotebookEditor notebook_id /> }
+}
 
+/// The editor proper, storage-agnostic (PRD-0054). `/local/{id}` mounts it
+/// in Local mode (loads from `IndexedDB`); the owner's view of
+/// `/mutable/{id}` mounts it in `ServerDraft` mode with the preloaded draft,
+/// and every persist then routes to the server (see `state.rs`).
+#[component]
+pub fn NotebookEditor(
+    /// The notebook uuid: the `IndexedDB` key in Local mode, the embedded id
+    /// in `ServerDraft` mode. Sessions key on it either way.
+    notebook_id: String,
+    /// `Some((share_id, notebook, server_dirty))` mounts `ServerDraft` mode.
+    #[prop(default = None)]
+    server_draft: Option<(String, IronpadNotebook, bool)>,
+) -> impl IntoView {
     // Set up notebook-level reactive state.
 
     let state = NotebookState {
@@ -410,6 +399,10 @@ pub fn NotebookEditorPage() -> impl IntoView {
         external_content_generation: RwSignal::new(0),
         #[cfg(feature = "hydrate")]
         reactive_timer_fn: StoredValue::new_local(None),
+        server_draft_share: RwSignal::new(None),
+        draft_dirty: RwSignal::new(false),
+        draft_save_state: RwSignal::new(DraftSaveState::Synced),
+        draft_save_epoch: RwSignal::new(0),
     };
     // Build the reactive-debounce callback once, under this component's owner,
     // so it's dropped on unmount instead of leaked per edit.
@@ -435,23 +428,31 @@ pub fn NotebookEditorPage() -> impl IntoView {
     #[cfg(feature = "hydrate")]
     on_cleanup(move || crate::session::end_session(&session_state));
 
-    // Load notebook from IndexedDB on the client side.
+    // Load the notebook: `ServerDraft` mode arrives preloaded (the mutable
+    // page already fetched the draft); Local mode reads IndexedDB.
 
-    #[cfg(feature = "hydrate")]
-    {
-        let nb_id = notebook_id;
-        leptos::task::spawn_local(async move {
-            if let Some(nb) = crate::storage::client::get_notebook(&nb_id).await {
-                // The page may already be gone (navigated away while the
-                // IndexedDB read was in flight); sync_from_notebook READS
-                // the notebook signal, which panics once disposed.
-                if state.notebook.try_get_untracked().is_none() {
-                    return;
+    if let Some((share_id, nb, server_dirty)) = server_draft {
+        state.server_draft_share.set(Some(share_id));
+        state.draft_dirty.set(server_dirty);
+        state.notebook.set(Some(nb));
+        model.sync_from_notebook();
+    } else {
+        #[cfg(feature = "hydrate")]
+        {
+            let nb_id = notebook_id;
+            leptos::task::spawn_local(async move {
+                if let Some(nb) = crate::storage::client::get_notebook(&nb_id).await {
+                    // The page may already be gone (navigated away while the
+                    // IndexedDB read was in flight); sync_from_notebook READS
+                    // the notebook signal, which panics once disposed.
+                    if state.notebook.try_get_untracked().is_none() {
+                        return;
+                    }
+                    state.notebook.set(Some(nb));
+                    model.sync_from_notebook();
                 }
-                state.notebook.set(Some(nb));
-                model.sync_from_notebook();
-            }
-        });
+            });
+        }
     }
 
     // Wire up LayoutContext when notebook data arrives.
@@ -680,30 +681,12 @@ fn NotebookContent() -> impl IntoView {
     let hamburger_open = RwSignal::new(false);
     let gear_open = RwSignal::new(false);
 
-    // ── Mutable-share binding (PRD-0049) ────────────────────────────────
+    // ── Mutable-share binding (PRD-0054) ────────────────────────────────
     //
-    // `Some(share_id)` when this notebook is mutable-backed on this device.
-    // Drives the Share Mutable ↔ Push and Delete ↔ Unpublish menu swaps.
-    // Loaded from the local mutable store once the notebook id is known.
-    let mutable_binding: RwSignal<Option<String>> = RwSignal::new(None);
-
-    #[cfg(feature = "hydrate")]
-    {
-        Effect::new(move |_| {
-            let id = state.notebook_id.get();
-            if id.is_empty() {
-                return;
-            }
-            leptos::task::spawn_local(async move {
-                let record = crate::storage::client::get_mutable(&id).await;
-                // The page may have been disposed during the read.
-                if state.notebook_id.try_get_untracked().is_none() {
-                    return;
-                }
-                mutable_binding.set(record.map(|r| r.share_id));
-            });
-        });
-    }
+    // `Some(share_id)` iff this editor is in `ServerDraft` mode — set at mount
+    // from the route, never from local storage (there is none for published
+    // notebooks anymore). Drives the menu swaps and the metadata panel.
+    let mutable_binding = state.server_draft_share;
 
     // ── Cells container ref for SortableJS ──────────────────────────────
 
@@ -915,6 +898,42 @@ fn NotebookContent() -> impl IntoView {
                 </button>
 
                 <SessionButton />
+
+                // ── Push button + draft indicator (PRD-0054) ────────────
+                // `ServerDraft` mode only: the one editorial control. Grayed
+                // "Published" when the draft matches; an active "Push" the
+                // moment an edit lands.
+                {move || state.server_draft_share.get().map(|share_id| view! {
+                    <span class="ironpad-draft-indicator">
+                        {move || match state.draft_save_state.get() {
+                            DraftSaveState::Saving => "Saving draft…",
+                            DraftSaveState::Failed => "Draft not saved; retrying",
+                            DraftSaveState::Synced => "",
+                        }}
+                    </span>
+                    <button
+                        class="ironpad-push-button"
+                        disabled=move || !state.draft_dirty.get()
+                        title=move || if state.draft_dirty.get() {
+                            "Publish your draft: readers see it after this"
+                        } else {
+                            "The published copy matches your draft"
+                        }
+                        on:click=move |_| {
+                            if !state.draft_dirty.get_untracked() {
+                                return;
+                            }
+                            state.save_generation.update(|g| *g += 1);
+                            push_mutable_current_notebook(
+                                &state,
+                                Toaster::expect_context(),
+                                share_id.clone(),
+                            );
+                        }
+                    >
+                        {move || if state.draft_dirty.get() { "⬆ Push" } else { "Published ✓" }}
+                    </button>
+                })}
             </Show>
 
             <div class="ironpad-toolbar-right">
@@ -966,7 +985,6 @@ fn NotebookContent() -> impl IntoView {
                                                     share_mutable_current_notebook(
                                                         &state,
                                                         Toaster::expect_context(),
-                                                        mutable_binding,
                                                     );
                                                 }
                                             >
@@ -974,46 +992,35 @@ fn NotebookContent() -> impl IntoView {
                                             </button>
                                         }.into_any(),
                                         Some(share_id) => {
-                                            let published_href = format!("/mutable/{share_id}");
-                                            let pull_share_id = share_id.clone();
+                                            // Push lives in the toolbar button now
+                                            // (PRD-0054); the menu keeps the
+                                            // secondary actions.
+                                            let reader_href =
+                                                format!("/mutable/{share_id}?view=reader");
+                                            let discard_share_id = share_id.clone();
                                             view! {
-                                                <button
-                                                    class="ironpad-toolbar-dropdown-item"
-                                                    on:click=move |_| {
-                                                        hamburger_open.set(false);
-                                                        state.save_generation.update(|g| *g += 1);
-                                                        push_mutable_current_notebook(
-                                                            &state,
-                                                            Toaster::expect_context(),
-                                                            share_id.clone(),
-                                                        );
-                                                    }
-                                                >
-                                                    "⬆ Push Update"
-                                                </button>
-                                                <button
-                                                    class="ironpad-toolbar-dropdown-item"
-                                                    on:click=move |_| {
-                                                        hamburger_open.set(false);
-                                                        // The destructive confirm lives inside:
-                                                        // it only fires when the copies differ.
-                                                        #[cfg(feature = "hydrate")]
-                                                        pull_mutable_current_notebook(
-                                                            &state,
-                                                            Toaster::expect_context(),
-                                                            pull_share_id.clone(),
-                                                        );
-                                                    }
-                                                >
-                                                    "⬇ Pull Latest"
-                                                </button>
                                                 <a
                                                     class="ironpad-toolbar-dropdown-item"
-                                                    href=published_href
+                                                    href=reader_href
+                                                    rel="external"
                                                     on:click=move |_| hamburger_open.set(false)
                                                 >
-                                                    "◎ View Published"
+                                                    "◎ View as Reader"
                                                 </a>
+                                                <button
+                                                    class="ironpad-toolbar-dropdown-item"
+                                                    on:click=move |_| {
+                                                        hamburger_open.set(false);
+                                                        #[cfg(feature = "hydrate")]
+                                                        discard_draft_current_notebook(
+                                                            &state,
+                                                            Toaster::expect_context(),
+                                                            discard_share_id.clone(),
+                                                        );
+                                                    }
+                                                >
+                                                    "⎌ Discard Draft"
+                                                </button>
                                             }.into_any()
                                         },
                                     }}
@@ -1119,20 +1126,36 @@ fn NotebookContent() -> impl IntoView {
                                                             let toaster = Toaster::expect_context();
                                                             let share_id = share_id.clone();
                                                             leptos::task::spawn_local(async move {
+                                                                // The editor holds the latest draft content;
+                                                                // bring it home BEFORE deleting the share so
+                                                                // a failure can't strand the notebook nowhere.
+                                                                let Some(nb) = state.notebook.try_get_untracked().flatten() else {
+                                                                    return;
+                                                                };
+                                                                if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+                                                                    toaster.toast(
+                                                                        ToastIntent::Error,
+                                                                        "Unpublish Failed",
+                                                                        format!("Could not save locally: {e:?}"),
+                                                                        6,
+                                                                    );
+                                                                    return;
+                                                                }
                                                                 match crate::server_fns::delete_mutable_share(share_id)
                                                                 .await
                                                                 {
                                                                     Ok(()) => {
-                                                                        crate::storage::client::convert_to_private(&uuid).await;
-                                                                        if state.notebook_id.try_get_untracked().is_some() {
-                                                                            mutable_binding.set(None);
-                                                                        }
-                                                                        toaster.toast(
+                                                                        // Hard navigation: the storage class and
+                                                                        // URL both change (PRD-0054).
+                                                                        Toaster::toast_after_reload(
                                                                             ToastIntent::Success,
                                                                             "Unpublished",
-                                                                            "Back in your private list.".to_string(),
+                                                                            "Back in your private list.",
                                                                             4,
                                                                         );
+                                                                        if let Some(window) = web_sys::window() {
+                                                                            let _ = window.location().set_href(&format!("/local/{uuid}"));
+                                                                        }
                                                                     }
                                                                     Err(e) => toaster.toast(
                                                                         ToastIntent::Error,

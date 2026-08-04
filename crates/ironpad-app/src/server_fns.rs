@@ -1216,16 +1216,16 @@ pub(crate) async fn create_mutable_share_core(
     Ok(id)
 }
 
+/// Autosave the owner's draft (PRD-0054). Cheap by design: a size-capped,
+/// validated JSON write with no blob work — this runs on the editor's
+/// debounce, not on an editorial act.
 #[cfg(feature = "ssr")]
-#[tracing::instrument(name = "push_mutable", level = "info", skip_all, fields(id = %id, bytes = notebook_json.len()))]
-pub(crate) async fn push_mutable_core(
+#[tracing::instrument(name = "save_mutable_draft", level = "debug", skip_all, fields(id = %id, bytes = notebook_json.len()))]
+pub(crate) async fn save_mutable_draft_core(
     db: &crate::db::Db,
-    data_dir: &std::path::Path,
-    cache_dir: &std::path::Path,
     github_id: &str,
     id: &str,
     notebook_json: &str,
-    cell_type_tags: &[String],
 ) -> anyhow::Result<()> {
     if notebook_json.len() > MAX_SHARE_BYTES {
         anyhow::bail!(
@@ -1233,21 +1233,49 @@ pub(crate) async fn push_mutable_core(
             notebook_json.len()
         );
     }
+    let _: IronpadNotebook = serde_json::from_str(notebook_json)
+        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+    if !db.user_owns_share(github_id, id).await? {
+        anyhow::bail!("unauthorized: you do not own this share");
+    }
+    db.save_draft(id, notebook_json).await
+}
 
+/// Push (PRD-0054): promote the server draft to published. Uploads nothing —
+/// the draft is already on the server; this snapshots blobs from it and
+/// swaps it in. Returns false when there was no draft to promote.
+#[cfg(feature = "ssr")]
+#[tracing::instrument(name = "push_mutable", level = "info", skip_all, fields(id = %id))]
+pub(crate) async fn push_mutable_core(
+    db: &crate::db::Db,
+    data_dir: &std::path::Path,
+    cache_dir: &std::path::Path,
+    github_id: &str,
+    id: &str,
+    cell_type_tags: &[String],
+) -> anyhow::Result<bool> {
     // The OWNER grant gates the push, before any blob work. A share that
     // doesn't exist reads the same as one you don't own — deliberately.
     if !db.user_owns_share(github_id, id).await? {
         anyhow::bail!("unauthorized: you do not own this share");
     }
+    let edit = db
+        .get_share_for_edit(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("mutable share not found"))?;
+    if !edit.dirty {
+        return Ok(false);
+    }
 
-    let notebook: IronpadNotebook = serde_json::from_str(notebook_json)
-        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+    let notebook: IronpadNotebook = serde_json::from_str(&edit.notebook_json)
+        .map_err(|e| anyhow::anyhow!("invalid stored draft: {e}"))?;
     let manifest = snapshot_mutable_manifest(data_dir, cache_dir, &notebook, cell_type_tags).await;
-    db.update_mutable_share(id, notebook_json, manifest_to_json(manifest))
-        .await?;
+    // A concurrent autosave between the read and this promote is fine: the
+    // promote takes whatever draft is newest (last-write-wins, PRD-0054).
+    db.promote_draft(id, manifest_to_json(manifest)).await?;
 
     tracing::info!(id = %id, "mutable share pushed");
-    Ok(())
+    Ok(true)
 }
 
 /// Fetch just the notebook of a mutable share (the OG-card path and tests;
@@ -1350,14 +1378,13 @@ pub async fn create_mutable_share(
     .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
-/// Overwrite a mutable share's content. Requires the caller's session to hold
-/// the OWNER grant.
+/// Push: promote the server draft to published (PRD-0054). Requires the
+/// OWNER grant. Returns false when the draft was already clean.
 #[server]
 pub async fn push_mutable(
     id: String,
-    notebook_json: String,
     cell_type_tags: Option<Vec<String>>,
-) -> Result<(), ServerFnError> {
+) -> Result<bool, ServerFnError> {
     use ironpad_common::AppConfig;
 
     let config = expect_context::<AppConfig>();
@@ -1369,11 +1396,71 @@ pub async fn push_mutable(
         &config.cache_dir,
         &user.github_id,
         &id,
-        &notebook_json,
         &cell_type_tags.unwrap_or_default(),
     )
     .await
     .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Autosave the owner's draft (PRD-0054). Readers are unaffected until Push.
+#[server]
+pub async fn save_mutable_draft(id: String, notebook_json: String) -> Result<(), ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    let user = require_login(&db).await?;
+    save_mutable_draft_core(&db, &user.github_id, &id, &notebook_json)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// The owner's editing payload: the draft (else published) plus whether they
+/// differ. Errs for non-owners — the reader path is `get_mutable_notebook`.
+#[server]
+pub async fn get_mutable_for_edit(
+    id: String,
+) -> Result<Option<ironpad_common::MutableEditResponse>, ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    let user = require_login(&db).await?;
+    if !db
+        .user_owns_share(&user.github_id, &id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+    {
+        return Err(ServerFnError::new(
+            "unauthorized: you do not own this share",
+        ));
+    }
+    let Some(edit) = db
+        .get_share_for_edit(&id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let notebook: IronpadNotebook = serde_json::from_str(&edit.notebook_json)
+        .map_err(|e| ServerFnError::new(format!("invalid stored draft: {e}")))?;
+    Ok(Some(ironpad_common::MutableEditResponse {
+        notebook,
+        dirty: edit.dirty,
+    }))
+}
+
+/// Discard the draft: revert the editor to the published copy (PRD-0054).
+#[server]
+pub async fn discard_mutable_draft(id: String) -> Result<(), ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    let user = require_login(&db).await?;
+    if !db
+        .user_owns_share(&user.github_id, &id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+    {
+        return Err(ServerFnError::new(
+            "unauthorized: you do not own this share",
+        ));
+    }
+    db.discard_draft(&id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 /// Retrieve a mutable share's current notebook plus owner attribution, and
@@ -2286,18 +2373,25 @@ mod tests {
             .unwrap()
             .is_none());
 
-        // The owner pushes; the content lands.
-        push_mutable_core(
-            &db,
-            data.path(),
-            cache.path(),
-            "1",
-            &id,
-            &zero_cell_notebook_json("Pushed"),
-            &[],
-        )
-        .await
-        .expect("owner push");
+        // The owner drafts, then pushes; readers see nothing until the push.
+        save_mutable_draft_core(&db, "1", &id, &zero_cell_notebook_json("Pushed"))
+            .await
+            .expect("owner draft save");
+        assert_eq!(
+            get_mutable_notebook_core(&db, &id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Test Notebook",
+            "readers must not see the draft"
+        );
+        assert!(
+            push_mutable_core(&db, data.path(), cache.path(), "1", &id, &[])
+                .await
+                .expect("owner push"),
+            "a dirty draft promotes"
+        );
         assert_eq!(
             get_mutable_notebook_core(&db, &id)
                 .await
@@ -2307,19 +2401,23 @@ mod tests {
             "Pushed"
         );
 
-        // A different signed-in user is rejected and the content is untouched.
-        let err = push_mutable_core(
-            &db,
-            data.path(),
-            cache.path(),
-            "2",
-            &id,
-            &zero_cell_notebook_json("Should not land"),
-            &[],
-        )
-        .await
-        .unwrap_err()
-        .to_string();
+        // Pushing a clean draft is a no-op, reported as such.
+        assert!(
+            !push_mutable_core(&db, data.path(), cache.path(), "1", &id, &[])
+                .await
+                .expect("clean push is Ok(false)")
+        );
+
+        // A different signed-in user can neither draft nor push.
+        let err = save_mutable_draft_core(&db, "2", &id, &zero_cell_notebook_json("nope"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unauthorized"), "unexpected error: {err}");
+        let err = push_mutable_core(&db, data.path(), cache.path(), "2", &id, &[])
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unauthorized"), "unexpected error: {err}");
         assert_eq!(
             get_mutable_notebook_core(&db, &id)
@@ -2331,17 +2429,11 @@ mod tests {
         );
 
         // Push to an unknown id fails the same way (no existence oracle).
-        assert!(push_mutable_core(
-            &db,
-            data.path(),
-            cache.path(),
-            "1",
-            "0000000000000000",
-            &zero_cell_notebook_json("x"),
-            &[],
-        )
-        .await
-        .is_err());
+        assert!(
+            push_mutable_core(&db, data.path(), cache.path(), "1", "0000000000000000", &[])
+                .await
+                .is_err()
+        );
 
         // Non-owner can't unpublish; the owner can.
         assert!(delete_mutable_core(&db, "2", &id).await.is_err());

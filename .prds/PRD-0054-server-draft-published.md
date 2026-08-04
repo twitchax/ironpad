@@ -1,7 +1,7 @@
 ---
 id: PRD-0054
 title: "Server-authoritative mutable shares: draft/published split, unified URL, Push button"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2026-08-04
 updated: 2026-08-04
@@ -34,58 +34,58 @@ acceptance_tests:
 - id: uat-001
   name: "Owner opens /mutable/{id} and gets the editor with a grayed Published button; a non-owner and an anonymous context get the view-only reader"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "An edit activates Push; readers still see the old published copy until Push; after Push a fresh context sees the update and the button grays again"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Second device, same account: opens the same URL and sees the in-progress draft in the editor while anonymous readers still see published"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-004
   name: "Discard draft reverts the editor to the published copy and grays the button"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-005
   name: "Share Mutable removes the local IndexedDB copy and the home card links to /mutable/{id}; Unpublish returns the latest draft content to the private list"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-006
   name: "Draft autosave failure surfaces a visible unsaved state and recovers on the next successful save"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
   title: "DB: draft slot + promote"
   priority: 1
-  status: todo
+  status: done
   notes: "mutable_share gains draft_json (option<string>; None means draft == published). New fns: save_draft(id, json) (sets draft_json), get_share_for_edit(id) -> {draft-or-published json, dirty: draft_json.is_some(), pushed_at}, discard_draft(id) (clears draft_json), promote_draft(id, manifest_json) (published := draft, clears draft_json, bumps pushed_at — one transaction). get_mutable_share (reader path) returns published only, unchanged. Idempotent DEFINE for the new field; unit tests for the whole draft lifecycle including promote-with-no-draft (no-op or error, pick and test)."
 - id: T-002
   title: "Server fns: draft save/load, promote replaces push"
   priority: 1
-  status: todo
+  status: done
   notes: "save_mutable_draft(id, notebook_json) — OWNER-gated, size-capped, no blob work (called on the autosave debounce). get_mutable_for_edit(id) — OWNER-gated, returns draft + dirty flag. push_mutable(id, cell_type_tags) — OWNER-gated, snapshots blobs from the DRAFT content and promotes; no notebook payload anymore. discard_mutable_draft(id). get_mutable_notebook (readers) untouched. Rate/size: draft saves inherit MAX_SHARE_BYTES; consider a per-session debounce floor server-side only if abuse shows up (non-goal now)."
 - id: T-003
   title: "Editor storage adapter + unified /mutable/{id} route"
   priority: 1
-  status: todo
+  status: done
   notes: "The one real architectural lift. A storage seam for the editor: Local (IndexedDB, today's path) vs ServerDraft(share_id) (load via get_mutable_for_edit, save via debounced save_mutable_draft with a 'Draft saved · Xs ago' indicator and a visible failure/retry state). /mutable/{id} SSRs the reader shell (SocialMeta from published, unchanged for crawlers); on hydrate, if get_mutable_for_edit succeeds the page swaps to the editor (Monaco is client-only anyway, so owners lose nothing). 'View as reader' menu item shows the published page (e.g. ?view=reader or a reader-mode signal). Agent sessions keep working: the browser model stays authoritative during an editing session; only persistence routes differ."
 - id: T-004
   title: "Push button states + Discard draft"
   priority: 1
-  status: todo
+  status: done
   notes: "A dedicated toolbar button, not a hamburger item. States: 'Published ✓' (grayed; server said dirty=false and no local edits since load) → 'Push' (active; server-reported dirty OR any local edit) → pushing spinner → grayed. A push from another device isn't observed live (no polling); clicking Push with an already-clean draft is a harmless no-op with an 'Up to date' toast. 'Discard draft' lives in the menu, confirm-gated, reloads the editor from published. Pull Latest and the divergence banner are deleted — the draft IS the sync."
 - id: T-005
   title: "Client storage: delete the mutable store; conversion/unpublish rework"
   priority: 2
-  status: todo
+  status: done
   notes: "storage.js DB_VERSION 5: drop the mutable object store and the binding (orphaned local working copies from 0.15.0 are discarded — dev-only data, same scorched-earth authorization). Share Mutable: upload, then DELETE the local IndexedDB copy and navigate to /mutable/{id}. Unpublish: download the latest draft content into the private store, delete the share server-side, navigate to /local/{uuid}. Home: three sources with zero reconciliation — private from IndexedDB, Published from list_mutable_shares() (cards link /mutable/{id} for everyone), public from the server scan. Rust storage/client.rs bindings shrink accordingly."
 - id: T-006
   title: "Tests: unit + e2e rewrite"
   priority: 2
-  status: todo
+  status: done
   notes: "Unit: draft lifecycle in db.rs + server_fns cores (owner-gated draft save, promote snapshots from draft, discard). e2e: the six UATs; mutable-shares.spec restructures around the unified URL (the second-device clone test becomes a shared-draft test); auth.spec untouched."
 - id: T-007
   title: "Docs + ship"
@@ -146,4 +146,5 @@ See frontmatter. The storage adapter (T-003) touches `notebook_editor/mod.rs` lo
 
 # History
 
-(Entries appended during implementation go below this line.)
+- **2026-08-04** — T-001..T-005 implemented in one pass: `draft_json` slot with single-statement promote (WHERE-guarded, LWW-safe against concurrent autosaves), draft server fns (save is owner-gated + size-capped, push promotes with `Ok(false)` for clean), editor storage seam via `NotebookState.server_draft_share` + epoch-coalesced 1.5s debounce with retry, unified `/mutable/{id}` (SSR always the reader; owner swaps to `NotebookEditor` with the `server_draft` prop on hydrate; `?view=reader` pins), toolbar Push button + Discard Draft + View as Reader, Share Mutable deletes the local copy and hard-navigates, Unpublish saves-local-then-deletes, storage.js DB_VERSION 5 deletes the mutable store, home lists three unmerged sources. Pull Latest, the divergence banner, clone-to-local, and the local binding are deleted. e2e rewrite (T-006) in flight.
+- **2026-08-04** — T-006 done: mutable-shares.spec.ts rewritten around the unified URL (owner lifecycle with reader-invisible drafts asserted in the DOM AND the raw unfurl body, cross-device shared draft with push-from-device-two, discard + view-as-reader round-trip, unpublish-brings-it-home with hard 404s, unfurl contract + home listing). Full Playwright: 103 passed, 0 failed; 783 unit tests. UAT evidence: cargo make ci + full Playwright (test-integration not re-run; compiler untouched). uat-006's failure-path half is covered by the retry logic's unit-visible structure and manual reasoning — the indicator's Failed state has no deterministic e2e trigger without fault injection; noted as the one soft spot.

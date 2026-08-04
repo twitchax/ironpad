@@ -20,12 +20,10 @@ enum NotebookListItem {
         cell_count: usize,
         updated_at: String,
     },
-    /// A mutable share (PRD-0049). `local_id` is `Some(uuid)` when the notebook
-    /// is bound on this device (card links to the editor); `None` for a share
-    /// enumerated by user key but not yet pulled here (card links to the
-    /// reader page, where the rebind control lives).
+    /// A mutable share (PRD-0054): server-enumerated by session; the card
+    /// links to `/mutable/{id}`, which is the editor for the owner and the
+    /// reader for everyone else. No local copy exists.
     Mutable {
-        local_id: Option<String>,
         share_id: String,
         title: String,
         cell_count: usize,
@@ -40,12 +38,10 @@ enum NotebookListItem {
     },
 }
 
-/// A mutable-share row for the home "Published" group, unifying locally-bound
-/// records and user-key-enumerated remote shares into one target-agnostic
-/// shape (so the signal type is valid on both build targets).
+/// A mutable-share row for the home "Published" group (server-enumerated by
+/// session; target-agnostic so the signal type is valid on both builds).
 #[derive(Clone)]
 struct MutableEntry {
-    local_id: Option<String>,
     share_id: String,
     title: String,
     cell_count: usize,
@@ -113,44 +109,26 @@ pub fn HomePage() -> impl IntoView {
         });
     }
 
-    // Mutable shares (PRD-0049): locally-bound working copies plus any shares
-    // the signed-in account owns but hasn't cloned here (PRD-0053 — the
-    // server enumerates by session; anonymous gets an empty list). Deduped by
-    // share id.
+    // Mutable shares (PRD-0054): server-enumerated by session, one source of
+    // truth. Anonymous gets an empty list; there is nothing local to merge.
 
     let mutable_entries: RwSignal<Vec<MutableEntry>> = RwSignal::new(vec![]);
 
     #[cfg(feature = "hydrate")]
     {
         leptos::task::spawn_local(async move {
-            let local = crate::storage::client::list_mutable().await;
-            let mut entries: Vec<MutableEntry> = local
-                .iter()
-                .map(|r| MutableEntry {
-                    local_id: Some(r.id.clone()),
-                    share_id: r.share_id.clone(),
-                    title: r.notebook.title.clone(),
-                    cell_count: r.notebook.cells.len(),
-                    updated_at: r.notebook.updated_at.format("%b %d, %Y").to_string(),
-                })
-                .collect();
-            let local_ids: std::collections::HashSet<String> =
-                local.iter().map(|r| r.share_id.clone()).collect();
-
             if let Ok(remote) = crate::server_fns::list_mutable_shares().await {
-                for s in remote {
-                    if !local_ids.contains(&s.id) {
-                        entries.push(MutableEntry {
-                            local_id: None,
-                            share_id: s.id,
-                            title: s.title,
-                            cell_count: s.cell_count,
-                            updated_at: s.pushed_at.get(..10).unwrap_or(&s.pushed_at).to_string(),
-                        });
-                    }
-                }
+                let entries: Vec<MutableEntry> = remote
+                    .into_iter()
+                    .map(|s| MutableEntry {
+                        share_id: s.id,
+                        title: s.title,
+                        cell_count: s.cell_count,
+                        updated_at: s.pushed_at.get(..10).unwrap_or(&s.pushed_at).to_string(),
+                    })
+                    .collect();
+                let _ = mutable_entries.try_set(entries);
             }
-            mutable_entries.set(entries);
         });
     }
 
@@ -318,12 +296,11 @@ fn NotebookGrid(
                 }
             }
 
-            // Mutable shares (PRD-0049), between private and public.
+            // Mutable shares (PRD-0054), between private and public.
             if matches!(mode, FilterMode::All | FilterMode::Mutable) {
                 for e in &mutable_entries.get() {
                     if query.is_empty() || e.title.to_lowercase().contains(&query) {
                         items.push(NotebookListItem::Mutable {
-                            local_id: e.local_id.clone(),
                             share_id: e.share_id.clone(),
                             title: e.title.clone(),
                             cell_count: e.cell_count,
@@ -444,25 +421,16 @@ fn NotebookCard(
         }
 
         NotebookListItem::Mutable {
-            local_id,
             share_id,
             title,
             cell_count,
             updated_at,
         } => {
-            // Bound locally → open the editor; otherwise → the reader page,
-            // where the owner's Edit control clones it to this device
-            // (PRD-0053).
-            let href = local_id.as_ref().map_or_else(
-                || format!("/mutable/{share_id}"),
-                |id| format!("/local/{id}"),
-            );
+            // One address (PRD-0054): the same link is the editor for the
+            // owner and the reader for everyone else.
+            let href = format!("/mutable/{share_id}");
             let cell_text = format_cell_count(cell_count);
-            let hint = if local_id.is_some() {
-                "published"
-            } else {
-                "published · tap to edit"
-            };
+            let hint = "published";
 
             view! {
                 <div class="ironpad-notebook-card-wrapper">

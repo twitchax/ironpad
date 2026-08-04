@@ -496,7 +496,7 @@ Upload notebook JSON via `share_notebook()` → blake3 content hash (first 16 he
 
 ### Mutable Shares (PRD-0049)
 
-"Share Mutable" converts a private notebook into a server-backed one at `/mutable/{id}` (server-minted 16-hex id). Anyone with the link reads it; the owner overwrites it with an explicit Push. Ownership is the signed-in GitHub account's OWNER grant (PRD-0053): create requires a session, push/delete require the grant, and the reader page shows "Published by @login" attribution. Share content (notebook JSON + blob manifest) lives in the embedded SurrealDB record, transactional with its grant; blobs stay in the content-addressed store. Server functions: `create_mutable_share`, `push_mutable`, `get_mutable_notebook` (returns owner attribution + whether the caller owns it), `get_mutable_manifest`, `delete_mutable_share` (unpublish), `list_mutable_shares` (by session).
+"Share Mutable" converts a private notebook into a server-backed one at `/mutable/{id}` (server-minted 16-hex id) and deletes the local copy: published notebooks live entirely on the server (PRD-0054). The record holds a published slot and a draft slot. The owner's edits autosave (debounced) to the draft; the toolbar Push button promotes draft to published and snapshots blobs at that moment; readers only ever see published, with "Published by @login" attribution. Ownership is the signed-in GitHub account's OWNER grant (PRD-0053). Server functions: `create_mutable_share`, `save_mutable_draft`, `get_mutable_for_edit` (owner-gated), `push_mutable` (promote), `discard_mutable_draft`, `get_mutable_notebook` (readers), `get_mutable_manifest`, `delete_mutable_share` (unpublish), `list_mutable_shares` (by session).
 
 ---
 
@@ -523,7 +523,7 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 /local/{id}                    → NotebookEditorPage (private, IndexedDB-backed)
 /public/{name}                 → PublicNotebookPage (read-only, static .ironpad file)
 /shared/{hash}                 → SharedNotebookPage (read-only, immutable, shared via hash)
-/mutable/{id}                  → MutableNotebookPage (read-only reader + attribution + clone-to-local Edit; PRD-0049/0053)
+/mutable/{id}                  → MutableNotebookPage (reader of published; owner's draft editor on hydrate; PRD-0054)
 /embed/shared/{hash}           → EmbedSharedPage (chrome-less iframe variant; PRD-0039)
 /embed/public/{filename}       → EmbedPublicPage (chrome-less iframe variant; PRD-0039)
 ```
@@ -615,7 +615,7 @@ pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, Server
 pub async fn get_shared_manifest(hash: String) -> Result<Option<ShareManifest>, ServerFnError>
 ```
 
-`check_cell` backs live check-on-type (PRD-0045); `get_toolchain_fingerprint` feeds the client-side blob cache keys (PRD-0047). The mutable-share set (PRD-0049/0053; writes are session-gated) adds `create_mutable_share`, `push_mutable`, `get_mutable_notebook`, `get_mutable_manifest`, `delete_mutable_share`, and `list_mutable_shares`; `get_auth_info` (PRD-0053) feeds the footer's sign-in surface.
+`check_cell` backs live check-on-type (PRD-0045); `get_toolchain_fingerprint` feeds the client-side blob cache keys (PRD-0047). The mutable-share set (PRD-0054; writes are session-gated) adds `create_mutable_share`, `save_mutable_draft`, `get_mutable_for_edit`, `push_mutable` (draft promote), `discard_mutable_draft`, `get_mutable_notebook`, `get_mutable_manifest`, `delete_mutable_share`, and `list_mutable_shares`; `get_auth_info` (PRD-0053) feeds the header's sign-in surface.
 
 They run on the server and are automatically serialized/called from the client.
 

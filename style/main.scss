@@ -528,6 +528,35 @@ a:focus-visible {
     }
 }
 
+// Push button (PRD-0054): the one editorial control. Amber like the rest of
+// the mutable chrome when armed; muted when the draft matches published.
+.ironpad-push-button {
+    background: none;
+    border: 1px solid var(--ip-shared);
+    color: var(--ip-shared);
+    border-radius: var(--ip-radius-md, 6px);
+    padding: 6px 14px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    white-space: nowrap;
+
+    &:hover:not(:disabled) {
+        background: var(--ip-shared-tint);
+    }
+
+    &:disabled {
+        border-color: var(--ip-border);
+        color: var(--ip-text-tertiary);
+        cursor: default;
+    }
+}
+
+.ironpad-draft-indicator {
+    color: var(--ip-text-tertiary);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
 // Path-ish metadata fields (the og_image override). Distinct from
 // .ironpad-search-input so per-section input locators stay unambiguous.
 .ironpad-metadata-input {
