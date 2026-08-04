@@ -553,6 +553,35 @@ pub struct MutableShareSummary {
     pub cell_count: usize,
 }
 
+// ── Accounts Types (PRD-0053) ───────────────────────────────────────────────
+
+/// The signed-in user as exposed to the client. Deliberately excludes the
+/// GitHub id — the client never needs it, and identity checks happen
+/// server-side against the session cookie.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CurrentUser {
+    pub login: String,
+    /// May be empty (test users); the UI renders an initial-letter fallback.
+    pub avatar_url: String,
+}
+
+/// Auth surface state for the client: whether sign-in exists on this
+/// deployment at all (OAuth env configured), and who is signed in.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthInfo {
+    /// False when the server has no GitHub OAuth credentials — the sign-in
+    /// button is hidden and the instance runs anonymous-only.
+    pub enabled: bool,
+    pub user: Option<CurrentUser>,
+}
+
+/// Owner attribution for a mutable share's reader page.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShareOwner {
+    pub login: String,
+    pub avatar_url: String,
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

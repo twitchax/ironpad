@@ -70,12 +70,32 @@ async fn main() {
         tracing::info!("OpenTelemetry OTLP trace + log export enabled");
     }
 
-    let args = CliArgs::parse();
+    let mut args = CliArgs::parse();
     // Relay knobs are server-local (they configure WsState, not the shared
     // AppConfig), so pull them out before the conversion consumes args.
     let max_guests = args.max_guests;
     let guest_idle_timeout = std::time::Duration::from_secs(args.guest_idle_timeout_secs);
     let max_concurrent_builds = args.max_concurrent_builds;
+    // Auth knobs are server-local too (PRD-0053): the OAuth dance and cookie
+    // minting live entirely in the auth router.
+    let github_oauth = match (
+        args.github_client_id.take(),
+        args.github_client_secret.take(),
+    ) {
+        (Some(client_id), Some(client_secret)) => Some(ironpad_server::auth::GithubOauth {
+            client_id,
+            client_secret,
+        }),
+        (None, None) => None,
+        _ => {
+            tracing::warn!(
+                "one of GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET is set without the other; \
+                 sign-in disabled"
+            );
+            None
+        }
+    };
+    let test_auth = args.test_auth;
     let config: AppConfig = args.into();
 
     tracing::info!(data_dir = %config.data_dir.display(), "data directory");
@@ -96,6 +116,18 @@ async fn main() {
         .await
         .expect("accounts database");
     tracing::info!("accounts database open");
+
+    let auth_enabled = github_oauth.is_some();
+    if test_auth {
+        tracing::warn!("IRONPAD_TEST_AUTH is set: /auth/test-login is live (e2e only!)");
+    }
+    let auth_router = ironpad_server::auth::router(ironpad_server::auth::AuthState {
+        db: db.clone(),
+        github: github_oauth,
+        test_auth,
+        public_url: config.public_url.clone(),
+        http: reqwest::Client::new(),
+    });
 
     let conf = get_configuration(None).expect("leptos configuration");
     let leptos_options = conf.leptos_options;
@@ -145,6 +177,9 @@ async fn main() {
     tracing::info!(max_concurrent_builds, "build admission configured");
 
     let app = Router::new()
+        // Sign-in surface (PRD-0053). nest_service because the auth router
+        // carries its own state; paths inside are prefix-stripped.
+        .nest_service("/auth", auth_router)
         .route("/ws/host", get(ws::ws_host_handler))
         .route("/ws/connect", get(ws::ws_connect_handler))
         .route("/share-blobs/{file}", get(share_blob_handler))
@@ -172,6 +207,7 @@ async fn main() {
                     provide_context(compile_locks.clone());
                     provide_context(build_admission.clone());
                     provide_context(db.clone());
+                    provide_context(ironpad_app::auth::AuthEnabled(auth_enabled));
                 }
             },
             {

@@ -52,6 +52,27 @@ pub struct CliArgs {
     #[arg(long, default_value_t = 3, env = "IRONPAD_MAX_CONCURRENT_BUILDS")]
     pub max_concurrent_builds: usize,
 
+    /// GitHub OAuth app client id (PRD-0053). Sign-in is hidden when either
+    /// credential is absent; the instance then runs anonymous-only.
+    #[arg(long, env = "GITHUB_CLIENT_ID")]
+    pub github_client_id: Option<String>,
+
+    /// GitHub OAuth app client secret (PRD-0053).
+    #[arg(long, env = "GITHUB_CLIENT_SECRET")]
+    pub github_client_secret: Option<String>,
+
+    /// Register the `/auth/test-login` endpoint (PRD-0053). e2e suites only;
+    /// production must NEVER set this — it mints sessions without GitHub.
+    #[arg(
+        long,
+        env = "IRONPAD_TEST_AUTH",
+        default_value_t = false,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    pub test_auth: bool,
+
     /// Global cap on concurrent WebSocket guest (agent) connections.
     #[arg(long, default_value_t = 512, env = "IRONPAD_MAX_GUESTS")]
     pub max_guests: usize,
@@ -99,6 +120,32 @@ mod tests {
         assert_eq!(args.public_url, None);
         assert_eq!(args.max_guests, 512);
         assert_eq!(args.guest_idle_timeout_secs, 1800);
+        // Auth defaults (PRD-0053): no credentials, and — critically — the
+        // test-login gate closed.
+        assert_eq!(args.github_client_id, None);
+        assert_eq!(args.github_client_secret, None);
+        assert!(!args.test_auth);
+    }
+
+    #[test]
+    fn auth_args_parse() {
+        let args = CliArgs::parse_from([
+            "ironpad",
+            "--github-client-id",
+            "Ov23liEXAMPLE",
+            "--github-client-secret",
+            "s3cr3t",
+            "--test-auth",
+        ]);
+        assert_eq!(args.github_client_id.as_deref(), Some("Ov23liEXAMPLE"));
+        assert_eq!(args.github_client_secret.as_deref(), Some("s3cr3t"));
+        assert!(args.test_auth);
+
+        // The falsey parser accepts the `IRONPAD_TEST_AUTH=1` env spelling.
+        let args = CliArgs::parse_from(["ironpad", "--test-auth", "1"]);
+        assert!(args.test_auth);
+        let args = CliArgs::parse_from(["ironpad", "--test-auth", "0"]);
+        assert!(!args.test_auth);
     }
 
     #[test]

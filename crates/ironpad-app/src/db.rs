@@ -1,6 +1,6 @@
-//! Accounts database (PRD-0053) — embedded SurrealDB on the data mount.
+//! Accounts database (PRD-0053) — embedded `SurrealDB` on the data mount.
 //!
-//! One SurrealKV file holds users, sessions, mutable shares, and RBAC grants.
+//! One `SurrealKV` file holds users, sessions, mutable shares, and RBAC grants.
 //! The wasm/js blobs stay on disk in the content-addressed store; only
 //! pointers and notebook JSON live here, so share content and ownership
 //! update transactionally.

@@ -1570,6 +1570,23 @@ pub async fn list_mutable_shares(
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
+// ── Accounts (PRD-0053) ─────────────────────────────────────────────────────
+
+/// Auth surface for the client: whether sign-in exists on this deployment,
+/// and who (if anyone) this request's session cookie belongs to.
+#[server]
+pub async fn get_auth_info() -> Result<ironpad_common::AuthInfo, ServerFnError> {
+    use ironpad_common::{AuthInfo, CurrentUser};
+
+    let enabled = expect_context::<crate::auth::AuthEnabled>().0;
+    let db = expect_context::<crate::db::Db>();
+    let user = crate::auth::current_user(&db).await.map(|u| CurrentUser {
+        login: u.login,
+        avatar_url: u.avatar_url,
+    });
+    Ok(AuthInfo { enabled, user })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, feature = "ssr"))]

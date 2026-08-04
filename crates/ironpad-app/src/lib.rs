@@ -5,6 +5,8 @@
 #![recursion_limit = "512"]
 
 #[cfg(feature = "ssr")]
+pub mod auth;
+#[cfg(feature = "ssr")]
 pub mod compiler;
 #[cfg(feature = "ssr")]
 pub mod db;

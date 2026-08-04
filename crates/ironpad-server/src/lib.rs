@@ -6,6 +6,7 @@
 //! [`ws`] for the relay handlers, [`sessions`] for the token/session store, and
 //! [`state`] for shared connection state.
 
+pub mod auth;
 pub mod crawl;
 pub mod oembed;
 pub mod og;
