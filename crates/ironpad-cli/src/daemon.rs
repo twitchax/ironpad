@@ -829,6 +829,19 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 version,
             }))
         }
+        "notebook.update" => {
+            // The args carry a `NotebookMetaPatch` verbatim; deserializing it
+            // (rather than plucking fields) keeps the CLI's surface in
+            // lockstep with the protocol — a field added to the patch is
+            // immediately sendable. `explicit_null_is_a_clear` turns the
+            // JSON's absent/null/value into untouched/clear/set.
+            let meta_value = req.args.get("meta").cloned().ok_or("missing meta")?;
+            let meta: protocol::NotebookMetaPatch = serde_json::from_value(meta_value)
+                .map_err(|e| format!("invalid meta patch: {e}"))?;
+            Ok(MessageKind::Mutation(
+                protocol::Mutation::NotebookUpdateMeta { meta },
+            ))
+        }
         "cells.reorder" => {
             let cell_ids: Vec<String> = req
                 .args
@@ -1143,6 +1156,44 @@ mod tests {
     fn translate_cells_delete_missing_version() {
         let req = ipc("cells.delete", json!({"cell_id": "c1"}));
         assert!(translate_command(&req).is_err());
+    }
+
+    #[test]
+    fn translate_notebook_update_tri_states() {
+        // One request exercising all three wire states: set (title, shared
+        // source), clear (explicit null on shared cargo), and untouched
+        // (everything absent, e.g. description).
+        let req = ipc(
+            "notebook.update",
+            json!({
+                "meta": {
+                    "title": "Renamed",
+                    "shared_source": "pub fn from_cli() -> i32 { 9 }",
+                    "shared_cargo_toml": null,
+                }
+            }),
+        );
+        let kind = translate_command(&req).unwrap();
+
+        match kind {
+            MessageKind::Mutation(protocol::Mutation::NotebookUpdateMeta { meta }) => {
+                assert_eq!(meta.title.as_deref(), Some("Renamed"));
+                assert_eq!(
+                    meta.shared_source,
+                    Some(Some("pub fn from_cli() -> i32 { 9 }".to_string()))
+                );
+                // Explicit null is a clear, not "unchanged".
+                assert_eq!(meta.shared_cargo_toml, Some(None));
+                // Absent fields stay untouched.
+                assert!(meta.description.is_none());
+                assert!(meta.tags.is_none());
+            }
+            other => panic!("expected NotebookUpdateMeta, got {other:?}"),
+        }
+
+        // No meta at all is a hard error, not an empty patch.
+        let bad = ipc("notebook.update", json!({}));
+        assert!(translate_command(&bad).is_err());
     }
 
     #[test]

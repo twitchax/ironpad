@@ -4,7 +4,7 @@ title: "Editable notebook metadata, oEmbed, and social-preview hardening"
 status: done
 owner: "Aaron Roney"
 created: 2026-07-27
-updated: 2026-07-27
+updated: 2026-08-04
 
 depends_on:
 - PRD-0039
@@ -264,3 +264,13 @@ by third parties.
 
 - 2026-07-27: Shipped in v0.13.1 alongside the social-preview security patch
   (stored XSS, quadratic `ellipsize`, non-evicting card cache, soft-404s).
+- 2026-08-04: Closed the CLI gap: `ironpad notebook update` sends a
+  `NotebookMetaPatch` (the daemon's `notebook.update` arm deserializes the
+  patch verbatim, so the CLI surface tracks the protocol automatically).
+  Agents can now edit the notebook-level shared source and shared Cargo.toml
+  (the original ask), plus title/description/tags, with `--clear-*` flags
+  mapping to explicit-null clears. Bare `ironpad notebook` still gets. Wire
+  format unchanged (PROTOCOL_VERSION stays 3); the mutation, model staling,
+  event mirror, and daemon `apply_to` all predate this — only the command
+  was missing. e2e: session.spec "agent updates notebook shared source and
+  cargo" (full loop + IndexedDB persist + appendix render + clear).

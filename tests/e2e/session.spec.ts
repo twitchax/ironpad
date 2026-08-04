@@ -160,6 +160,75 @@ test.describe.serial("Agent Session", () => {
     expect(cell.source).toContain("let x = 99;");
   });
 
+  test("agent updates notebook shared source and cargo", async ({ page }) => {
+    test.setTimeout(60_000);
+
+    await createNotebook(page);
+    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+
+    // Set both shared fields in one patch.
+    const update = cliExecRaw([
+      "notebook",
+      "update",
+      "--shared-source",
+      "pub fn from_cli() -> i32 { 9 }",
+      "--shared-cargo-toml",
+      '[dependencies]\nironpad-cell = "0.1"',
+    ]);
+    expect(update.exitCode).toBe(0);
+
+    // The daemon's cached copy rebuilds from the browser's mirrored event
+    // (not from its own request), so this read asserts the full loop:
+    // CLI -> relay -> browser model.apply -> event -> daemon. Polled because
+    // the mutation ack can land a beat before the event fan-out.
+    await expect
+      .poll(() => cliExec(["notebook"]).shared_source ?? "", {
+        timeout: 10_000,
+      })
+      .toContain("from_cli");
+    // Both fields ride the same event, so one plain read suffices here.
+    expect(cliExec(["notebook"]).shared_cargo_toml).toContain("ironpad-cell");
+
+    // The browser persisted the change through the same path as local edits.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async (id) => {
+            const nb = await (window as any).IronpadStorage.getNotebook(id);
+            return nb?.shared_source ?? "";
+          }, notebookId),
+        { timeout: 10_000 },
+      )
+      .toContain("from_cli");
+
+    // And the editor's shared appendix shows it (the panel seeds from model
+    // state when expanded). dispatchEvent rather than click: with a session
+    // active, the sticky session toolbar overlaps the scrolled-to header and
+    // intercepts pointer events — an overlay quirk, not what this test is
+    // about.
+    const sourceSection = page
+      .locator(".ironpad-editor-shared-appendix .view-only-shared-section")
+      .nth(0);
+    await sourceSection
+      .locator(".view-only-shared-header")
+      .dispatchEvent("click");
+    await expect(sourceSection.locator(".view-lines")).toContainText(
+      "from_cli",
+      { timeout: 15_000 },
+    );
+
+    // Clearing round-trips to an absent field, not an empty string.
+    const clear = cliExecRaw(["notebook", "update", "--clear-shared-source"]);
+    expect(clear.exitCode).toBe(0);
+    await expect
+      .poll(() => cliExec(["notebook"]).shared_source ?? null, {
+        timeout: 10_000,
+      })
+      .toBeNull();
+  });
+
   test("agent runs a cell and reads its output (PRD-0052)", async ({
     page,
   }) => {

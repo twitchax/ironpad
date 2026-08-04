@@ -43,8 +43,11 @@ enum Command {
     Status,
 
     // ── Notebook commands ────────────────────────────────────────────────
-    /// Get notebook metadata.
-    Notebook,
+    /// Notebook operations. Bare `notebook` gets metadata.
+    Notebook {
+        #[command(subcommand)]
+        command: Option<NotebookCommand>,
+    },
 
     // ── Cell commands ────────────────────────────────────────────────────
     /// Cell operations.
@@ -75,6 +78,56 @@ impl CellTypeArg {
             Self::Markdown => "markdown",
         }
     }
+}
+
+#[derive(Subcommand)]
+enum NotebookCommand {
+    /// Get notebook metadata (the default when no subcommand is given).
+    Get,
+    /// Update notebook-level fields: shared source/deps, title, description, tags.
+    Update(Box<NotebookUpdateArgs>),
+}
+
+/// Flags for `notebook update`. Every field is tri-state on the wire: an
+/// omitted flag leaves the field untouched, `--clear-*` clears it, and a
+/// value sets it (`NotebookMetaPatch` semantics).
+#[derive(clap::Args)]
+struct NotebookUpdateArgs {
+    /// New notebook title.
+    #[arg(long)]
+    title: Option<String>,
+    /// New shared source (compiled into every cell's shared.rs). Use "-" to
+    /// read from stdin.
+    #[arg(long, conflicts_with_all = ["shared_source_file", "clear_shared_source"])]
+    shared_source: Option<String>,
+    /// Read the shared source from a file.
+    #[arg(long, conflicts_with = "clear_shared_source")]
+    shared_source_file: Option<String>,
+    /// Clear the shared source.
+    #[arg(long)]
+    clear_shared_source: bool,
+    /// New shared Cargo.toml (dependencies for every cell). Use "-" to read
+    /// from stdin.
+    #[arg(long, conflicts_with_all = ["shared_cargo_toml_file", "clear_shared_cargo_toml"])]
+    shared_cargo_toml: Option<String>,
+    /// Read the shared Cargo.toml from a file.
+    #[arg(long, conflicts_with = "clear_shared_cargo_toml")]
+    shared_cargo_toml_file: Option<String>,
+    /// Clear the shared Cargo.toml.
+    #[arg(long)]
+    clear_shared_cargo_toml: bool,
+    /// New description (home page and link previews).
+    #[arg(long, conflicts_with = "clear_description")]
+    description: Option<String>,
+    /// Clear the description.
+    #[arg(long)]
+    clear_description: bool,
+    /// Comma-separated tags.
+    #[arg(long, conflicts_with = "clear_tags")]
+    tags: Option<String>,
+    /// Clear the tags.
+    #[arg(long)]
+    clear_tags: bool,
 }
 
 #[derive(Subcommand)]
@@ -253,10 +306,13 @@ async fn main() {
             print_response(&response);
         }
 
-        Command::Notebook => {
-            let response = send_ipc("notebook.get", serde_json::Value::Null).await;
-            print_response(&response);
-        }
+        Command::Notebook { command } => match command {
+            None | Some(NotebookCommand::Get) => {
+                let response = send_ipc("notebook.get", serde_json::Value::Null).await;
+                print_response(&response);
+            }
+            Some(NotebookCommand::Update(args)) => handle_notebook_update(*args).await,
+        },
 
         Command::Cells(cmd) => handle_cells_command(cmd).await,
 
@@ -334,6 +390,74 @@ async fn handle_cells_command(cmd: CellsCommand) {
             timeout_secs,
         } => handle_cells_run(&cell_id, no_wait, timeout_secs).await,
     }
+}
+
+/// Build and send a `notebook.update` patch from the CLI flags.
+///
+/// Tri-state per field: an omitted flag is absent from the JSON (untouched),
+/// `--clear-*` inserts an explicit `null` (a clear, via
+/// `explicit_null_is_a_clear` on the daemon side), and a value sets it.
+async fn handle_notebook_update(args: NotebookUpdateArgs) {
+    // Both text fields accept "-", but stdin can only be read once.
+    if args.shared_source.as_deref() == Some("-") && args.shared_cargo_toml.as_deref() == Some("-")
+    {
+        eprintln!("only one of --shared-source and --shared-cargo-toml may read from stdin");
+        std::process::exit(1);
+    }
+
+    let mut meta = serde_json::Map::new();
+    if let Some(title) = args.title {
+        meta.insert("title".to_string(), serde_json::Value::String(title));
+    }
+    if args.clear_shared_source {
+        meta.insert("shared_source".to_string(), serde_json::Value::Null);
+    } else if let Some(source) = resolve_source(args.shared_source, args.shared_source_file) {
+        meta.insert(
+            "shared_source".to_string(),
+            serde_json::Value::String(source),
+        );
+    }
+    if args.clear_shared_cargo_toml {
+        meta.insert("shared_cargo_toml".to_string(), serde_json::Value::Null);
+    } else if let Some(toml) = resolve_source(args.shared_cargo_toml, args.shared_cargo_toml_file) {
+        meta.insert(
+            "shared_cargo_toml".to_string(),
+            serde_json::Value::String(toml),
+        );
+    }
+    if args.clear_description {
+        meta.insert("description".to_string(), serde_json::Value::Null);
+    } else if let Some(description) = args.description {
+        meta.insert(
+            "description".to_string(),
+            serde_json::Value::String(description),
+        );
+    }
+    if args.clear_tags {
+        meta.insert("tags".to_string(), serde_json::Value::Null);
+    } else if let Some(tags) = args.tags {
+        let list: Vec<serde_json::Value> = tags
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| serde_json::Value::String(t.to_string()))
+            .collect();
+        // An all-whitespace --tags is a clear, not a list of nothing.
+        let value = if list.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::Array(list)
+        };
+        meta.insert("tags".to_string(), value);
+    }
+
+    if meta.is_empty() {
+        eprintln!("nothing to update: pass at least one field flag (see `notebook update --help`)");
+        std::process::exit(1);
+    }
+
+    let response = send_ipc("notebook.update", serde_json::json!({ "meta": meta })).await;
+    print_response(&response);
 }
 
 async fn handle_cells_run(cell_id: &str, no_wait: bool, timeout_secs: u64) {
