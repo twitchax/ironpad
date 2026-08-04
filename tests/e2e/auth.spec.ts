@@ -21,22 +21,20 @@ test.describe("Accounts (PRD-0053)", () => {
 
     await loginTestUser(page, "carol");
 
-    // The status bar only renders off-home; a notebook page shows it.
-    await createNotebook(page);
-    await expect(page.locator(".ironpad-status-auth-login")).toHaveText(
-      "@carol",
-      { timeout: 15_000 },
-    );
+    // The auth surface lives in the header, so it must be visible on the
+    // home page itself — this shipped as a footer widget in 0.15.0 and was
+    // invisible exactly where a visitor looks for login.
+    await expect(page.locator(".ironpad-auth-login")).toHaveText("@carol", {
+      timeout: 15_000,
+    });
 
-    // Sign out from the footer link: session gone, and the sign-in link is
-    // back the next time the footer renders.
-    await page.locator(".ironpad-status-auth-action", { hasText: "Sign out" }).click();
+    // Sign out from the header link: session gone, sign-in link back.
+    await page.locator(".ironpad-auth-action", { hasText: "Sign out" }).click();
     await expect(page.locator(".ironpad-home")).toBeVisible({
       timeout: 15_000,
     });
-    await createNotebook(page);
     await expect(
-      page.locator(".ironpad-status-auth-action", {
+      page.locator(".ironpad-auth-action", {
         hasText: "Sign in with GitHub",
       }),
     ).toBeVisible({ timeout: 15_000 });

@@ -456,27 +456,32 @@ a:focus-visible {
 
 /* ── Accounts + mutable shares (PRD-0049/PRD-0053) ─────────────────────── */
 
-.ironpad-status-auth {
+// Header sign-in surface. In the header (not the status bar) because the
+// status bar is hidden on home, where visitors actually look for login.
+.ironpad-auth {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
 }
 
-.ironpad-status-avatar {
-    width: 16px;
-    height: 16px;
+.ironpad-auth-avatar {
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
     display: block;
 }
 
-.ironpad-status-auth-login {
+.ironpad-auth-login {
     color: var(--ip-text-secondary);
+    font-size: 0.85rem;
 }
 
-.ironpad-status-auth-action {
+.ironpad-auth-action {
     color: var(--ip-accent);
     text-decoration: none;
     cursor: pointer;
+    font-size: 0.85rem;
+    white-space: nowrap;
 
     &:hover {
         text-decoration: underline;

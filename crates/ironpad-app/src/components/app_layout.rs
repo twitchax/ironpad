@@ -299,6 +299,7 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                     "☼"
                 </button>
             </div>
+            <AuthStatus ctx />
         </div>
     }
 }
@@ -333,9 +334,13 @@ fn format_relative_time(epoch_ms: f64, now_ms: f64) -> String {
     }
 }
 
-/// Sign-in element for the status bar (PRD-0053): a GitHub sign-in link when
+/// Sign-in element for the HEADER (PRD-0053): a GitHub sign-in link when
 /// signed out, avatar + handle + sign-out when signed in, and nothing at all
 /// while loading or on an instance with no OAuth configured.
+///
+/// Header, not the status bar: the status bar is hidden on the home page,
+/// which is exactly where a visitor looks for a way to log in (this shipped
+/// as a footer widget in 0.15.0 and was invisible on `/`).
 ///
 /// Plain anchors, not buttons: the OAuth dance and logout are full-page
 /// navigations by nature (the session cookie changes hands).
@@ -351,29 +356,28 @@ fn AuthStatus(ctx: LayoutContext) -> impl IntoView {
             }
             Some(info.user.map_or_else(
                 || {
+                    // Tracked read: the sign-in link returns the user to
+                    // wherever they were when they clicked it, including
+                    // after SPA navigation.
                     let href = format!(
                         "/auth/github?redirect_to={}",
-                        location.pathname.get_untracked()
+                        location.pathname.get()
                     );
                     view! {
-                        <span class="ironpad-status-separator">"|"</span>
-                        <span class="ironpad-status-item ironpad-status-auth">
-                            <a class="ironpad-status-auth-action" href=href rel="external">
-                                "Sign in with GitHub"
-                            </a>
-                        </span>
+                        <a class="ironpad-auth-action" href=href rel="external">
+                            "Sign in with GitHub"
+                        </a>
                     }.into_any()
                 },
                 |user| {
                     let avatar = (!user.avatar_url.is_empty()).then(|| view! {
-                        <img class="ironpad-status-avatar" src=user.avatar_url.clone() alt="" />
+                        <img class="ironpad-auth-avatar" src=user.avatar_url.clone() alt="" />
                     });
                     view! {
-                        <span class="ironpad-status-separator">"|"</span>
-                        <span class="ironpad-status-item ironpad-status-auth">
+                        <span class="ironpad-auth">
                             {avatar}
-                            <span class="ironpad-status-auth-login">{format!("@{}", user.login)}</span>
-                            <a class="ironpad-status-auth-action" href="/auth/logout" rel="external">
+                            <span class="ironpad-auth-login">{format!("@{}", user.login)}</span>
+                            <a class="ironpad-auth-action" href="/auth/logout" rel="external">
                                 "Sign out"
                             </a>
                         </span>
@@ -430,7 +434,6 @@ fn StatusBar(ctx: LayoutContext) -> impl IntoView {
                 "Cells: "
                 {move || ctx.cell_count.get().to_string()}
             </span>
-            <AuthStatus ctx />
             {move || {
                 // Touch `tick` so the closure re-runs on each interval.
                 let _ = tick.get();
