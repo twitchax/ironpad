@@ -87,6 +87,16 @@ async fn main() {
     // therefore valve checks) happen at least once per burst of visits.
     cache_pressure_valve(&config.cache_dir, || fs_usage(&config.cache_dir));
 
+    // Accounts database (PRD-0053). Opening SurrealKV takes ~1.5s, which is
+    // paid once per boot; it must precede serving since server fns expect the
+    // context. Kept OUT of AppState so WS handler tests don't each pay that
+    // open — the DB travels as leptos context + the auth router's own state.
+    std::fs::create_dir_all(&config.data_dir).expect("create data dir");
+    let db = ironpad_app::db::Db::open(&config.data_dir.join("ironpad.db"))
+        .await
+        .expect("accounts database");
+    tracing::info!("accounts database open");
+
     let conf = get_configuration(None).expect("leptos configuration");
     let leptos_options = conf.leptos_options;
 
@@ -155,11 +165,13 @@ async fn main() {
                 let leptos_options = leptos_options.clone();
                 let compile_locks = compile_locks.clone();
                 let build_admission = build_admission.clone();
+                let db = db.clone();
                 move || {
                     provide_context(config.clone());
                     provide_context(leptos_options.clone());
                     provide_context(compile_locks.clone());
                     provide_context(build_admission.clone());
+                    provide_context(db.clone());
                 }
             },
             {

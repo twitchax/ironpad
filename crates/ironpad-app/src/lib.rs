@@ -6,6 +6,8 @@
 
 #[cfg(feature = "ssr")]
 pub mod compiler;
+#[cfg(feature = "ssr")]
+pub mod db;
 
 /// Toolchain for normal and SIMD cell builds — the common case, tracked at a
 /// recent nightly. The finicky feature cells keep their own pins so this one can
