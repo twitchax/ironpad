@@ -1,7 +1,7 @@
 ---
 id: PRD-0054
 title: "Server-authoritative mutable shares: draft/published split, unified URL, Push button"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-08-04
 updated: 2026-08-04
@@ -90,7 +90,7 @@ tasks:
 - id: T-007
   title: "Docs + ship"
   priority: 3
-  status: todo
+  status: done
   notes: "CLAUDE.md/DEVELOPMENT.md mutable sections rewritten again; PRD history; version bump + deploy + warm (deploy requires explicit authorization). Note for the release: published notebooks become online-only to edit; private notebooks stay local-first."
 ---
 
@@ -148,3 +148,4 @@ See frontmatter. The storage adapter (T-003) touches `notebook_editor/mod.rs` lo
 
 - **2026-08-04** — T-001..T-005 implemented in one pass: `draft_json` slot with single-statement promote (WHERE-guarded, LWW-safe against concurrent autosaves), draft server fns (save is owner-gated + size-capped, push promotes with `Ok(false)` for clean), editor storage seam via `NotebookState.server_draft_share` + epoch-coalesced 1.5s debounce with retry, unified `/mutable/{id}` (SSR always the reader; owner swaps to `NotebookEditor` with the `server_draft` prop on hydrate; `?view=reader` pins), toolbar Push button + Discard Draft + View as Reader, Share Mutable deletes the local copy and hard-navigates, Unpublish saves-local-then-deletes, storage.js DB_VERSION 5 deletes the mutable store, home lists three unmerged sources. Pull Latest, the divergence banner, clone-to-local, and the local binding are deleted. e2e rewrite (T-006) in flight.
 - **2026-08-04** — T-006 done: mutable-shares.spec.ts rewritten around the unified URL (owner lifecycle with reader-invisible drafts asserted in the DOM AND the raw unfurl body, cross-device shared draft with push-from-device-two, discard + view-as-reader round-trip, unpublish-brings-it-home with hard 404s, unfurl contract + home listing). Full Playwright: 103 passed, 0 failed; 783 unit tests. UAT evidence: cargo make ci + full Playwright (test-integration not re-run; compiler untouched). uat-006's failure-path half is covered by the retry logic's unit-visible structure and manual reasoning — the indicator's Failed state has no deterministic e2e trigger without fault injection; noted as the one soft spot.
+- **2026-08-04** — T-007 shipped as v0.16.0 (with the held header sign-in fix riding along): deploy + warm green, prod smoke passing (home 200, /auth/github 303). The server-side migration is additive (draft_json defaults absent); client DB_VERSION 5 discards 0.15.0-era local working copies as authorized. PRD closed.
