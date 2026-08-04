@@ -488,6 +488,39 @@ a:focus-visible {
     }
 }
 
+// Signed-out control: the empty-portrait convention — an anonymous
+// silhouette in a circle with "Sign in" beneath, all one link.
+.ironpad-auth-signin {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    color: var(--ip-text-secondary);
+    text-decoration: none;
+
+    &:hover {
+        color: var(--ip-accent);
+    }
+}
+
+.ironpad-auth-signin-avatar {
+    width: 20px;
+    height: 20px;
+    border: 1px solid currentColor;
+    border-radius: 50%;
+    // The shoulders path runs to the viewBox edge; the rounded border clips
+    // it into the classic portrait crop.
+    overflow: hidden;
+    display: block;
+}
+
+.ironpad-auth-signin-label {
+    font-size: 0.6rem;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
 .ironpad-notebook-badge.mutable {
     color: var(--ip-shared);
 }

@@ -28,16 +28,18 @@ test.describe("Accounts (PRD-0053)", () => {
       timeout: 15_000,
     });
 
-    // Sign out from the header link: session gone, sign-in link back.
+    // Sign out from the header link: session gone, and the compact
+    // empty-portrait sign-in control is back.
     await page.locator(".ironpad-auth-action", { hasText: "Sign out" }).click();
     await expect(page.locator(".ironpad-home")).toBeVisible({
       timeout: 15_000,
     });
-    await expect(
-      page.locator(".ironpad-auth-action", {
-        hasText: "Sign in with GitHub",
-      }),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".ironpad-auth-signin")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".ironpad-auth-signin-label")).toHaveText(
+      "Sign in",
+    );
   });
 
   test("the session cookie carries the full flag set", async ({ request }) => {

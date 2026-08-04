@@ -363,9 +363,29 @@ fn AuthStatus(ctx: LayoutContext) -> impl IntoView {
                         "/auth/github?redirect_to={}",
                         location.pathname.get()
                     );
+                    // The empty-portrait convention: an anonymous silhouette
+                    // with "Sign in" beneath, all one link. The full wording
+                    // lives in the tooltip.
                     view! {
-                        <a class="ironpad-auth-action" href=href rel="external">
-                            "Sign in with GitHub"
+                        <a
+                            class="ironpad-auth-signin"
+                            href=href
+                            rel="external"
+                            title="Sign in with GitHub"
+                            aria-label="Sign in with GitHub"
+                        >
+                            <svg
+                                class="ironpad-auth-signin-avatar"
+                                viewBox="0 0 24 24"
+                                aria-hidden="true"
+                            >
+                                <circle cx="12" cy="9" r="4" fill="currentColor" />
+                                <path
+                                    d="M4 22c0-4.4 3.6-8 8-8s8 3.6 8 8z"
+                                    fill="currentColor"
+                                />
+                            </svg>
+                            <span class="ironpad-auth-signin-label">"Sign in"</span>
                         </a>
                     }.into_any()
                 },
