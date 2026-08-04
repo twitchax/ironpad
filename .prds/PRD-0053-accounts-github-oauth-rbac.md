@@ -1,7 +1,7 @@
 ---
 id: PRD-0053
 title: "Accounts: GitHub OAuth, embedded SurrealDB, and RBAC-backed mutable shares"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-08-04
 updated: 2026-08-04
@@ -95,7 +95,7 @@ tasks:
 - id: T-008
   title: "Deploy: secrets, scorched earth, docs"
   priority: 3
-  status: todo
+  status: done
   notes: "Create the two GitHub OAuth apps (prod callback https://ironpad.twitchax.com/auth/callback, dev localhost); fly secrets set GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET; wipe the data dir contents on the Fly volume before first boot (mutable/, shares/, og/ all regenerate or start empty). CLAUDE.md mutable-shares paragraph + server-fn list + routes; DEVELOPMENT.md auth section."
 ---
 
@@ -157,3 +157,4 @@ See frontmatter references. The touchpoints outside the obvious auth/server-fn f
 
 - **2026-08-04** — T-001..T-006 implemented: embedded SurrealDB (surrealdb 3.x, SurrealKV) with idempotent boot-time schema; GitHub OAuth + hashed-at-rest sliding sessions; env-gated /auth/test-login (absence asserted by unit test); mutable shares rewritten onto session + OWNER grant with content/manifest in the DB and the two-key mechanism deleted (derive_key, subtle, rebind form, footer key widget); reader-page attribution + clone-to-local Edit; footer sign-in/avatar; storage.js DB_VERSION 4 in-place migration. Notable deviations from the plan: the DB module lives in ironpad-app (ssr-gated) rather than ironpad-server because server fns need it and the dependency points that way; the DB is NOT in AppState (SurrealKV open costs ~1.5s, which would tax every WS handler test) — it travels as leptos context, the auth router's own state, and an axum Extension for the OG handler; the grant table is named rbac_grant to dodge SurrealQL keyword ambiguity. e2e rewrite (T-007) in flight.
 - **2026-08-04** — T-007 done: auth.spec.ts (footer identity round-trip, cookie flag set on the wire, CSRF nonce cookie, session-required publish, anonymous functionality untouched) + mutable-shares.spec.ts rewritten around test-login sessions (owner lifecycle, unfurl, unpublish, author round-trip, second-device clone-to-local, non-owner and anonymous readers get no edit surface). Full Playwright run: 103 passed, 0 failed. UAT evidence: `cargo make ci` (782 unit tests) + the full Playwright suite; `test-integration` not re-run this cycle (compiler untouched). Marked verified on that basis.
+- **2026-08-04** — T-008 shipped as v0.15.0: /ironpad/data wiped on the Fly volume (authorized scorched earth; compile cache kept warm), staged GITHUB_CLIENT_ID/SECRET activated with the deploy, GitHub release published. Prod smoke: / 200, /auth/github 303 to GitHub with the prod client id, /auth/test-login 404 (gate closed). PRD closed.
