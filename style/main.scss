@@ -523,6 +523,18 @@ a:focus-visible {
     }
 }
 
+// Path-ish metadata fields (the og_image override). Distinct from
+// .ironpad-search-input so per-section input locators stay unambiguous.
+.ironpad-metadata-input {
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md, 6px);
+    padding: 4px 8px;
+    background: var(--ip-surface, transparent);
+    color: var(--ip-text-primary);
+    font-family: monospace;
+    min-width: 220px;
+}
+
 // Author-only notice on /mutable: the local working copy differs from the
 // published one (unpushed edits here, or a push from another device).
 .mutable-author-banner {

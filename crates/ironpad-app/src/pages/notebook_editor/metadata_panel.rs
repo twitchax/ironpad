@@ -283,7 +283,7 @@ fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<String>>) -> impl Into
             <label class="ironpad-metadata-field">
                 <span class="ironpad-metadata-label">"Preview image (optional)"</span>
                 <input
-                    class="mutable-rebind-input"
+                    class="ironpad-metadata-input"
                     r#type="text"
                     placeholder="/og-custom/my-notebook.png"
                     prop:value=move || og_image.get()

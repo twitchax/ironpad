@@ -1,11 +1,13 @@
 import { test, expect, APIRequestContext, Page } from "@playwright/test";
 import { createNotebook } from "./helpers/session";
+import { loginTestUser } from "./helpers/auth";
 
 /**
- * PRD-0049: mutable shares. Convert a private notebook to a server-backed
- * mutable share at /mutable/{id}, push updates, rebind on a fresh device with
- * a key, and unpublish. Keys are device-minted; the reader page is view-only
- * with an "enter your key" rebind control.
+ * PRD-0049 (accounts-backed since PRD-0053): mutable shares. Convert a
+ * private notebook to a server-backed mutable share at /mutable/{id}, push
+ * updates, clone-to-local on a second signed-in device, and unpublish.
+ * Ownership is the GitHub session's OWNER grant; sessions here come from the
+ * env-gated test login (see helpers/auth.ts).
  *
  * Also the /mutable half of the PRD-0050 unfurl contract (social-preview
  * .spec.ts owns the /public and /shared halves): the metadata assertions here
@@ -103,8 +105,9 @@ test.describe("Mutable shares (PRD-0049)", () => {
     browser,
   }) => {
     test.setTimeout(90_000);
+    await loginTestUser(page, "alice");
     await createNotebook(page);
-    await page.waitForTimeout(1_500); // user key + binding load (hydration)
+    await page.waitForTimeout(1_500); // binding load (hydration)
 
     await rename(page, "Mutable One");
     const shareId = await shareMutable(page);
@@ -146,6 +149,10 @@ test.describe("Mutable shares (PRD-0049)", () => {
         "Mutable One Edited",
         { timeout: 15_000 },
       );
+      // Owner attribution renders for everyone (PRD-0053 uat-004).
+      await expect(reader.locator(".mutable-attribution")).toContainText(
+        "@alice",
+      );
     } finally {
       await ctx.close();
     }
@@ -158,8 +165,9 @@ test.describe("Mutable shares (PRD-0049)", () => {
     // Two server round-trips that snapshot blobs (create + push), so the
     // suite-standard generous budget.
     test.setTimeout(120_000);
+    await loginTestUser(page, "alice");
     await createNotebook(page);
-    await page.waitForTimeout(1_500); // user key + binding load (hydration)
+    await page.waitForTimeout(1_500); // binding load (hydration)
 
     // Unique title so a stale server-side record from an earlier run can
     // never satisfy the assertion by accident.
@@ -207,6 +215,7 @@ test.describe("Mutable shares (PRD-0049)", () => {
     request,
   }) => {
     test.setTimeout(90_000);
+    await loginTestUser(page, "alice");
     await createNotebook(page);
     await page.waitForTimeout(1_500);
     const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
@@ -262,8 +271,9 @@ test.describe("Mutable shares (PRD-0049)", () => {
     page,
   }) => {
     test.setTimeout(120_000);
+    await loginTestUser(page, "alice");
     await createNotebook(page);
-    await page.waitForTimeout(1_500); // user key + binding load (hydration)
+    await page.waitForTimeout(1_500); // binding load (hydration)
 
     const title = `Round trip ${Date.now()}`;
     await rename(page, title);
@@ -290,13 +300,12 @@ test.describe("Mutable shares (PRD-0049)", () => {
     await expect(edit).toBeVisible({ timeout: 15_000 });
     await expect(page.locator(".mutable-author-banner")).toHaveCount(0);
 
-    // The menu offers the editor, not a key prompt, on the authoring device.
+    // The menu offers the editor on the authoring device.
     const readerMenuToggle = page.locator(
       ".view-only-menu .ironpad-toolbar-dropdown-toggle",
     );
     await readerMenuToggle.click();
     await expect(page.locator(".mutable-edit-menu-item")).toBeVisible();
-    await expect(page.locator(".mutable-rebind-menu-item")).toHaveCount(0);
     await readerMenuToggle.click(); // close
 
     // Edit drops straight into the editor; no key required.
@@ -362,69 +371,86 @@ test.describe("Mutable shares (PRD-0049)", () => {
     ).toBeVisible({ timeout: 15_000 });
   });
 
-  test("rebind on a fresh context with the user key; a wrong key is rejected", async ({
+  test("second device: the owner clones to local and pushes; others get no edit controls", async ({
     page,
     browser,
   }) => {
-    test.setTimeout(90_000);
+    test.setTimeout(150_000);
+    await loginTestUser(page, "alice");
     await createNotebook(page);
     await page.waitForTimeout(1_500);
 
+    const title = `Second device ${Date.now()}`;
+    await rename(page, title);
     const shareId = await shareMutable(page);
 
-    // Read this device's user key from the status bar (either key authorizes).
-    await page.locator('.ironpad-status-key-btn[title="Reveal"]').click();
-    const userKey = (await page
-      .locator(".ironpad-status-key-value")
-      .textContent())!.trim();
-    expect(userKey).toMatch(/^[a-f0-9]{64}$/);
-
-    const ctx = await browser.newContext();
+    // A fresh context signed in as the SAME account: Edit clones the
+    // published copy into a local working copy and opens the editor — the
+    // PRD-0053 replacement for the key-based rebind (signing in IS the
+    // authorization; distinct test logins are distinct accounts).
+    const sameOwner = await browser.newContext();
     try {
-      const reader = await ctx.newPage();
-      await reader.goto(`/mutable/${shareId}`);
-      await expect(reader.locator(".view-only-notebook")).toBeVisible({
+      const p2 = await sameOwner.newPage();
+      await loginTestUser(p2, "alice");
+      await p2.goto(`/mutable/${shareId}`);
+      await expect(p2.locator(".view-only-notebook")).toBeVisible({
         timeout: 30_000,
       });
-      await reader.waitForTimeout(2_500); // hydrate the rebind handler
+      await expect(p2.locator(".mutable-attribution")).toContainText("@alice");
 
-      // The rebind entry lives in the toolbar's "☰" menu; ordinary readers
-      // see no rebind chrome until they go looking for it.
-      await reader
-        .locator(".view-only-menu .ironpad-toolbar-dropdown-toggle")
-        .click();
-      await reader.locator(".mutable-rebind-menu-item").click();
-      // Wrong key: valid format, no match.
-      await reader.locator(".mutable-rebind-input").fill("0".repeat(64));
-      await reader.locator(".mutable-rebind-submit").click();
-      await expect(reader.locator(".mutable-rebind-status")).toContainText(
-        "does not match",
-        { timeout: 15_000 },
-      );
-
-      // Correct key: pulled into local storage, editor opens, and the
-      // acceptance is confirmed with a toast (asserted before the editor —
-      // the toast auto-dismisses after a few seconds).
-      await reader.locator(".mutable-rebind-input").fill(userKey);
-      await reader.locator(".mutable-rebind-submit").click();
+      const edit = p2.locator(".view-only-edit-button");
+      await expect(edit).toBeVisible({ timeout: 15_000 });
+      await edit.click();
+      // The clone is confirmed with a toast (asserted before the editor —
+      // it auto-dismisses), then lands in the editor.
       await expect(
-        reader.locator(".ironpad-toast-title", { hasText: "Key Accepted" }),
+        p2.locator(".ironpad-toast-title", { hasText: "Ready to Edit" }),
       ).toBeVisible({ timeout: 15_000 });
-      await expect(reader).toHaveURL(/\/local\/[a-f0-9-]+/, {
-        timeout: 15_000,
-      });
-      await expect(reader.locator(".ironpad-editor")).toBeVisible({
+      await expect(p2).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 15_000 });
+      await expect(p2.locator(".ironpad-editor")).toBeVisible({
         timeout: 15_000,
       });
 
-      // Push works from the rebound device.
-      await reader.waitForTimeout(1_000); // binding load
-      await menuClick(reader, "Push Update");
+      // Push works from the cloned device: same account, same OWNER grant.
+      await p2.waitForTimeout(1_000); // binding load
+      await menuClick(p2, "Push Update");
       await expect(
-        reader.locator(".ironpad-toast-body", { hasText: "updated" }),
+        p2.locator(".ironpad-toast-body", { hasText: "updated" }),
       ).toBeVisible({ timeout: 30_000 });
     } finally {
-      await ctx.close();
+      await sameOwner.close();
+    }
+
+    // A DIFFERENT signed-in account reads the notebook but gets no edit
+    // surface at all — ownership is per-account, not per-login-state.
+    const otherUser = await browser.newContext();
+    try {
+      const p3 = await otherUser.newPage();
+      await loginTestUser(p3, "bob");
+      await p3.goto(`/mutable/${shareId}`);
+      await expect(p3.locator(".view-only-notebook")).toBeVisible({
+        timeout: 30_000,
+      });
+      await p3.waitForTimeout(2_000); // let any owner UI hydrate (it must not)
+      await expect(p3.locator(".view-only-edit-button")).toHaveCount(0);
+      await expect(p3.locator(".mutable-edit-menu-item")).toHaveCount(0);
+    } finally {
+      await otherUser.close();
+    }
+
+    // Anonymous readers: same read-only page, attribution included.
+    const anon = await browser.newContext();
+    try {
+      const p4 = await anon.newPage();
+      await p4.goto(`/mutable/${shareId}`);
+      await expect(p4.locator(".view-only-notebook")).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(p4.locator(".mutable-attribution")).toContainText("@alice");
+      await p4.waitForTimeout(2_000);
+      await expect(p4.locator(".view-only-edit-button")).toHaveCount(0);
+    } finally {
+      await anon.close();
     }
   });
 });

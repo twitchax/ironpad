@@ -258,7 +258,7 @@ ironpad/
 │
 ├── data/                           # Runtime server data ({data_dir}, not tracked)
 │   ├── shares/                     # Shared notebook JSON + blobs/ snapshots
-│   ├── mutable/                    # Mutable share records (PRD-0049)
+│   ├── ironpad.db/                 # Embedded SurrealDB (accounts + mutable shares, PRD-0053)
 │   └── og/                         # Cached social-preview PNGs (PRD-0050)
 │
 ├── tests/
@@ -496,7 +496,7 @@ Upload notebook JSON via `share_notebook()` → blake3 content hash (first 16 he
 
 ### Mutable Shares (PRD-0049)
 
-"Share Mutable" converts a private notebook into a server-backed one at `/mutable/{id}` (server-minted 16-hex id). Anyone with the link reads it; the author overwrites it with an explicit Push. There are no accounts: authorization is two device-minted keys, a per-profile user key and a per-notebook notebook key, and the server accepts either. Keys are hashed at rest with domain-separated blake3 and compared in constant time. The record at `{data_dir}/mutable/{id}.json` holds the notebook, both key hashes, the blob manifest, and the push timestamp. Server functions: `create_mutable_share`, `push_mutable`, `get_mutable_notebook`, `get_mutable_manifest`, `verify_mutable_key` (rebind gate), `delete_mutable_share` (unpublish), `list_mutable_shares` (enumerate by user key).
+"Share Mutable" converts a private notebook into a server-backed one at `/mutable/{id}` (server-minted 16-hex id). Anyone with the link reads it; the owner overwrites it with an explicit Push. Ownership is the signed-in GitHub account's OWNER grant (PRD-0053): create requires a session, push/delete require the grant, and the reader page shows "Published by @login" attribution. Share content (notebook JSON + blob manifest) lives in the embedded SurrealDB record, transactional with its grant; blobs stay in the content-addressed store. Server functions: `create_mutable_share`, `push_mutable`, `get_mutable_notebook` (returns owner attribution + whether the caller owns it), `get_mutable_manifest`, `delete_mutable_share` (unpublish), `list_mutable_shares` (by session).
 
 ---
 
@@ -523,12 +523,12 @@ Feature flags split `ironpad-app` between server (`ssr`) and client (`hydrate`) 
 /local/{id}                    → NotebookEditorPage (private, IndexedDB-backed)
 /public/{name}                 → PublicNotebookPage (read-only, static .ironpad file)
 /shared/{hash}                 → SharedNotebookPage (read-only, immutable, shared via hash)
-/mutable/{id}                  → MutableNotebookPage (read-only reader + rebind; author-updatable via Push; PRD-0049)
+/mutable/{id}                  → MutableNotebookPage (read-only reader + attribution + clone-to-local Edit; PRD-0049/0053)
 /embed/shared/{hash}           → EmbedSharedPage (chrome-less iframe variant; PRD-0039)
 /embed/public/{filename}       → EmbedPublicPage (chrome-less iframe variant; PRD-0039)
 ```
 
-Legacy `/notebook/{id}` and `/notebook/public/{filename}` paths redirect to the canonical routes. The three server-backed notebook routes (`/public`, `/shared`, `/mutable`) render with `SsrMode::Async` so crawlers see their metadata (see Social Previews below). Outside Leptos, the server also handles `/share-blobs/{file}`, `/og/{class}/{id}.png`, `/og/ironpad.png`, `/robots.txt`, and `/sitemap.xml` as plain axum routes.
+Legacy `/notebook/{id}` and `/notebook/public/{filename}` paths redirect to the canonical routes. The three server-backed notebook routes (`/public`, `/shared`, `/mutable`) render with `SsrMode::Async` so crawlers see their metadata (see Social Previews below). Outside Leptos, the server also handles `/share-blobs/{file}`, `/og/{class}/{id}.png`, `/og/ironpad.png`, `/robots.txt`, `/sitemap.xml`, and the `/auth/*` sign-in routes (PRD-0053; `/auth/test-login` exists only under `IRONPAD_TEST_AUTH`) as plain axum routes.
 
 ### Key Components
 
@@ -615,7 +615,7 @@ pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, Server
 pub async fn get_shared_manifest(hash: String) -> Result<Option<ShareManifest>, ServerFnError>
 ```
 
-`check_cell` backs live check-on-type (PRD-0045); `get_toolchain_fingerprint` feeds the client-side blob cache keys (PRD-0047). The mutable-share set (PRD-0049) adds `create_mutable_share`, `push_mutable`, `get_mutable_notebook`, `get_mutable_manifest`, `verify_mutable_key`, `delete_mutable_share`, and `list_mutable_shares`.
+`check_cell` backs live check-on-type (PRD-0045); `get_toolchain_fingerprint` feeds the client-side blob cache keys (PRD-0047). The mutable-share set (PRD-0049/0053; writes are session-gated) adds `create_mutable_share`, `push_mutable`, `get_mutable_notebook`, `get_mutable_manifest`, `delete_mutable_share`, and `list_mutable_shares`; `get_auth_info` (PRD-0053) feeds the footer's sign-in surface.
 
 They run on the server and are automatically serialized/called from the client.
 
@@ -680,7 +680,8 @@ Beneath the root span, the request paths that actually spend time are instrument
 | Compile | `compile_cell` → `compile_lock_wait`, `cache_lookup`, `build_permit_wait` (admission, PRD-0052), `scaffold`, `cargo_build`, `wasm_bindgen`, `wasm_opt`, `cache_store` |
 | Live check | `check_cell` → `scaffold`, `cargo_check` |
 | Share | `share_notebook` → `dir_size_scan`; `snapshot_share_blobs` → `snapshot_cell_blobs` → per-cell `cache_lookup` |
-| Mutable shares | `create_mutable_share`, `push_mutable`, `read_mutable_record`, `list_mutable_shares` |
+| Mutable shares | `create_mutable_share`, `push_mutable`, `list_mutable_shares`, `db_get_share` |
+| Accounts (PRD-0053) | `auth_github`, `auth_callback`, `auth_logout`, `db_session_user`, `db_create_session` |
 | Notebook loads | `list_public_notebooks`, `get_public_notebook`, `get_shared_notebook`, `get_shared_manifest` |
 | OG cards | `render_card` → `render_lock_wait`, `rasterize` (entered inside the `spawn_blocking` closure so the resvg CPU time still lands under the request trace), `og_cache_evict` |
 

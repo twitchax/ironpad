@@ -224,9 +224,9 @@ test.describe("Social preview metadata (PRD-0050)", () => {
     // Regression guard for a stored XSS shipped in v0.13.0. leptos_meta
     // splices the title into the SSR head as raw text and `<title>` is
     // RCDATA, so an injected `</title>` closed the element and the script
-    // after it ran on ironpad's own origin — where IndexedDB holds the
-    // mutable-share user key. Share uploads are unauthenticated, so any
-    // visitor could be handed such a link.
+    // after it ran on ironpad's own origin — with first-party access to
+    // IndexedDB and the session cookie's ambient authority. Share uploads
+    // are unauthenticated, so any visitor could be handed such a link.
     test.setTimeout(120_000);
 
     const hash = await shareNotebookTitled(

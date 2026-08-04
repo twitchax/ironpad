@@ -41,9 +41,17 @@ export default defineConfig({
       // is covered by unit tests in compiler/admission.rs.
       IRONPAD_BUILD_RATE_BURST: "100000",
       IRONPAD_BUILD_RATE_PER_MIN: "100000",
+      // Registers /auth/test-login (PRD-0053) so specs can mint real
+      // sessions without GitHub. Production never sets this.
+      IRONPAD_TEST_AUTH: "1",
+      // Dummy OAuth credentials so the sign-in surface renders (the footer
+      // hides it entirely when unconfigured). Nothing ever completes the
+      // GitHub dance in e2e — test-login mints the sessions.
+      GITHUB_CLIENT_ID: "test-client-id",
+      GITHUB_CLIENT_SECRET: "test-client-secret",
     },
     url: "http://localhost:3111",
     reuseExistingServer: !process.env.CI,
-    timeout: 300_000, // 5 min — cargo build can be slow
+    timeout: 600_000, // 10 min — a cold release build (surrealdb tree) exceeds 5
   },
 });

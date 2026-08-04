@@ -124,7 +124,7 @@ test.describe("Notebook metadata panel (PRD-0051)", () => {
     await createNotebook(page);
     const section = await openMetadataPanel(page);
 
-    const imageField = section.locator(".mutable-rebind-input");
+    const imageField = section.locator(".ironpad-metadata-input");
     await imageField.fill("https://evil.example/x.png");
     await expect(section.locator(".ironpad-metadata-problem")).toBeVisible();
 

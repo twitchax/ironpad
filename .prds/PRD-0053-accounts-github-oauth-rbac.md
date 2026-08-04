@@ -1,7 +1,7 @@
 ---
 id: PRD-0053
 title: "Accounts: GitHub OAuth, embedded SurrealDB, and RBAC-backed mutable shares"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2026-08-04
 updated: 2026-08-04
@@ -60,37 +60,37 @@ tasks:
 - id: T-001
   title: "DB layer: embedded SurrealDB + schema"
   priority: 1
-  status: todo
+  status: done
   notes: "New db module in ironpad-server: surrealdb crate with the SurrealKV backend, file at {data_dir}/ironpad.db, connection in AppState. Tables: user (id = github user id; login, avatar_url, created_at), session (opaque 32-byte-hex id, user record link, created_at, expires_at with sliding ~30-day TTL), mutable_share (16-hex id kept for URL compatibility; notebook JSON, manifest, private: bool default false, pushed_at, created_at), grant (user, resource_kind, resource_id, role; only OWNER minted, uniqueness enforced at create). DEFINE TABLE/INDEX on boot, idempotent. Unit tests against a tempdir DB. Blobs stay on disk in shares/blobs (they are large binary wasm; only pointers live in the DB)."
 - id: T-002
   title: "GitHub OAuth flow + sessions"
   priority: 1
-  status: todo
+  status: done
   notes: "Axum routes /auth/github (redirect with random state in a short-lived cookie, plus a redirect_to for returning to the origin page), /auth/callback (state check, code exchange via reqwest, fetch user via the GitHub API, upsert user, mint session, set ironpad_session cookie httponly/secure/SameSite=Lax, redirect back), /auth/logout (delete session, clear cookie). No scopes beyond default read:user. GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET via env (Fly secrets in prod, a second localhost OAuth app for dev); when unset the sign-in button is hidden and the server runs fine anonymous-only. Server fn get_current_user() -> Option<UserInfo{login, avatar_url}> reads the cookie via leptos_axum extract. Helpers require_user and require_role(user, kind, id, role) for the write paths."
 - id: T-003
   title: "Env-gated test login"
   priority: 1
-  status: todo
+  status: done
   notes: "IRONPAD_TEST_AUTH=1 registers /auth/test-login?login={name}: upserts a synthetic user and mints a real session, exercising the same session/RBAC code as OAuth. The route is not registered at all when the env is unset (config test asserts absence; uat-006). Playwright webServer env sets it; prod never does. Same stale-server trap as the rate-limit overrides: a manually started server on :3111 lacks the env and silently breaks auth specs, so kill it before e2e reruns."
 - id: T-004
   title: "Mutable shares on sessions + grants; delete the key mechanism"
   priority: 1
-  status: todo
+  status: done
   notes: "Rewrite server fns: create_mutable_share(notebook_json) requires a session, mints the share and an OWNER grant transactionally; push_mutable(id, notebook_json), delete_mutable_share(id) require the OWNER grant; list_mutable_shares() enumerates by session; get_mutable_notebook(id) gains owner attribution (login, avatar_url) and an is_owner bool for the caller. verify_mutable_key is deleted along with derive_key, the subtle dependency, and both key hashes. Notebook JSON + manifest move into the mutable_share record; the PRD-0047 snapshot recipe is unchanged (blobs on disk, manifest REPLACED per push). OG extraction for /mutable switches from reading {data_dir}/mutable/{id}.json to a DB query. The {data_dir}/mutable directory and its atomic-write path are removed."
 - id: T-005
   title: "Client: sign-in UI, ownership binding, clone-to-local"
   priority: 1
-  status: todo
+  status: done
   notes: "Footer: sign-in-with-GitHub button when logged out; avatar + handle + sign-out when logged in (replaces the user-key widget). Reader page binding is now is_owner from get_mutable_notebook: owner with a local working copy gets the existing Edit shortcut; owner WITHOUT one gets Edit = clone the published copy into the mutable IndexedDB store and navigate (this replaces rebind on every new device). The rebind form, footer key UI, and notebook-key share-panel row are deleted. storage.js DB_VERSION 4: drop the user key from meta and notebook_key from mutable records; the share-id-keyed working-copy binding store stays as-is. Editor push/pull/unpublish flows keep their UX; they just stop sending keys."
 - id: T-006
   title: "Attribution on the reader page"
   priority: 2
-  status: todo
+  status: done
   notes: "Published by @{login} with avatar on /mutable/{id}, near the title, linking to github.com/{login}. Always on (owner toggle is a later feature with the private flag). OG card attribution is a non-goal for now."
 - id: T-007
   title: "e2e rewrite + auth spec"
   priority: 2
-  status: todo
+  status: in-progress
   notes: "helpers/auth.ts with loginTestUser(page, login) hitting /auth/test-login. mutable-shares.spec.ts rewritten around login: owner lifecycle, cross-context read, non-owner push rejected (assert the error toast), second-device clone-to-local, unpublish, Published-group listing. New auth.spec.ts: login/logout footer states, test-login 404 when env unset (spawn a server without the env or assert against a config unit test), cookie flags."
 - id: T-008
   title: "Deploy: secrets, scorched earth, docs"
@@ -155,4 +155,4 @@ See frontmatter references. The touchpoints outside the obvious auth/server-fn f
 
 # History
 
-(Entries appended during implementation go below this line.)
+- **2026-08-04** — T-001..T-006 implemented: embedded SurrealDB (surrealdb 3.x, SurrealKV) with idempotent boot-time schema; GitHub OAuth + hashed-at-rest sliding sessions; env-gated /auth/test-login (absence asserted by unit test); mutable shares rewritten onto session + OWNER grant with content/manifest in the DB and the two-key mechanism deleted (derive_key, subtle, rebind form, footer key widget); reader-page attribution + clone-to-local Edit; footer sign-in/avatar; storage.js DB_VERSION 4 in-place migration. Notable deviations from the plan: the DB module lives in ironpad-app (ssr-gated) rather than ironpad-server because server fns need it and the dependency points that way; the DB is NOT in AppState (SurrealKV open costs ~1.5s, which would tax every WS handler test) — it travels as leptos context, the auth router's own state, and an axum Extension for the OG handler; the grant table is named rbac_grant to dodge SurrealQL keyword ambiguity. e2e rewrite (T-007) in flight.
