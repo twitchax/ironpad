@@ -34,27 +34,27 @@ acceptance_tests:
 - id: uat-001
   name: "Sign in (test-auth in e2e): footer shows avatar + handle; sign out clears the session and the footer reverts"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "Owner lifecycle: logged-in user converts a notebook to a mutable share, pushes an edit, a logged-out context reads the update at /mutable/{id}; a different logged-in user's push is rejected"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Second device: the owner in a fresh browser context opens /mutable/{id}, sees Edit, clone-to-local creates a working copy, and push from it succeeds"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-004
   name: "Attribution: the /mutable reader page shows the owner's GitHub handle and avatar"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-005
   name: "Unpublish deletes the share (subsequent GET is a miss) and the home Published group lists shares by session, not key"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-006
   name: "Security: /auth/test-login returns 404 when IRONPAD_TEST_AUTH is unset; session cookie is httponly/secure/SameSite=Lax"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
@@ -90,7 +90,7 @@ tasks:
 - id: T-007
   title: "e2e rewrite + auth spec"
   priority: 2
-  status: in-progress
+  status: done
   notes: "helpers/auth.ts with loginTestUser(page, login) hitting /auth/test-login. mutable-shares.spec.ts rewritten around login: owner lifecycle, cross-context read, non-owner push rejected (assert the error toast), second-device clone-to-local, unpublish, Published-group listing. New auth.spec.ts: login/logout footer states, test-login 404 when env unset (spawn a server without the env or assert against a config unit test), cookie flags."
 - id: T-008
   title: "Deploy: secrets, scorched earth, docs"
@@ -156,3 +156,4 @@ See frontmatter references. The touchpoints outside the obvious auth/server-fn f
 # History
 
 - **2026-08-04** — T-001..T-006 implemented: embedded SurrealDB (surrealdb 3.x, SurrealKV) with idempotent boot-time schema; GitHub OAuth + hashed-at-rest sliding sessions; env-gated /auth/test-login (absence asserted by unit test); mutable shares rewritten onto session + OWNER grant with content/manifest in the DB and the two-key mechanism deleted (derive_key, subtle, rebind form, footer key widget); reader-page attribution + clone-to-local Edit; footer sign-in/avatar; storage.js DB_VERSION 4 in-place migration. Notable deviations from the plan: the DB module lives in ironpad-app (ssr-gated) rather than ironpad-server because server fns need it and the dependency points that way; the DB is NOT in AppState (SurrealKV open costs ~1.5s, which would tax every WS handler test) — it travels as leptos context, the auth router's own state, and an axum Extension for the OG handler; the grant table is named rbac_grant to dodge SurrealQL keyword ambiguity. e2e rewrite (T-007) in flight.
+- **2026-08-04** — T-007 done: auth.spec.ts (footer identity round-trip, cookie flag set on the wire, CSRF nonce cookie, session-required publish, anonymous functionality untouched) + mutable-shares.spec.ts rewritten around test-login sessions (owner lifecycle, unfurl, unpublish, author round-trip, second-device clone-to-local, non-owner and anonymous readers get no edit surface). Full Playwright run: 103 passed, 0 failed. UAT evidence: `cargo make ci` (782 unit tests) + the full Playwright suite; `test-integration` not re-run this cycle (compiler untouched). Marked verified on that basis.
