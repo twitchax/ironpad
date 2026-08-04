@@ -1,20 +1,20 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
-use ironpad_common::{IronpadNotebook, ShareManifest};
+use ironpad_common::{MutableNotebookResponse, ShareManifest};
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::server_fns::{get_mutable_manifest, get_mutable_notebook};
 
-/// Route component for `/mutable/{id}` (PRD-0049).
+/// Route component for `/mutable/{id}` (PRD-0049, accounts-backed PRD-0053).
 ///
-/// Fetches a mutable share's current notebook from the server and renders it
-/// read-only via [`ViewOnlyNotebook`], plus an "enter your key" rebind control
-/// so the author (on any device) can pull the share into local storage and
-/// edit it. The reader page itself never edits: capability-based rendering is
-/// a deliberate non-goal.
+/// Fetches a mutable share's current notebook (plus owner attribution and
+/// whether the caller's session owns it) and renders it read-only via
+/// [`ViewOnlyNotebook`]. The owner gets an Edit path on any device they're
+/// signed in on: bound devices open the local working copy, fresh devices
+/// clone the published copy into one. The reader page itself never edits.
 #[component]
 pub fn MutableNotebookPage() -> impl IntoView {
     let params = use_params_map();
@@ -30,21 +30,21 @@ pub fn MutableNotebookPage() -> impl IntoView {
             move || id.clone()
         },
         |id| async move {
-            let notebook = get_mutable_notebook(id.clone()).await?;
+            let response = get_mutable_notebook(id.clone()).await?;
             // Manifest only matters when the notebook exists; a
             // missing/degraded manifest falls back to live compilation.
-            let manifest = if notebook.is_some() {
+            let manifest = if response.is_some() {
                 get_mutable_manifest(id).await.unwrap_or(None)
             } else {
                 None
             };
-            Ok::<_, ServerFnError>((notebook, manifest))
+            Ok::<_, ServerFnError>((response, manifest))
         },
     );
 
     Effect::new(move || {
-        if let Some(Ok((Some(nb), _))) = notebook_resource.get() {
-            ctx.cell_count.set(nb.cells.len());
+        if let Some(Ok((Some(r), _))) = notebook_resource.get() {
+            ctx.cell_count.set(r.notebook.cells.len());
         }
     });
 
@@ -60,24 +60,24 @@ pub fn MutableNotebookPage() -> impl IntoView {
                 let id = id.clone();
                 Suspend::new(async move {
                     match notebook_resource.await {
-                        Ok((Some(notebook), manifest)) => view! {
+                        Ok((Some(response), manifest)) => view! {
                             // `noindex`: like immutable shares, a mutable
                             // link is unlisted, so it unfurls without being
                             // indexed.
                             <SocialMeta
-                                title=notebook.title.clone()
-                                description=notebook.description.clone()
+                                title=response.notebook.title.clone()
+                                description=response.notebook.description.clone()
                                 path=format!("/mutable/{id}")
-                                image=notebook
+                                image=response.notebook
                                     .og_image_path()
                                     .map_or_else(
                                         || format!("/og/mutable/{id}.png"),
                                         str::to_string,
                                     )
-                                image_size=notebook.og_image_dimensions()
+                                image_size=response.notebook.og_image_dimensions()
                                 noindex=true
                             />
-                            <MutableReader id notebook manifest />
+                            <MutableReader id response manifest />
                         }.into_any(),
                         Ok((None, _)) => view! {
                             {mark_not_found()}
@@ -106,21 +106,25 @@ pub fn MutableNotebookPage() -> impl IntoView {
     }
 }
 
-/// The resolved reader: rebind bar plus the read-only notebook.
+/// The resolved reader: attribution, owner controls, and the read-only
+/// notebook.
 #[component]
 fn MutableReader(
     id: String,
-    notebook: IronpadNotebook,
+    response: MutableNotebookResponse,
     manifest: Option<ShareManifest>,
 ) -> impl IntoView {
-    let rebind_open = RwSignal::new(false);
-    let key_input = RwSignal::new(String::new());
-    let rebind_status = RwSignal::new(Option::<String>::None);
+    let MutableNotebookResponse {
+        notebook,
+        owner,
+        is_owner,
+    } = response;
+
     let busy = RwSignal::new(false);
 
-    // `Some(local_uuid)` when this device authors the share (a record for
-    // the notebook's uuid exists in the local mutable store). Resolved on
-    // hydrate; until then the page renders as it does for ordinary readers.
+    // `Some(local_uuid)` when this device holds the working copy (a record
+    // for the notebook's uuid exists in the local mutable store). Resolved on
+    // hydrate; until then owner controls render the clone variant.
     let binding: RwSignal<Option<String>> = RwSignal::new(None);
     // The local working copy differs from the published copy. Symmetric on
     // purpose: content inequality cannot tell unpushed local edits from a
@@ -152,75 +156,73 @@ fn MutableReader(
         });
     });
 
-    let submit_key = move |_| {
+    // Owner on a device with no working copy: clone the published copy into
+    // the local mutable store and open the editor (the PRD-0053 replacement
+    // for the key-based rebind flow — signing in IS the authorization).
+    let clone_and_edit = move || {
         #[cfg(feature = "hydrate")]
         {
             if busy.get_untracked() {
                 return;
             }
-            let key = key_input.get_untracked().trim().to_string();
-            if key.is_empty() {
-                rebind_status.set(Some("Enter your edit key.".to_string()));
-                return;
-            }
             busy.set(true);
-            rebind_status.set(None);
             let navigate = navigate.get_value();
             leptos::task::spawn_local(async move {
                 let sid = share_id.get_value();
                 let nb = notebook_stored.get_value();
                 let local_uuid = nb.id.to_string();
 
-                match crate::server_fns::verify_mutable_key(sid.clone(), key.clone()).await {
-                    Ok(true) => {
-                        // A record may already exist: bound devices get an
-                        // Edit link instead of this form, but the binding
-                        // check is async and a fast user can beat it. Never
-                        // clobber a local working copy with the server copy;
-                        // just open the editor. Otherwise store the entered
-                        // key as this share's edit key on this device (either
-                        // key authorizes, so whatever the user pasted is a
-                        // valid pushing credential).
-                        if crate::storage::client::get_mutable(&local_uuid)
-                            .await
-                            .is_none()
-                        {
-                            if let Err(e) =
-                                crate::storage::client::save_mutable(&nb, &sid, &key).await
-                            {
-                                busy.set(false);
-                                rebind_status.set(Some(format!("Could not save locally: {e:?}")));
-                                return;
-                            }
-                        }
-                        // The toast survives the client-side navigation: the
-                        // toast list is owned by the app root, not this page.
+                // The binding check is async and a fast click can beat it:
+                // never clobber an existing working copy, just open it.
+                if crate::storage::client::get_mutable(&local_uuid)
+                    .await
+                    .is_none()
+                {
+                    if let Err(e) = crate::storage::client::save_mutable(&nb, &sid).await {
+                        busy.set(false);
                         toaster.toast(
-                            crate::components::toaster::ToastIntent::Success,
-                            "Key Accepted",
-                            "This notebook is editable on this device now.",
-                            4,
+                            crate::components::toaster::ToastIntent::Error,
+                            "Could Not Clone",
+                            format!("Saving the working copy failed: {e:?}"),
+                            6,
                         );
-                        navigate(
-                            &format!("/local/{local_uuid}"),
-                            leptos_router::NavigateOptions::default(),
-                        );
+                        return;
                     }
-                    Ok(false) => {
-                        busy.set(false);
-                        rebind_status
-                            .set(Some("That key does not match this notebook.".to_string()));
-                    }
-                    Err(e) => {
-                        busy.set(false);
-                        rebind_status.set(Some(format!("Could not verify: {e}")));
-                    }
+                    toaster.toast(
+                        crate::components::toaster::ToastIntent::Success,
+                        "Ready to Edit",
+                        "The published copy is now your working copy on this device.",
+                        4,
+                    );
                 }
+                navigate(
+                    &format!("/local/{local_uuid}"),
+                    leptos_router::NavigateOptions::default(),
+                );
             });
         }
     };
 
+    let attribution = owner.map(|o| {
+        let avatar = (!o.avatar_url.is_empty()).then(|| {
+            view! { <img class="mutable-attribution-avatar" src=o.avatar_url.clone() alt="" /> }
+        });
+        let profile = format!("https://github.com/{}", o.login);
+        view! {
+            <div class="mutable-attribution">
+                {avatar}
+                <span class="mutable-attribution-text">
+                    "Published by "
+                    <a class="mutable-attribution-link" href=profile target="_blank" rel="noopener">
+                        {format!("@{}", o.login)}
+                    </a>
+                </span>
+            </div>
+        }
+    });
+
     view! {
+        {attribution}
         // Author-only divergence notice (implies a binding, so the editor
         // link inside can assume one). Readers on other devices never see it.
         {move || diverged.get().then(|| {
@@ -240,65 +242,43 @@ fn MutableReader(
                 </div>
             }
         })}
-        // The form bar exists only while rebinding; the entry point lives in
-        // the toolbar's "☰" menu below, so ordinary readers (who have no key)
-        // never see rebind chrome at all.
-        {move || rebind_open.get().then(|| view! {
-            <div class="mutable-rebind">
-                <div class="mutable-rebind-form">
-                    <input
-                        class="mutable-rebind-input"
-                        r#type="text"
-                        placeholder="Paste your edit key"
-                        prop:value=move || key_input.get()
-                        on:input=move |ev| key_input.set(event_target_value(&ev))
-                    />
-                    <button
-                        class="mutable-rebind-submit"
-                        on:click=submit_key
-                        disabled=move || busy.get()
-                    >
-                        {move || if busy.get() { "Checking…" } else { "Edit" }}
-                    </button>
-                    // A dismiss matters more now that reopening is a menu
-                    // trip away, not a click on the same spot.
-                    <button
-                        class="mutable-rebind-cancel"
-                        on:click=move |_| rebind_open.set(false)
-                    >
-                        "Cancel"
-                    </button>
-                    {move || rebind_status.get().map(|msg| view! {
-                        <span class="mutable-rebind-status">{msg}</span>
-                    })}
-                </div>
-            </div>
-        })}
         <ViewOnlyNotebook
             notebook
             fork_label="Fork to Private".to_string()
             share_manifest=manifest
-            // The authoring device gets a first-class Edit link; everyone
-            // else reaches the rebind form through the menu. Reactive inside
-            // the slots because the binding resolves asynchronously.
+            // Owners get a first-class Edit control: a link into the local
+            // working copy when one exists, a clone-and-edit button on a
+            // fresh device. Reactive inside the slots because the binding
+            // resolves asynchronously; non-owners render nothing.
             controls=Some(view! {
-                {move || binding.get().map(|uuid| view! {
-                    <a
-                        class="view-only-edit-button"
-                        href=format!("/local/{uuid}")
-                    >
-                        "✎ Edit"
-                    </a>
-                })}
-            }.into_any())
-            menu=Some(view! {
-                {move || binding.get().map_or_else(
+                {move || is_owner.then(|| binding.get().map_or_else(
                     || view! {
                         <button
-                            class="ironpad-toolbar-dropdown-item mutable-rebind-menu-item"
-                            on:click=move |_| rebind_open.set(true)
+                            class="view-only-edit-button"
+                            on:click=move |_| clone_and_edit()
+                            disabled=move || busy.get()
                         >
-                            "✎ Have an edit key?"
+                            {move || if busy.get() { "Preparing…" } else { "✎ Edit" }}
+                        </button>
+                    }.into_any(),
+                    |uuid| view! {
+                        <a
+                            class="view-only-edit-button"
+                            href=format!("/local/{uuid}")
+                        >
+                            "✎ Edit"
+                        </a>
+                    }.into_any(),
+                ))}
+            }.into_any())
+            menu=Some(view! {
+                {move || is_owner.then(|| binding.get().map_or_else(
+                    || view! {
+                        <button
+                            class="ironpad-toolbar-dropdown-item mutable-edit-menu-item"
+                            on:click=move |_| clone_and_edit()
+                        >
+                            "✎ Edit on this device"
                         </button>
                     }.into_any(),
                     |uuid| view! {
@@ -309,7 +289,7 @@ fn MutableReader(
                             "✎ Open in editor"
                         </a>
                     }.into_any(),
-                )}
+                ))}
             }.into_any())
         />
     }

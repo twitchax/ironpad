@@ -2506,7 +2506,6 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
- "subtle",
  "surrealdb",
  "tempfile",
  "thiserror 2.0.18",

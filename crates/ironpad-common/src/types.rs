@@ -582,6 +582,15 @@ pub struct ShareOwner {
     pub avatar_url: String,
 }
 
+/// Reader-page payload for a mutable share: the notebook, its owner
+/// attribution, and whether the CALLER's session holds the OWNER grant.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MutableNotebookResponse {
+    pub notebook: IronpadNotebook,
+    pub owner: Option<ShareOwner>,
+    pub is_owner: bool,
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

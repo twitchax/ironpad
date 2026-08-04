@@ -114,8 +114,9 @@ pub fn HomePage() -> impl IntoView {
     }
 
     // Mutable shares (PRD-0049): locally-bound working copies plus any shares
-    // this device's user key owns but hasn't pulled yet (found on a fresh
-    // machine by pasting the key). Deduped by share id.
+    // the signed-in account owns but hasn't cloned here (PRD-0053 — the
+    // server enumerates by session; anonymous gets an empty list). Deduped by
+    // share id.
 
     let mutable_entries: RwSignal<Vec<MutableEntry>> = RwSignal::new(vec![]);
 
@@ -136,23 +137,16 @@ pub fn HomePage() -> impl IntoView {
             let local_ids: std::collections::HashSet<String> =
                 local.iter().map(|r| r.share_id.clone()).collect();
 
-            let user_key = crate::storage::client::get_user_key().await;
-            if !user_key.is_empty() {
-                if let Ok(remote) = crate::server_fns::list_mutable_shares(user_key).await {
-                    for s in remote {
-                        if !local_ids.contains(&s.id) {
-                            entries.push(MutableEntry {
-                                local_id: None,
-                                share_id: s.id,
-                                title: s.title,
-                                cell_count: s.cell_count,
-                                updated_at: s
-                                    .pushed_at
-                                    .get(..10)
-                                    .unwrap_or(&s.pushed_at)
-                                    .to_string(),
-                            });
-                        }
+            if let Ok(remote) = crate::server_fns::list_mutable_shares().await {
+                for s in remote {
+                    if !local_ids.contains(&s.id) {
+                        entries.push(MutableEntry {
+                            local_id: None,
+                            share_id: s.id,
+                            title: s.title,
+                            cell_count: s.cell_count,
+                            updated_at: s.pushed_at.get(..10).unwrap_or(&s.pushed_at).to_string(),
+                        });
                     }
                 }
             }
@@ -457,7 +451,8 @@ fn NotebookCard(
             updated_at,
         } => {
             // Bound locally → open the editor; otherwise → the reader page,
-            // where the "enter your key" rebind control lives.
+            // where the owner's Edit control clones it to this device
+            // (PRD-0053).
             let href = local_id.as_ref().map_or_else(
                 || format!("/mutable/{share_id}"),
                 |id| format!("/local/{id}"),

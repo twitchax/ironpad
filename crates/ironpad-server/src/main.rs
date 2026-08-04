@@ -217,6 +217,10 @@ async fn main() {
         )
         .fallback(leptos_axum::file_and_error_handler::<AppState, _>(shell))
         .with_state(app_state)
+        // The accounts DB for handlers outside the leptos context (the OG
+        // mutable-card path). See the boot comment for why it's not in
+        // AppState.
+        .layer(axum::Extension(db.clone()))
         // Framework-level request-body cap so the per-endpoint
         // `MAX_SHARE_BYTES` (4 MiB) check isn't the only guard. Sized above the
         // largest legitimate body (a max-size shared notebook) so real uploads

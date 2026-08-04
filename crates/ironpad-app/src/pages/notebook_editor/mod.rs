@@ -213,14 +213,14 @@ async fn flush_serialize_tags(
     Some((json, tags))
 }
 
-/// Convert the current notebook into a mutable share (PRD-0049): mint a
-/// per-notebook key, create the share server-side under this device's user
-/// key, move the notebook into the local mutable store, update `binding`, and
-/// copy the `/mutable/{id}` link. The caller bumps `save_generation` first.
+/// Convert the current notebook into a mutable share (PRD-0049): create the
+/// share server-side under the signed-in account (PRD-0053), move the
+/// notebook into the local mutable store, update `binding`, and copy the
+/// `/mutable/{id}` link. The caller bumps `save_generation` first.
 fn share_mutable_current_notebook(
     state: &NotebookState,
     toaster: Toaster,
-    binding: RwSignal<Option<(String, String)>>,
+    binding: RwSignal<Option<String>>,
 ) {
     let state = *state;
     // Same immediate ack as Share Immutable.
@@ -237,20 +237,10 @@ fn share_mutable_current_notebook(
         #[cfg(feature = "hydrate")]
         {
             let uuid = state.notebook_id.get_untracked();
-            let user_key = crate::storage::client::get_user_key().await;
-            let notebook_key = crate::storage::client::mint_key();
-            match crate::server_fns::create_mutable_share(
-                json,
-                user_key,
-                notebook_key.clone(),
-                Some(tags),
-            )
-            .await
-            {
+            match crate::server_fns::create_mutable_share(json, Some(tags)).await {
                 Ok(share_id) => {
                     if let Err(e) =
-                        crate::storage::client::convert_to_mutable(&uuid, &share_id, &notebook_key)
-                            .await
+                        crate::storage::client::convert_to_mutable(&uuid, &share_id).await
                     {
                         toaster.toast(
                             ToastIntent::Error,
@@ -262,7 +252,7 @@ fn share_mutable_current_notebook(
                     }
                     // The page may have been disposed during the awaits.
                     if state.notebook_id.try_get_untracked().is_some() {
-                        binding.set(Some((share_id.clone(), notebook_key)));
+                        binding.set(Some(share_id.clone()));
                     }
                     let origin = web_sys::window()
                         .and_then(|w| w.location().origin().ok())
@@ -286,13 +276,8 @@ fn share_mutable_current_notebook(
 }
 
 /// Push the current notebook to its existing mutable share, overwriting the
-/// server copy. Uses the stored per-share edit key.
-fn push_mutable_current_notebook(
-    state: &NotebookState,
-    toaster: Toaster,
-    share_id: String,
-    edit_key: String,
-) {
+/// server copy. The signed-in session must hold the OWNER grant (PRD-0053).
+fn push_mutable_current_notebook(state: &NotebookState, toaster: Toaster, share_id: String) {
     let state = *state;
     // Immediate ack: the push re-snapshots blobs server-side, which can take
     // a few seconds of visible nothing otherwise.
@@ -306,7 +291,7 @@ fn push_mutable_current_notebook(
         let Some((json, tags)) = flush_serialize_tags(&state, toaster, "Push Failed").await else {
             return;
         };
-        match crate::server_fns::push_mutable(share_id, edit_key, json, Some(tags)).await {
+        match crate::server_fns::push_mutable(share_id, json, Some(tags)).await {
             Ok(()) => toaster.toast(
                 ToastIntent::Success,
                 "Pushed",
@@ -331,7 +316,8 @@ fn pull_mutable_current_notebook(state: &NotebookState, toaster: Toaster, share_
     let state = *state;
     leptos::task::spawn_local(async move {
         match crate::server_fns::get_mutable_notebook(share_id).await {
-            Ok(Some(published)) => {
+            Ok(Some(response)) => {
+                let published = response.notebook;
                 let already_matches = state
                     .notebook
                     .try_get_untracked()
@@ -696,11 +682,10 @@ fn NotebookContent() -> impl IntoView {
 
     // ── Mutable-share binding (PRD-0049) ────────────────────────────────
     //
-    // `Some((share_id, edit_key))` when this notebook is mutable-backed on
-    // this device. Drives the Share Mutable ↔ Push and Delete ↔ Unpublish
-    // menu swaps. Loaded from the local mutable store once the notebook id is
-    // known.
-    let mutable_binding: RwSignal<Option<(String, String)>> = RwSignal::new(None);
+    // `Some(share_id)` when this notebook is mutable-backed on this device.
+    // Drives the Share Mutable ↔ Push and Delete ↔ Unpublish menu swaps.
+    // Loaded from the local mutable store once the notebook id is known.
+    let mutable_binding: RwSignal<Option<String>> = RwSignal::new(None);
 
     #[cfg(feature = "hydrate")]
     {
@@ -715,7 +700,7 @@ fn NotebookContent() -> impl IntoView {
                 if state.notebook_id.try_get_untracked().is_none() {
                     return;
                 }
-                mutable_binding.set(record.map(|r| (r.share_id, r.edit_key)));
+                mutable_binding.set(record.map(|r| r.share_id));
             });
         });
     }
@@ -988,7 +973,7 @@ fn NotebookContent() -> impl IntoView {
                                                 "⇅ Share Mutable"
                                             </button>
                                         }.into_any(),
-                                        Some((share_id, edit_key)) => {
+                                        Some(share_id) => {
                                             let published_href = format!("/mutable/{share_id}");
                                             let pull_share_id = share_id.clone();
                                             view! {
@@ -1001,7 +986,6 @@ fn NotebookContent() -> impl IntoView {
                                                             &state,
                                                             Toaster::expect_context(),
                                                             share_id.clone(),
-                                                            edit_key.clone(),
                                                         );
                                                     }
                                                 >
@@ -1117,7 +1101,7 @@ fn NotebookContent() -> impl IntoView {
                                     </button>
                                     // Delete (private) / Unpublish (mutable, PRD-0049)
                                     {move || match mutable_binding.get() {
-                                        Some((share_id, edit_key)) => view! {
+                                        Some(share_id) => view! {
                                             <button
                                                 class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
                                                 on:click=move |_| {
@@ -1134,11 +1118,8 @@ fn NotebookContent() -> impl IntoView {
                                                             let uuid = state.notebook_id.get_untracked();
                                                             let toaster = Toaster::expect_context();
                                                             let share_id = share_id.clone();
-                                                            let edit_key = edit_key.clone();
                                                             leptos::task::spawn_local(async move {
-                                                                match crate::server_fns::delete_mutable_share(
-                                                                    share_id, edit_key,
-                                                                )
+                                                                match crate::server_fns::delete_mutable_share(share_id)
                                                                 .await
                                                                 {
                                                                     Ok(()) => {

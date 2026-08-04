@@ -29,23 +29,10 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "importNotebook")]
     async fn js_import_notebook(json_string: &str) -> Result<JsValue, JsValue>;
 
-    // ── Mutable shares + user key (PRD-0049) ────────────────────────────────
-
-    #[wasm_bindgen(js_namespace = ["window", "IronpadStorage"], js_name = "mintKey")]
-    fn js_mint_key() -> String;
-
-    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "getUserKey")]
-    async fn js_get_user_key() -> Result<JsValue, JsValue>;
-
-    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "setUserKey")]
-    async fn js_set_user_key(value: &str) -> Result<JsValue, JsValue>;
+    // ── Mutable shares (PRD-0049; keys removed by PRD-0053) ─────────────────
 
     #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "convertToMutable")]
-    async fn js_convert_to_mutable(
-        id: &str,
-        share_id: &str,
-        edit_key: &str,
-    ) -> Result<JsValue, JsValue>;
+    async fn js_convert_to_mutable(id: &str, share_id: &str) -> Result<JsValue, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "convertToPrivate")]
     async fn js_convert_to_private(id: &str) -> Result<JsValue, JsValue>;
@@ -64,12 +51,12 @@ extern "C" {
 }
 
 /// A mutable-share working copy stored locally (PRD-0049): the notebook plus
-/// its server share id and the key that authorizes pushes on this device.
+/// its server share id. Push authorization is the GitHub session, not a
+/// stored key (PRD-0053).
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct MutableLocalRecord {
     pub id: String,
     pub share_id: String,
-    pub edit_key: String,
     pub notebook: IronpadNotebook,
 }
 
@@ -78,7 +65,6 @@ pub struct MutableLocalRecord {
 struct MutableLocalRecordOut<'a> {
     id: String,
     share_id: &'a str,
-    edit_key: &'a str,
     notebook: &'a IronpadNotebook,
 }
 
@@ -201,37 +187,12 @@ pub async fn import_notebook(json_string: &str) -> Option<IronpadNotebook> {
     }
 }
 
-// ── Mutable shares + user key (PRD-0049) ────────────────────────────────────
-
-/// Mint a fresh random 64-hex key (a new share's per-notebook key).
-pub fn mint_key() -> String {
-    js_mint_key()
-}
-
-/// This device's user key, generating and persisting one on first use.
-/// Degrades to an empty string (logged) if `IndexedDB` is unavailable.
-pub async fn get_user_key() -> String {
-    match js_get_user_key().await {
-        Ok(val) => val.as_string().unwrap_or_default(),
-        Err(e) => {
-            leptos::logging::warn!("getUserKey failed: {e:?}");
-            String::new()
-        }
-    }
-}
-
-/// Overwrite this device's user key (local clobber; does not revoke the old
-/// one server-side).
-pub async fn set_user_key(value: &str) {
-    if let Err(e) = js_set_user_key(value).await {
-        leptos::logging::warn!("setUserKey failed: {e:?}");
-    }
-}
+// ── Mutable shares (PRD-0049; keys removed by PRD-0053) ─────────────────────
 
 /// Convert a private notebook into a mutable-share working copy (move it into
-/// the mutable store under `share_id`/`edit_key`).
-pub async fn convert_to_mutable(id: &str, share_id: &str, edit_key: &str) -> Result<(), JsValue> {
-    js_convert_to_mutable(id, share_id, edit_key).await?;
+/// the mutable store under `share_id`).
+pub async fn convert_to_mutable(id: &str, share_id: &str) -> Result<(), JsValue> {
+    js_convert_to_mutable(id, share_id).await?;
     Ok(())
 }
 
@@ -242,16 +203,12 @@ pub async fn convert_to_private(id: &str) {
     }
 }
 
-/// Insert or replace a local mutable-share record (rebind onto this device).
-pub async fn save_mutable(
-    notebook: &IronpadNotebook,
-    share_id: &str,
-    edit_key: &str,
-) -> Result<(), JsValue> {
+/// Insert or replace a local mutable-share record (the owner's clone-to-local
+/// flow on a fresh device).
+pub async fn save_mutable(notebook: &IronpadNotebook, share_id: &str) -> Result<(), JsValue> {
     let record = MutableLocalRecordOut {
         id: notebook.id.to_string(),
         share_id,
-        edit_key,
         notebook,
     };
     let val = serde_wasm_bindgen::to_value(&record)

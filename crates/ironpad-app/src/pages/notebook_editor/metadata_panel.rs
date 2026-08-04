@@ -32,10 +32,10 @@ const MIN_SAVING_MS: i32 = 500;
 /// Collapsed-by-default metadata section. Expanding lazily mounts the form.
 #[component]
 pub(super) fn NotebookMetadataSection(
-    /// `Some((share_id, edit_key))` while the notebook is mutable-backed on
+    /// `Some(share_id)` while the notebook is mutable-backed on
     /// this device (PRD-0049); drives the published-URL row, so the share
     /// link is findable after its one appearance in the share toast.
-    mutable_binding: RwSignal<Option<(String, String)>>,
+    mutable_binding: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let collapsed = RwSignal::new(true);
     let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
@@ -82,7 +82,7 @@ fn published_origin() -> String {
 /// The form body.
 #[component]
 #[allow(clippy::too_many_lines)] // One form, read top to bottom.
-fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<(String, String)>>) -> impl IntoView {
+fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<String>>) -> impl IntoView {
     let state = expect_context::<NotebookState>();
     let model = expect_context::<NotebookModel>();
     let toaster = Toaster::expect_context();
@@ -245,7 +245,7 @@ fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<(String, String)>>) ->
                  X, Slack, and Discord build when someone pastes a link to this notebook."
             </p>
 
-            {move || mutable_binding.get().map(|(share_id, _)| {
+            {move || mutable_binding.get().map(|share_id| {
                 let url = format!("{}/mutable/{share_id}", published_origin());
                 view! {
                     <div class="ironpad-metadata-field">

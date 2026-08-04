@@ -436,8 +436,12 @@ fn host_of(public_url: &str) -> &str {
 }
 
 /// `GET /og/{class}/{id}.png` — the card for one notebook.
+///
+/// The accounts DB rides in as an `Extension` (PRD-0053): mutable shares live
+/// there now, and the DB is deliberately not part of `AppState`.
 pub async fn notebook_card_handler(
     State(state): State<AppState>,
+    axum::Extension(db): axum::Extension<ironpad_app::db::Db>,
     AxumPath((class, file)): AxumPath<(String, String)>,
 ) -> Response {
     let (Some(class), Some(id)) = (Class::parse(&class), notebook_id_from(&file)) else {
@@ -454,15 +458,11 @@ pub async fn notebook_card_handler(
         }
         // A mutable share that was unpublished resolves to `Ok(None)`, which
         // is a 404 here exactly like a hash that never existed.
-        Class::Mutable => {
-            match ironpad_app::server_fns::get_mutable_notebook_core(&state.config.data_dir, id)
-                .await
-            {
-                Ok(Some(nb)) => Ok(nb),
-                Ok(None) => Err(anyhow::anyhow!("no such mutable share")),
-                Err(e) => Err(e),
-            }
-        }
+        Class::Mutable => match ironpad_app::server_fns::get_mutable_notebook_core(&db, id).await {
+            Ok(Some(nb)) => Ok(nb),
+            Ok(None) => Err(anyhow::anyhow!("no such mutable share")),
+            Err(e) => Err(e),
+        },
     };
 
     let Ok(notebook) = notebook else {
