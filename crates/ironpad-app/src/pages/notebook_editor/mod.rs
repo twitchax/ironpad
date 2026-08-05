@@ -2,6 +2,7 @@ mod cell_item;
 mod cell_output;
 mod export;
 mod metadata_panel;
+mod pipeline;
 mod shared_editor_panel;
 mod sharing;
 mod skeleton;
