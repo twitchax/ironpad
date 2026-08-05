@@ -16,6 +16,7 @@ use tokio::net::UnixListener;
 use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tokio_tungstenite::tungstenite;
 
+use ironpad_common::notebook_ops;
 use ironpad_common::protocol::{self, MessageKind, Query};
 use ironpad_common::IronpadNotebook;
 
@@ -328,7 +329,7 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
         protocol::Event::CellAdded {
             cell,
             after_cell_id,
-        } => apply_cell_added(nb, cell, after_cell_id.as_deref()),
+        } => notebook_ops::insert_cell(&mut nb.cells, cell.clone(), after_cell_id.as_deref()),
         protocol::Event::CellUpdated {
             cell_id,
             source,
@@ -338,21 +339,25 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
             collapsed,
             output_collapsed,
             version,
-        } => apply_cell_updated(
-            nb,
-            cell_id,
-            &CellFieldChanges {
-                source: source.as_ref(),
-                cargo_toml: cargo_toml.as_ref(),
-                label: label.as_ref(),
-                shared: *shared,
-                collapsed: *collapsed,
-                output_collapsed: *output_collapsed,
-            },
-            *version,
-        ),
-        protocol::Event::CellDeleted { cell_id } => apply_cell_deleted(nb, cell_id),
-        protocol::Event::CellReordered { cell_ids } => apply_cell_reordered(nb, cell_ids),
+        } => {
+            if let Some(cell) = nb.cells.iter_mut().find(|c| &c.id == cell_id) {
+                notebook_ops::CellPatch {
+                    source: source.as_ref(),
+                    cargo_toml: cargo_toml.as_ref(),
+                    label: label.as_ref(),
+                    shared: *shared,
+                    collapsed: *collapsed,
+                    output_collapsed: *output_collapsed,
+                }
+                .apply_to(cell, *version);
+            }
+        }
+        protocol::Event::CellDeleted { cell_id } => {
+            notebook_ops::delete_cell(&mut nb.cells, cell_id);
+        }
+        protocol::Event::CellReordered { cell_ids } => {
+            notebook_ops::reorder_cells(&mut nb.cells, cell_ids);
+        }
         protocol::Event::NotebookMetaUpdated { meta } => meta.apply_to(nb),
         // Compilation/execution events don't affect the notebook structure; an
         // unknown event from a newer peer is likewise ignored here.
@@ -364,95 +369,12 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
     }
 }
 
-// ── Per-event cache update handlers ─────────────────────────────────────────
-
-fn apply_cell_added(
-    nb: &mut IronpadNotebook,
-    cell: &ironpad_common::IronpadCell,
-    after_cell_id: Option<&str>,
-) {
-    if let Some(after_id) = after_cell_id {
-        if let Some(idx) = nb.cells.iter().position(|c| c.id == after_id) {
-            nb.cells.insert(idx + 1, cell.clone());
-        } else {
-            nb.cells.push(cell.clone());
-        }
-    } else {
-        nb.cells.insert(0, cell.clone());
-    }
-    renumber(&mut nb.cells);
-}
-
-/// Changed-field bundle for [`apply_cell_updated`] — mirrors
-/// `Event::CellUpdated` so the applier stays readable as per-cell
-/// attributes grow.
-struct CellFieldChanges<'a> {
-    source: Option<&'a String>,
-    cargo_toml: Option<&'a Option<String>>,
-    label: Option<&'a String>,
-    shared: Option<bool>,
-    collapsed: Option<bool>,
-    output_collapsed: Option<bool>,
-}
-
-fn apply_cell_updated(
-    nb: &mut IronpadNotebook,
-    cell_id: &str,
-    changes: &CellFieldChanges,
-    version: u64,
-) {
-    if let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cell_id) {
-        if let Some(src) = changes.source {
-            cell.source.clone_from(src);
-        }
-        if let Some(ct) = changes.cargo_toml {
-            cell.cargo_toml.clone_from(ct);
-        }
-        if let Some(lbl) = changes.label {
-            cell.label.clone_from(lbl);
-        }
-        if let Some(sh) = changes.shared {
-            cell.shared = sh;
-        }
-        if let Some(c) = changes.collapsed {
-            cell.collapsed = c;
-        }
-        if let Some(oc) = changes.output_collapsed {
-            cell.output_collapsed = oc;
-        }
-        cell.version = version;
-    }
-}
-
-fn apply_cell_deleted(nb: &mut IronpadNotebook, cell_id: &str) {
-    nb.cells.retain(|c| c.id != *cell_id);
-    renumber(&mut nb.cells);
-}
-
-fn apply_cell_reordered(nb: &mut IronpadNotebook, cell_ids: &[String]) {
-    let mut reordered = Vec::with_capacity(cell_ids.len());
-    for id in cell_ids {
-        if let Some(pos) = nb.cells.iter().position(|c| c.id == *id) {
-            reordered.push(nb.cells.remove(pos));
-        }
-    }
-    reordered.append(&mut nb.cells);
-    nb.cells = reordered;
-    renumber(&mut nb.cells);
-}
-
-// `apply_notebook_meta_updated` used to live here as a hand-written mirror of
-// the browser model's version. It is now `NotebookMetaPatch::apply_to` in
-// ironpad-common, so the daemon's cached notebook and the authoritative one
-// cannot disagree about what a metadata event means.
-
-fn renumber(cells: &mut [ironpad_common::IronpadCell]) {
-    for (i, cell) in cells.iter_mut().enumerate() {
-        #[allow(clippy::cast_possible_truncation)]
-        let order = i as u32;
-        cell.order = order;
-    }
-}
+// The per-event structural appliers (insert/update/delete/reorder/renumber)
+// used to live here as hand-written mirrors of the browser model's mutation
+// semantics. They are now `ironpad_common::notebook_ops`, shared with
+// `NotebookModel` — same unification the metadata mirror already went
+// through (`NotebookMetaPatch::apply_to`) — so the daemon's cached notebook
+// and the authoritative one cannot disagree.
 
 // ── IPC connection handling ─────────────────────────────────────────────────
 
@@ -619,12 +541,17 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
 /// Maps an incoming event to the terminal outcome of a run of `cell_id`, or
 /// `None` if the run is still in flight.
 ///
-/// Three terminal shapes:
+/// Four terminal shapes:
 /// - `CellExecuted` for our cell — done, successfully or not.
 /// - `CellCompiled { success: false }` for our cell — compile failure.
 /// - `CellCompiled { success: false }` for ANY other cell — a prerequisite in
 ///   the cascade failed. The browser clears the run queue on compile failure,
 ///   so our queued run is dead and waiting longer would only hit the timeout.
+/// - `CellExecuted { success: false }` for ANY other cell — same logic at
+///   runtime: the browser clears the queue when any cell's EXECUTION fails
+///   too (a prerequisite that compiled clean but panicked), so without this
+///   arm the daemon waited out the full timeout instead of reporting
+///   `prerequisite_failed`.
 fn run_outcome(cell_id: &str, event: &protocol::Event) -> Option<serde_json::Value> {
     match event {
         protocol::Event::CellExecuted {
@@ -639,6 +566,16 @@ fn run_outcome(cell_id: &str, event: &protocol::Event) -> Option<serde_json::Val
             "display_text": display_text,
             "type_tag": type_tag,
             "execution_time_ms": execution_time_ms,
+        })),
+        protocol::Event::CellExecuted {
+            cell_id: id,
+            display_text,
+            success: false,
+            ..
+        } => Some(serde_json::json!({
+            "status": "prerequisite_failed",
+            "cell_id": id,
+            "display_text": display_text,
         })),
         protocol::Event::CellCompiled {
             cell_id: id,
@@ -1031,6 +968,24 @@ mod tests {
         .unwrap();
         assert_eq!(prereq["status"], "prerequisite_failed");
         assert_eq!(prereq["cell_id"], "upstream");
+
+        // Terminal: a prerequisite's RUNTIME failure too — the browser clears
+        // the queue on execution errors, so waiting longer only hits the
+        // timeout (this hung for the full 360s before it had its own arm).
+        let runtime_prereq = run_outcome(
+            "mine",
+            &Event::CellExecuted {
+                cell_id: "upstream".into(),
+                display_text: Some("panicked at 'boom'".into()),
+                type_tag: None,
+                execution_time_ms: 0.0,
+                success: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(runtime_prereq["status"], "prerequisite_failed");
+        assert_eq!(runtime_prereq["cell_id"], "upstream");
+        assert_eq!(runtime_prereq["display_text"], "panicked at 'boom'");
     }
 
     // ── translate_command ────────────────────────────────────────────────
@@ -1323,40 +1278,6 @@ mod tests {
         let resp = translate_response(wrap(MessageKind::Query(Query::NotebookGet)));
         assert!(!resp.ok);
         assert!(resp.error.as_deref().unwrap().contains("unexpected"));
-    }
-
-    // ── renumber ────────────────────────────────────────────────────────
-
-    #[test]
-    fn renumber_empty() {
-        let mut cells = vec![];
-        renumber(&mut cells);
-        assert!(cells.is_empty());
-    }
-
-    #[test]
-    fn renumber_single() {
-        let mut cells = vec![make_cell("a", 42)];
-        renumber(&mut cells);
-        assert_eq!(cells[0].order, 0);
-    }
-
-    #[test]
-    fn renumber_multiple_with_gaps() {
-        let mut cells = vec![make_cell("a", 10), make_cell("b", 5), make_cell("c", 99)];
-        renumber(&mut cells);
-        assert_eq!(cells[0].order, 0);
-        assert_eq!(cells[1].order, 1);
-        assert_eq!(cells[2].order, 2);
-    }
-
-    #[test]
-    fn renumber_already_ordered() {
-        let mut cells = vec![make_cell("a", 0), make_cell("b", 1), make_cell("c", 2)];
-        renumber(&mut cells);
-        assert_eq!(cells[0].order, 0);
-        assert_eq!(cells[1].order, 1);
-        assert_eq!(cells[2].order, 2);
     }
 
     // ── shutdown cleanup (SIGTERM/SIGINT stop path) ──────────────────────

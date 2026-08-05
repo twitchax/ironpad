@@ -647,6 +647,62 @@
     return n;
   };
 
+  // ── env host-import table ─────────────────────────────────────────────
+  //
+  // THE single source of truth for the `env` imports a cell's WASM module
+  // may declare. The authoritative Rust side is the `#[link(wasm_import_module
+  // = "env")] extern "C"` blocks in ironpad-cell (lib.rs, sim.rs, gpu.rs,
+  // blocking.rs); this table must list exactly those names.
+  //
+  // Each entry builds the import's JS function EXPRESSION as a string,
+  // parameterized by:
+  //   - g:   an expression evaluating to the executor object;
+  //   - cid: an expression evaluating to the cell id.
+  // Three consumers generate from it: the ESM `import * from 'env'` rewrite,
+  // the `__wbg_get_imports` preamble (older wasm-bindgen fallback), and the
+  // raw-WASM imports object. They used to be three hand-written copies, and
+  // a new import missing from ONE copy failed instantiation only on that
+  // specific loading path — which no test exercises.
+  function _envImportExprs(g, cid) {
+    // The Suspending wrappers are built inline (never via the executor
+    // global): the generated text also evaluates inside rayon sub-workers,
+    // where the executor global is undefined — a build-time dereference
+    // would crash worker init before the thread pool exists.
+    function jspiGuarded(fnExpr) {
+      return (
+        "(typeof WebAssembly.Suspending === 'function') " +
+        "? new WebAssembly.Suspending(" + fnExpr + ") " +
+        ": function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); }"
+      );
+    }
+    return {
+      ironpad_host_message:
+        "function(ptr, len) { if (" + g + ") { " + g + "._dispatchHostMessage(" + cid + ", ptr, len); } }",
+      ironpad_sim_read:
+        "function(ptr, len) { return " + g + " ? " + g + "._simRead(" + cid + ", ptr, len) : 0; }",
+      ironpad_sim_read_all:
+        "function(ptr, len) { return " + g + " ? " + g + "._simReadAll(" + cid + ", ptr, len) : 0; }",
+      ironpad_gpu_available:
+        "function() { return " + g + "._gpuAvailableSync(); }",
+      ironpad_gpu_create_buffer:
+        "function(s, u) { return " + g + "._gpuCreateBuffer(s, u); }",
+      ironpad_gpu_write_buffer:
+        "function(h, p, l) { if (" + g + ") " + g + "._gpuWriteBufferForCell(" + cid + ", h, p, l); }",
+      ironpad_gpu_dispatch_compute:
+        "function(sp, sl, uh, oh, w, h) { return " + g + " ? " + g + "._gpuDispatchComputeForCell(" + cid + ", sp, sl, uh, oh, w, h) : 1; }",
+      ironpad_blocking_sleep_ms: jspiGuarded(
+        "function(ms) { return new Promise(function(res) { setTimeout(res, ms); }); }"
+      ),
+      ironpad_blocking_fetch: jspiGuarded(
+        "function(p, l) { return " + g + "._blockingFetch(" + cid + ", p, l); }"
+      ),
+      ironpad_blocking_fetch_ok:
+        "function() { return " + g + " ? " + g + "._blockingFetchOk(" + cid + ") : 0; }",
+      ironpad_blocking_read:
+        "function(p, l) { return " + g + " ? " + g + "._blockingRead(" + cid + ", p, l) : 0; }",
+    };
+  }
+
   CellExecutor.prototype.loadBlob = async function (cellId, hash, wasmBytes, jsGlue) {
     var existing = this.modules.get(cellId);
     if (existing && existing.hash === hash) {
@@ -674,41 +730,12 @@
 
       // 1) Replace bare `import * as __wbg_starN from 'env'` with an
       //    inline shim so the ESM can load from a blob URL.
-      var hostShimBody =
-        "ironpad_host_message: function(ptr, len) { " +
-        "if (" + globalRef + ") { " +
-        globalRef + "._dispatchHostMessage(" +
-        escapedCellId + ", ptr, len); } }, " +
-        "ironpad_sim_read: function(ptr, len) { " +
-        "return " + globalRef + " ? " + globalRef + "._simRead(" +
-        escapedCellId + ", ptr, len) : 0; }, " +
-        "ironpad_sim_read_all: function(ptr, len) { " +
-        "return " + globalRef + " ? " + globalRef + "._simReadAll(" +
-        escapedCellId + ", ptr, len) : 0; }, " +
-        "ironpad_gpu_available: function() { return " + globalRef + "._gpuAvailableSync(); }, " +
-        "ironpad_gpu_create_buffer: function(s, u) { return " + globalRef + "._gpuCreateBuffer(s, u); }, " +
-        "ironpad_gpu_write_buffer: function(h, p, l) { " +
-        "if (" + globalRef + ") " + globalRef + "._gpuWriteBufferForCell(" +
-        escapedCellId + ", h, p, l); }, " +
-        "ironpad_gpu_dispatch_compute: function(sp, sl, uh, oh, w, h) { " +
-        "return " + globalRef + " ? " + globalRef + "._gpuDispatchComputeForCell(" +
-        escapedCellId + ", sp, sl, uh, oh, w, h) : 1; }, " +
-        // The Suspending wrappers are built inline (never via the executor
-        // global): this shim text also evaluates inside rayon sub-workers,
-        // where the executor global is undefined — any build-time dereference
-        // of it would crash worker init before the thread pool exists.
-        "ironpad_blocking_sleep_ms: (typeof WebAssembly.Suspending === 'function') " +
-        "? new WebAssembly.Suspending(function(ms) { " +
-        "return new Promise(function(res) { setTimeout(res, ms); }); }) " +
-        ": function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); }, " +
-        "ironpad_blocking_fetch: (typeof WebAssembly.Suspending === 'function') " +
-        "? new WebAssembly.Suspending(function(p, l) { " +
-        "return " + globalRef + "._blockingFetch(" + escapedCellId + ", p, l); }) " +
-        ": function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); }, " +
-        "ironpad_blocking_fetch_ok: function() { " +
-        "return " + globalRef + " ? " + globalRef + "._blockingFetchOk(" + escapedCellId + ") : 0; }, " +
-        "ironpad_blocking_read: function(p, l) { " +
-        "return " + globalRef + " ? " + globalRef + "._blockingRead(" + escapedCellId + ", p, l) : 0; }";
+      // Generated from the single env-import table above.
+      var _shimExprs = _envImportExprs(globalRef, escapedCellId);
+      var hostShimBody = Object.keys(_shimExprs)
+        .map(function (k) { return k + ": " + _shimExprs[k]; })
+        .join(", ");
+
       jsGlue = jsGlue.replace(
         /import\s*\*\s*as\s+(\w+)\s+from\s+['"]env['"]\s*;?/g,
         function (_match, starName) {
@@ -816,6 +843,9 @@
       );
 
       // 2) Preamble: wrap __wbg_get_imports (fallback for older wasm-bindgen).
+      // 2) Preamble: wrap __wbg_get_imports (fallback for older
+      //    wasm-bindgen), generated from the same env-import table.
+      var _preambleExprs = _envImportExprs(globalRef, "__ironpad_cell_id");
       var preamble =
         "var __ironpad_cell_id = " + escapedCellId + ";\n" +
         "if (typeof __wbg_get_imports === 'function') {\n" +
@@ -823,44 +853,11 @@
         "  __wbg_get_imports = function(memory) {\n" +
         "    var imports = __ironpad_orig_get_imports(memory);\n" +
         "    if (!imports.env) imports.env = {};\n" +
-        "    imports.env.ironpad_host_message = function(ptr, len) {\n" +
-        "      if (" + globalRef + ") {\n" +
-        "        " + globalRef + "._dispatchHostMessage(__ironpad_cell_id, ptr, len);\n" +
-        "      }\n" +
-        "    };\n" +
-        "    imports.env.ironpad_sim_read = function(ptr, len) {\n" +
-        "      return " + globalRef + " ? " + globalRef + "._simRead(__ironpad_cell_id, ptr, len) : 0;\n" +
-        "    };\n" +
-        "    imports.env.ironpad_sim_read_all = function(ptr, len) {\n" +
-        "      return " + globalRef + " ? " + globalRef + "._simReadAll(__ironpad_cell_id, ptr, len) : 0;\n" +
-        "    };\n" +
-        "    imports.env.ironpad_gpu_available = function() { return " + globalRef + "._gpuAvailableSync(); };\n" +
-        "    imports.env.ironpad_gpu_create_buffer = function(s, u) { return " + globalRef + "._gpuCreateBuffer(s, u); };\n" +
-        "    imports.env.ironpad_gpu_write_buffer = function(h, p, l) {\n" +
-        "      if (" + globalRef + ") " + globalRef + "._gpuWriteBufferForCell(__ironpad_cell_id, h, p, l);\n" +
-        "    };\n" +
-        "    imports.env.ironpad_gpu_dispatch_compute = function(sp, sl, uh, oh, w, h) {\n" +
-        "      return " + globalRef + " ? " + globalRef + "._gpuDispatchComputeForCell(__ironpad_cell_id, sp, sl, uh, oh, w, h) : 1;\n" +
-        "    };\n" +
-        // Inline Suspending construction, NOT via the executor global: this
-        // preamble also runs inside rayon sub-workers where that global is
-        // undefined, and a build-time dereference would crash worker init.
-        "    imports.env.ironpad_blocking_sleep_ms = (typeof WebAssembly.Suspending === 'function')\n" +
-        "      ? new WebAssembly.Suspending(function(ms) {\n" +
-        "          return new Promise(function(res) { setTimeout(res, ms); });\n" +
-        "        })\n" +
-        "      : function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); };\n" +
-        "    imports.env.ironpad_blocking_fetch = (typeof WebAssembly.Suspending === 'function')\n" +
-        "      ? new WebAssembly.Suspending(function(p, l) {\n" +
-        "          return " + globalRef + "._blockingFetch(__ironpad_cell_id, p, l);\n" +
-        "        })\n" +
-        "      : function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); };\n" +
-        "    imports.env.ironpad_blocking_fetch_ok = function() {\n" +
-        "      return " + globalRef + " ? " + globalRef + "._blockingFetchOk(__ironpad_cell_id) : 0;\n" +
-        "    };\n" +
-        "    imports.env.ironpad_blocking_read = function(p, l) {\n" +
-        "      return " + globalRef + " ? " + globalRef + "._blockingRead(__ironpad_cell_id, p, l) : 0;\n" +
-        "    };\n" +
+        Object.keys(_preambleExprs)
+          .map(function (k) {
+            return "    imports.env." + k + " = " + _preambleExprs[k] + ";\n";
+          })
+          .join("") +
         "    return imports;\n" +
         "  };\n" +
         "}\n";
@@ -911,44 +908,22 @@
       // ── Legacy raw WASM path ─────────────────────────────────────────
       var rawCellId = cellId;
       var rawSelf = this;
+      // Materialize the SAME generated env-import table as live closures:
+      // `new Function` receives rawSelf/rawCellId as parameters, so the
+      // expressions close over the live executor exactly as the previous
+      // hand-written object did (prototype methods delegate to the free
+      // gpu helpers, and the inline Suspending guard matches _jspiImport).
+      var _rawExprs = _envImportExprs("rawSelf", "rawCellId");
+      var _rawBody = Object.keys(_rawExprs)
+        .map(function (k) { return k + ": " + _rawExprs[k]; })
+        .join(", ");
+      /* eslint-disable-next-line no-new-func */
       var imports = {
-        env: {
-          ironpad_host_message: function (ptr, len) {
-            rawSelf._dispatchHostMessage(rawCellId, ptr, len);
-          },
-          ironpad_sim_read: function (ptr, len) {
-            return rawSelf._simRead(rawCellId, ptr, len);
-          },
-          ironpad_sim_read_all: function (ptr, len) {
-            return rawSelf._simReadAll(rawCellId, ptr, len);
-          },
-          ironpad_gpu_available: function () {
-            return _gpuAvailableSync();
-          },
-          ironpad_gpu_create_buffer: function (size, usage) {
-            return _gpuCreateBuffer(size, usage);
-          },
-          ironpad_gpu_write_buffer: function (handle, ptr, len) {
-            rawSelf._gpuWriteBufferForCell(rawCellId, handle, ptr, len);
-          },
-          ironpad_gpu_dispatch_compute: function (sp, sl, uh, oh, w, h) {
-            return rawSelf._gpuDispatchComputeForCell(rawCellId, sp, sl, uh, oh, w, h);
-          },
-          ironpad_blocking_sleep_ms: rawSelf._jspiImport(function (ms) {
-            return new Promise(function (res) {
-              setTimeout(res, ms);
-            });
-          }),
-          ironpad_blocking_fetch: rawSelf._jspiImport(function (ptr, len) {
-            return rawSelf._blockingFetch(rawCellId, ptr, len);
-          }),
-          ironpad_blocking_fetch_ok: function () {
-            return rawSelf._blockingFetchOk(rawCellId);
-          },
-          ironpad_blocking_read: function (ptr, len) {
-            return rawSelf._blockingRead(rawCellId, ptr, len);
-          },
-        },
+        env: new Function(
+          "rawSelf",
+          "rawCellId",
+          "return {" + _rawBody + "};"
+        )(rawSelf, rawCellId),
       };
       var result = await WebAssembly.instantiate(wasmBytes, imports);
       this.modules.set(cellId, {

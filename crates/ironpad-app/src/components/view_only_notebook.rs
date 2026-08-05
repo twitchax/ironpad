@@ -643,27 +643,12 @@ fn ViewOnlyCodeCell(
                 let cells = all_cells.get_value();
                 let my_idx = cells.iter().position(|c| c.id == cell_data.id).unwrap_or(0);
 
-                // Compute previous cell types and serialized input bytes.
+                // Positional piping slots + type tags — the one shared
+                // recipe (`assemble_cell_inputs`), identical to the editor's,
+                // so cache identity cannot fork between the two surfaces.
                 let outputs = cell_outputs.get_untracked();
-                let mut all_output_bytes: Vec<&[u8]> = Vec::new();
-                let mut types: Vec<String> = Vec::new();
-
-                for c in &cells[..my_idx] {
-                    if c.cell_type == CellType::Code {
-                        if let Some(data) = outputs.get(&c.id) {
-                            all_output_bytes.push(&data.bytes);
-                            types.push(data.type_tag.clone().unwrap_or_default());
-                        } else {
-                            all_output_bytes.push(&[]);
-                            types.push(String::new());
-                        }
-                    } else {
-                        all_output_bytes.push(&[]);
-                        types.push(String::new());
-                    }
-                }
-
-                let input_buf = crate::components::executor::encode_cell_inputs(&all_output_bytes);
+                let (input_buf, types) =
+                    crate::components::executor::assemble_cell_inputs(&cells, my_idx, &outputs);
 
                 let request = CompileRequest {
                     notebook_id: stored_notebook_id.get_value(),
@@ -705,22 +690,17 @@ fn ViewOnlyCodeCell(
                     }
                 }
 
-                // Local blob store (PRD-0047): cache mode probes IndexedDB
-                // before paying the wire. The hash is computed in Fresh mode
-                // too (so the fresh server result can overwrite the entry),
-                // but not when the snapshot already served the blob — that
-                // path stores nothing, and skipping keeps a snapshot replay
-                // free of even the fingerprint round trip.
+                // Local blob store (PRD-0047): the shared probe policy —
+                // skipped entirely when the share snapshot already served
+                // the blob, which keeps a snapshot replay free of even the
+                // fingerprint round trip.
                 let request_hash = if snapshot_response.is_some() {
                     None
                 } else {
-                    crate::blob_cache::request_hash(&request).await
+                    let (hash, local_hit) = crate::blob_cache::probe_local(&request).await;
+                    snapshot_response = local_hit;
+                    hash
                 };
-                if !force && snapshot_response.is_none() {
-                    if let Some(hash) = &request_hash {
-                        snapshot_response = crate::blob_cache::try_local_hit(hash).await;
-                    }
-                }
                 let served_without_server = snapshot_response.is_some();
 
                 // Compile requests are idempotent (cache-keyed server-side), so
@@ -757,15 +737,13 @@ fn ViewOnlyCodeCell(
                                 .collect();
                             error_message.set(Some(errors.join("\n")));
                         } else {
-                            // Persist server results locally (PRD-0047). Runs
-                            // for Fresh compiles too — that overwrite is what
-                            // makes flipping back to cache serve the fresh
-                            // blob.
-                            if !served_without_server {
-                                if let Some(request_hash) = &request_hash {
-                                    crate::blob_cache::store_local(request_hash, &response).await;
-                                }
-                            }
+                            // Persist server results locally (PRD-0047).
+                            crate::blob_cache::store_unless_served(
+                                served_without_server,
+                                request_hash.as_deref(),
+                                &response,
+                            )
+                            .await;
                             let hash =
                                 crate::components::executor::hash_wasm_blob(&response.wasm_blob);
                             match crate::components::executor::load_blob(
@@ -1031,7 +1009,7 @@ fn ViewOnlyOutput(
         cells: Signal::derive(move || {
             all_cells
                 .iter()
-                .map(|c| (c.id.clone(), c.cell_type.clone()))
+                .map(|c| (c.id.clone(), c.is_runnable()))
                 .collect()
         }),
         cell_stale: None,

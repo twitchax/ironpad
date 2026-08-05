@@ -151,7 +151,10 @@ async fn main() {
             interval.tick().await; // consume the immediate first tick
             loop {
                 interval.tick().await;
-                let removed = ws.sessions.sweep_expired().await;
+                // Sweep AND disconnect: guests authorize against
+                // connect-time permissions, so dropping only the session
+                // record would leave an active agent mutating forever.
+                let removed = ws.sweep_expired_sessions().await;
                 if removed > 0 {
                     tracing::debug!(removed, "swept expired sessions");
                 }

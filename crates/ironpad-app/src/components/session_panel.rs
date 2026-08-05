@@ -122,7 +122,7 @@ fn SessionPanel(on_close: impl Fn() + 'static + Clone) -> impl IntoView {
             // ── CLI one-liner ────────────────────────────────────────────
             {move || {
                 session.token.get().map(|token| {
-                    let cmd = format!("ironpad-cli connect --token {token}");
+                    let cmd = cli_command(&ws_origin(), &token);
                     view! {
                         <div class="ironpad-session-cli-section">
                             <label class="ironpad-session-label">"CLI command"</label>
@@ -207,6 +207,41 @@ fn end_session_flow() {
     }
 }
 
+// ── CLI command helpers ─────────────────────────────────────────────────────
+
+/// The copy-paste daemon invocation shown in the panel. Must match the real
+/// clap surface in `ironpad-cli` (`--host`/`--token` are global flags,
+/// `daemon` is the subcommand — there IS no `connect`); this string shipped
+/// wrong once and the one command the UI taught failed on paste.
+fn cli_command(ws_host: &str, token: &str) -> String {
+    format!("ironpad-cli --host {ws_host} --token {token} daemon")
+}
+
+/// The current page's origin as a WebSocket URL (`wss://` under TLS).
+fn ws_origin() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let location = web_sys::window().map(|w| w.location());
+        let protocol = location
+            .as_ref()
+            .and_then(|l| l.protocol().ok())
+            .unwrap_or_default();
+        let host = location
+            .as_ref()
+            .and_then(|l| l.host().ok())
+            .unwrap_or_default();
+        ws_origin_from(&protocol, &host)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    ws_origin_from("http:", "localhost:3111")
+}
+
+/// Map an `http(s):` page protocol + host to the matching WS origin.
+fn ws_origin_from(protocol: &str, host: &str) -> String {
+    let scheme = if protocol == "https:" { "wss" } else { "ws" };
+    format!("{scheme}://{host}")
+}
+
 // ── Clipboard helper ────────────────────────────────────────────────────────
 
 #[cfg(feature = "hydrate")]
@@ -214,5 +249,35 @@ fn copy_to_clipboard(text: &str) {
     if let Some(window) = web_sys::window() {
         let clipboard = window.navigator().clipboard();
         let _ = clipboard.write_text(text);
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_command_matches_the_real_clap_surface() {
+        let cmd = cli_command("wss://ironpad.twitchax.com", "deadbeef");
+        assert_eq!(
+            cmd,
+            "ironpad-cli --host wss://ironpad.twitchax.com --token deadbeef daemon"
+        );
+        // The subcommand that never existed must never come back.
+        assert!(!cmd.contains("connect"));
+    }
+
+    #[test]
+    fn ws_origin_tracks_the_page_protocol() {
+        assert_eq!(
+            ws_origin_from("https:", "ironpad.twitchax.com"),
+            "wss://ironpad.twitchax.com"
+        );
+        assert_eq!(
+            ws_origin_from("http:", "localhost:3111"),
+            "ws://localhost:3111"
+        );
     }
 }

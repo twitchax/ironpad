@@ -15,7 +15,6 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use ironpad_common::CellType;
 use leptos::prelude::*;
 
 use crate::components::animation_canvas::{AnimationCanvas, SimSliderMeta, SimulationCanvas};
@@ -185,9 +184,13 @@ pub(crate) struct WidgetSink {
     pub(crate) cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     /// Run-all queue; the button widget pushes downstream cell IDs here.
     pub(crate) run_all_queue: RwSignal<Vec<String>>,
-    /// Ordered `(id, cell_type)` for every cell, used to find strictly-downstream
-    /// Code cells (button widget) and to mark them stale.
-    pub(crate) cells: Signal<Vec<(String, CellType)>>,
+    /// Ordered `(id, runnable)` for every cell, used to find strictly-
+    /// downstream runnable cells (button widget) and to mark them stale.
+    /// Carrying runnability — not the raw `CellType` — is deliberate: a
+    /// shared cell IS `CellType::Code` but must never enter the run queue
+    /// (the editor's queue watcher skips them; the read-only viewer has no
+    /// such recovery, and a queued shared cell stalled its queue forever).
+    pub(crate) cells: Signal<Vec<(String, bool)>>,
     /// When `Some`, a value change marks downstream Code cells stale (editor
     /// reactive mode). `None` in the read-only viewer.
     pub(crate) cell_stale: Option<RwSignal<HashMap<String, bool>>>,
@@ -213,14 +216,24 @@ fn update_cell_output(new_bytes: Vec<u8>, cell_id: Option<&str>, sink: Option<Wi
         return;
     };
     let cells = sink.cells.get_untracked();
-    let my_idx = cells.iter().position(|(id, _)| id == cid).unwrap_or(0);
     cell_stale.update(|map| {
-        for (id, cell_type) in cells.iter().skip(my_idx + 1) {
-            if *cell_type == CellType::Code {
-                map.insert(id.clone(), true);
-            }
+        for id in downstream_runnable(&cells, cid) {
+            map.insert(id, true);
         }
     });
+}
+
+/// Strictly-downstream runnable cells of `cell_id`, in notebook order — what
+/// the button widget enqueues and a widget value-change marks stale.
+fn downstream_runnable(cells: &[(String, bool)], cell_id: &str) -> Vec<String> {
+    let Some(my_idx) = cells.iter().position(|(id, _)| id == cell_id) else {
+        return Vec::new();
+    };
+    cells[my_idx + 1..]
+        .iter()
+        .filter(|(_, runnable)| *runnable)
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 // ── Display panel rendering ──────────────────────────────────────────────────
@@ -893,15 +906,9 @@ fn render_button(
             let Some(sink) = sink else { return };
 
             let all_cells = sink.cells.get_untracked();
-            if let Some(my_idx) = all_cells.iter().position(|(id, _)| id == cid) {
-                let downstream: Vec<String> = all_cells[my_idx + 1..]
-                    .iter()
-                    .filter(|(_, cell_type)| *cell_type == CellType::Code)
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                if !downstream.is_empty() {
-                    sink.run_all_queue.set(downstream);
-                }
+            let downstream = downstream_runnable(&all_cells, cid);
+            if !downstream.is_empty() {
+                sink.run_all_queue.set(downstream);
             }
         }
     };
@@ -1013,5 +1020,29 @@ mod tests {
         let panels: Vec<DisplayPanel> = serde_json::from_str(json).unwrap();
         assert_eq!(panels.len(), 1);
         assert!(matches!(panels[0], DisplayPanel::Text(ref t) if t == "hello"));
+    }
+
+    #[test]
+    fn downstream_runnable_skips_shared_and_markdown_cells() {
+        // (id, runnable) as the sink constructors compute it via
+        // CellManifest::is_runnable: markdown and shared cells are false.
+        let cells = vec![
+            ("button".to_string(), true),
+            ("md".to_string(), false),
+            ("code1".to_string(), true),
+            ("shared".to_string(), false),
+            ("code2".to_string(), true),
+        ];
+        // Regression: the shared cell used to be enqueued (it IS
+        // CellType::Code), and the read-only viewer's queue — which has no
+        // skip-and-advance watcher — stalled on it forever.
+        assert_eq!(
+            downstream_runnable(&cells, "button"),
+            vec!["code1".to_string(), "code2".to_string()]
+        );
+        // Strictly downstream: the origin cell itself is excluded.
+        assert_eq!(downstream_runnable(&cells, "code2"), Vec::<String>::new());
+        // An unknown origin enqueues nothing (not everything).
+        assert_eq!(downstream_runnable(&cells, "gone"), Vec::<String>::new());
     }
 }

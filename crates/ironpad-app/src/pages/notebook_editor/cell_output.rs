@@ -135,7 +135,7 @@ pub(super) fn CellOutputPanel(
                     cells
                         .get()
                         .iter()
-                        .map(|c| (c.id.clone(), c.cell_type.clone()))
+                        .map(|c| (c.id.clone(), c.is_runnable()))
                         .collect()
                 }),
                 cell_stale: Some(cell_stale),

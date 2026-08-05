@@ -356,6 +356,31 @@ impl WsState {
         // send tasks to exit and the WebSocket connections to close.
     }
 
+    /// Sweep expired sessions AND disconnect their guests.
+    ///
+    /// The disconnect half is the enforcement: a guest's permissions are
+    /// checked against the value captured at connect time and never
+    /// re-validated, and its idle timer resets on every inbound frame — so
+    /// an active agent on an expired session would keep mutating forever if
+    /// the sweep only dropped the session record. Returns how many sessions
+    /// were swept.
+    pub async fn sweep_expired_sessions(&self) -> usize {
+        let removed = self.sessions.sweep_expired().await;
+        for session_id in &removed {
+            let close_msg = crate::ws::wire_msg(
+                "",
+                ironpad_common::protocol::MessageKind::Control(
+                    ironpad_common::protocol::ControlMessage::SessionEnded {
+                        session_id: session_id.clone(),
+                    },
+                ),
+            );
+            self.broadcast_to_guests(session_id, &close_msg).await;
+            self.disconnect_guests(session_id).await;
+        }
+        removed.len()
+    }
+
     // ── Query tracking ──────────────────────────────────────────────────
 
     /// Track a pending query so the response can be routed back.
@@ -782,6 +807,38 @@ mod tests {
     async fn send_to_guest_returns_false_for_unknown() {
         let ws = WsState::default();
         assert!(!ws.send_to_guest("no-such-client", "msg").await);
+    }
+
+    #[tokio::test]
+    async fn sweeping_an_expired_session_notifies_and_disconnects_its_guests() {
+        use ironpad_common::protocol::{ControlMessage, MessageKind, Permissions};
+
+        let ws = WsState::default();
+        let created = ws
+            .sessions
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+        let (tx, mut rx) = mpsc::channel(64);
+        ws.register_guest(&created.session_id, "agent-1", tx).await;
+
+        // Fresh session: the sweep leaves the guest alone.
+        assert_eq!(ws.sweep_expired_sessions().await, 0);
+        assert!(ws.guests.read().await.contains_key(&created.session_id));
+
+        // Expired: the guest learns the session ended, then its channel dies
+        // (which is what closes the WebSocket) — without this, an active
+        // agent's connect-time permissions outlived the session forever.
+        assert!(ws.sessions.expire_session(&created.session_id).await);
+        assert_eq!(ws.sweep_expired_sessions().await, 1);
+
+        let ended = rx.recv().await.expect("guest gets a SessionEnded");
+        let msg: ironpad_common::protocol::Message = serde_json::from_str(&ended).unwrap();
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Control(ControlMessage::SessionEnded { session_id }) if session_id == created.session_id
+        ));
+        assert!(rx.recv().await.is_none(), "channel closes after the notice");
+        assert!(!ws.guests.read().await.contains_key(&created.session_id));
     }
 
     #[tokio::test]

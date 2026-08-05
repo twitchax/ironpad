@@ -198,13 +198,24 @@ impl SessionStore {
             .collect()
     }
 
-    /// Remove expired sessions. Call periodically to prevent unbounded growth.
-    pub async fn sweep_expired(&self) -> usize {
+    /// Remove expired sessions, returning their ids so the caller can also
+    /// disconnect their guests. Call periodically to prevent unbounded
+    /// growth — and to actually END expired sessions: permissions are
+    /// checked against the value captured at connect time, so a
+    /// still-connected guest outlives its session unless someone drops it
+    /// (see [`WsState::sweep_expired_sessions`](crate::state::WsState)).
+    pub async fn sweep_expired(&self) -> Vec<String> {
         let mut sessions = self.sessions.write().await;
         let now = Utc::now();
-        let before = sessions.len();
-        sessions.retain(|_, s| s.expires_at > now);
-        before - sessions.len()
+        let mut swept = Vec::new();
+        sessions.retain(|id, s| {
+            let keep = s.expires_at > now;
+            if !keep {
+                swept.push(id.clone());
+            }
+            keep
+        });
+        swept
     }
 }
 
@@ -441,7 +452,7 @@ mod tests {
         }
 
         let swept = store.sweep_expired().await;
-        assert_eq!(swept, 1);
+        assert_eq!(swept, vec![r1.session_id]);
 
         // One session should remain.
         let sessions = store.sessions.read().await;

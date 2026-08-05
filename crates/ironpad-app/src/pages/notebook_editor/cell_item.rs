@@ -555,40 +555,14 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             }
         }
 
-        // Collect previous cell outputs for the I/O pipeline.
-        // All cells are included so that cellN indices match absolute notebook position.
-        // Markdown cells get empty bytes/type so the scaffold filters them out.
+        // Collect previous cell outputs for the I/O pipeline — the one
+        // shared recipe (`assemble_cell_inputs`): positional slots, empty
+        // for markdown/unexecuted, types feeding the cache key.
         let (input_bytes, previous_cell_types) = {
             let cells = state.cells.get_untracked();
             let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
             let outputs = state.cell_outputs.get_untracked();
-
-            if my_idx == 0 {
-                (vec![], vec![])
-            } else {
-                let mut all_outputs: Vec<&[u8]> = Vec::new();
-                let mut types: Vec<String> = Vec::new();
-
-                for c in &cells[..my_idx] {
-                    if c.cell_type == CellType::Code {
-                        if let Some(data) = outputs.get(&c.id) {
-                            all_outputs.push(&data.bytes);
-                            types.push(data.type_tag.clone().unwrap_or_default());
-                        } else {
-                            all_outputs.push(&[]);
-                            types.push(String::new());
-                        }
-                    } else {
-                        all_outputs.push(&[]);
-                        types.push(String::new());
-                    }
-                }
-
-                (
-                    crate::components::executor::encode_cell_inputs(&all_outputs),
-                    types,
-                )
-            }
+            crate::components::executor::assemble_cell_inputs(&cells, my_idx, &outputs)
         };
 
         // Used inside #[cfg(feature = "hydrate")] below.
@@ -664,14 +638,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             // the fresh result overwrites the local entry below.
             #[cfg(feature = "hydrate")]
             let (result, served_locally, request_hash) = {
-                let request_hash = crate::blob_cache::request_hash(&request).await;
-                let local_hit = if request.force {
-                    None
-                } else if let Some(hash) = &request_hash {
-                    crate::blob_cache::try_local_hit(hash).await
-                } else {
-                    None
-                };
+                let (request_hash, local_hit) = crate::blob_cache::probe_local(&request).await;
                 let served_locally = local_hit.is_some();
                 let result = match local_hit {
                     Some(response) => Ok(response),
@@ -728,15 +695,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
                             cell_status.set(CellStatus::Running);
 
-                            // Persist server results locally (PRD-0047). Runs
-                            // for Fresh compiles too — that overwrite is what
-                            // makes flipping back to cache serve the fresh
-                            // blob.
-                            if !served_locally {
-                                if let Some(request_hash) = &request_hash {
-                                    crate::blob_cache::store_local(request_hash, &response).await;
-                                }
-                            }
+                            // Persist server results locally (PRD-0047).
+                            crate::blob_cache::store_unless_served(
+                                served_locally,
+                                request_hash.as_deref(),
+                                &response,
+                            )
+                            .await;
 
                             let blob = response.wasm_blob.clone();
                             let js_glue = response.js_glue.clone();

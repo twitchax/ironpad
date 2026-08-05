@@ -17,15 +17,12 @@ use axum::response::{AppendHeaders, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
 
-use ironpad_app::auth::SESSION_COOKIE;
+use ironpad_app::auth::{clear_session_cookie, session_cookie, SESSION_COOKIE};
 use ironpad_app::db::Db;
 
 /// Short-lived CSRF nonce cookie for the OAuth round trip. Scoped to `/auth`
 /// so it never rides along on normal page requests.
 const OAUTH_STATE_COOKIE: &str = "ironpad_oauth_state";
-
-/// Session cookie lifetime, mirrored from the DB-side TTL.
-const SESSION_COOKIE_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 
 // ── State ───────────────────────────────────────────────────────────────────
 
@@ -318,18 +315,10 @@ fn safe_redirect_path(path: Option<&str>) -> String {
     }
 }
 
-/// The session cookie. `Secure` is safe on localhost too — every modern
-/// browser treats it as a trustworthy origin.
-fn session_cookie(token: &str) -> String {
-    format!(
-        "{SESSION_COOKIE}={token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE_SECS}; \
-         HttpOnly; Secure; SameSite=Lax"
-    )
-}
-
-fn clear_session_cookie() -> String {
-    format!("{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
-}
+// The session cookie itself (mint/clear) lives in `ironpad_app::auth` — one
+// definition shared with the sliding-expiry re-issue path in `current_user`.
+// `Secure` is safe on localhost too: every modern browser treats it as a
+// trustworthy origin.
 
 fn oauth_state_cookie(nonce: &str, max_age_secs: u32) -> String {
     format!(
@@ -448,7 +437,7 @@ mod tests {
             .split(';')
             .next()
             .unwrap();
-        let user = state.db.session_user(token).await.unwrap().unwrap();
+        let (user, _) = state.db.session_user(token).await.unwrap().unwrap();
         assert_eq!(user.login, "alice");
         assert_eq!(user.github_id, "test-alice");
 

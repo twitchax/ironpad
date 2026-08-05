@@ -57,7 +57,27 @@ async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bool) -
     let input_path = work_dir.join(format!("opt-{stem}.pre.wasm"));
     let output_path = work_dir.join(format!("opt-{stem}.post.wasm"));
 
-    tokio::fs::write(&input_path, wasm_bytes).await?;
+    let result = run_wasm_opt(wasm_bytes, &input_path, &output_path, needs_atomics).await;
+
+    // Clean up on EVERY path (best-effort): the work dir is persistent and
+    // shared, and failure paths used to leak both temp blobs per failed
+    // optimization — an unbounded disk drip on a box where wasm-opt is
+    // broken or the input is pathological.
+    let _ = tokio::fs::remove_file(&input_path).await;
+    let _ = tokio::fs::remove_file(&output_path).await;
+
+    result
+}
+
+/// The fallible middle of [`try_optimize`], separated so its `?` returns all
+/// funnel through the caller's temp-file cleanup.
+async fn run_wasm_opt(
+    wasm_bytes: &[u8],
+    input_path: &Path,
+    output_path: &Path,
+    needs_atomics: bool,
+) -> Result<Vec<u8>> {
+    tokio::fs::write(input_path, wasm_bytes).await?;
 
     let mut cmd = Command::new("wasm-opt");
     cmd.arg("-O3").arg("--debuginfo");
@@ -66,13 +86,19 @@ async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bool) -
         cmd.arg("--enable-threads");
     }
 
-    cmd.arg(&input_path)
+    cmd.arg(input_path)
         .arg("-o")
-        .arg(&output_path)
+        .arg(output_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = run_with_timeout(cmd, WASM_OPT_TIMEOUT).await?;
+    // Shared group-kill discipline with the build/check paths (wasm-opt
+    // spawns no children today, but the tree dies either way).
+    let output = super::build::run_group_with_timeout(cmd, WASM_OPT_TIMEOUT)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!("wasm-opt timed out after {}s", WASM_OPT_TIMEOUT.as_secs())
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -80,49 +106,7 @@ async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bool) -
         anyhow::bail!("wasm-opt failed: {stderr}");
     }
 
-    let optimized = tokio::fs::read(&output_path).await?;
-
-    // Clean up temp files (best-effort).
-    let _ = tokio::fs::remove_file(&input_path).await;
-    let _ = tokio::fs::remove_file(&output_path).await;
-
-    Ok(optimized)
-}
-
-/// Run `cmd` to completion under a hard timeout, killing the whole process group
-/// if it exceeds it.
-///
-/// Mirrors the kill discipline in [`super::build::build_micro_crate`]: the child
-/// leads its own process group so a timeout can `killpg` the entire tree in one
-/// signal (`wasm-opt` spawns no children today, but this is robust if that ever
-/// changes), and `kill_on_drop` is a backstop if the future is dropped.
-async fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    // Run as its own process-group leader so a timeout kills the whole tree.
-    #[cfg(unix)]
-    cmd.process_group(0);
-    // Backstop: if the future is dropped, kill at least the direct child.
-    cmd.kill_on_drop(true);
-
-    let program = cmd.as_std().get_program().to_string_lossy().to_string();
-    let child = cmd
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("failed to spawn {program}: {e}"))?;
-    let child_pid = child.id();
-
-    let Ok(result) = tokio::time::timeout(timeout, child.wait_with_output()).await else {
-        // Timed out: kill the whole process group. The negated pgid equals the
-        // child's pid because we made it the group leader; SIGKILL can't be
-        // caught, so the tree dies.
-        #[cfg(unix)]
-        if let Some(pid) = child_pid.and_then(|p| i32::try_from(p).ok()) {
-            // SAFETY: kill(2) with a negative pid signals the process group.
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        }
-        anyhow::bail!("{program} timed out after {}s", timeout.as_secs());
-    };
-    result.map_err(|e| anyhow::anyhow!("{program} failed: {e}"))
+    Ok(tokio::fs::read(output_path).await?)
 }
 
 #[cfg(test)]
@@ -144,15 +128,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_with_timeout_kills_overlong_process() {
-        // A 30s sleep under a 200ms budget must be killed, not waited out.
+    async fn failure_paths_leave_no_temp_files_behind() {
+        // wasm-opt on garbage bytes fails (or wasm-opt is missing entirely);
+        // either way the shared work dir must come back empty — failure
+        // paths used to leak both temp blobs.
+        let dir = tempdir().unwrap();
+        let _ = optimize_wasm(b"not-a-real-wasm-file", dir.path(), false).await;
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(leftovers.is_empty(), "temp files leaked: {leftovers:?}");
+    }
+
+    #[tokio::test]
+    async fn run_group_timeout_kills_overlong_process() {
+        // A 30s sleep under a 200ms budget must be killed, not waited out
+        // (the shared helper's own tests cover grandchildren).
         let mut cmd = Command::new("sleep");
         cmd.arg("30");
 
         let start = Instant::now();
-        let result = run_with_timeout(cmd, Duration::from_millis(200)).await;
+        let result = crate::compiler::build::run_group_with_timeout(cmd, Duration::from_millis(200))
+            .await
+            .unwrap();
 
-        assert!(result.is_err(), "an over-budget process must time out");
+        assert!(result.is_none(), "an over-budget process must time out");
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "the child must be killed promptly, not waited out ({:?})",

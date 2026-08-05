@@ -19,7 +19,7 @@ use surrealdb::Surreal;
 // ── Constants ───────────────────────────────────────────────────────────────
 
 /// Sliding session lifetime.
-const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+pub(crate) const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// Renew a session at most this often: `session_user` bumps `expires_at` only
 /// once the session has aged past this, so validation is not a write per
@@ -207,9 +207,13 @@ impl Db {
 
     /// Resolve a session token to its user, or `None` for unknown/expired
     /// tokens. Slides the expiry (at most once per
-    /// [`SESSION_RENEW_AFTER_SECS`]).
+    /// [`SESSION_RENEW_AFTER_SECS`]), and reports whether it did: a renewal
+    /// means the session COOKIE must be re-issued with a fresh `Max-Age`
+    /// too, or the browser deletes it 30 days after login while the DB row
+    /// slides forever — the "sliding" expiry never actually slid for the
+    /// user (the caller side is `crate::auth::current_user`).
     #[tracing::instrument(name = "db_session_user", level = "debug", skip_all)]
-    pub async fn session_user(&self, token: &str) -> Result<Option<AuthUser>> {
+    pub async fn session_user(&self, token: &str) -> Result<Option<(AuthUser, bool)>> {
         #[derive(SurrealValue)]
         struct Row {
             github_id: String,
@@ -246,7 +250,8 @@ impl Db {
             return Ok(None);
         }
 
-        if row.expires_at - now < SESSION_TTL_SECS - SESSION_RENEW_AFTER_SECS {
+        let renewed = row.expires_at - now < SESSION_TTL_SECS - SESSION_RENEW_AFTER_SECS;
+        if renewed {
             self.inner
                 .query("UPDATE type::record('session', $key) SET expires_at = $exp")
                 .bind(("key", key))
@@ -257,11 +262,14 @@ impl Db {
                 .context("session renewal returned an error")?;
         }
 
-        Ok(Some(AuthUser {
-            github_id: row.github_id,
-            login: row.login,
-            avatar_url: row.avatar_url,
-        }))
+        Ok(Some((
+            AuthUser {
+                github_id: row.github_id,
+                login: row.login,
+                avatar_url: row.avatar_url,
+            },
+            renewed,
+        )))
     }
 
     /// Delete a session (logout). Unknown tokens are a no-op.
@@ -674,7 +682,7 @@ mod tests {
         let token = db.create_session("42").await.unwrap();
         assert_eq!(token.len(), 64, "32 random bytes as hex");
 
-        let user = db
+        let (user, renewed) = db
             .session_user(&token)
             .await
             .unwrap()
@@ -682,12 +690,40 @@ mod tests {
         assert_eq!(user.github_id, "42");
         assert_eq!(user.login, "octocat");
         assert_eq!(user.avatar_url, "https://example.com/a.png");
+        assert!(!renewed, "a fresh session must not renew immediately");
 
         // A bogus token resolves to nobody.
         assert!(db.session_user(&random_token()).await.unwrap().is_none());
 
         db.delete_session(&token).await.unwrap();
         assert!(db.session_user(&token).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn session_renewal_slides_and_reports_exactly_when_it_happens() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("9", "renewer", "").await.unwrap();
+        let token = db.create_session("9").await.unwrap();
+
+        // Age the session just past the renewal threshold (nowhere near
+        // expiry): the next lookup must slide it AND say so, because the
+        // caller re-issues the cookie's Max-Age off that flag.
+        db.inner
+            .query("UPDATE session SET expires_at = $exp")
+            .bind((
+                "exp",
+                now_secs() + SESSION_TTL_SECS - SESSION_RENEW_AFTER_SECS - 60,
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        let (_, renewed) = db.session_user(&token).await.unwrap().unwrap();
+        assert!(renewed, "an aged session slides");
+        // The slide is throttled: the immediately-following lookup is fresh.
+        let (_, renewed) = db.session_user(&token).await.unwrap().unwrap();
+        assert!(!renewed, "renewal happens at most once per threshold");
     }
 
     #[tokio::test]
@@ -702,7 +738,7 @@ mod tests {
             .unwrap();
 
         let token = db.create_session("7").await.unwrap();
-        let user = db.session_user(&token).await.unwrap().unwrap();
+        let (user, _) = db.session_user(&token).await.unwrap().unwrap();
         assert_eq!(user.login, "new-login");
         assert_eq!(user.avatar_url, "https://a/2.png");
     }

@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use ironpad_common::notebook_ops;
 use ironpad_common::protocol::*;
 use ironpad_common::{CellManifest, CellType, IronpadCell, IronpadNotebook};
 use leptos::prelude::*;
@@ -346,20 +347,9 @@ impl NotebookModel {
 
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
-
-            if let Some(ref after_id) = after_cell_id {
-                if let Some(idx) = nb.cells.iter().position(|c| c.id == *after_id) {
-                    nb.cells.insert(idx + 1, cell.clone());
-                } else {
-                    nb.cells.push(cell.clone());
-                }
-            } else {
-                // No after_cell_id → insert at beginning (matches existing UI behavior:
-                // the top "Add Cell" button passes None).
-                nb.cells.insert(0, cell.clone());
-            }
-
-            renumber(&mut nb.cells);
+            // Shared insert semantics (after / append-on-missing / top for
+            // None) — one definition with the daemon's event applier.
+            notebook_ops::insert_cell(&mut nb.cells, cell.clone(), after_cell_id.as_deref());
         });
 
         self.cell_versions.update(|v| {
@@ -433,25 +423,17 @@ impl NotebookModel {
             let Some(cell) = nb.cells.iter_mut().find(|c| c.id == cell_id) else {
                 return;
             };
-            if let Some(ref src) = source {
-                cell.source.clone_from(src);
+            // Shared per-field application — one definition with the
+            // daemon's event applier.
+            notebook_ops::CellPatch {
+                source: source.as_ref(),
+                cargo_toml: cargo_toml.as_ref(),
+                label: label.as_ref(),
+                shared,
+                collapsed,
+                output_collapsed,
             }
-            if let Some(ref ct) = cargo_toml {
-                cell.cargo_toml.clone_from(ct);
-            }
-            if let Some(ref lbl) = label {
-                cell.label.clone_from(lbl);
-            }
-            if let Some(sh) = shared {
-                cell.shared = sh;
-            }
-            if let Some(c) = collapsed {
-                cell.collapsed = c;
-            }
-            if let Some(oc) = output_collapsed {
-                cell.output_collapsed = oc;
-            }
-            cell.version = new_version;
+            .apply_to(cell, new_version);
         });
 
         self.cell_versions.update(|v| {
@@ -506,8 +488,7 @@ impl NotebookModel {
 
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
-            nb.cells.retain(|c| c.id != cell_id);
-            renumber(&mut nb.cells);
+            notebook_ops::delete_cell(&mut nb.cells, &cell_id);
         });
 
         self.cell_versions.update(|v| {
@@ -530,18 +511,7 @@ impl NotebookModel {
     fn cell_reorder(&self, cell_ids: Vec<String>) -> Result<(MutationResult, Event), ModelError> {
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
-            let mut reordered = Vec::with_capacity(cell_ids.len());
-            for id in &cell_ids {
-                if let Some(pos) = nb.cells.iter().position(|c| &c.id == id) {
-                    reordered.push(nb.cells.remove(pos));
-                }
-            }
-            // Append any cells not in cell_ids (shouldn't happen, but safe).
-            reordered.append(&mut nb.cells);
-            for (i, c) in reordered.iter_mut().enumerate() {
-                c.order = u32::try_from(i).unwrap_or(u32::MAX);
-            }
-            nb.cells = reordered;
+            notebook_ops::reorder_cells(&mut nb.cells, &cell_ids);
         });
 
         self.sync_from_notebook();
@@ -588,13 +558,6 @@ fn generate_cell_id(_cell_count: usize) -> String {
     #[cfg(not(feature = "hydrate"))]
     {
         format!("cell_{_cell_count}")
-    }
-}
-
-/// Renumber all cells' `order` fields to match their position in the vec.
-fn renumber(cells: &mut [IronpadCell]) {
-    for (i, cell) in cells.iter_mut().enumerate() {
-        cell.order = u32::try_from(i).unwrap_or(u32::MAX);
     }
 }
 

@@ -62,6 +62,39 @@ async fn toolchain_fingerprint() -> Option<String> {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
+/// The probe half of the local-cache policy, shared by the editor and the
+/// read-only viewer: compute the request's content hash — in Fresh mode too,
+/// so the fresh server result can overwrite the entry — and serve a local
+/// hit unless the request is forced. Returns `(request_hash, local_hit)`.
+pub async fn probe_local(request: &CompileRequest) -> (Option<String>, Option<CompileResponse>) {
+    let hash = request_hash(request).await;
+    let local_hit = if request.force {
+        None
+    } else if let Some(hash) = &hash {
+        try_local_hit(hash).await
+    } else {
+        None
+    };
+    (hash, local_hit)
+}
+
+/// The store-back half: persist a server result unless the blob was served
+/// without the server (local hit or share snapshot). Running for Fresh
+/// compiles is deliberate — that overwrite is what makes flipping back to
+/// cache mode serve the fresh blob.
+pub async fn store_unless_served(
+    served_without_server: bool,
+    request_hash: Option<&str>,
+    response: &CompileResponse,
+) {
+    if served_without_server {
+        return;
+    }
+    if let Some(hash) = request_hash {
+        store_local(hash, response).await;
+    }
+}
+
 /// Compute the cache key for a compile request with the shared recipe — the
 /// same hash the server derives in `compile_cell`, so local entries line up
 /// with server cache semantics exactly. `None` when the fingerprint is

@@ -20,7 +20,7 @@ use crate::sessions::{check_permission, ValidateError};
 use crate::state::{AppState, ClaimOutcome, HostDelivery};
 
 /// Serialize a protocol message to JSON for the wire.
-fn wire_msg(id: &str, kind: MessageKind) -> String {
+pub(crate) fn wire_msg(id: &str, kind: MessageKind) -> String {
     serde_json::to_string(&protocol::Message {
         id: id.to_string(),
         kind,

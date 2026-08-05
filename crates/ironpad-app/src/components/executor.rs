@@ -310,9 +310,119 @@ pub fn encode_cell_inputs<T: AsRef<[u8]>>(outputs: &[T]) -> Vec<u8> {
     buf
 }
 
+/// The positional piping recipe: one slot per PRECEDING cell — a code
+/// cell's latest output bytes + type tag, empty for markdown/unexecuted
+/// cells (shared cells never execute, so they land empty via the missing
+/// output) — returned as (encoded input buffer, `previous_cell_types`).
+///
+/// ONE definition on purpose: the editor and the read-only viewer must
+/// derive identical `previous_cell_types` for the same notebook state,
+/// because that vector feeds the blake3 cache key (`ironpad_common::
+/// cache_key`) — a drift between two hand-maintained copies silently forks
+/// cache identity between the editor and the viewer for the same cell. The
+/// byte layout feeds `CellInputs::from_raw` in `ironpad-cell`.
+pub fn assemble_cell_inputs<C: PipingCell, S: std::hash::BuildHasher>(
+    cells: &[C],
+    my_idx: usize,
+    outputs: &std::collections::HashMap<
+        String,
+        crate::components::output_render::CellOutputData,
+        S,
+    >,
+) -> (Vec<u8>, Vec<String>) {
+    if my_idx == 0 {
+        // Zero preceding cells: `CellInputs::from_raw` accepts the empty
+        // buffer and the zero-count header alike; the empty buffer is free.
+        return (Vec::new(), Vec::new());
+    }
+    let mut all_outputs: Vec<&[u8]> = Vec::with_capacity(my_idx);
+    let mut types: Vec<String> = Vec::with_capacity(my_idx);
+    for c in &cells[..my_idx] {
+        if let Some(data) = c.is_code().then(|| outputs.get(c.id())).flatten() {
+            all_outputs.push(&data.bytes);
+            types.push(data.type_tag.clone().unwrap_or_default());
+        } else {
+            all_outputs.push(&[]);
+            types.push(String::new());
+        }
+    }
+    (encode_cell_inputs(&all_outputs), types)
+}
+
+/// The projection [`assemble_cell_inputs`] needs — implemented for both cell
+/// shapes so the editor (`CellManifest`) and the viewer (`IronpadCell`) run
+/// the SAME recipe instead of two hand-synced copies.
+pub trait PipingCell {
+    fn id(&self) -> &str;
+    fn is_code(&self) -> bool;
+}
+
+impl PipingCell for ironpad_common::CellManifest {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn is_code(&self) -> bool {
+        self.cell_type == ironpad_common::CellType::Code
+    }
+}
+
+impl PipingCell for ironpad_common::IronpadCell {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn is_code(&self) -> bool {
+        self.cell_type == ironpad_common::CellType::Code
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::encode_cell_inputs;
+    use super::{assemble_cell_inputs, encode_cell_inputs};
+    use crate::components::output_render::CellOutputData;
+    use ironpad_common::{CellManifest, CellType};
+    use std::collections::HashMap;
+
+    fn manifest(id: &str, cell_type: CellType) -> CellManifest {
+        CellManifest {
+            id: id.to_string(),
+            order: 0,
+            label: id.to_string(),
+            cell_type,
+            shared: false,
+            collapsed: false,
+            output_collapsed: false,
+        }
+    }
+
+    #[test]
+    fn assembles_positional_slots_with_empty_markdown_and_unexecuted() {
+        let cells = vec![
+            manifest("c0", CellType::Code),
+            manifest("md", CellType::Markdown),
+            manifest("c1", CellType::Code),
+            manifest("me", CellType::Code),
+        ];
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "c0".to_string(),
+            CellOutputData {
+                bytes: vec![1, 2],
+                type_tag: Some("u32".to_string()),
+            },
+        );
+        // c1 exists but never executed: empty slot, empty tag.
+        let (buf, types) = assemble_cell_inputs(&cells, 3, &outputs);
+        assert_eq!(types, vec!["u32".to_string(), String::new(), String::new()]);
+        assert_eq!(buf, encode_cell_inputs(&[&[1u8, 2][..], &[], &[]]));
+    }
+
+    #[test]
+    fn first_cell_gets_the_free_empty_encoding() {
+        let cells = vec![manifest("me", CellType::Code)];
+        let (buf, types) = assemble_cell_inputs(&cells, 0, &HashMap::new());
+        assert!(buf.is_empty());
+        assert!(types.is_empty());
+    }
 
     #[test]
     fn encodes_length_prefixed_entries() {

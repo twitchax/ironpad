@@ -52,6 +52,15 @@
     if (entry.ring.length > SIM_BUS_RING_CAP) entry.ring.shift();
   }
 
+  // A worker that errors within this window of being spawned counts as a
+  // rapid failure; after WORKER_MAX_RAPID_FAILURES consecutive ones the
+  // bridge stops respawning and stays on the main-thread fallback. Without
+  // the cap, a persistently failing worker script (offline tab, 404 after a
+  // bad deploy) turned onerror -> spawn -> onerror into an unbounded tight
+  // loop burning CPU and network for the life of the tab.
+  var WORKER_RAPID_FAIL_MS = 5000;
+  var WORKER_MAX_RAPID_FAILURES = 3;
+
   function BridgeExecutor() {
     this._nextId = 1;
     this._pending = new Map();       // reqId -> { resolve, reject }
@@ -60,6 +69,8 @@
     this._messageHandlers = {};      // type -> handler(msg, cellId)
     this._simBus = new Map();        // key -> { latest: string|null, ring: string[] }
     this._worker = null;
+    this._workerSpawnedAt = 0;       // for the rapid-failure window
+    this._workerRapidFailures = 0;   // consecutive rapid failures
     this._mainExecutor = null;       // Lazy main-thread CellExecutor for fallback
     this._mainExecutorPromise = null; // In-flight fallback load (memoized)
 
@@ -70,6 +81,7 @@
 
   BridgeExecutor.prototype._spawnWorker = function () {
     var self = this;
+    this._workerSpawnedAt = Date.now();
     this._worker = new Worker(versionedPath("/executor-worker.js"));
 
     this._worker.onmessage = function (e) {
@@ -80,7 +92,7 @@
       console.error("ironpad: worker error:", e.message);
       // A worker-level failure (script-load error, uncaught exception) leaves
       // every in-flight request unsettled — reject them so cells don't hang on
-      // "Compiling/Running" forever, then respawn a fresh worker for later use.
+      // "Compiling/Running" forever.
       var err = new Error(
         "Worker crashed: " + (e.message || "unknown worker error")
       );
@@ -89,6 +101,25 @@
       });
       self._pending.clear();
       self._loadedCache.clear();
+
+      // Terminate before respawning: per the HTML spec an uncaught error
+      // does NOT stop a worker, so skipping this abandoned a still-running
+      // worker (loaded WASM, rayon sub-pool, any runaway cell) that kept
+      // posting stale messages into the new worker's handlers.
+      self._worker.terminate();
+      self._worker = null;
+
+      var lifetime = Date.now() - self._workerSpawnedAt;
+      self._workerRapidFailures =
+        lifetime < WORKER_RAPID_FAIL_MS ? self._workerRapidFailures + 1 : 1;
+      if (self._workerRapidFailures >= WORKER_MAX_RAPID_FAILURES) {
+        console.error(
+          "ironpad: worker failed " + self._workerRapidFailures +
+          " times in quick succession; not respawning. Cells will run on " +
+          "the main-thread fallback executor."
+        );
+        return;
+      }
       self._spawnWorker();
     };
   };
@@ -166,6 +197,14 @@
     var self = this;
     var id = this._nextId++;
     message.id = id;
+
+    // No worker (respawn cap reached): reject so callers with a main-thread
+    // fallback (execute and friends) take it immediately.
+    if (!this._worker) {
+      return Promise.reject(
+        new Error("Worker unavailable (respawn limit reached)")
+      );
+    }
 
     return new Promise(function (resolve, reject) {
       self._pending.set(id, { resolve: resolve, reject: reject });
@@ -326,7 +365,9 @@
   BridgeExecutor.prototype.unload = function (cellId) {
     this._loadedCache.delete(cellId);
     this._blobCache.delete(cellId);
-    this._worker.postMessage({ type: "unload", cellId: cellId });
+    if (this._worker) {
+      this._worker.postMessage({ type: "unload", cellId: cellId });
+    }
 
     // Also unload from main-thread executor if present.
     if (this._mainExecutor) {
@@ -383,7 +424,9 @@
     _updateSimBus(this._simBus, key, json);
 
     // Forward to worker bus.
-    this._worker.postMessage({ type: "sim_bus_write", key: key, json: json });
+    if (this._worker) {
+      this._worker.postMessage({ type: "sim_bus_write", key: key, json: json });
+    }
 
     // Mirror to main-thread fallback executor bus if loaded.
     if (this._mainExecutor) {
@@ -404,8 +447,12 @@
   /// All pending Promises are rejected with an AbortError.  The isLoaded
   /// cache is cleared — Rust will re-trigger loadBlob when needed.
   BridgeExecutor.prototype.terminate = function () {
-    // Kill the Worker immediately.
-    this._worker.terminate();
+    // Kill the Worker immediately (it may already be gone if the respawn
+    // cap was reached).
+    if (this._worker) {
+      this._worker.terminate();
+      this._worker = null;
+    }
 
     // Reject all pending requests.
     this._pending.forEach(function (entry) {
@@ -414,9 +461,12 @@
     });
     this._pending.clear();
 
-    // Reset state and spawn a fresh Worker.
+    // Reset state and spawn a fresh Worker. An explicit user-driven
+    // terminate also resets the rapid-failure counter — it is a deliberate
+    // fresh start, not another crash in the loop.
     // NOTE: _blobCache is intentionally preserved for fallback.
     this._loadedCache.clear();
+    this._workerRapidFailures = 0;
     this._spawnWorker();
   };
 

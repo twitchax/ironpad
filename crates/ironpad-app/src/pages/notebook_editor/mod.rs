@@ -15,7 +15,11 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 use leptos_router::NavigateOptions;
 
 use crate::components::app_layout::LayoutContext;
-use crate::components::toaster::{ToastIntent, Toaster};
+use crate::components::toaster::Toaster;
+// The save-generation watcher (hydrate-only) is the one remaining direct
+// toast in this file; the workflow toasts live in `sharing`.
+#[cfg(feature = "hydrate")]
+use crate::components::toaster::ToastIntent;
 use crate::model::NotebookModel;
 use crate::session::SessionState;
 

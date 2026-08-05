@@ -14,6 +14,51 @@ use tracing::Instrument as _;
 
 use crate::CELL_TOOLCHAIN;
 
+/// Spawn `cmd` as its own process-group leader and await its output under
+/// `timeout`. Returns `None` on timeout — after `SIGKILL`ing the WHOLE group.
+///
+/// The group kill is the point: cargo fans out rustc and build-script
+/// children, and killing only the direct child (what `kill_on_drop` does)
+/// leaves a compile-bomb's children burning CPU/RAM and writing into the
+/// shared target dir after the caller's locks are released — racing the next
+/// build that enters it. Shared by the build and check paths (and any other
+/// subprocess with a fan-out risk).
+pub(crate) async fn run_group_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+) -> anyhow::Result<Option<std::process::Output>> {
+    // Backstop: if this future is dropped (not just timed out), kill at
+    // least the direct child.
+    cmd.kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let child = cmd.spawn().context("failed to spawn subprocess")?;
+    let child_pid = child.id();
+
+    let Ok(wait_result) = tokio::time::timeout(timeout, child.wait_with_output()).await else {
+        // Timed out: kill the whole process group. The negated pgid equals
+        // the child's pid because we made it the group leader; SIGKILL can't
+        // be caught, so the tree dies.
+        #[cfg(unix)]
+        if let Some(pid) = child_pid.and_then(|p| i32::try_from(p).ok()) {
+            // SAFETY: kill(2) with a negative pid signals the process group.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = child_pid;
+        return Ok(None);
+    };
+    wait_result.map(Some).context("subprocess failed to run")
+}
+
+/// Cap on the `wasm-bindgen` post-processing subprocess. Normally sub-second
+/// per blob; the cap only exists so a wedged run cannot hold a compile slot
+/// forever.
+const WASM_BINDGEN_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Target features for atomics/shared-memory WASM builds (rayon cells).
 ///
 /// Kept separate from [`ATOMICS_LINK_RUSTFLAGS`] because rustc keeps only the
@@ -199,43 +244,22 @@ pub async fn build_micro_crate(
         needs_simd,
     );
     cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        // Backstop: if the future is dropped, kill at least the direct child.
-        .kill_on_drop(true);
-
-    // Run cargo as its own process-group leader so a timeout can kill cargo AND
-    // its rustc/build-script children in one killpg — killing only cargo leaves
-    // a compile-bomb's children burning CPU/RAM.
-    #[cfg(unix)]
-    cmd.process_group(0);
+        .stderr(std::process::Stdio::piped());
 
     // Child span around the cargo subprocess, so a trace separates compile
     // time from the scaffold/wasm-bindgen/wasm-opt stages around it.
     let output = async {
-        let child = cmd.spawn().map_err(|e| {
-            tracing::error!(cell_id = %cell_id, error = %e, "failed to spawn cargo");
-            anyhow::anyhow!("failed to spawn cargo: {e}")
-        })?;
-        let child_pid = child.id();
-
-        let Ok(wait_result) = tokio::time::timeout(timeout, child.wait_with_output()).await else {
-            // Timed out: kill the whole process group (cargo + rustc + build
-            // scripts). The negated pgid equals cargo's pid because we made it
-            // the group leader; SIGKILL can't be caught, so the tree dies.
-            #[cfg(unix)]
-            if let Some(pid) = child_pid.and_then(|p| i32::try_from(p).ok()) {
-                // SAFETY: kill(2) with a negative pid signals the process group.
-                unsafe {
-                    libc::kill(-pid, libc::SIGKILL);
-                }
+        match run_group_with_timeout(cmd, timeout).await {
+            Ok(Some(output)) => Ok(output),
+            Ok(None) => {
+                tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", timeout.as_secs());
+                anyhow::bail!("compilation timed out after {}s", timeout.as_secs());
             }
-            tracing::error!(cell_id = %cell_id, "cargo build timed out after {}s", timeout.as_secs());
-            anyhow::bail!("compilation timed out after {}s", timeout.as_secs());
-        };
-        wait_result.map_err(|e| {
-            tracing::error!(cell_id = %cell_id, error = %e, "cargo build failed to complete");
-            anyhow::anyhow!("cargo build failed: {e}")
-        })
+            Err(e) => {
+                tracing::error!(cell_id = %cell_id, error = %e, "cargo build failed to run");
+                Err(e.context("cargo build failed"))
+            }
+        }
     }
     .instrument(tracing::info_span!("cargo_build", cell_id = %cell_id))
     .await?;
@@ -268,17 +292,30 @@ pub async fn build_micro_crate(
     let wasm_bindgen_out_dir = crate_dir.join("wasm-bindgen-out");
     std::fs::create_dir_all(&wasm_bindgen_out_dir)?;
 
-    let wb_output = tokio::process::Command::new("wasm-bindgen")
+    let mut wb_cmd = tokio::process::Command::new("wasm-bindgen");
+    wb_cmd
         .arg("--target")
         .arg("web")
         .arg("--out-dir")
         .arg(&wasm_bindgen_out_dir)
         .arg("--no-typescript")
         .arg(&wasm_path)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    // Bounded like every other subprocess in this pipeline: a wedged
+    // wasm-bindgen (pathological blob, fs stall) must not hold the cell's
+    // compile slot forever.
+    let wb_output = run_group_with_timeout(wb_cmd, WASM_BINDGEN_TIMEOUT)
         .instrument(tracing::info_span!("wasm_bindgen", cell_id = %cell_id))
         .await
-        .context("wasm-bindgen CLI not found. Install it with: cargo install wasm-bindgen-cli")?;
+        .context("wasm-bindgen CLI not found. Install it with: cargo install wasm-bindgen-cli")?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "wasm-bindgen timed out after {}s",
+                WASM_BINDGEN_TIMEOUT.as_secs()
+            )
+        })?;
 
     if !wb_output.status.success() {
         let wb_stderr = String::from_utf8_lossy(&wb_output.stderr);
@@ -420,8 +457,12 @@ fn compose_rustflags(
 /// [`build_timeout`] (a cold dep tree is legitimate there), and the live
 /// check-on-type path passes a short budget so a misclassified cold check
 /// degrades to "no markers this round" instead of a hang (PRD-0045). On
-/// timeout the cargo process is killed (`kill_on_drop`) so it cannot keep
-/// mutating the scaffold dir after the per-cell lock is released.
+/// timeout the whole process GROUP is killed ([`run_group_with_timeout`],
+/// same discipline as the build path): killing only cargo would orphan its
+/// rustc children, which keep burning CPU outside the admission caps and
+/// keep writing to the shared target dir after the per-cell lock is
+/// released — racing the next check or build that enters it. Cold-tree
+/// timeouts are an EXPECTED path here, not an edge case.
 #[allow(clippy::too_many_arguments)]
 pub async fn check_micro_crate(
     crate_dir: &Path,
@@ -457,29 +498,25 @@ pub async fn check_micro_crate(
         "starting live check",
     );
 
-    let output = tokio::time::timeout(timeout, {
-        let mut cmd = Command::new("cargo");
-        configure_cargo_cmd(
-            &mut cmd,
-            "check",
-            crate_dir,
-            &cargo_home,
-            &target_dir,
-            compilation_proxy,
-            needs_atomics,
-            needs_autodiff,
-            needs_simd,
-        );
-        // If the timeout drops the output future, the child must die with it:
-        // an orphaned cargo would keep writing to the scaffold dir after the
-        // caller releases the per-cell lock, racing the next check or build.
-        cmd.kill_on_drop(true);
-        cmd.output()
-    })
-    .instrument(tracing::info_span!("cargo_check", cell_id = %cell_id))
-    .await
-    .map_err(|_| CheckTimedOut(timeout))?
-    .map_err(|e| anyhow::anyhow!("failed to spawn cargo: {e}"))?;
+    let mut cmd = Command::new("cargo");
+    configure_cargo_cmd(
+        &mut cmd,
+        "check",
+        crate_dir,
+        &cargo_home,
+        &target_dir,
+        compilation_proxy,
+        needs_atomics,
+        needs_autodiff,
+        needs_simd,
+    );
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = run_group_with_timeout(cmd, timeout)
+        .instrument(tracing::info_span!("cargo_check", cell_id = %cell_id))
+        .await?
+        .ok_or(CheckTimedOut(timeout))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -750,6 +787,171 @@ mod tests {
         assert_eq!(
             path,
             PathBuf::from("/t/wasm32-unknown-unknown/release/cell_my_cell.wasm"),
+        );
+    }
+
+    /// A timeout must kill the whole process GROUP, not just the direct
+    /// child: cargo fans out rustc children that would otherwise reparent to
+    /// init and keep burning CPU / writing to the shared target dir.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn group_timeout_kills_grandchildren_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+
+        // The shell backgrounds a grandchild, records its pid, then hangs.
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("sleep 30 & echo $! > {}; wait", pid_file.display()));
+        let result = run_group_with_timeout(cmd, Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert!(result.is_none(), "the hang must report as a timeout");
+
+        let grandchild: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the shell ran long enough to record the grandchild pid")
+            .trim()
+            .parse()
+            .unwrap();
+        // SIGKILL delivery is asynchronous; poll briefly for the corpse.
+        for _ in 0..40 {
+            // SAFETY: kill(pid, 0) only probes for existence.
+            let alive = unsafe { libc::kill(grandchild, 0) } == 0;
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("grandchild {grandchild} survived the group kill");
+    }
+
+    /// The subprocess's output is returned intact when it beats the timeout.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn group_timeout_passes_through_a_fast_exit() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("echo done")
+            .stdout(std::process::Stdio::piped());
+        let output = run_group_with_timeout(cmd, Duration::from_secs(10))
+            .await
+            .unwrap()
+            .expect("no timeout");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "done");
+    }
+
+    /// The three cell-toolchain pins are string literals that must appear in
+    /// every environment that installs toolchains. Drift here has shipped
+    /// breakage before (a pin bumped in Rust but not in the image leaves the
+    /// fingerprint on the default rustc and every cell build failing in
+    /// prod), so the constants are made authoritative by assertion.
+    #[test]
+    fn toolchain_pins_are_in_sync_across_dockerfile_ci_and_toolchain_toml() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dockerfile = std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap();
+        let ci = std::fs::read_to_string(root.join(".github/workflows/build.yml")).unwrap();
+        let toolchain_toml = std::fs::read_to_string(root.join("rust-toolchain.toml")).unwrap();
+
+        for (name, pin) in [
+            ("CELL_TOOLCHAIN", CELL_TOOLCHAIN),
+            ("AUTODIFF_TOOLCHAIN", AUTODIFF_TOOLCHAIN),
+            ("ATOMICS_TOOLCHAIN", ATOMICS_TOOLCHAIN),
+        ] {
+            assert!(
+                dockerfile.contains(&format!("rustup toolchain install {pin}")),
+                "docker/Dockerfile does not install {name} ({pin})"
+            );
+            assert!(
+                ci.contains(pin),
+                ".github/workflows/build.yml does not reference {name} ({pin})"
+            );
+        }
+        // The deploy image's default toolchain is the common-case pin.
+        assert!(
+            dockerfile.contains(&format!("rustup default {CELL_TOOLCHAIN}")),
+            "docker/Dockerfile must default to CELL_TOOLCHAIN"
+        );
+        // The workspace's own toolchain rides the atomics pin (documented on
+        // ATOMICS_TOOLCHAIN: "Keep in sync with rust-toolchain.toml").
+        assert!(
+            toolchain_toml.contains(&format!("channel = \"{ATOMICS_TOOLCHAIN}\"")),
+            "rust-toolchain.toml channel must match ATOMICS_TOOLCHAIN"
+        );
+
+        // No FOURTH pin hiding anywhere: every nightly date literal in the
+        // install environments must be one of the three constants.
+        let known = [CELL_TOOLCHAIN, AUTODIFF_TOOLCHAIN, ATOMICS_TOOLCHAIN];
+        for (file, text) in [("docker/Dockerfile", &dockerfile), ("build.yml", &ci)] {
+            for (idx, _) in text.match_indices("nightly-20") {
+                let pin = &text[idx..(idx + "nightly-2026-07-14".len()).min(text.len())];
+                assert!(
+                    known.contains(&pin),
+                    "{file} references unknown toolchain pin {pin}"
+                );
+            }
+        }
+    }
+
+    /// The executor's env host-import table must list exactly the imports
+    /// ironpad-cell's `#[link(wasm_import_module = "env")]` extern blocks
+    /// declare. A name missing from the JS side fails cell instantiation at
+    /// runtime (and only on the loading path that happened to lack it, back
+    /// when there were three hand-written copies); a stale extra is dead
+    /// weight. This turns the "keep in sync" comments into an assertion.
+    #[test]
+    fn env_host_import_table_matches_the_cell_extern_blocks() {
+        use std::collections::BTreeSet;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        // Rust side: `fn ironpad_*` inside env-linked extern blocks.
+        let mut rust_names = BTreeSet::new();
+        for file in ["lib.rs", "sim.rs", "gpu.rs", "blocking.rs"] {
+            let src =
+                std::fs::read_to_string(root.join("crates/ironpad-cell/src").join(file)).unwrap();
+            for (attr_idx, _) in src.match_indices("#[link(wasm_import_module = \"env\")]") {
+                let block_start = src[attr_idx..].find('{').unwrap() + attr_idx;
+                let block_end = src[block_start..].find("\n}").unwrap() + block_start;
+                let block = &src[block_start..block_end];
+                for (idx, _) in block.match_indices("fn ironpad_") {
+                    let name_start = idx + "fn ".len();
+                    let name_end = block[name_start..]
+                        .find('(')
+                        .map(|i| name_start + i)
+                        .unwrap();
+                    rust_names.insert(block[name_start..name_end].trim().to_string());
+                }
+            }
+        }
+        assert!(
+            rust_names.len() >= 10,
+            "extern scan looks broken: {rust_names:?}"
+        );
+
+        // JS side: keys of the generated env-import table.
+        let core = std::fs::read_to_string(root.join("public/executor-core.js")).unwrap();
+        let table_start = core
+            .find("function _envImportExprs")
+            .expect("env-import table function present");
+        let table = &core[table_start
+            ..core[table_start..]
+                .find("\n  }")
+                .map(|i| table_start + i)
+                .unwrap()];
+        let mut js_names = BTreeSet::new();
+        for (idx, _) in table.match_indices("\n      ironpad_") {
+            let name_start = idx + "\n      ".len();
+            let name_end = table[name_start..]
+                .find(':')
+                .map(|i| name_start + i)
+                .unwrap();
+            js_names.insert(table[name_start..name_end].trim().to_string());
+        }
+
+        assert_eq!(
+            rust_names, js_names,
+            "ironpad-cell extern blocks and the executor env-import table disagree"
         );
     }
 }
