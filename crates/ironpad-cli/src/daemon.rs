@@ -62,6 +62,12 @@ struct DaemonState {
     /// subscribes here to await execution results, which are correlated by
     /// `cell_id` rather than message id (a run can cascade into prerequisites).
     events: broadcast::Sender<protocol::EventEnvelope>,
+    /// Message id of the initial `NotebookGet`, so the recv path can cache
+    /// its response INLINE — strictly ordered with the event stream. Caching
+    /// it on the main task (after the oneshot resolved) left a window where
+    /// an event arriving right behind the response was applied to a
+    /// still-`None` cache and silently dropped: a permanently stale snapshot.
+    init_query_id: RwLock<Option<String>>,
 }
 
 // ── Run daemon ──────────────────────────────────────────────────────────────
@@ -110,6 +116,7 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
         // Capacity sized for bursts of execution events; a slow `cells.run`
         // waiter that lags simply skips ahead (handled at the recv site).
         events: broadcast::channel(256).0,
+        init_query_id: RwLock::new(None),
     });
 
     // ── Task: Unix socket listener ──────────────────────────────────────
@@ -156,6 +163,7 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
                 kind: MessageKind::Query(Query::NotebookGet),
             };
             let (init_tx, init_rx) = oneshot::channel::<String>();
+            *state.init_query_id.write().await = Some(init_id.clone());
             state.pending.write().await.insert(init_id, init_tx);
             if ws_tx.send(serde_json::to_string(&init_msg)?).is_err() {
                 tracing::warn!("failed to send initial NotebookGet query — WS channel closed");
@@ -185,24 +193,10 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
                 tracing::info!("WebSocket closed");
             });
 
-            // Wait for initial notebook fetch.
+            // Wait for the initial notebook fetch. The recv path cached it
+            // (in stream order); this only gates startup on its arrival.
             match tokio::time::timeout(std::time::Duration::from_secs(10), init_rx).await {
-                Ok(Ok(text)) => match serde_json::from_str::<protocol::Message>(&text) {
-                    Ok(msg) => {
-                        if let MessageKind::Response(protocol::Response::Notebook { notebook }) =
-                            msg.kind
-                        {
-                            *state.notebook.write().await = Some(notebook);
-                            tracing::info!("notebook state cached");
-                        } else {
-                            tracing::warn!(
-                                "unexpected response kind for NotebookGet: {:?}",
-                                msg.kind
-                            );
-                        }
-                    }
-                    Err(e) => tracing::warn!("failed to parse NotebookGet response: {e}"),
-                },
+                Ok(Ok(_)) => tracing::debug!("initial notebook response received"),
                 Ok(Err(_)) => tracing::warn!("NotebookGet response channel closed"),
                 Err(_) => tracing::warn!("timed out waiting for initial notebook state"),
             }
@@ -287,7 +281,20 @@ async fn handle_ws_message(text: &str, state: &DaemonState) {
 
     match &msg.kind {
         // Response to a pending query/mutation.
-        MessageKind::Response(_) => {
+        MessageKind::Response(response) => {
+            // The initial NotebookGet snapshot is cached HERE so it is
+            // strictly ordered with the event stream (see the field docs on
+            // `init_query_id` for the race this closes).
+            let is_init = state.init_query_id.read().await.as_deref() == Some(msg.id.as_str());
+            if is_init {
+                if let protocol::Response::Notebook { notebook } = response {
+                    *state.notebook.write().await = Some(notebook.clone());
+                    tracing::info!("notebook state cached");
+                } else {
+                    tracing::warn!("unexpected response kind for NotebookGet: {response:?}");
+                }
+                *state.init_query_id.write().await = None;
+            }
             let mut pending = state.pending.write().await;
             if let Some(tx) = pending.remove(&msg.id) {
                 let _ = tx.send(text.to_string());
@@ -480,8 +487,9 @@ async fn serve_status(state: &DaemonState) -> IpcResponse {
 }
 
 /// Default wait for a `cells.run` execution result: the build timeout (300s)
-/// plus headroom for queueing, wasm-opt, and the run itself.
-const RUN_WAIT_DEFAULT_SECS: u64 = 360;
+/// plus headroom for queueing, wasm-opt, and the run itself. Also the clap
+/// default for `cells run --timeout-secs` in `main.rs` — one constant.
+pub const RUN_WAIT_DEFAULT_SECS: u64 = 360;
 
 /// `cells.run` (PRD-0052): ask the hosting browser to run a cell, then wait
 /// for its terminal execution event.
@@ -552,6 +560,13 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
 ///   too (a prerequisite that compiled clean but panicked), so without this
 ///   arm the daemon waited out the full timeout instead of reporting
 ///   `prerequisite_failed`.
+///
+/// "ANY other cell" is deliberate, not an approximation: the browser's
+/// cascade abort clears the whole queue on any concurrent failure — even a
+/// manually-run unrelated cell's — so our queued run is dead regardless of
+/// whether the failing cell was literally upstream of ours. The
+/// `prerequisite_failed` status therefore means "the cascade halted because
+/// a cell failed", and the payload names which one.
 fn run_outcome(cell_id: &str, event: &protocol::Event) -> Option<serde_json::Value> {
     match event {
         protocol::Event::CellExecuted {
@@ -868,6 +883,65 @@ mod tests {
             output_collapsed: false,
             version: 1,
         }
+    }
+
+    fn test_state() -> DaemonState {
+        DaemonState {
+            connected: RwLock::new(true),
+            notebook: RwLock::new(None),
+            pending: RwLock::new(HashMap::new()),
+            ws_tx: RwLock::new(None),
+            events: broadcast::channel(16).0,
+            init_query_id: RwLock::new(None),
+        }
+    }
+
+    /// Regression for the startup race: an event arriving right behind the
+    /// initial `NotebookGet` response used to hit a still-`None` cache (the
+    /// main task cached the snapshot only after its oneshot resolved) and
+    /// was silently dropped — a permanently stale snapshot. Caching on the
+    /// recv path makes response-then-event ordering deterministic.
+    #[tokio::test]
+    async fn init_response_and_trailing_event_apply_in_stream_order() {
+        let state = test_state();
+        *state.init_query_id.write().await = Some("init-1".to_string());
+
+        let mut nb = IronpadNotebook::new("Race");
+        nb.cells = vec![make_cell("a", 0)];
+        let response = serde_json::to_string(&protocol::Message {
+            id: "init-1".to_string(),
+            kind: MessageKind::Response(protocol::Response::Notebook { notebook: nb }),
+        })
+        .unwrap();
+        let event = serde_json::to_string(&protocol::Message {
+            id: String::new(),
+            kind: MessageKind::Event(protocol::EventEnvelope {
+                event: protocol::Event::CellAdded {
+                    cell: make_cell("b", 1),
+                    after_cell_id: Some("a".to_string()),
+                },
+                by: protocol::ClientId::browser(),
+            }),
+        })
+        .unwrap();
+
+        // The exact wire order that used to lose the event.
+        handle_ws_message(&response, &state).await;
+        handle_ws_message(&event, &state).await;
+
+        let cached = state.notebook.read().await;
+        let cells: Vec<&str> = cached
+            .as_ref()
+            .expect("snapshot cached on the recv path")
+            .cells
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(cells, ["a", "b"], "the trailing event must not be lost");
+        assert!(
+            state.init_query_id.read().await.is_none(),
+            "init id cleared after use"
+        );
     }
 
     // ── cells.run (PRD-0052) ─────────────────────────────────────────────

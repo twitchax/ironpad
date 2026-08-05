@@ -19,7 +19,7 @@ use crate::types::{CellManifest, CellType, Diagnostic, IronpadCell, IronpadNoteb
 /// schema changes in a way a peer should be able to notice (a new payload
 /// variant, an added field, …). Decode sites (in the server/CLI crates) may
 /// log a warning when a received version differs from this constant.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Top-level message envelope. Every frame on the wire is one of these.
 ///
@@ -243,7 +243,14 @@ pub enum Mutation {
         cell_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// `Some(None)` is an explicit clear. Without the custom
+        /// deserializer the wire's `"cargo_toml": null` decoded as the
+        /// OUTER `None` ("unchanged") and the clear was silently dropped.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "explicit_null_is_a_clear"
+        )]
         cargo_toml: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
@@ -356,7 +363,14 @@ pub enum Event {
         cell_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// `Some(None)` is an explicit clear. Without the custom
+        /// deserializer the wire's `"cargo_toml": null` decoded as the
+        /// OUTER `None` ("unchanged") and the clear was silently dropped.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "explicit_null_is_a_clear"
+        )]
         cargo_toml: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
@@ -537,6 +551,12 @@ pub enum ErrorCode {
     InvalidMessage,
     SessionNotFound,
     SessionExpired,
+    /// Forward-compatibility catch-all: a code minted by a newer peer.
+    /// Without it, one unknown code failed the WHOLE message deserialize,
+    /// and the correlated request stalled to its timeout instead of
+    /// surfacing the error (same rationale as `Event::Unknown`).
+    #[serde(other)]
+    Unknown,
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -697,6 +717,46 @@ mod tests {
             untouched.description, None,
             "an absent key must mean unchanged"
         );
+    }
+
+    #[test]
+    fn cell_update_explicit_null_cargo_toml_survives_the_wire() {
+        // Regression: `"cargo_toml": null` (a clear, Some(None)) used to
+        // decode as the OUTER None ("unchanged") on both the mutation and
+        // the event, silently dropping the clear.
+        let m: Mutation = serde_json::from_str(
+            r#"{"action":"CellUpdate","cell_id":"c1","cargo_toml":null,"version":1}"#,
+        )
+        .unwrap();
+        match m {
+            Mutation::CellUpdate {
+                cargo_toml, source, ..
+            } => {
+                assert_eq!(cargo_toml, Some(None), "explicit null is a clear");
+                assert_eq!(source, None, "absent key stays unchanged");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let e: Event = serde_json::from_str(
+            r#"{"event":"CellUpdated","cell_id":"c1","cargo_toml":null,"version":1}"#,
+        )
+        .unwrap();
+        match e {
+            Event::CellUpdated { cargo_toml, .. } => assert_eq!(cargo_toml, Some(None)),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_error_code_deserializes_instead_of_failing_the_message() {
+        // A code minted by a newer peer must not fail the whole frame (the
+        // correlated request would stall to timeout).
+        let code: ErrorCode = serde_json::from_str(r#""SomeFutureCode""#).unwrap();
+        assert_eq!(code, ErrorCode::Unknown);
+        // Known codes still round-trip.
+        let known: ErrorCode = serde_json::from_str(r#""PermissionDenied""#).unwrap();
+        assert_eq!(known, ErrorCode::PermissionDenied);
     }
 
     #[test]
@@ -1091,7 +1151,7 @@ mod tests {
         // they became editable (PRD-0051).
         // 3: `Mutation::CellRun` + `MutationResult::CellRunStarted`, and
         // `CellExecuted` gained `success` (PRD-0052).
-        assert_eq!(PROTOCOL_VERSION, 3);
+        assert_eq!(PROTOCOL_VERSION, 4);
     }
 
     /// Forward-compat (new → old), envelope level: a frame minted by a newer

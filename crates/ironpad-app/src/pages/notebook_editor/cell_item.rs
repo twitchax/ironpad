@@ -832,19 +832,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                     cell_status.set(CellStatus::Error);
 
                                     // Stop run-all on execution error.
-                                    // In reactive mode, mark remaining queued cells as blocked.
-                                    let queue = state.run_all_queue.get_untracked();
-                                    if state.reactive_mode.get_untracked() && queue.len() > 1 {
-                                        state.cell_blocked_by.update(|blocked| {
-                                            for queued_id in &queue[1..] {
-                                                blocked.insert(
-                                                    queued_id.clone(),
-                                                    cell_id_for_exec.clone(),
-                                                );
-                                            }
-                                        });
-                                    }
-                                    state.run_all_queue.set(vec![]);
+                                    state.abort_run_cascade(&cell_id_for_exec);
                                 }
                             }
                         }
@@ -876,16 +864,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         last_compile.set(Some(response));
 
                         // Stop run-all on compile error.
-                        // In reactive mode, mark remaining queued cells as blocked.
-                        let queue = state.run_all_queue.get_untracked();
-                        if state.reactive_mode.get_untracked() && queue.len() > 1 {
-                            state.cell_blocked_by.update(|blocked| {
-                                for queued_id in &queue[1..] {
-                                    blocked.insert(queued_id.clone(), cell_id_for_exec.clone());
-                                }
-                            });
-                        }
-                        state.run_all_queue.set(vec![]);
+                        state.abort_run_cascade(&cell_id_for_exec);
                     }
                 }
                 Err(e) => {
@@ -910,16 +889,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     }));
 
                     // Stop run-all on server error.
-                    // In reactive mode, mark remaining queued cells as blocked.
-                    let queue = state.run_all_queue.get_untracked();
-                    if state.reactive_mode.get_untracked() && queue.len() > 1 {
-                        state.cell_blocked_by.update(|blocked| {
-                            for queued_id in &queue[1..] {
-                                blocked.insert(queued_id.clone(), cell_id_for_exec.clone());
-                            }
-                        });
-                    }
-                    state.run_all_queue.set(vec![]);
+                    state.abort_run_cascade(&cell_id_for_exec);
                 }
             }
         });

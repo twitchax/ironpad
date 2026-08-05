@@ -487,20 +487,33 @@ impl Db {
     /// The WHERE guard makes this promote-or-nothing; the caller decides "was
     /// there anything to push" via [`get_share_for_edit`](Self::get_share_for_edit)
     /// beforehand (a benign race, last-write-wins by design, PRD-0054).
+    ///
+    /// `published_bytes` is the BYTE length of the draft the caller read
+    /// (every other path stores Rust `.len()` bytes; the in-DB
+    /// `string::len` this replaced counted CHARS, silently undercounting
+    /// multibyte notebooks). If an autosave lands between the caller's read
+    /// and this promote, the recorded size lags by one autosave — the same
+    /// last-write-wins drift as the content itself, corrected on next push.
     #[tracing::instrument(name = "db_promote_draft", level = "info", skip_all, fields(id = %id))]
-    pub async fn promote_draft(&self, id: &str, manifest_json: Option<String>) -> Result<()> {
+    pub async fn promote_draft(
+        &self,
+        id: &str,
+        manifest_json: Option<String>,
+        published_bytes: u64,
+    ) -> Result<()> {
         self.inner
             .query(
                 "UPDATE type::record('mutable_share', $id) SET \
                     notebook_json = draft_json ?? notebook_json, \
                     manifest_json = $mf, \
-                    bytes = string::len(draft_json ?? notebook_json), \
+                    bytes = $bytes, \
                     pushed_at = $now, \
                     draft_json = NONE \
                  WHERE draft_json != NONE",
             )
             .bind(("id", id.to_string()))
             .bind(("mf", manifest_json))
+            .bind(("bytes", i64::try_from(published_bytes).unwrap_or(i64::MAX)))
             .bind(("now", now_rfc3339()))
             .await
             .context("draft promote failed")?
@@ -875,7 +888,9 @@ mod tests {
             .unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 35);
         // ...and both promote and discard return it to published-only.
-        db.promote_draft("aaaaaaaaaaaaaaaa", None).await.unwrap();
+        db.promote_draft("aaaaaaaaaaaaaaaa", None, 20)
+            .await
+            .unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 30);
         db.save_draft("bbbbbbbbbbbbbbbb", "xx").await.unwrap();
         db.discard_draft("bbbbbbbbbbbbbbbb").await.unwrap();
@@ -925,7 +940,7 @@ mod tests {
 
         // Promote: published := draft, manifest replaced, clean again.
         let before = reader.pushed_at.clone();
-        db.promote_draft("aaaaaaaaaaaaaaaa", Some("{\"m\":1}".into()))
+        db.promote_draft("aaaaaaaaaaaaaaaa", Some("{\"m\":1}".into()), 7)
             .await
             .unwrap();
         let reader = db
@@ -945,7 +960,7 @@ mod tests {
         );
 
         // Promote with no draft: a no-op (published and manifest untouched).
-        db.promote_draft("aaaaaaaaaaaaaaaa", None).await.unwrap();
+        db.promote_draft("aaaaaaaaaaaaaaaa", None, 0).await.unwrap();
         let reader = db
             .get_mutable_share("aaaaaaaaaaaaaaaa")
             .await

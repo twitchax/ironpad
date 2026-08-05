@@ -217,7 +217,7 @@ enum CellsCommand {
         #[arg(long)]
         no_wait: bool,
         /// Seconds to wait for the execution result (covers a cold compile).
-        #[arg(long, default_value_t = 360)]
+        #[arg(long, default_value_t = daemon::RUN_WAIT_DEFAULT_SECS)]
         timeout_secs: u64,
     },
 }

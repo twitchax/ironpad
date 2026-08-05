@@ -74,11 +74,19 @@ pub struct CliArgs {
     pub test_auth: bool,
 
     /// Global cap on concurrent WebSocket guest (agent) connections.
-    #[arg(long, default_value_t = 512, env = "IRONPAD_MAX_GUESTS")]
+    #[arg(
+        long,
+        default_value_t = ironpad_server::state::DEFAULT_MAX_GUESTS,
+        env = "IRONPAD_MAX_GUESTS"
+    )]
     pub max_guests: usize,
 
     /// Idle timeout (seconds) after which a silent guest connection is reaped.
-    #[arg(long, default_value_t = 1800, env = "IRONPAD_GUEST_IDLE_TIMEOUT_SECS")]
+    #[arg(
+        long,
+        default_value_t = ironpad_server::state::DEFAULT_GUEST_IDLE_TIMEOUT_SECS,
+        env = "IRONPAD_GUEST_IDLE_TIMEOUT_SECS"
+    )]
     pub guest_idle_timeout_secs: u64,
 }
 

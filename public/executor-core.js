@@ -502,6 +502,12 @@
       try { panels = JSON.parse(cellResult.displayText); } catch (e) { panels = null; }
     }
 
+    // Panel indices already filled by an earlier readback this pass: two
+    // dispatches with the SAME dimensions must fill two DISTINCT panels in
+    // emission order — without the claim set, both matched the first
+    // size-matching panel and the second readback clobbered the first image
+    // while its own placeholder stayed blank.
+    var claimed = new Set();
     for (var rb of this._pendingGpuReadbacks) {
       var rgb = await _gpuReadPixels(
         rb.output_handle, rb.staging_handle, rb.width, rb.height
@@ -516,15 +522,17 @@
         var base64 = btoa(binary);
 
         if (panels && Array.isArray(panels)) {
-          // Find the first BlobImage panel matching this readback's dimensions
-          // and replace its placeholder base64_data with the real GPU output.
+          // Find the first UNCLAIMED BlobImage panel matching this
+          // readback's dimensions and fill in the real GPU output.
           var found = false;
           for (var j = 0; j < panels.length; j++) {
             var p = panels[j];
-            if (p && p.BlobImage &&
+            if (!claimed.has(j) &&
+                p && p.BlobImage &&
                 p.BlobImage.width === rb.width &&
                 p.BlobImage.height === rb.height) {
               p.BlobImage.base64_data = base64;
+              claimed.add(j);
               found = true;
               break;
             }

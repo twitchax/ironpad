@@ -1286,8 +1286,14 @@ pub(crate) async fn push_mutable_core(
         .map_err(|e| anyhow::anyhow!("invalid stored draft: {e}"))?;
     let manifest = snapshot_mutable_manifest(data_dir, cache_dir, &notebook, cell_type_tags).await;
     // A concurrent autosave between the read and this promote is fine: the
-    // promote takes whatever draft is newest (last-write-wins, PRD-0054).
-    db.promote_draft(id, manifest_to_json(manifest)).await?;
+    // promote takes whatever draft is newest (last-write-wins, PRD-0054);
+    // the recorded byte size then lags by the same one autosave.
+    db.promote_draft(
+        id,
+        manifest_to_json(manifest),
+        edit.notebook_json.len() as u64,
+    )
+    .await?;
 
     tracing::info!(id = %id, "mutable share pushed");
     Ok(true)

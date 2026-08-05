@@ -587,9 +587,26 @@ fn ViewOnlyCodeCell(
     // Trigger signal: incrementing this dispatches a compile.
     let run_trigger = RwSignal::new(0u64);
 
-    // Run button click — increment run_trigger to start compile.
+    // Run button click. A piped cell run in isolation reads empty inputs and
+    // errors out on content the author already made work, so the click
+    // routes through the run-all queue with any unexecuted upstream
+    // runnable cells prepended — the same cascade agents get (PRD-0052).
+    // With no cold prerequisites it degrades to the direct trigger.
     let run_cell = move |_| {
-        run_trigger.update(|g| *g += 1);
+        if !run_all_queue.get_untracked().is_empty() {
+            return; // a run is already in flight; the queue owns execution
+        }
+        let cid = cell.with_value(|c| c.id.clone());
+        let outputs = cell_outputs.get_untracked();
+        let mut prereqs = all_cells.with_value(|cells| {
+            crate::components::executor::unexecuted_upstream(cells, &cid, &outputs)
+        });
+        if prereqs.is_empty() {
+            run_trigger.update(|g| *g += 1);
+        } else {
+            prereqs.push(cid);
+            run_all_queue.set(prereqs);
+        }
     };
 
     // ── Run-all queue watcher ───────────────────────────────────────────

@@ -137,77 +137,126 @@ fn update_framed_opt(hasher: &mut blake3::Hasher, bytes: Option<&[u8]>) {
 
 // ── Dependency merging ───────────────────────────────────────────────────────
 
-/// Extract dependency lines from the user's `Cargo.toml` content.
-///
-/// Finds the `[dependencies]` section and collects all lines until the next
-/// section header (`[...]`), filtering out any existing `ironpad-cell` entry
-/// (we always inject our own).
-#[must_use]
-pub fn extract_user_dependencies(cargo_toml: &str) -> String {
-    let mut in_deps = false;
-    let mut deps = Vec::new();
+/// The two shapes a dependency takes under `[dependencies]`: an inline
+/// `name = spec` line, or a dotted `[dependencies.name]` subtable (kept as a
+/// rendered block, header included).
+#[derive(Debug, Clone)]
+enum DepEntry {
+    Inline(String),
+    Section(String),
+}
+
+/// `[dependencies.NAME]` -> `NAME` (single-segment only).
+fn dotted_dependency_name(header: &str) -> Option<&str> {
+    let inner = header.strip_prefix('[')?.strip_suffix(']')?.trim();
+    let name = inner.strip_prefix("dependencies.")?.trim();
+    (!name.is_empty() && !name.contains('.')).then_some(name)
+}
+
+/// Parse a `Cargo.toml`'s dependency surface into (normalized crate name,
+/// entry) pairs in declaration order. Dotted `[dependencies.NAME]` subtables
+/// count: they used to be dropped as "some other section", which silently
+/// bypassed the shared/cell merge, the rayon/atomics detection, and the
+/// `ironpad-cell` filter for any notebook using the section form.
+fn parse_dependency_entries(cargo_toml: &str) -> Vec<(String, DepEntry)> {
+    enum State {
+        Outside,
+        Inline,
+        Section,
+    }
+    let mut state = State::Outside;
+    let mut entries: Vec<(String, DepEntry)> = Vec::new();
 
     for line in cargo_toml.lines() {
         let trimmed = line.trim();
-
-        // Detect section headers.
         if trimmed.starts_with('[') {
-            in_deps = trimmed == "[dependencies]";
+            if trimmed == "[dependencies]" {
+                state = State::Inline;
+            } else if let Some(name) = dotted_dependency_name(trimmed) {
+                entries.push((name.replace('-', "_"), DepEntry::Section(line.to_string())));
+                state = State::Section;
+            } else {
+                state = State::Outside;
+            }
             continue;
         }
-
-        if in_deps && !trimmed.is_empty() && !trimmed.starts_with('#') {
-            // Skip any user-specified ironpad-cell (we inject our own).
-            if trimmed.starts_with("ironpad-cell") || trimmed.starts_with("ironpad_cell") {
-                continue;
+        match state {
+            State::Inline => {
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    if let Some(name) = crate_name_from_dep_line(line) {
+                        entries.push((name, DepEntry::Inline(line.to_string())));
+                    }
+                }
             }
-            deps.push(line);
+            State::Section => {
+                if !trimmed.is_empty() {
+                    if let Some((_, DepEntry::Section(block))) = entries.last_mut() {
+                        block.push('\n');
+                        block.push_str(line);
+                    }
+                }
+            }
+            State::Outside => {}
         }
     }
+    entries
+}
 
-    deps.join("\n")
+/// [`parse_dependency_entries`] minus any user-specified `ironpad-cell`
+/// (we always inject our own), in either form.
+fn user_dependency_entries(cargo_toml: &str) -> Vec<(String, DepEntry)> {
+    parse_dependency_entries(cargo_toml)
+        .into_iter()
+        .filter(|(name, _)| name != "ironpad_cell")
+        .collect()
+}
+
+/// Render entries: inline lines first, dotted subtables after — the order
+/// TOML requires when the result is pasted under a `[dependencies]` header.
+fn render_dep_entries(entries: Vec<(String, DepEntry)>) -> String {
+    let mut inline = Vec::new();
+    let mut sections = Vec::new();
+    for (_, entry) in entries {
+        match entry {
+            DepEntry::Inline(line) => inline.push(line),
+            DepEntry::Section(block) => sections.push(block),
+        }
+    }
+    let mut out = inline.join("\n");
+    for block in sections {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&block);
+    }
+    out
+}
+
+/// Extract dependency declarations from the user's `Cargo.toml` content —
+/// inline lines under `[dependencies]` AND dotted `[dependencies.NAME]`
+/// subtables — filtering out any existing `ironpad-cell` entry (we always
+/// inject our own).
+#[must_use]
+pub fn extract_user_dependencies(cargo_toml: &str) -> String {
+    render_dep_entries(user_dependency_entries(cargo_toml))
 }
 
 /// Merge shared (notebook-level) and cell-level dependencies.
 ///
-/// Cell deps take precedence: if both shared and cell declare the same crate
-/// name, the cell's line wins. The merge is at the dependency-line level.
+/// Cell deps take precedence by normalized crate name, ACROSS forms: a cell
+/// inline `rayon = "1"` replaces a shared `[dependencies.rayon]` subtable
+/// and vice versa.
 #[must_use]
 pub fn merge_dependencies(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> String {
-    let shared_deps = shared_cargo_toml.map_or_else(String::new, extract_user_dependencies);
-    let cell_deps = extract_user_dependencies(cell_cargo_toml);
-
-    if shared_deps.is_empty() {
-        return cell_deps;
-    }
-    if cell_deps.is_empty() {
-        return shared_deps;
-    }
-
-    // Build a map of crate_name → dep_line, shared first, then cell overrides.
-    let mut dep_map: Vec<(String, String)> = Vec::new();
-
-    for line in shared_deps.lines() {
-        if let Some(name) = crate_name_from_dep_line(line) {
-            dep_map.push((name, line.to_string()));
+    let mut merged = shared_cargo_toml.map_or_else(Vec::new, user_dependency_entries);
+    for (name, entry) in user_dependency_entries(cell_cargo_toml) {
+        if let Some(existing) = merged.iter_mut().find(|(n, _)| *n == name) {
+            existing.1 = entry;
+        } else {
+            merged.push((name, entry));
         }
     }
-
-    for line in cell_deps.lines() {
-        if let Some(name) = crate_name_from_dep_line(line) {
-            if let Some(entry) = dep_map.iter_mut().find(|(n, _)| *n == name) {
-                entry.1 = line.to_string();
-            } else {
-                dep_map.push((name, line.to_string()));
-            }
-        }
-    }
-
-    dep_map
-        .into_iter()
-        .map(|(_, line)| line)
-        .collect::<Vec<_>>()
-        .join("\n")
+    render_dep_entries(merged)
 }
 
 /// Extract the crate name from a TOML dependency line.
@@ -232,11 +281,13 @@ pub fn crate_name_from_dep_line(line: &str) -> Option<String> {
 /// downstream stages can enable the atomics WASM feature.
 #[must_use]
 pub fn merged_deps_contain_rayon(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> bool {
-    let merged = merge_dependencies(shared_cargo_toml, cell_cargo_toml);
-    merged
-        .lines()
-        .filter_map(crate_name_from_dep_line)
-        .any(|name| name == "rayon")
+    // Entry names, not rendered lines: a `[dependencies.rayon]` subtable
+    // has no `rayon = ...` line for a line-based scan to find.
+    shared_cargo_toml
+        .map_or_else(Vec::new, user_dependency_entries)
+        .iter()
+        .chain(user_dependency_entries(cell_cargo_toml).iter())
+        .any(|(name, _)| name == "rayon")
 }
 
 /// Returns `true` if the cell (or the notebook's shared source) uses
@@ -297,6 +348,54 @@ pub fn uses_coroutines(source: &str, shared_source: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dotted_dependency_sections_are_extracted_merged_and_filtered() {
+        // Regression: `[dependencies.NAME]` subtables were treated as "some
+        // other section" and dropped wholesale.
+        let toml = "[package]\nname = \"x\"\n\n[dependencies]\nserde = \"1\"\n\n\
+                    [dependencies.rayon]\nversion = \"1.10\"\n\n\
+                    [dependencies.ironpad-cell]\npath = \"nope\"\n";
+        let extracted = extract_user_dependencies(toml);
+        assert_eq!(
+            extracted, "serde = \"1\"\n\n[dependencies.rayon]\nversion = \"1.10\"",
+            "inline first, subtable kept with its header, ironpad-cell filtered"
+        );
+
+        // Cross-form precedence: a cell INLINE line replaces a shared
+        // SUBTABLE of the same crate, and vice versa.
+        let shared = "[dependencies.rayon]\nversion = \"1.9\"\n";
+        let merged = merge_dependencies(Some(shared), "[dependencies]\nrayon = \"1.10\"\n");
+        assert_eq!(merged, "rayon = \"1.10\"");
+        let merged = merge_dependencies(
+            Some("[dependencies]\nrayon = \"1.9\"\n"),
+            "[dependencies.rayon]\nversion = \"1.10\"\n",
+        );
+        assert_eq!(merged, "[dependencies.rayon]\nversion = \"1.10\"");
+    }
+
+    #[test]
+    fn rayon_in_a_dotted_section_opts_into_atomics() {
+        // The detection feeds the atomics toolchain/flags AND the cache key;
+        // the section form used to be invisible to it.
+        assert!(merged_deps_contain_rayon(
+            None,
+            "[dependencies.rayon]\nversion = \"1.10\"\n"
+        ));
+        assert!(merged_deps_contain_rayon(
+            Some("[dependencies.rayon]\nversion = \"1.10\"\n"),
+            "",
+        ));
+        assert!(!merged_deps_contain_rayon(
+            None,
+            "[dependencies.serde]\nversion = \"1\"\n"
+        ));
+        // The inline form still detects.
+        assert!(merged_deps_contain_rayon(
+            None,
+            "[dependencies]\nrayon = \"1.10\"\n"
+        ));
+    }
 
     #[test]
     fn coroutine_detection_covers_source_and_shared_but_not_bare_yield() {

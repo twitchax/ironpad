@@ -299,15 +299,17 @@ async fn finish_login(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Constrain a post-login redirect to a local path: absolute-path only, and
-/// not scheme-relative (`//evil.example`). Anything else lands home.
+/// Constrain a post-login redirect to a local path: absolute-path only, not
+/// scheme-relative (`//evil.example`), and free of control characters — a
+/// `\n`/`\r` in the path fails `HeaderValue` construction downstream, turning
+/// the sign-in landing into a 500. Anything else lands home.
 fn safe_redirect_path(path: Option<&str>) -> String {
     match path {
         Some(p)
             if p.starts_with('/')
                 && !p.starts_with("//")
                 && !p.contains('\\')
-                && !p.contains("/\\") =>
+                && !p.bytes().any(|b| b.is_ascii_control()) =>
         {
             p.to_string()
         }
@@ -365,6 +367,11 @@ mod tests {
         assert_eq!(safe_redirect_path(Some("//evil.example")), "/");
         assert_eq!(safe_redirect_path(Some("/\\evil.example")), "/");
         assert_eq!(safe_redirect_path(Some("javascript:alert(1)")), "/");
+        // Control characters fail HeaderValue construction downstream and
+        // used to 500 the sign-in landing; they land home instead.
+        assert_eq!(safe_redirect_path(Some("/a\nSet-Cookie: x=1")), "/");
+        assert_eq!(safe_redirect_path(Some("/a\rb")), "/");
+        assert_eq!(safe_redirect_path(Some("/a\x00b")), "/");
     }
 
     #[test]

@@ -34,14 +34,20 @@ impl FromRef<AppState> for LeptosOptions {
 
 /// Default global cap on concurrent guest connections across all sessions.
 /// Bounds the memory/task cost of a connection flood; generous for legitimate
-/// multi-agent use on a single-author deployment.
-const DEFAULT_MAX_GUESTS: usize = 512;
+/// multi-agent use on a single-author deployment. Also the clap default in
+/// `config.rs` — one constant, not two hand-synced literals.
+pub const DEFAULT_MAX_GUESTS: usize = 512;
 
-/// Default idle timeout for a guest connection. Guests (CLI daemons) don't send
-/// heartbeats and don't auto-reconnect, so this is deliberately generous: it
-/// exists to reap a half-open connection (a network drop with no FIN), not to
-/// police an agent's normal think-time. Any inbound frame resets the window.
-const DEFAULT_GUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Default idle timeout (seconds) for a guest connection. Guests (CLI
+/// daemons) don't send heartbeats and don't auto-reconnect, so this is
+/// deliberately generous: it exists to reap a half-open connection (a
+/// network drop with no FIN), not to police an agent's normal think-time.
+/// Any inbound frame resets the window. Also the clap default in
+/// `config.rs`.
+pub const DEFAULT_GUEST_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
+
+/// [`DEFAULT_GUEST_IDLE_TIMEOUT_SECS`] as a `Duration` for in-crate use.
+const DEFAULT_GUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(DEFAULT_GUEST_IDLE_TIMEOUT_SECS);
 
 /// Manages WebSocket connections between browser hosts and CLI guests.
 #[derive(Clone)]

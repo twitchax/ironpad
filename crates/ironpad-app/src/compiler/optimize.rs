@@ -6,7 +6,7 @@
 //! frame) while the blob is fetched once and cached.
 
 use std::path::Path;
-use std::process::{Output, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -146,9 +146,10 @@ mod tests {
         cmd.arg("30");
 
         let start = Instant::now();
-        let result = crate::compiler::build::run_group_with_timeout(cmd, Duration::from_millis(200))
-            .await
-            .unwrap();
+        let result =
+            crate::compiler::build::run_group_with_timeout(cmd, Duration::from_millis(200))
+                .await
+                .unwrap();
 
         assert!(result.is_none(), "an over-budget process must time out");
         assert!(

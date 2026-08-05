@@ -349,12 +349,15 @@ pub fn assemble_cell_inputs<C: PipingCell, S: std::hash::BuildHasher>(
     (encode_cell_inputs(&all_outputs), types)
 }
 
-/// The projection [`assemble_cell_inputs`] needs — implemented for both cell
-/// shapes so the editor (`CellManifest`) and the viewer (`IronpadCell`) run
-/// the SAME recipe instead of two hand-synced copies.
+/// The projection [`assemble_cell_inputs`] and [`unexecuted_upstream`] need
+/// — implemented for both cell shapes so the editor (`CellManifest`) and the
+/// viewer (`IronpadCell`) run the SAME recipes instead of hand-synced
+/// copies.
 pub trait PipingCell {
     fn id(&self) -> &str;
     fn is_code(&self) -> bool;
+    /// Run All / cascades execute this cell (code and not shared).
+    fn is_runnable(&self) -> bool;
 }
 
 impl PipingCell for ironpad_common::CellManifest {
@@ -363,6 +366,9 @@ impl PipingCell for ironpad_common::CellManifest {
     }
     fn is_code(&self) -> bool {
         self.cell_type == ironpad_common::CellType::Code
+    }
+    fn is_runnable(&self) -> bool {
+        Self::is_runnable(self)
     }
 }
 
@@ -373,11 +379,39 @@ impl PipingCell for ironpad_common::IronpadCell {
     fn is_code(&self) -> bool {
         self.cell_type == ironpad_common::CellType::Code
     }
+    fn is_runnable(&self) -> bool {
+        Self::is_runnable(self)
+    }
+}
+
+/// Upstream runnable cells (strictly before `cell_id`, in notebook order)
+/// with no recorded output — the prerequisites a single-cell Run must
+/// execute first, or the target's piped inputs arrive empty and it errors
+/// out on content the author already made work. The same cascade semantics
+/// `run_all_queue` gives agents (PRD-0052), shared with the read-only
+/// viewer's Run button.
+pub fn unexecuted_upstream<C: PipingCell, S: std::hash::BuildHasher>(
+    cells: &[C],
+    cell_id: &str,
+    outputs: &std::collections::HashMap<
+        String,
+        crate::components::output_render::CellOutputData,
+        S,
+    >,
+) -> Vec<String> {
+    let Some(my_idx) = cells.iter().position(|c| c.id() == cell_id) else {
+        return Vec::new();
+    };
+    cells[..my_idx]
+        .iter()
+        .filter(|c| c.is_runnable() && !outputs.contains_key(c.id()))
+        .map(|c| c.id().to_string())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{assemble_cell_inputs, encode_cell_inputs};
+    use super::{assemble_cell_inputs, encode_cell_inputs, unexecuted_upstream};
     use crate::components::output_render::CellOutputData;
     use ironpad_common::{CellManifest, CellType};
     use std::collections::HashMap;
@@ -422,6 +456,34 @@ mod tests {
         let (buf, types) = assemble_cell_inputs(&cells, 0, &HashMap::new());
         assert!(buf.is_empty());
         assert!(types.is_empty());
+    }
+
+    #[test]
+    fn unexecuted_upstream_selects_only_runnable_cells_without_outputs() {
+        let mut cells = vec![
+            manifest("ran", CellType::Code),
+            manifest("md", CellType::Markdown),
+            manifest("cold", CellType::Code),
+            manifest("shared", CellType::Code),
+            manifest("me", CellType::Code),
+            manifest("after", CellType::Code),
+        ];
+        cells[3].shared = true;
+        let mut outputs = HashMap::new();
+        outputs.insert("ran".to_string(), CellOutputData::default());
+
+        // Only the unexecuted, runnable, strictly-upstream cell qualifies:
+        // executed cells are warm, markdown/shared never run, and cells
+        // after the target are not prerequisites.
+        assert_eq!(
+            unexecuted_upstream(&cells, "me", &outputs),
+            vec!["cold".to_string()]
+        );
+        // Unknown target: nothing (never "run everything").
+        assert_eq!(
+            unexecuted_upstream(&cells, "gone", &outputs),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

@@ -252,6 +252,24 @@ impl NotebookState {
     /// No-op on the server side.
     #[cfg(not(feature = "hydrate"))]
     pub(super) fn schedule_reactive_execution(&self) {}
+
+    /// Halt a run-all cascade at `failed_cell_id`: in reactive mode, mark
+    /// the remaining queued cells blocked-by the failure, then clear the
+    /// queue. ONE definition for the three error paths (execution, compile,
+    /// transport) that each used to hand-roll it — the daemon's
+    /// `prerequisite_failed` semantics lean on this behavior, so the copies
+    /// drifting apart would desync agents from the UI.
+    pub(super) fn abort_run_cascade(&self, failed_cell_id: &str) {
+        let queue = self.run_all_queue.get_untracked();
+        if self.reactive_mode.get_untracked() && queue.len() > 1 {
+            self.cell_blocked_by.update(|blocked| {
+                for queued_id in &queue[1..] {
+                    blocked.insert(queued_id.clone(), failed_cell_id.to_string());
+                }
+            });
+        }
+        self.run_all_queue.set(vec![]);
+    }
 }
 
 // ── Notebook state helpers ──────────────────────────────────────────────────
