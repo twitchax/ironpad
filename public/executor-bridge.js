@@ -155,11 +155,31 @@
 
     var self = this;
     this._mainExecutorPromise = new Promise(function (resolve, reject) {
-      // executor.js depends on executor-core.js (reads self.__IronpadExecutorCore),
-      // so we must load core first.
-      var coreScript = document.createElement("script");
-      coreScript.src = versionedPath("/executor-core.js");
-      coreScript.onload = function () {
+      // Load order matters: executor-core.js reads the Gpu/Glue namespaces
+      // its companions register (PRD-0055 T-002), and executor.js reads
+      // self.__IronpadExecutorCore — so the chain is gpu, glue, core,
+      // executor.js, strictly sequential.
+      var chain = [
+        "/executor-gpu.js",
+        "/executor-glue.js",
+        "/executor-core.js",
+      ];
+      function loadNext() {
+        var path = chain.shift();
+        if (path === undefined) {
+          loadExecutorJs();
+          return;
+        }
+        var script = document.createElement("script");
+        script.src = versionedPath(path);
+        script.onload = loadNext;
+        script.onerror = function () {
+          self._mainExecutorPromise = null; // allow a later retry
+          reject(new Error("Failed to load " + path));
+        };
+        document.head.appendChild(script);
+      }
+      function loadExecutorJs() {
         var script = document.createElement("script");
         // executor.js sets window.IronpadExecutor, but we already own that
         // global.  We load it, grab the CellExecutor from the temporary
@@ -181,12 +201,8 @@
           reject(new Error("Failed to load fallback executor"));
         };
         document.head.appendChild(script);
-      };
-      coreScript.onerror = function () {
-        self._mainExecutorPromise = null; // allow a later retry
-        reject(new Error("Failed to load executor-core.js"));
-      };
-      document.head.appendChild(coreScript);
+      }
+      loadNext();
     });
     return this._mainExecutorPromise;
   };

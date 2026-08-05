@@ -11,6 +11,11 @@
 (function () {
   "use strict";
 
+  // Split companions (PRD-0055 T-002), loaded BEFORE this file in both
+  // contexts (worker importScripts chain; main-thread fallback injection):
+  var Gpu = self.__IronpadExecutorGpu;
+  var Glue = self.__IronpadExecutorGlue;
+
   // ── CellResult layout ──────────────────────────────────────────────────────
   //
   // The cell_main function returns a pointer to a CellResult (#[repr(C)]):
@@ -65,10 +70,9 @@
   // promise settles. Shipped by default in Chrome/Edge 137+.
 
   var JSPI_IMPORT_PREFIX = "ironpad_blocking_";
-  var JSPI_UNSUPPORTED_MSG =
-    "This cell uses blocking host calls (ironpad_cell::blocking), which need " +
-    "WebAssembly JSPI: available in Chrome and Edge 137+, not yet in Firefox " +
-    "or Safari.";
+  // Owned by executor-glue.js (the generated import shims embed it at build
+  // time); read here for the execute()-time gate and _jspiImport stub.
+  var JSPI_UNSUPPORTED_MSG = Glue.JSPI_UNSUPPORTED_MSG;
 
   function _jspiAvailable() {
     return (
@@ -120,216 +124,6 @@
 
     // Fall back to the raw message with memory context.
     return raw + memHint;
-  }
-
-  // ── GPU state ──────────────────────────────────────────────────────────────
-  //
-  // WebGPU capability detection, device initialization, handle registry, and
-  // FFI helpers.  All GPU handles live in a flat Map so WASM cells can
-  // reference them by integer handle.
-
-  var _gpuDevice = null;
-  var _gpuAvailable = null; // null = not yet probed, true/false = result
-  var _gpuHandles = new Map();
-  var _gpuNextHandle = 1;
-
-  async function _initGpu() {
-    if (_gpuAvailable !== null) return _gpuAvailable;
-    try {
-      if (typeof navigator === "undefined" || !navigator.gpu) {
-        _gpuAvailable = false;
-        return false;
-      }
-      var adapter = await navigator.gpu.requestAdapter();
-      if (!adapter) {
-        _gpuAvailable = false;
-        return false;
-      }
-      _gpuDevice = await adapter.requestDevice({
-        requiredLimits: {
-          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-          maxBufferSize: adapter.limits.maxBufferSize,
-        },
-      });
-      _gpuDevice.lost.then(function (info) {
-        console.warn("ironpad: GPU device lost:", info.message);
-        _gpuDevice = null;
-        _gpuAvailable = null;
-      });
-      _gpuAvailable = true;
-      return true;
-    } catch (e) {
-      console.warn("ironpad: GPU init failed:", e);
-      _gpuAvailable = false;
-      return false;
-    }
-  }
-
-  function _gpuCleanupHandles(handles) {
-    for (var h of handles) {
-      var res = _gpuHandles.get(h);
-      if (res) {
-        if (res.destroy) res.destroy();
-        _gpuHandles.delete(h);
-      }
-    }
-  }
-
-  // ── GPU FFI helpers ────────────────────────────────────────────────────────
-
-  function _gpuAvailableSync() {
-    return _gpuAvailable === true ? 1 : 0;
-  }
-
-  function _gpuCreateBuffer(size, usage) {
-    // usage: 0=STORAGE, 1=STORAGE|COPY_SRC, 2=MAP_READ|COPY_DST, 3=STORAGE|COPY_DST
-    if (!_gpuDevice) return 0;
-    var gpuUsage;
-    switch (usage) {
-      case 0: gpuUsage = GPUBufferUsage.STORAGE; break;
-      case 1: gpuUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC; break;
-      case 2: gpuUsage = GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST; break;
-      case 3: gpuUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST; break;
-      default: gpuUsage = GPUBufferUsage.STORAGE; break;
-    }
-    try {
-      var buf = _gpuDevice.createBuffer({ size: size, usage: gpuUsage });
-      var handle = _gpuNextHandle++;
-      _gpuHandles.set(handle, buf);
-      return handle;
-    } catch (e) {
-      console.error("ironpad: GPU createBuffer failed:", e);
-      return 0;
-    }
-  }
-
-  function _gpuWriteBuffer(handle, srcPtr, srcLen, memory) {
-    if (!_gpuDevice) return;
-    var buf = _gpuHandles.get(handle);
-    if (!buf) return;
-    var data = new Uint8Array(memory.buffer, srcPtr, srcLen);
-    _gpuDevice.queue.writeBuffer(buf, 0, data);
-  }
-
-  function _gpuDispatchComputeSync(
-    shaderPtr, shaderLen, uniformHandle, outputHandle, width, height, memory
-  ) {
-    if (!_gpuDevice) return 1;
-    try {
-      var shaderBytes = new Uint8Array(memory.buffer, shaderPtr, shaderLen);
-      var shaderCode = new TextDecoder().decode(shaderBytes);
-
-      var shaderModule = _gpuDevice.createShaderModule({ code: shaderCode });
-
-      var uniformBuf = _gpuHandles.get(uniformHandle);
-      var outputBuf = _gpuHandles.get(outputHandle);
-      if (!uniformBuf || !outputBuf) return 1;
-
-      var bindGroupLayout = _gpuDevice.createBindGroupLayout({
-        entries: [
-          { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-          { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        ],
-      });
-
-      var bindGroup = _gpuDevice.createBindGroup({
-        layout: bindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: uniformBuf } },
-          { binding: 1, resource: { buffer: outputBuf } },
-        ],
-      });
-
-      var pipeline = _gpuDevice.createComputePipeline({
-        layout: _gpuDevice.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
-        compute: { module: shaderModule, entryPoint: "main" },
-      });
-
-      var commandEncoder = _gpuDevice.createCommandEncoder();
-      var pass = commandEncoder.beginComputePass();
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bindGroup);
-      pass.dispatchWorkgroups(Math.ceil(width / 16), Math.ceil(height / 16));
-      pass.end();
-      _gpuDevice.queue.submit([commandEncoder.finish()]);
-      return 0;
-    } catch (e) {
-      console.error("ironpad: GPU dispatch failed:", e);
-      return 1;
-    }
-  }
-
-  // ── GPU async readback (called after cell_main returns) ────────────────────
-
-  async function _gpuReadPixels(outputHandle, stagingHandle, width, height) {
-    if (!_gpuDevice) return null;
-    var outputBuf = _gpuHandles.get(outputHandle);
-    var stagingBuf = _gpuHandles.get(stagingHandle);
-    if (!outputBuf || !stagingBuf) return null;
-    try {
-      var byteSize = width * height * 16; // vec4<f32> = 16 bytes per pixel
-      var commandEncoder = _gpuDevice.createCommandEncoder();
-      commandEncoder.copyBufferToBuffer(outputBuf, 0, stagingBuf, 0, byteSize);
-      _gpuDevice.queue.submit([commandEncoder.finish()]);
-
-      await stagingBuf.mapAsync(GPUMapMode.READ);
-      var mapped = new Float32Array(stagingBuf.getMappedRange());
-
-      var pixelCount = width * height;
-      var rgb = new Uint8Array(pixelCount * 3);
-      for (var i = 0; i < pixelCount; i++) {
-        rgb[i * 3] = Math.min(255, Math.max(0, Math.round(mapped[i * 4] * 255)));
-        rgb[i * 3 + 1] = Math.min(255, Math.max(0, Math.round(mapped[i * 4 + 1] * 255)));
-        rgb[i * 3 + 2] = Math.min(255, Math.max(0, Math.round(mapped[i * 4 + 2] * 255)));
-      }
-      stagingBuf.unmap();
-      return rgb;
-    } catch (e) {
-      console.error("ironpad: GPU readPixels failed:", e);
-      return null;
-    }
-  }
-
-  // ── BMP construction (used for GPU canvas output) ──────────────────────────
-
-  function _gpuBuildBmp(width, height, rgb) {
-    var rowStride = Math.ceil((width * 3) / 4) * 4;
-    var pixelDataSize = rowStride * height;
-    var fileSize = 54 + pixelDataSize;
-    var bmp = new Uint8Array(fileSize);
-    var view = new DataView(bmp.buffer);
-
-    // BMP file header (14 bytes).
-    bmp[0] = 0x42; bmp[1] = 0x4d; // "BM"
-    view.setUint32(2, fileSize, true);
-    view.setUint32(10, 54, true);
-
-    // DIB header (BITMAPINFOHEADER, 40 bytes).
-    view.setUint32(14, 40, true);
-    view.setInt32(18, width, true);
-    view.setInt32(22, -height, true); // negative = top-down row order
-    view.setUint16(26, 1, true);
-    view.setUint16(28, 24, true);
-    view.setUint32(34, pixelDataSize, true);
-
-    for (var y = 0; y < height; y++) {
-      for (var x = 0; x < width; x++) {
-        var srcIdx = (y * width + x) * 3;
-        var dstIdx = 54 + y * rowStride + x * 3;
-        bmp[dstIdx] = rgb[srcIdx + 2];     // B
-        bmp[dstIdx + 1] = rgb[srcIdx + 1]; // G
-        bmp[dstIdx + 2] = rgb[srcIdx];     // R
-      }
-    }
-    return bmp;
-  }
-
-  function _gpuBmpToBase64DataUrl(bmp) {
-    var binary = "";
-    for (var i = 0; i < bmp.length; i++) {
-      binary += String.fromCharCode(bmp[i]);
-    }
-    return "data:image/bmp;base64," + btoa(binary);
   }
 
   // ── CellExecutor ───────────────────────────────────────────────────────────
@@ -458,11 +252,11 @@
   // ── GPU executor methods (resolve WASM memory per cell) ─────────────────
 
   CellExecutor.prototype._gpuAvailableSync = function () {
-    return _gpuAvailableSync();
+    return Gpu.availableSync();
   };
 
   CellExecutor.prototype._gpuCreateBuffer = function (size, usage) {
-    return _gpuCreateBuffer(size, usage);
+    return Gpu.createBuffer(size, usage);
   };
 
   CellExecutor.prototype._gpuWriteBufferForCell = function (cellId, handle, ptr, len) {
@@ -471,7 +265,7 @@
     var memory = entry.type === "bindgen"
       ? (entry.wasm && entry.wasm.memory)
       : (entry.instance && entry.instance.exports.memory);
-    if (memory) _gpuWriteBuffer(handle, ptr, len, memory);
+    if (memory) Gpu.writeBuffer(handle, ptr, len, memory);
   };
 
   CellExecutor.prototype._gpuDispatchComputeForCell = function (
@@ -483,7 +277,7 @@
       ? (entry.wasm && entry.wasm.memory)
       : (entry.instance && entry.instance.exports.memory);
     if (!memory) return 1;
-    return _gpuDispatchComputeSync(
+    return Gpu.dispatchComputeSync(
       shaderPtr, shaderLen, uniformHandle, outputHandle, width, height, memory
     );
   };
@@ -509,11 +303,11 @@
     // while its own placeholder stayed blank.
     var claimed = new Set();
     for (var rb of this._pendingGpuReadbacks) {
-      var rgb = await _gpuReadPixels(
+      var rgb = await Gpu.readPixels(
         rb.output_handle, rb.staging_handle, rb.width, rb.height
       );
       if (rgb) {
-        var bmp = _gpuBuildBmp(rb.width, rb.height, rgb);
+        var bmp = Gpu.buildBmp(rb.width, rb.height, rgb);
         // Extract raw base64 (no data URL prefix) for the BlobImage panel.
         var binary = "";
         for (var i = 0; i < bmp.length; i++) {
@@ -655,62 +449,6 @@
     return n;
   };
 
-  // ── env host-import table ─────────────────────────────────────────────
-  //
-  // THE single source of truth for the `env` imports a cell's WASM module
-  // may declare. The authoritative Rust side is the `#[link(wasm_import_module
-  // = "env")] extern "C"` blocks in ironpad-cell (lib.rs, sim.rs, gpu.rs,
-  // blocking.rs); this table must list exactly those names.
-  //
-  // Each entry builds the import's JS function EXPRESSION as a string,
-  // parameterized by:
-  //   - g:   an expression evaluating to the executor object;
-  //   - cid: an expression evaluating to the cell id.
-  // Three consumers generate from it: the ESM `import * from 'env'` rewrite,
-  // the `__wbg_get_imports` preamble (older wasm-bindgen fallback), and the
-  // raw-WASM imports object. They used to be three hand-written copies, and
-  // a new import missing from ONE copy failed instantiation only on that
-  // specific loading path — which no test exercises.
-  function _envImportExprs(g, cid) {
-    // The Suspending wrappers are built inline (never via the executor
-    // global): the generated text also evaluates inside rayon sub-workers,
-    // where the executor global is undefined — a build-time dereference
-    // would crash worker init before the thread pool exists.
-    function jspiGuarded(fnExpr) {
-      return (
-        "(typeof WebAssembly.Suspending === 'function') " +
-        "? new WebAssembly.Suspending(" + fnExpr + ") " +
-        ": function() { throw new Error(" + JSON.stringify(JSPI_UNSUPPORTED_MSG) + "); }"
-      );
-    }
-    return {
-      ironpad_host_message:
-        "function(ptr, len) { if (" + g + ") { " + g + "._dispatchHostMessage(" + cid + ", ptr, len); } }",
-      ironpad_sim_read:
-        "function(ptr, len) { return " + g + " ? " + g + "._simRead(" + cid + ", ptr, len) : 0; }",
-      ironpad_sim_read_all:
-        "function(ptr, len) { return " + g + " ? " + g + "._simReadAll(" + cid + ", ptr, len) : 0; }",
-      ironpad_gpu_available:
-        "function() { return " + g + "._gpuAvailableSync(); }",
-      ironpad_gpu_create_buffer:
-        "function(s, u) { return " + g + "._gpuCreateBuffer(s, u); }",
-      ironpad_gpu_write_buffer:
-        "function(h, p, l) { if (" + g + ") " + g + "._gpuWriteBufferForCell(" + cid + ", h, p, l); }",
-      ironpad_gpu_dispatch_compute:
-        "function(sp, sl, uh, oh, w, h) { return " + g + " ? " + g + "._gpuDispatchComputeForCell(" + cid + ", sp, sl, uh, oh, w, h) : 1; }",
-      ironpad_blocking_sleep_ms: jspiGuarded(
-        "function(ms) { return new Promise(function(res) { setTimeout(res, ms); }); }"
-      ),
-      ironpad_blocking_fetch: jspiGuarded(
-        "function(p, l) { return " + g + "._blockingFetch(" + cid + ", p, l); }"
-      ),
-      ironpad_blocking_fetch_ok:
-        "function() { return " + g + " ? " + g + "._blockingFetchOk(" + cid + ") : 0; }",
-      ironpad_blocking_read:
-        "function(p, l) { return " + g + " ? " + g + "._blockingRead(" + cid + ", p, l) : 0; }",
-    };
-  }
-
   CellExecutor.prototype.loadBlob = async function (cellId, hash, wasmBytes, jsGlue) {
     var existing = this.modules.get(cellId);
     if (existing && existing.hash === hash) {
@@ -734,142 +472,10 @@
       // wrapper that injects `env.ironpad_host_message` at import-build
       // time.
 
-      var escapedCellId = JSON.stringify(cellId);
+      // The whole text transformation (env shim, rayon startWorkers,
+      // __wbg_get_imports preamble) lives in executor-glue.js.
+      var augmentedGlue = Glue.rewriteBindgenGlue(jsGlue, cellId, globalRef);
 
-      // 1) Replace bare `import * as __wbg_starN from 'env'` with an
-      //    inline shim so the ESM can load from a blob URL.
-      // Generated from the single env-import table above.
-      var _shimExprs = _envImportExprs(globalRef, escapedCellId);
-      var hostShimBody = Object.keys(_shimExprs)
-        .map(function (k) { return k + ": " + _shimExprs[k]; })
-        .join(", ");
-
-      jsGlue = jsGlue.replace(
-        /import\s*\*\s*as\s+(\w+)\s+from\s+['"]env['"]\s*;?/g,
-        function (_match, starName) {
-          return "var " + starName + " = { " + hostShimBody + " };";
-        }
-      );
-
-      // 1b) Replace wasm-bindgen-rayon snippet imports with an inline
-      //     startWorkers implementation.  The snippet lives at a relative
-      //     path like `./snippets/wasm-bindgen-rayon-HASH/src/workerHelpers.js`
-      //     which cannot be resolved when the glue is loaded from a blob URL.
-      //
-      //     Our inline version creates rayon sub-workers from blob URLs,
-      //     passing the rewritten glue code so each sub-worker can import
-      //     it and call `pkg.default(init)` + `pkg.wbg_rayon_start_worker`.
-      jsGlue = jsGlue.replace(
-        /import\s*\{\s*startWorkers\s*\}\s+from\s+['"][^'"]*wasm-bindgen-rayon[^'"]*workerHelpers\.js['"];?/g,
-        "\n" +
-        "var _rayonWorkers;\n" +
-        "var _RAYON_WORKER_INIT_TIMEOUT_MS = 30000;\n" +
-        "// Resolve when `target` posts a message of `type`; reject on worker\n" +
-        "// error or after `timeoutMs`. Both listeners AND the timer are always\n" +
-        "// torn down so a sub-worker that never signals ready can't leak the\n" +
-        "// listener or hang initThreadPool forever.\n" +
-        "function _waitForMsgType(target, type, timeoutMs) {\n" +
-        "  return new Promise(function(resolve, reject) {\n" +
-        "    function cleanup() {\n" +
-        "      clearTimeout(timer);\n" +
-        "      target.removeEventListener('message', onMsg);\n" +
-        "      target.removeEventListener('error', onErr);\n" +
-        "    }\n" +
-        "    var timer = setTimeout(function() {\n" +
-        "      cleanup();\n" +
-        "      reject(new Error('rayon worker init timed out after ' + timeoutMs + 'ms'));\n" +
-        "    }, timeoutMs);\n" +
-        "    function onMsg(event) {\n" +
-        "      if (!event.data || event.data.type !== type) return;\n" +
-        "      cleanup();\n" +
-        "      resolve(event.data);\n" +
-        "    }\n" +
-        "    function onErr(event) {\n" +
-        "      cleanup();\n" +
-        "      reject(new Error('rayon worker failed to initialize: ' + (event.message || 'unknown error')));\n" +
-        "    }\n" +
-        "    target.addEventListener('message', onMsg);\n" +
-        "    target.addEventListener('error', onErr);\n" +
-        "  });\n" +
-        "}\n" +
-        "async function startWorkers(module, memory, builder) {\n" +
-        "  if (builder.numThreads() === 0) throw new Error('num_threads must be > 0');\n" +
-        "  // Read this cell's glue by id (not a single shared global) so two\n" +
-        "  // concurrent rayon-cell loads can't clobber each other's code.\n" +
-        "  var glueCode = (self.__ironpadRayonGlue || {})[__ironpad_cell_id];\n" +
-        "  // Terminate any previously-spawned pool so repeated loads of a rayon\n" +
-        "  // cell don't leak a fresh set of sub-workers each time.\n" +
-        "  if (self.__ironpadRayonWorkers) {\n" +
-        "    self.__ironpadRayonWorkers.forEach(function(w) { w.terminate(); });\n" +
-        "    self.__ironpadRayonWorkers = null;\n" +
-        "  }\n" +
-        "  var workerInit = {\n" +
-        "    type: 'wasm_bindgen_worker_init',\n" +
-        "    init: { module_or_path: module, memory: memory },\n" +
-        "    receiver: builder.receiver()\n" +
-        "  };\n" +
-        "  var _spawned = [];\n" +
-        "  try {\n" +
-        "    _rayonWorkers = await Promise.all(\n" +
-        "      Array.from({ length: builder.numThreads() }, async function() {\n" +
-        "        var subWorkerCode =\n" +
-        "          'self.onmessage = async function(e) {' +\n" +
-        "          '  if (e.data && e.data.type === \"wasm_bindgen_worker_init\") {' +\n" +
-        "          '    var blob = new Blob([e.data.glueCode], {type:\"application/javascript\"});' +\n" +
-        "          '    var url = URL.createObjectURL(blob);' +\n" +
-        "          '    try {' +\n" +
-        "          '      var pkg = await import(url);' +\n" +
-        "          '      await pkg.default(e.data.init);' +\n" +
-        "          '      self.postMessage({type:\"wasm_bindgen_worker_ready\"});' +\n" +
-        "          '      pkg.wbg_rayon_start_worker(e.data.receiver);' +\n" +
-        "          '    } finally {' +\n" +
-        "          '      URL.revokeObjectURL(url);' +\n" +
-        "          '    }' +\n" +
-        "          '  }' +\n" +
-        "          '};';\n" +
-        "        var subBlob = new Blob([subWorkerCode], {type:'application/javascript'});\n" +
-        "        var subUrl = URL.createObjectURL(subBlob);\n" +
-        "        var worker = new Worker(subUrl, {type:'module'});\n" +
-        "        URL.revokeObjectURL(subUrl);\n" +
-        "        _spawned.push(worker);\n" +
-        "        var msg = { type: workerInit.type, init: workerInit.init,\n" +
-        "                     receiver: workerInit.receiver, glueCode: glueCode };\n" +
-        "        worker.postMessage(msg);\n" +
-        "        await _waitForMsgType(worker, 'wasm_bindgen_worker_ready', _RAYON_WORKER_INIT_TIMEOUT_MS);\n" +
-        "        return worker;\n" +
-        "      })\n" +
-        "    );\n" +
-        "  } catch (err) {\n" +
-        "    // One sub-worker failed to init: terminate every worker we spawned\n" +
-        "    // so a partial pool can't leak, then reject initThreadPool.\n" +
-        "    _spawned.forEach(function(w) { w.terminate(); });\n" +
-        "    throw err;\n" +
-        "  }\n" +
-        "  self.__ironpadRayonWorkers = _rayonWorkers;\n" +
-        "  builder.build();\n" +
-        "}\n"
-      );
-
-      // 2) Preamble: wrap __wbg_get_imports (fallback for older wasm-bindgen).
-      // 2) Preamble: wrap __wbg_get_imports (fallback for older
-      //    wasm-bindgen), generated from the same env-import table.
-      var _preambleExprs = _envImportExprs(globalRef, "__ironpad_cell_id");
-      var preamble =
-        "var __ironpad_cell_id = " + escapedCellId + ";\n" +
-        "if (typeof __wbg_get_imports === 'function') {\n" +
-        "  var __ironpad_orig_get_imports = __wbg_get_imports;\n" +
-        "  __wbg_get_imports = function(memory) {\n" +
-        "    var imports = __ironpad_orig_get_imports(memory);\n" +
-        "    if (!imports.env) imports.env = {};\n" +
-        Object.keys(_preambleExprs)
-          .map(function (k) {
-            return "    imports.env." + k + " = " + _preambleExprs[k] + ";\n";
-          })
-          .join("") +
-        "    return imports;\n" +
-        "  };\n" +
-        "}\n";
-      var augmentedGlue = preamble + jsGlue;
       var jsBlob = new Blob([augmentedGlue], { type: "application/javascript" });
       var jsUrl = URL.createObjectURL(jsBlob);
 
@@ -914,25 +520,9 @@
       }
     } else {
       // ── Legacy raw WASM path ─────────────────────────────────────────
-      var rawCellId = cellId;
-      var rawSelf = this;
-      // Materialize the SAME generated env-import table as live closures:
-      // `new Function` receives rawSelf/rawCellId as parameters, so the
-      // expressions close over the live executor exactly as the previous
-      // hand-written object did (prototype methods delegate to the free
-      // gpu helpers, and the inline Suspending guard matches _jspiImport).
-      var _rawExprs = _envImportExprs("rawSelf", "rawCellId");
-      var _rawBody = Object.keys(_rawExprs)
-        .map(function (k) { return k + ": " + _rawExprs[k]; })
-        .join(", ");
-      /* eslint-disable-next-line no-new-func */
-      var imports = {
-        env: new Function(
-          "rawSelf",
-          "rawCellId",
-          "return {" + _rawBody + "};"
-        )(rawSelf, rawCellId),
-      };
+      // Live-closure materialization of the same env-import table
+      // (executor-glue.js).
+      var imports = { env: Glue.rawEnvImports(this, cellId) };
       var result = await WebAssembly.instantiate(wasmBytes, imports);
       this.modules.set(cellId, {
         hash: hash,
@@ -951,7 +541,7 @@
   /// wasm-bindgen-futures), and the raw path is wrapped transparently.
   CellExecutor.prototype.execute = async function (cellId, inputBytes) {
     // Ensure GPU device is initialized (no-op after first call).
-    await _initGpu();
+    await Gpu.init();
 
     var entry = this.modules.get(cellId);
     if (!entry) {
@@ -1047,7 +637,7 @@
       // then always tear down per-run GPU state.
       if (inputPtr !== 0) dealloc(inputPtr, inputLen);
       this._pendingGpuReadbacks = [];
-      _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
+      Gpu.cleanupAllHandles();
     }
   };
 
@@ -1148,7 +738,7 @@
       // then always tear down per-run GPU state.
       if (inputPtr !== 0) dealloc(inputPtr, inputLen);
       this._pendingGpuReadbacks = [];
-      _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
+      Gpu.cleanupAllHandles();
     }
   };
 

@@ -3,10 +3,14 @@
 // global.  executor-worker.js imports this via importScripts and creates the
 // executor instance.
 //
-// executor-core.js is loaded via importScripts (no <script> ordering in Workers).
+// The executor scripts load via importScripts (no <script> ordering in
+// Workers). Order matters: executor-core.js reads the Gpu/Glue namespaces
+// its two companions register (PRD-0055 T-002).
 
 "use strict";
 
+importScripts("/executor-gpu.js" + (self.location.search || ""));
+importScripts("/executor-glue.js" + (self.location.search || ""));
 importScripts("/executor-core.js" + (self.location.search || ""));
 
 var _CoreCellExecutor = self.__IronpadExecutorCore.CellExecutor;

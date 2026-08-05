@@ -28,7 +28,7 @@ acceptance_tests:
 - id: uat-002
   name: "executor-core.js split: all cell execution paths (bindgen, raw, rayon, JSPI, GPU, sim) work across window and worker contexts"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "main.rs split: server boots identically (routes, middleware, sweepers, cache valve); relay + auth integration tests green"
   command: cargo make uat
@@ -43,7 +43,7 @@ tasks:
 - id: T-002
   title: "Split executor-core.js by concern"
   priority: 2
-  status: todo
+  status: done
   notes: "1,480 lines mixing the WebGPU runtime, BMP/image encoding, wasm-bindgen glue rewriting (env import table, rayon inline-worker codegen), and the cell ABI/executor class. Split into files loaded in both contexts (window script tags via versioned(); worker via importScripts in executor-worker*.js) — verify the load mechanism for each context FIRST and keep load order explicit. Candidate cut: executor-gpu.js (device/buffers/dispatch/readback), executor-glue.js (env table + glue rewrite + rayon codegen), executor-core.js (executor class + ABI + sim bus). The env-import sync test in compiler/build.rs must keep passing (update its file target if the table moves). If the split yields a natural shared home for the bridge's sim-bus mirror, take it; otherwise leave the documented duplication."
 - id: T-003
   title: "Split main.rs bootstrap into modules"
@@ -101,3 +101,4 @@ See frontmatter references; hot files are the three named in the tasks.
 - **2026-08-05** — PRD created from the fanout review's three deliberately-deferred SOC findings, prioritized ahead of the feature backlog at Aaron's direction.
 
 - **2026-08-05** — T-001 done: `pipeline.rs` (compile/execute flow as `wire_run_effect` over a `CellRunCtx` bundle, plus the PRD-0045 live-check dispatch and marker/warmth helpers). CellItem drops from 2,073 to ~1,500 lines and owns only the trigger, watchers, editor callbacks, and rendering. The extraction consumed two more shared seams for free: the run path's hand-rolled prerequisite cascade became `unexecuted_upstream` (the third copy unified), and the downstream-invalidation set became a pure, unit-tested `downstream_code_ids`. Session-event emission moved behind `CellRunCtx::emit_session_event` with the same live-session gate. Gate: cargo make ci (806 unit tests, two new), full Playwright 108 passed / 0 failed. uat-001 verified.
+- **2026-08-05** — T-002 done: `executor-gpu.js` (WebGPU state/dispatch/readback/BMP, 230 lines) and `executor-glue.js` (env import table + ESM/rayon/preamble rewriting as pure text functions, 250 lines) split out; `executor-core.js` drops 1,480 → 1,070 and keeps the executor class + ABI + sim bus, consuming the two namespaces. Loaders updated with explicit ordering (worker importScripts chain; the bridge's fallback injection generalized to a sequential list). The env-import sync test retargeted to the glue file. Dead `_gpuBmpToBase64DataUrl` (zero callers) deleted. Verified by: node-level smoke of the moved behavior (namespace surface, a synthetic bindgen-glue rewrite through all three transformations, raw-path closure materialization), cargo make ci (806), full Playwright 108/0 — every e2e cell execution exercises the worker chain; the main-thread fallback injection sequence is the one path e2e cannot reach and carries the parse-check instead. uat-002 verified.

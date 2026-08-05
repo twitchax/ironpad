@@ -930,7 +930,7 @@ mod tests {
         );
 
         // JS side: keys of the generated env-import table.
-        let core = std::fs::read_to_string(root.join("public/executor-core.js")).unwrap();
+        let core = std::fs::read_to_string(root.join("public/executor-glue.js")).unwrap();
         let table_start = core
             .find("function _envImportExprs")
             .expect("env-import table function present");
