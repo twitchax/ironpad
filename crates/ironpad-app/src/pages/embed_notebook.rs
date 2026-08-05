@@ -20,11 +20,11 @@ use crate::server_fns::{get_public_notebook, get_shared_manifest, get_shared_not
 #[component]
 pub fn EmbedSharedPage() -> impl IntoView {
     let params = use_params_map();
-    let hash = params.read_untracked().get("hash").unwrap_or_default();
-    let spec = format!("shared/{hash}");
+    // Tracked: the router reuses this outlet on a param-only change.
+    let hash = Memo::new(move |_| params.read().get("hash").unwrap_or_default());
 
     let notebook_resource = Resource::new(
-        move || hash.clone(),
+        move || hash.get(),
         |hash| async move {
             let notebook = get_shared_notebook(hash.clone()).await?;
             // A missing/failed manifest degrades to live compilation
@@ -37,7 +37,7 @@ pub fn EmbedSharedPage() -> impl IntoView {
     view! {
         <Suspense fallback=embed_loading>
             {move || {
-                let spec = spec.clone();
+                let spec = format!("shared/{}", hash.get());
                 Suspend::new(async move {
                     let (result, manifest) = match notebook_resource.await {
                         Ok((nb, manifest)) => (Ok(nb), manifest),
@@ -68,8 +68,8 @@ pub fn EmbedSharedPage() -> impl IntoView {
 #[component]
 pub fn EmbedPublicPage() -> impl IntoView {
     let params = use_params_map();
-    let filename = params.read_untracked().get("filename").unwrap_or_default();
-    let spec = format!("public/{filename}");
+    // Tracked: the router reuses this outlet on a param-only change.
+    let filename = Memo::new(move |_| params.read().get("filename").unwrap_or_default());
 
     let query = leptos_router::hooks::use_query_map();
     let autorun = matches!(
@@ -77,12 +77,12 @@ pub fn EmbedPublicPage() -> impl IntoView {
         Some("1" | "true")
     );
 
-    let notebook_resource = Resource::new(move || filename.clone(), get_public_notebook);
+    let notebook_resource = Resource::new(move || filename.get(), get_public_notebook);
 
     view! {
         <Suspense fallback=embed_loading>
             {move || {
-                let spec = spec.clone();
+                let spec = format!("public/{}", filename.get());
                 Suspend::new(async move {
                     embed_body(
                         notebook_resource.await,

@@ -23,6 +23,15 @@ const DRAFT_SAVE_DEBOUNCE_MS: i32 = 1500;
 #[cfg(feature = "hydrate")]
 const DRAFT_SAVE_RETRY_MS: i32 = 5000;
 
+/// Poll interval (ms) while a durable save drains in-flight autosaves.
+#[cfg(feature = "hydrate")]
+const DRAFT_SAVE_INFLIGHT_POLL_MS: i32 = 50;
+
+/// Cap (ms) on that drain, so a hung autosave request can't wedge Push
+/// forever — past it we proceed and rely on last-write-wins.
+#[cfg(feature = "hydrate")]
+const DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS: i32 = 5000;
+
 // ── Cell status ─────────────────────────────────────────────────────────────
 
 /// Reactive cell execution status for the UI.
@@ -123,6 +132,11 @@ pub(crate) struct NotebookState {
     /// Monotonic epoch coalescing debounced draft saves: each schedule bumps
     /// it, and a firing task saves only if its epoch is still current.
     pub(super) draft_save_epoch: RwSignal<u64>,
+    /// Count of draft-save POSTs currently in flight. The pre-Push durable
+    /// save drains this before writing: the epoch guard stops tasks that
+    /// have not fired yet, but a request already on the wire could land
+    /// AFTER the durable write and revert the draft the promote publishes.
+    pub(super) draft_save_inflight: RwSignal<u32>,
 }
 
 // ── Reactive execution scheduling ───────────────────────────────────────────
@@ -262,25 +276,41 @@ pub(crate) fn persist_notebook(state: &NotebookState) {
     }
 }
 
-/// Awaitable persist: resolves after the write completes (failures are
-/// logged, not surfaced — same policy as the fire-and-forget path). In
-/// `ServerDraft` mode this saves the draft IMMEDIATELY (no debounce): durable
-/// callers (the pre-Push flush) need the server to hold current content.
+/// Awaitable persist: resolves after the write completes, returning whether
+/// it landed. In `ServerDraft` mode this saves the draft IMMEDIATELY (no
+/// debounce): durable callers (the pre-Push flush) need the server to hold
+/// current content, and Push aborts when this returns `false` — promoting a
+/// draft the server never received would publish stale content.
 #[cfg(feature = "hydrate")]
-pub(super) async fn persist_notebook_durable(state: &NotebookState) {
-    if let Some(mut nb) = state.notebook.get_untracked() {
-        nb.updated_at = chrono::Utc::now();
-        state
-            .notebook
-            .update_untracked(|existing| *existing = Some(nb.clone()));
-        if state.server_draft_share.get_untracked().is_some() {
-            let _ = state.draft_dirty.try_set(true);
-            // Supersede any pending debounce so it can't double-write after us.
-            state.draft_save_epoch.update_untracked(|e| *e += 1);
-            save_draft_now(state).await;
-        } else if let Err(e) = crate::storage::client::save_notebook(&nb).await {
-            leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
+pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
+    let Some(mut nb) = state.notebook.try_get_untracked().flatten() else {
+        return false;
+    };
+    nb.updated_at = chrono::Utc::now();
+    state
+        .notebook
+        .update_untracked(|existing| *existing = Some(nb.clone()));
+    if state.server_draft_share.get_untracked().is_some() {
+        let _ = state.draft_dirty.try_set(true);
+        // Drain any autosave POST already on the wire so ours lands last —
+        // an earlier request arriving after this write would revert the
+        // draft the promote then publishes. Bounded: past the cap we
+        // proceed and rely on last-write-wins.
+        let mut waited_ms = 0;
+        while state.draft_save_inflight.try_get_untracked().unwrap_or(0) > 0
+            && waited_ms < DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS
+        {
+            super::yield_for_cell_flush(DRAFT_SAVE_INFLIGHT_POLL_MS).await;
+            waited_ms += DRAFT_SAVE_INFLIGHT_POLL_MS;
         }
+        // Supersede any pending debounce so it can't double-write after us.
+        state.draft_save_epoch.update_untracked(|e| *e += 1);
+        save_draft_now(state).await
+    } else if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+        leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
+        false
+    } else {
+        true
     }
 }
 
@@ -306,27 +336,33 @@ pub(super) fn schedule_draft_save(state: &NotebookState, after_ms: i32) {
 }
 
 /// Serialize the current notebook and write the server draft, updating the
-/// indicator. A failure schedules a retry (epoch-guarded, so an intervening
-/// edit's own save wins).
+/// indicator. Returns whether the write landed; a failure schedules a retry
+/// (epoch-guarded, so an intervening edit's own save wins).
 #[cfg(feature = "hydrate")]
-pub(super) async fn save_draft_now(state: &NotebookState) {
+pub(super) async fn save_draft_now(state: &NotebookState) -> bool {
     let Some(share_id) = state.server_draft_share.try_get_untracked().flatten() else {
-        return;
+        return false;
     };
     let Some(nb) = state.notebook.try_get_untracked().flatten() else {
-        return;
+        return false;
     };
     let json = match serde_json::to_string(&nb) {
         Ok(json) => json,
         Err(e) => {
             leptos::logging::error!("draft serialize failed: {e}");
-            return;
+            return false;
         }
     };
     let _ = state.draft_save_state.try_set(DraftSaveState::Saving);
-    match crate::server_fns::save_mutable_draft(share_id, json).await {
+    let _ = state.draft_save_inflight.try_update(|n| *n += 1);
+    let result = crate::server_fns::save_mutable_draft(share_id, json).await;
+    let _ = state
+        .draft_save_inflight
+        .try_update(|n| *n = n.saturating_sub(1));
+    match result {
         Ok(()) => {
             let _ = state.draft_save_state.try_set(DraftSaveState::Synced);
+            true
         }
         Err(e) => {
             leptos::logging::warn!("draft autosave failed (will retry): {e}");
@@ -337,6 +373,7 @@ pub(super) async fn save_draft_now(state: &NotebookState) {
             {
                 schedule_draft_save(state, DRAFT_SAVE_RETRY_MS);
             }
+            false
         }
     }
 }

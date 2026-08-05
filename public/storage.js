@@ -167,16 +167,6 @@ window.IronpadStorage = (function () {
         },
 
         /**
-         * Export a notebook as a JSON string.
-         * @param {string} id - Notebook UUID.
-         * @returns {Promise<string|null>} JSON string, or null if not found.
-         */
-        exportNotebook: async function (id) {
-            const nb = await this.getNotebook(id);
-            return nb ? JSON.stringify(nb, null, 2) : null;
-        },
-
-        /**
          * Import a notebook from a JSON string. Assigns a new UUID so
          * the imported copy doesn't collide with the original.
          * @param {string} jsonString - JSON-encoded IronpadNotebook.

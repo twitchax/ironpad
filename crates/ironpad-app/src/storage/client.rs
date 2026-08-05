@@ -23,9 +23,6 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "searchNotebooks")]
     async fn js_search_notebooks(query: &str) -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "exportNotebook")]
-    async fn js_export_notebook(id: &str) -> Result<JsValue, JsValue>;
-
     #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "importNotebook")]
     async fn js_import_notebook(json_string: &str) -> Result<JsValue, JsValue>;
 
@@ -123,17 +120,6 @@ pub async fn search_notebooks(query: &str) -> Vec<IronpadNotebook> {
         Err(e) => {
             leptos::logging::warn!("searchNotebooks failed: {e:?}");
             Vec::new()
-        }
-    }
-}
-
-/// Exports a notebook as a JSON string, or `None` if not found (or the read failed).
-pub async fn export_notebook(id: &str) -> Option<String> {
-    match js_export_notebook(id).await {
-        Ok(val) => val.as_string(),
-        Err(e) => {
-            leptos::logging::warn!("exportNotebook failed: {e:?}");
-            None
         }
     }
 }

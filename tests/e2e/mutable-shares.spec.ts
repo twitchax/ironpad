@@ -1,6 +1,10 @@
+import fs from "fs";
+import path from "path";
+
 import { test, expect, APIRequestContext, Page } from "@playwright/test";
 import { createNotebook } from "./helpers/session";
 import { loginTestUser } from "./helpers/auth";
+import { setCellSource } from "./helpers/monaco";
 
 /**
  * PRD-0054: server-authoritative mutable shares with a draft/published
@@ -337,5 +341,114 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await expect(
       page.locator(`a[href="/mutable/${shareId}"]`),
     ).toBeVisible({ timeout: 15_000 });
+  });
+
+  test("push aborts loudly when the draft save fails, and recovers", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(150_000);
+    await loginTestUser(page, "alice");
+    await createNotebook(page);
+    await rename(page, "Push Fail Base");
+    const shareId = await shareMutable(page);
+
+    // Fault injection: every draft save fails at the network layer. The
+    // debounce autosave surfaces the visible failure state (uat-006), and a
+    // Push must refuse to promote — the server never received the edit, so
+    // promoting would publish stale content behind a success toast.
+    await page.route(
+      (url) => url.pathname.includes("save_mutable_draft"),
+      (route) => route.abort(),
+    );
+    await rename(page, "Push Fail v2");
+    const push = page.locator(".ironpad-push-button");
+    await expect(push).toBeEnabled({ timeout: 10_000 });
+    await expect(page.locator(".ironpad-draft-indicator")).toHaveText(
+      /Draft not saved/,
+      { timeout: 15_000 },
+    );
+
+    await push.click();
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Push Failed" }),
+    ).toBeVisible({ timeout: 30_000 });
+    // Nothing was promoted and the button stays armed.
+    await expect(push).toBeEnabled();
+    await expect(push).toHaveText(/Push/);
+    const stale = await rawHtml(request, `/mutable/${shareId}`);
+    expect(metaContent(stale, "og:title")).toBe("Push Fail Base");
+
+    // Network restored: the same Push flushes the draft and promotes it.
+    await page.unrouteAll();
+    await push.click();
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Pushed" }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(push).toBeDisabled({ timeout: 15_000 });
+    const pushed = await rawHtml(request, `/mutable/${shareId}`);
+    expect(metaContent(pushed, "og:title")).toBe("Push Fail v2");
+  });
+
+  test("download .ironpad works from the mutable editor", async ({ page }) => {
+    test.setTimeout(150_000);
+    await loginTestUser(page, "alice");
+    await createNotebook(page);
+    // Rename BEFORE adding a cell: a new cell steals focus when its Monaco
+    // mounts (pending_focus_cell), which would hijack mid-flight title typing.
+    await rename(page, "Download Mutable");
+    await page.locator(".ironpad-add-cell-btn").first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await shareMutable(page);
+
+    // Regression: Download used to read the IndexedDB record, which Share
+    // Mutable deletes — the menu item silently did nothing in this editor.
+    const downloadPromise = page.waitForEvent("download");
+    await menuClick(page, "Download .ironpad");
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/\.ironpad$/);
+    const tmpPath = path.join("/tmp", download.suggestedFilename());
+    await download.saveAs(tmpPath);
+    const notebook = JSON.parse(fs.readFileSync(tmpPath, "utf-8"));
+    fs.unlinkSync(tmpPath);
+    expect(notebook.title).toBe("Download Mutable");
+    expect(notebook.cells.length).toBe(1);
+  });
+
+  test("unpublish keeps a keystroke made inside the debounce window", async ({
+    page,
+  }) => {
+    test.setTimeout(150_000);
+    await loginTestUser(page, "alice");
+    await createNotebook(page);
+    // Rename BEFORE adding a cell: a new cell steals focus when its Monaco
+    // mounts (pending_focus_cell), which would hijack mid-flight title typing.
+    await rename(page, "Unpublish Flush");
+    await page.locator(".ironpad-add-cell-btn").first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await shareMutable(page);
+    await expect(
+      page.locator(".ironpad-cell-card .monaco-editor").first(),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // Edit a cell and unpublish IMMEDIATELY — inside the ~1s editor->model
+    // debounce. Unpublish deletes the share (published AND draft), so the
+    // local save it makes is the only surviving copy: without the flush
+    // discipline this keystroke was gone permanently.
+    page.on("dialog", (d) => d.accept());
+    await setCellSource(
+      page,
+      page.locator(".ironpad-cell-card").first(),
+      "let flushed_before_unpublish = 42;",
+    );
+    await menuClick(page, "Unpublish");
+
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 30_000 });
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Unpublished" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.locator(".ironpad-cell-card .monaco-editor .view-lines").first(),
+    ).toContainText("flushed_before_unpublish", { timeout: 30_000 });
   });
 });

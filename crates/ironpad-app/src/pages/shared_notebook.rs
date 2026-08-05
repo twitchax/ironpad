@@ -13,10 +13,9 @@ use crate::server_fns::{get_shared_manifest, get_shared_notebook};
 #[component]
 pub fn SharedNotebookPage() -> impl IntoView {
     let params = use_params_map();
-    let hash = params.read_untracked().get("hash").unwrap_or_default();
-    // Spec handed to ViewOnlyNotebook so its Embed button can build snippets.
-    let embed_spec = (!hash.is_empty()).then(|| format!("shared/{hash}"));
-    let meta_hash = hash.clone();
+    // Tracked: the router reuses this outlet on a param-only change, so a
+    // frozen untracked read would keep rendering the old share.
+    let hash = Memo::new(move |_| params.read().get("hash").unwrap_or_default());
 
     // Reset layout context for shared notebook.
     let ctx = expect_context::<LayoutContext>();
@@ -25,7 +24,7 @@ pub fn SharedNotebookPage() -> impl IntoView {
     ctx.notebook_title.set(None);
 
     let notebook_resource = Resource::new(
-        move || hash.clone(),
+        move || hash.get(),
         |hash| async move {
             let notebook = get_shared_notebook(hash.clone()).await?;
             // A missing/failed manifest degrades to live compilation
@@ -51,8 +50,10 @@ pub fn SharedNotebookPage() -> impl IntoView {
             }
         }>
             {move || {
-                let embed_spec = embed_spec.clone();
-                let meta_hash = meta_hash.clone();
+                let meta_hash = hash.get();
+                // Spec handed to ViewOnlyNotebook so its Embed button can
+                // build snippets.
+                let embed_spec = (!meta_hash.is_empty()).then(|| format!("shared/{meta_hash}"));
                 Suspend::new(async move {
                 match notebook_resource.await {
                     Ok((notebook, share_manifest)) => {

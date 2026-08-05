@@ -218,4 +218,27 @@ test.describe("Per-cell collapse state", () => {
       .count();
     expect(collapsed).toBeGreaterThan(0);
   });
+
+  test("a markdown cross-link to another public notebook renders it", async ({
+    page,
+  }) => {
+    // Regression: the router reuses the outlet on a param-only change, and
+    // the pages used to freeze their param with an untracked read — clicking
+    // cannon's in-prose link to /public/autodiff changed the URL but kept
+    // rendering cannon forever.
+    await page.goto("/public/cannon");
+    await expect(page.locator(".view-only-title")).toHaveText(
+      "The compiler fires a cannon",
+      { timeout: 30_000 },
+    );
+
+    // The link lives in rendered markdown, so the router's delegated click
+    // handler intercepts it (client-side navigation, same route).
+    await page.locator('a[href="/public/autodiff"]').first().click();
+    await expect(page).toHaveURL(/\/public\/autodiff$/);
+    await expect(page.locator(".view-only-title")).toHaveText(
+      "std::autodiff: Differentiation in the Compiler",
+      { timeout: 30_000 },
+    );
+  });
 });

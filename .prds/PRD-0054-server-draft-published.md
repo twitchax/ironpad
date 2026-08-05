@@ -4,7 +4,7 @@ title: "Server-authoritative mutable shares: draft/published split, unified URL,
 status: done
 owner: "Aaron Roney"
 created: 2026-08-04
-updated: 2026-08-04
+updated: 2026-08-05
 
 depends_on:
 - PRD-0053
@@ -145,6 +145,8 @@ See frontmatter. The storage adapter (T-003) touches `notebook_editor/mod.rs` lo
 - Server-side rate limiting of draft saves beyond the existing size caps.
 
 # History
+
+- **2026-08-05** — Post-ship review fixes (fanout review wave 1): Unpublish gained the flush discipline every sibling serialize-flow already had (an edit inside the ~1s editor→model debounce was saved locally WITHOUT the last keystrokes and the share — the only other copy — then deleted); Push now aborts loudly when the pre-push durable draft save fails (`persist_notebook_durable`/`save_draft_now` return success, and a `draft_save_inflight` counter drains in-wire autosaves so the durable write provably lands last before the promote); Download .ironpad serializes from the live model instead of the `IndexedDB` record Share Mutable deletes (it silently did nothing in the mutable editor; the orphaned exportNotebook seam is removed at all three layers); draft saves now count toward `MAX_TOTAL_MUTABLE_BYTES` (previously only published `bytes` was summed, so autosaved drafts grew storage unboundedly). All the share/publish workflows moved out of `notebook_editor/mod.rs` into `sharing.rs` with one shared flush helper. uat-006's soft spot is closed: the push-failure e2e aborts `save_mutable_draft` at the network layer and asserts the Failed indicator, the Push refusal, and recovery.
 
 - **2026-08-04** — T-001..T-005 implemented in one pass: `draft_json` slot with single-statement promote (WHERE-guarded, LWW-safe against concurrent autosaves), draft server fns (save is owner-gated + size-capped, push promotes with `Ok(false)` for clean), editor storage seam via `NotebookState.server_draft_share` + epoch-coalesced 1.5s debounce with retry, unified `/mutable/{id}` (SSR always the reader; owner swaps to `NotebookEditor` with the `server_draft` prop on hydrate; `?view=reader` pins), toolbar Push button + Discard Draft + View as Reader, Share Mutable deletes the local copy and hard-navigates, Unpublish saves-local-then-deletes, storage.js DB_VERSION 5 deletes the mutable store, home lists three unmerged sources. Pull Latest, the divergence banner, clone-to-local, and the local binding are deleted. e2e rewrite (T-006) in flight.
 - **2026-08-04** — T-006 done: mutable-shares.spec.ts rewritten around the unified URL (owner lifecycle with reader-invisible drafts asserted in the DOM AND the raw unfurl body, cross-device shared draft with push-from-device-two, discard + view-as-reader round-trip, unpublish-brings-it-home with hard 404s, unfurl contract + home listing). Full Playwright: 103 passed, 0 failed; 783 unit tests. UAT evidence: cargo make ci + full Playwright (test-integration not re-run; compiler untouched). uat-006's failure-path half is covered by the retry logic's unit-visible structure and manual reasoning — the indicator's Failed state has no deterministic e2e trigger without fault injection; noted as the one soft spot.

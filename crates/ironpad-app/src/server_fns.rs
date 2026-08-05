@@ -1114,10 +1114,12 @@ pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, Server
 // no-cache by the server's default policy). Each push RE-snapshots and REPLACES
 // the embedded manifest, versus the merge semantics of immutable shares.
 
-/// Aggregate cap on stored mutable-share notebook JSON (blobs live in the
-/// shared blob store under its own cap). Beyond it, creating a *new* mutable
-/// share is refused; pushing to an existing one overwrites in place and is
-/// always allowed.
+/// Aggregate cap on stored mutable-share notebook JSON, drafts included
+/// (blobs live in the shared blob store under its own cap). Beyond it,
+/// creating a *new* mutable share and saving a draft are both refused;
+/// pushing an existing draft overwrites published in place and is always
+/// allowed. The cores take the cap as a parameter so tests can exercise the
+/// refusal without generating half a gigabyte of JSON.
 #[cfg(feature = "ssr")]
 const MAX_TOTAL_MUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -1172,6 +1174,7 @@ pub(crate) async fn create_mutable_share_core(
     owner_github_id: &str,
     notebook_json: &str,
     cell_type_tags: &[String],
+    max_total_bytes: u64,
 ) -> anyhow::Result<String> {
     if notebook_json.len() > MAX_SHARE_BYTES {
         anyhow::bail!(
@@ -1185,9 +1188,9 @@ pub(crate) async fn create_mutable_share_core(
     // Aggregate cap for a NEW share (minor TOCTOU is fine; the cap bounds
     // steady-state storage, it is not a hard quota).
     let existing_total = db.total_mutable_bytes().await?;
-    if existing_total.saturating_add(notebook_json.len() as u64) > MAX_TOTAL_MUTABLE_BYTES {
+    if existing_total.saturating_add(notebook_json.len() as u64) > max_total_bytes {
         anyhow::bail!(
-            "mutable share store full: {existing_total} bytes stored, cap is {MAX_TOTAL_MUTABLE_BYTES}"
+            "mutable share store full: {existing_total} bytes stored, cap is {max_total_bytes}"
         );
     }
 
@@ -1226,6 +1229,7 @@ pub(crate) async fn save_mutable_draft_core(
     github_id: &str,
     id: &str,
     notebook_json: &str,
+    max_total_bytes: u64,
 ) -> anyhow::Result<()> {
     if notebook_json.len() > MAX_SHARE_BYTES {
         anyhow::bail!(
@@ -1237,6 +1241,17 @@ pub(crate) async fn save_mutable_draft_core(
         .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
     if !db.user_owns_share(github_id, id).await? {
         anyhow::bail!("unauthorized: you do not own this share");
+    }
+    // Aggregate cap: drafts count (they are the one write path an owner can
+    // drive at will; uncounted, N tiny shares each autosaving a 4 MiB draft
+    // would grow storage unboundedly). Conservative by up to the size of the
+    // draft being replaced — the total still includes it — which at worst
+    // refuses one draft-size early near the cap.
+    let existing_total = db.total_mutable_bytes().await?;
+    if existing_total.saturating_add(notebook_json.len() as u64) > max_total_bytes {
+        anyhow::bail!(
+            "mutable share store full: {existing_total} bytes stored, cap is {max_total_bytes}"
+        );
     }
     db.save_draft(id, notebook_json).await
 }
@@ -1373,6 +1388,7 @@ pub async fn create_mutable_share(
         &user.github_id,
         &notebook_json,
         &cell_type_tags.unwrap_or_default(),
+        MAX_TOTAL_MUTABLE_BYTES,
     )
     .await
     .map_err(|e| ServerFnError::new(e.to_string()))
@@ -1407,9 +1423,15 @@ pub async fn push_mutable(
 pub async fn save_mutable_draft(id: String, notebook_json: String) -> Result<(), ServerFnError> {
     let db = expect_context::<crate::db::Db>();
     let user = require_login(&db).await?;
-    save_mutable_draft_core(&db, &user.github_id, &id, &notebook_json)
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))
+    save_mutable_draft_core(
+        &db,
+        &user.github_id,
+        &id,
+        &notebook_json,
+        MAX_TOTAL_MUTABLE_BYTES,
+    )
+    .await
+    .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 /// The owner's editing payload: the draft (else published) plus whether they
@@ -2357,6 +2379,7 @@ mod tests {
             "1",
             VALID_NOTEBOOK_JSON,
             &[String::new()],
+            MAX_TOTAL_MUTABLE_BYTES,
         )
         .await
         .unwrap();
@@ -2374,9 +2397,15 @@ mod tests {
             .is_none());
 
         // The owner drafts, then pushes; readers see nothing until the push.
-        save_mutable_draft_core(&db, "1", &id, &zero_cell_notebook_json("Pushed"))
-            .await
-            .expect("owner draft save");
+        save_mutable_draft_core(
+            &db,
+            "1",
+            &id,
+            &zero_cell_notebook_json("Pushed"),
+            MAX_TOTAL_MUTABLE_BYTES,
+        )
+        .await
+        .expect("owner draft save");
         assert_eq!(
             get_mutable_notebook_core(&db, &id)
                 .await
@@ -2409,10 +2438,16 @@ mod tests {
         );
 
         // A different signed-in user can neither draft nor push.
-        let err = save_mutable_draft_core(&db, "2", &id, &zero_cell_notebook_json("nope"))
-            .await
-            .unwrap_err()
-            .to_string();
+        let err = save_mutable_draft_core(
+            &db,
+            "2",
+            &id,
+            &zero_cell_notebook_json("nope"),
+            MAX_TOTAL_MUTABLE_BYTES,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("unauthorized"), "unexpected error: {err}");
         let err = push_mutable_core(&db, data.path(), cache.path(), "2", &id, &[])
             .await
@@ -2456,6 +2491,7 @@ mod tests {
                 owner,
                 &zero_cell_notebook_json(title),
                 &[],
+                MAX_TOTAL_MUTABLE_BYTES,
             )
             .await
             .unwrap();
@@ -2482,16 +2518,67 @@ mod tests {
             "1",
             VALID_NOTEBOOK_JSON,
             &[String::new()],
+            MAX_TOTAL_MUTABLE_BYTES,
         )
         .await
         .unwrap();
         assert!(get_mutable_manifest_core(&db, &id).await.unwrap().is_none());
 
         // Garbage JSON is rejected before anything is stored.
-        assert!(
-            create_mutable_share_core(&db, data.path(), cache.path(), "1", "not json", &[],)
-                .await
-                .is_err()
-        );
+        assert!(create_mutable_share_core(
+            &db,
+            data.path(),
+            cache.path(),
+            "1",
+            "not json",
+            &[],
+            MAX_TOTAL_MUTABLE_BYTES,
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn draft_saves_count_toward_the_aggregate_cap() {
+        let (_dbdir, db) = accounts_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        // A cap sized so the published notebook fits but published + one
+        // draft does not: drafts used to bypass the aggregate accounting
+        // entirely, making stored bytes owner-drivable without limit.
+        let published = zero_cell_notebook_json("Capped");
+        let draft = zero_cell_notebook_json("Drafty");
+        let one_byte_short = published.len() as u64 + draft.len() as u64 - 1;
+        let id = create_mutable_share_core(
+            &db,
+            data.path(),
+            cache.path(),
+            "1",
+            &published,
+            &[],
+            one_byte_short,
+        )
+        .await
+        .expect("published copy fits under the cap");
+
+        let err = save_mutable_draft_core(&db, "1", &id, &draft, one_byte_short)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("store full"), "unexpected error: {err}");
+
+        // With headroom the same save lands, and an overwrite of the SAME
+        // draft passes a cap of total + one draft: the check is conservative
+        // (it still counts the draft being replaced) but the slot itself is
+        // replaced, not appended.
+        save_mutable_draft_core(&db, "1", &id, &draft, MAX_TOTAL_MUTABLE_BYTES)
+            .await
+            .expect("draft fits under the real cap");
+        let total = db.total_mutable_bytes().await.unwrap();
+        assert_eq!(total, (published.len() + draft.len()) as u64);
+        save_mutable_draft_core(&db, "1", &id, &draft, total + draft.len() as u64)
+            .await
+            .expect("replacing the draft is bounded, not accumulating");
     }
 }

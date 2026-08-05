@@ -583,8 +583,11 @@ impl Db {
         Ok(out)
     }
 
-    /// Total bytes of stored notebook JSON across all shares (the aggregate
-    /// cap input; blobs are capped separately by the blob store).
+    /// Total bytes of stored notebook JSON across all shares, DRAFTS
+    /// INCLUDED (the aggregate cap input; blobs are capped separately by the
+    /// blob store). Counting `draft_json` matters: autosaves are the one
+    /// write path an owner can drive at will, and an uncounted draft slot
+    /// would let stored bytes grow unboundedly past the cap.
     pub async fn total_mutable_bytes(&self) -> Result<u64> {
         #[derive(SurrealValue)]
         struct Row {
@@ -592,7 +595,10 @@ impl Db {
         }
         let row: Option<Row> = self
             .inner
-            .query("SELECT math::sum(bytes) AS total FROM mutable_share GROUP ALL")
+            .query(
+                "SELECT math::sum(bytes + string::len(draft_json ?? '')) AS total \
+                 FROM mutable_share GROUP ALL",
+            )
             .await
             .context("byte total failed")?
             .take(0)
@@ -807,7 +813,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn total_mutable_bytes_sums_notebook_json() {
+    async fn total_mutable_bytes_sums_notebook_json_and_drafts() {
         let (_dir, db) = test_db().await;
         db.upsert_user("1", "author", "https://a/a.png")
             .await
@@ -821,6 +827,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 15);
+
+        // A draft counts toward the total (it is owner-drivable storage)...
+        db.save_draft("aaaaaaaaaaaaaaaa", "123456789012345678901234567890")
+            .await
+            .unwrap();
+        assert_eq!(db.total_mutable_bytes().await.unwrap(), 45);
+        // ...an overwrite replaces rather than accumulates...
+        db.save_draft("aaaaaaaaaaaaaaaa", "12345678901234567890")
+            .await
+            .unwrap();
+        assert_eq!(db.total_mutable_bytes().await.unwrap(), 35);
+        // ...and both promote and discard return it to published-only.
+        db.promote_draft("aaaaaaaaaaaaaaaa", None).await.unwrap();
+        assert_eq!(db.total_mutable_bytes().await.unwrap(), 30);
+        db.save_draft("bbbbbbbbbbbbbbbb", "xx").await.unwrap();
+        db.discard_draft("bbbbbbbbbbbbbbbb").await.unwrap();
+        assert_eq!(db.total_mutable_bytes().await.unwrap(), 30);
     }
 
     #[tokio::test]

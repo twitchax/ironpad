@@ -19,7 +19,10 @@ use crate::server_fns::{get_mutable_manifest, get_mutable_notebook};
 #[component]
 pub fn MutableNotebookPage() -> impl IntoView {
     let params = use_params_map();
-    let id = params.read_untracked().get("id").unwrap_or_default();
+    // Tracked: the router reuses this outlet on a param-only change (e.g. a
+    // markdown cross-link between two /mutable pages), so a frozen untracked
+    // read would keep rendering — or worse, keep EDITING — the old notebook.
+    let id = Memo::new(move |_| params.read().get("id").unwrap_or_default());
 
     let ctx = expect_context::<LayoutContext>();
     // Real title shows once in the view-only toolbar; keep the header center clear.
@@ -27,16 +30,10 @@ pub fn MutableNotebookPage() -> impl IntoView {
 
     // `?view=reader` pins the reader even for the owner.
     let query = leptos_router::hooks::use_query_map();
-    let force_reader = query
-        .read_untracked()
-        .get("view")
-        .is_some_and(|v| v == "reader");
+    let force_reader = Memo::new(move |_| query.read().get("view").is_some_and(|v| v == "reader"));
 
     let notebook_resource = Resource::new(
-        {
-            let id = id.clone();
-            move || id.clone()
-        },
+        move || id.get(),
         |id| async move {
             let response = get_mutable_notebook(id.clone()).await?;
             // Manifest only matters when the notebook exists; a
@@ -58,42 +55,53 @@ pub fn MutableNotebookPage() -> impl IntoView {
 
     // Owner detection (PRD-0054): resolved on hydrate so SSR stays the
     // reader. A non-owner or anonymous caller errs, which simply leaves the
-    // reader in place.
-    let owner_edit: RwSignal<Option<ironpad_common::MutableEditResponse>> = RwSignal::new(None);
+    // reader in place. The resolved edit is tagged with the share id it was
+    // fetched FOR, so a param-only navigation can never mount the old draft
+    // under the new URL (the fetch is async; render order is not guaranteed).
+    let owner_edit: RwSignal<Option<(String, ironpad_common::MutableEditResponse)>> =
+        RwSignal::new(None);
 
     #[cfg(feature = "hydrate")]
-    if !force_reader {
-        let edit_id = id.clone();
-        Effect::new(move || {
-            let edit_id = edit_id.clone();
-            leptos::task::spawn_local(async move {
-                if let Ok(Some(edit)) = crate::server_fns::get_mutable_for_edit(edit_id).await {
-                    let _ = owner_edit.try_set(Some(edit));
+    Effect::new(move || {
+        let edit_id = id.get();
+        // A new target (or a pinned reader) invalidates any resolved editor.
+        owner_edit.set(None);
+        if force_reader.get() {
+            return;
+        }
+        leptos::task::spawn_local(async move {
+            if let Ok(Some(edit)) = crate::server_fns::get_mutable_for_edit(edit_id.clone()).await {
+                // Drop responses that raced a later navigation.
+                if id.try_get_untracked().as_ref() == Some(&edit_id) {
+                    let _ = owner_edit.try_set(Some((edit_id, edit)));
                 }
-            });
+            }
         });
-    }
+    });
 
-    let share_id_for_editor = id.clone();
     view! {
         {move || {
-            if let Some(edit) = owner_edit.get() {
-                // The owner's editor over the server draft. Mounting the
-                // editor replaces the reader wholesale; the session-cleanup
-                // and persistence seams live inside NotebookEditor.
-                return view! {
-                    <NotebookEditor
-                        notebook_id=edit.notebook.id.to_string()
-                        server_draft=Some((
-                            share_id_for_editor.clone(),
-                            edit.notebook.clone(),
-                            edit.dirty,
-                        ))
-                    />
+            let share_id = id.get();
+            if let Some((for_id, edit)) = owner_edit.get() {
+                if for_id == share_id {
+                    // The owner's editor over the server draft. Mounting the
+                    // editor replaces the reader wholesale; the session-cleanup
+                    // and persistence seams live inside NotebookEditor.
+                    return view! {
+                        <NotebookEditor
+                            notebook_id=edit.notebook.id.to_string()
+                            server_draft=Some((
+                                share_id.clone(),
+                                edit.notebook.clone(),
+                                edit.dirty,
+                            ))
+                        />
+                    }
+                    .into_any();
                 }
-                .into_any();
             }
-            let id = share_id_for_editor.clone();
+            let id = share_id;
+            let force_reader = force_reader.get();
             view! {
                 <Suspense fallback=move || {
                     view! {
