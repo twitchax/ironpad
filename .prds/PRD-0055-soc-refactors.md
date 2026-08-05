@@ -1,7 +1,7 @@
 ---
 id: PRD-0055
 title: "SOC refactors: CellItem pipeline extraction, executor-core.js split, main.rs split"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-08-05
 updated: 2026-08-05
@@ -32,7 +32,7 @@ acceptance_tests:
 - id: uat-003
   name: "main.rs split: server boots identically (routes, middleware, sweepers, cache valve); relay + auth integration tests green"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
@@ -48,12 +48,12 @@ tasks:
 - id: T-003
   title: "Split main.rs bootstrap into modules"
   priority: 3
-  status: todo
+  status: done
   notes: "845 lines wiring tracing setup, config conversion, DB open, cache valve, static-asset middleware, the share-blobs/OG/oembed/crawl routes, WS routes, auth nesting, sweeper task, and serve. Extract cohesive units into bin-local modules (mod middleware, mod router_assembly or similar) keeping main() as a readable table of contents. is_embeddable_path and friends carry their tests along. No route or header behavior changes; the versioned()/cache-header invariants (CLAUDE.md pitfall 6) must survive verbatim."
 - id: T-004
   title: "Docs + PRD close"
   priority: 4
-  status: todo
+  status: done
   notes: "CLAUDE.md hot-edit paths and DEVELOPMENT.md architecture sections updated to the new module map; PRD history entries per task; no version bump/deploy in this PRD (ships with whatever release follows)."
 ---
 
@@ -102,3 +102,4 @@ See frontmatter references; hot files are the three named in the tasks.
 
 - **2026-08-05** — T-001 done: `pipeline.rs` (compile/execute flow as `wire_run_effect` over a `CellRunCtx` bundle, plus the PRD-0045 live-check dispatch and marker/warmth helpers). CellItem drops from 2,073 to ~1,500 lines and owns only the trigger, watchers, editor callbacks, and rendering. The extraction consumed two more shared seams for free: the run path's hand-rolled prerequisite cascade became `unexecuted_upstream` (the third copy unified), and the downstream-invalidation set became a pure, unit-tested `downstream_code_ids`. Session-event emission moved behind `CellRunCtx::emit_session_event` with the same live-session gate. Gate: cargo make ci (806 unit tests, two new), full Playwright 108 passed / 0 failed. uat-001 verified.
 - **2026-08-05** — T-002 done: `executor-gpu.js` (WebGPU state/dispatch/readback/BMP, 230 lines) and `executor-glue.js` (env import table + ESM/rayon/preamble rewriting as pure text functions, 250 lines) split out; `executor-core.js` drops 1,480 → 1,070 and keeps the executor class + ABI + sim bus, consuming the two namespaces. Loaders updated with explicit ordering (worker importScripts chain; the bridge's fallback injection generalized to a sequential list). The env-import sync test retargeted to the glue file. Dead `_gpuBmpToBase64DataUrl` (zero callers) deleted. Verified by: node-level smoke of the moved behavior (namespace surface, a synthetic bindgen-glue rewrite through all three transformations, raw-path closure materialization), cargo make ci (806), full Playwright 108/0 — every e2e cell execution exercises the worker chain; the main-thread fallback injection sequence is the one path e2e cannot reach and carries the parse-check instead. uat-002 verified.
+- **2026-08-05** — T-003 + T-004 done, PRD closed: `main.rs` split into three bin modules — `cache_valve.rs` (boot pressure valve + tests), `http_policy.rs` (CORP header, cache-control tiers, CSP const, `/share-blobs/` handler + its three test mods), `otel.rs` (OTLP providers/filter/switch + tests) — leaving main() at 288 lines of readable assembly (was 845). All consts moved with their owners; no route, header, or boot-order change. Docs synced (CLAUDE.md hot-edit map + Last Updated; DEVELOPMENT.md module tree, executor load order, CSP pointer). Gate per split: cargo make ci (806) + full Playwright 108/0 (the e2e webServer boot exercises the assembled router directly). uat-003 verified. Ships with the next release.

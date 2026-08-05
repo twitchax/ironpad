@@ -103,7 +103,7 @@ The heart of the application, split between SSR server code and hydrate (client)
 Binary that starts the Axum + Leptos SSR server, the WebSocket relay, and the social-preview endpoints.
 
 **Files**:
-- `main.rs`: Tokio runtime, route generation, `/share-blobs/` handler, cache-control middleware
+- `main.rs`: Tokio runtime + route assembly (bin modules: `cache_valve.rs` boot pressure valve, `http_policy.rs` CORP/cache-control/`/share-blobs/` handler + CSP, `otel.rs` OTLP wiring)
 - `config.rs`: CLI argument parsing (data dir, cache dir, port, cell path, proxy, public URL, guest limits)
 - `ws.rs` / `sessions.rs` / `state.rs`: WebSocket relay, session/token store, shared server state
 - `og/` / `crawl.rs`: generated social-preview cards, robots.txt + sitemap.xml (PRD-0050)
@@ -188,7 +188,7 @@ ironpad/
 │   │   ├── Cargo.toml
 │   │   ├── assets/fonts/           # Embedded fonts for preview cards (PRD-0050)
 │   │   └── src/
-│   │       ├── main.rs             # Tokio + Axum + Leptos setup
+│   │       ├── main.rs             # Tokio + Axum + Leptos setup (bin mods: cache_valve, http_policy, otel)
 │   │       ├── config.rs           # CLI args
 │   │       ├── ws.rs               # WebSocket relay handlers
 │   │       ├── sessions.rs         # Session store + token management
@@ -235,7 +235,9 @@ ironpad/
 │
 ├── public/
 │   ├── executor-bridge.js          # window.IronpadExecutor (delegates to worker)
-│   ├── executor-core.js            # Executor logic shared by main thread + worker
+│   ├── executor-core.js            # Executor class + cell ABI (shared by main thread + worker)
+│   ├── executor-gpu.js             # WebGPU runtime (loaded before core)
+│   ├── executor-glue.js            # env import table + wasm-bindgen glue rewriting (loaded before core)
 │   ├── executor-worker.js          # Web Worker entry (+ executor-worker-core.js)
 │   ├── executor.js                 # Main-thread executor wrapper
 │   ├── embed.js                    # Third-party embed loader (+ embed-frame.js)
@@ -504,7 +506,7 @@ Upload notebook JSON via `share_notebook()` → blake3 content hash (first 16 he
 
 - **Leptos 0.8** with SSR + WASM hydration — server renders HTML, client hydrates into a reactive SPA.
 - **Monaco editor** with a custom dark theme, Rust syntax highlighting, and inline diagnostic markers. Loaded from `public/monaco/` via AMD loader.
-- **Cell execution** runs entirely in the browser: compiled WASM modules are loaded and invoked via the executor scripts in `public/` (`executor-bridge.js` exposes `window.IronpadExecutor` and delegates to a Web Worker built on `executor-core.js`; `executor.js` is the main-thread wrapper), with FFI-based memory management for I/O piping.
+- **Cell execution** runs entirely in the browser: compiled WASM modules are loaded and invoked via the executor scripts in `public/` (`executor-bridge.js` exposes `window.IronpadExecutor` and delegates to a Web Worker built on `executor-gpu.js` + `executor-glue.js` + `executor-core.js`, loaded in that order; `executor.js` is the main-thread wrapper), with FFI-based memory management for I/O piping.
 
 ### Client-Side APIs
 
@@ -747,7 +749,7 @@ It is locked to `public_url`: a provider that embedded arbitrary URLs would be a
 
 ### Content Security Policy
 
-Every response carries `object-src 'none'; base-uri 'self'; form-action 'self'` (`CONTENT_SECURITY_POLICY` in `ironpad-server/src/main.rs`).
+Every response carries `object-src 'none'; base-uri 'self'; form-action 'self'` (`CONTENT_SECURITY_POLICY` in `ironpad-server/src/http_policy.rs`).
 
 Two deliberate omissions. There is no `script-src`, because Leptos hydration emits an inline module script and Monaco ships its own loader, so any policy today would need `'unsafe-inline'`, which permits exactly the kind of injection a CSP is meant to blunt; per-request nonces through `leptos_meta` and the Monaco bootstrap are the real fix. And there is no `frame-ancestors`, because `/embed/*` exists to be framed by third parties.
 
