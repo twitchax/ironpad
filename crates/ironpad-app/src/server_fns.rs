@@ -1019,7 +1019,18 @@ async fn snapshot_share_blobs_capped(
             cells: std::collections::BTreeMap::new(),
         },
     };
-    manifest.cells.extend(fresh_entries);
+    // Insert-if-ABSENT, never overwrite: `share_notebook` is unauthenticated
+    // and re-sharing an existing hash is idempotent, so an attacker who
+    // reproduces a share's JSON could otherwise re-POST it with different
+    // (caller-supplied, unverified) cell_type_tags, recompute a different
+    // blob key, and REPLACE the manifest entry — changing which WASM every
+    // existing viewer of that immutable link runs. The first sharer's entry
+    // for a cell id is frozen; a legitimate re-share of identical content
+    // with identical tags recomputes the same entry (a no-op), and a cell
+    // that missed the cache originally can still be filled later.
+    for (cell_id, entry) in fresh_entries {
+        manifest.cells.entry(cell_id).or_insert(entry);
+    }
 
     if !manifest.cells.is_empty() {
         atomic_write_async(&manifest_path, &serde_json::to_vec(&manifest)?).await?;
@@ -2371,6 +2382,58 @@ mod tests {
             .unwrap();
         assert_eq!(manifest.cells["cell-1"].blob, h1);
         assert!(manifest.cells.contains_key("cell-old"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_does_not_overwrite_an_existing_entry() {
+        // Security: re-share is unauthenticated and idempotent, so a fresh
+        // snapshot must never REPLACE an existing cell's blob pointer — that
+        // would let an attacker re-POST a share's JSON with different tags
+        // and change which WASM existing viewers run. The first entry freezes.
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let nb = snapshot_notebook(vec![code_cell("cell-1", "let a = 1;")]);
+        let tags: Vec<String> = vec![String::new()];
+        // Seed the cache so this snapshot WOULD produce a fresh cell-1 entry.
+        let fresh = seed_cache(cache.path(), &nb, &tags, 0, b"wasm-fresh", None);
+
+        // A prior share already froze cell-1 to a DIFFERENT blob pointer.
+        let shares = data.path().join("shares");
+        tokio::fs::create_dir_all(&shares).await.unwrap();
+        let frozen_blob = "a".repeat(64);
+        assert_ne!(
+            frozen_blob, fresh,
+            "the fresh key must differ to prove freeze"
+        );
+        let old = ironpad_common::ShareManifest {
+            version: 1,
+            cells: std::collections::BTreeMap::from([(
+                "cell-1".to_string(),
+                ironpad_common::ShareBlobEntry {
+                    blob: frozen_blob.clone(),
+                    has_js_glue: false,
+                },
+            )]),
+        };
+        tokio::fs::write(
+            shares.join("aabbccdd00112233.manifest.json"),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        snapshot_share_blobs(data.path(), cache.path(), &nb, &tags, "aabbccdd00112233")
+            .await
+            .unwrap();
+
+        let manifest = get_shared_manifest_core(data.path(), "aabbccdd00112233")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            manifest.cells["cell-1"].blob, frozen_blob,
+            "the original entry must survive; a re-share cannot replace it"
+        );
     }
 
     #[tokio::test]

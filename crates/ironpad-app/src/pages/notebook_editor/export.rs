@@ -1,19 +1,19 @@
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", test))]
 use std::collections::HashMap;
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", test))]
 use std::fmt::Write;
 
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", test))]
 use ironpad_common::{CellType, IronpadNotebook};
 
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", test))]
 use crate::components::markdown_cell::render_markdown;
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", test))]
 use crate::components::output_render::{html_escape, render_table_html, DisplayPanel};
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
 
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", test))]
 const EXPORT_CSS: &str = r"
 :root { color-scheme: dark; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -88,7 +88,7 @@ pre.code-block {
 ";
 
 /// Build a self-contained HTML document from a notebook and its cached display texts.
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", test))]
 pub(super) fn build_export_html(
     nb: &IronpadNotebook,
     display_texts: &HashMap<String, String>,
@@ -99,6 +99,14 @@ pub(super) fn build_export_html(
     html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
     html.push_str("<meta charset=\"UTF-8\">\n");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+    // Defense in depth: the export is a self-contained static document
+    // (inline styles, no scripts), so a strict CSP that forbids scripts and
+    // restricts other loads costs nothing and neutralizes any injection that
+    // slips past the per-field escaping below if this file is ever re-hosted.
+    html.push_str(
+        "<meta http-equiv=\"Content-Security-Policy\" \
+         content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:\">\n",
+    );
     let _ = writeln!(html, "<title>{}</title>", html_escape(&nb.title));
     html.push_str("<style>\n");
     html.push_str(EXPORT_CSS);
@@ -171,13 +179,19 @@ pub(super) fn build_export_html(
                                 } => {
                                     // Static HTML export: inline the data URL since
                                     // Blob URLs are not available in a static file.
+                                    // The panel is cell-emitted (untrusted), so the
+                                    // attribute-spliced fields are escaped — an
+                                    // unescaped mime_type like `x" onerror="…` would
+                                    // break out of the src attribute (XSS).
                                     let _ = writeln!(
                                         html,
                                         "<div class=\"output-html\">\
-                                         <img src=\"data:{mime_type};base64,{base64_data}\" \
+                                         <img src=\"data:{};base64,{}\" \
                                          width=\"{width}\" height=\"{height}\" \
                                          style=\"image-rendering: pixelated;\" />\
-                                         </div>"
+                                         </div>",
+                                        html_escape(mime_type),
+                                        html_escape(base64_data)
                                     );
                                 }
                                 DisplayPanel::Animation {
@@ -212,8 +226,9 @@ pub(super) fn build_export_html(
                                     let _ = writeln!(
                                         html,
                                         "<div class=\"output-html\">\
-                                         <em>LiveView at {fps} fps ({kind})</em>\
-                                         </div>"
+                                         <em>LiveView at {fps} fps ({})</em>\
+                                         </div>",
+                                        html_escape(kind)
                                     );
                                 }
                             }
@@ -239,7 +254,7 @@ pub(super) fn build_export_html(
 }
 
 /// Render an interactive widget as a static HTML representation for export.
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", test))]
 fn render_interactive_static(html: &mut String, kind: &str, config: &str) {
     let cfg: serde_json::Value = serde_json::from_str(config).unwrap_or_default();
     let label = cfg.get("label").and_then(|v| v.as_str()).unwrap_or("");
@@ -296,7 +311,8 @@ fn render_interactive_static(html: &mut String, kind: &str, config: &str) {
         _ => {
             let _ = writeln!(
                 html,
-                "<div class=\"ironpad-interactive-static\">[{kind} widget]</div>"
+                "<div class=\"ironpad-interactive-static\">[{} widget]</div>",
+                html_escape(kind)
             );
         }
     }
@@ -379,4 +395,76 @@ pub(super) fn trigger_html_download(html_content: &str, title: &str) {
 pub(super) fn trigger_ironpad_download(json_content: &str, title: &str) {
     let filename = format!("{}.ironpad", sanitize_filename(title));
     trigger_download(json_content, "application/json;charset=utf-8", &filename);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_export_html;
+    use ironpad_common::{CellType, IronpadCell, IronpadNotebook};
+    use std::collections::HashMap;
+
+    fn code_cell(id: &str) -> IronpadCell {
+        IronpadCell {
+            id: id.to_string(),
+            order: 0,
+            label: "c".to_string(),
+            cell_type: CellType::Code,
+            source: "40 + 2".to_string(),
+            cargo_toml: None,
+            shared: false,
+            collapsed: false,
+            output_collapsed: false,
+            version: 0,
+            saved_output: None,
+        }
+    }
+
+    /// Cell-emitted panel fields are untrusted; the export arms that splice
+    /// them must escape, or a crafted `mime_type` / `kind` is XSS in the file.
+    #[test]
+    fn export_escapes_untrusted_panel_fields() {
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells = vec![code_cell("a"), code_cell("b"), code_cell("c")];
+        let mut dt = HashMap::new();
+        // BlobImage: mime_type breaks out of the src attribute if unescaped.
+        dt.insert(
+            "a".to_string(),
+            r#"[{"BlobImage":{"mime_type":"x\" onerror=\"alert(1)","base64_data":"AAA\"><script>x","width":1,"height":1}}]"#
+                .to_string(),
+        );
+        // LiveView kind spliced into text.
+        dt.insert(
+            "b".to_string(),
+            r#"[{"LiveView":{"fps":30,"kind":"<img src=x onerror=alert(2)>","content":""}}]"#
+                .to_string(),
+        );
+        // Unknown interactive widget kind → fallback arm.
+        dt.insert(
+            "c".to_string(),
+            r#"[{"Interactive":{"kind":"</div><script>alert(3)</script>","config":"{}"}}]"#
+                .to_string(),
+        );
+        let html = build_export_html(&nb, &dt);
+
+        // None of the raw payloads survive.
+        assert!(
+            !html.contains("onerror=\"alert(1)"),
+            "BlobImage mime unescaped"
+        );
+        assert!(!html.contains("<script>x"), "BlobImage data unescaped");
+        assert!(
+            !html.contains("<img src=x onerror=alert(2)>"),
+            "LiveView kind unescaped"
+        );
+        assert!(
+            !html.contains("<script>alert(3)</script>"),
+            "widget kind unescaped"
+        );
+        // The escaped forms are present instead.
+        assert!(html.contains("onerror=&quot;alert(1)"));
+        assert!(html.contains("&lt;img src=x onerror=alert(2)&gt;"));
+        // And the export ships a script-forbidding CSP.
+        assert!(html.contains("Content-Security-Policy"));
+        assert!(html.contains("default-src 'none'"));
+    }
 }

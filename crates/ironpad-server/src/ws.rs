@@ -71,14 +71,24 @@ pub struct GuestParams {
 // ── Host handler ────────────────────────────────────────────────────────────
 
 /// WebSocket upgrade for browser hosts: `GET /ws/host?notebook_id=<id>`.
-#[allow(clippy::unused_async)] // Axum handler signature requires async.
 pub async fn ws_host_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<HostParams>,
     State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
-        .on_upgrade(move |socket| handle_host(socket, params.notebook_id, state))
+) -> Result<impl IntoResponse, StatusCode> {
+    // Enforce the global host cap before upgrading. `/ws/host` is
+    // unauthenticated, so without this a stranger could open unbounded host
+    // sockets. A reconnect for an already-hosted notebook is exempt (it
+    // replaces, adding no entry). Small TOCTOU overshoot under a simultaneous
+    // burst is acceptable — the cap bounds steady-state, and the handshake
+    // timeout reaps sockets that never claim.
+    if !state.ws.host_slot_available(&params.notebook_id).await {
+        tracing::warn!(notebook_id = %params.notebook_id, "host connection cap reached — rejecting");
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(ws
+        .max_message_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_host(socket, params.notebook_id, state)))
 }
 
 async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {

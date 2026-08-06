@@ -38,6 +38,15 @@ impl FromRef<AppState> for LeptosOptions {
 /// `config.rs` — one constant, not two hand-synced literals.
 pub const DEFAULT_MAX_GUESTS: usize = 512;
 
+/// Global cap on concurrent registered browser hosts. `/ws/host` is
+/// unauthenticated (a browser proves the notebook's host secret via TOFU, not
+/// an account), so without a cap a stranger could open unbounded host sockets
+/// — each a pair of tasks plus a bounded channel and a `notebook_secrets`
+/// entry. One host registers per notebook id (a re-claim replaces), so this
+/// bounds distinct hosted notebooks; the handshake timeout reaps sockets that
+/// connect and never claim. Generous for a single-author deployment.
+pub const DEFAULT_MAX_HOSTS: usize = 256;
+
 /// Default idle timeout (seconds) for a guest connection. Guests (CLI
 /// daemons) don't send heartbeats and don't auto-reconnect, so this is
 /// deliberately generous: it exists to reap a half-open connection (a
@@ -69,6 +78,8 @@ pub struct WsState {
     guest_idle_timeout: Duration,
     /// Global cap on concurrent guest connections (see [`DEFAULT_MAX_GUESTS`]).
     max_guests: usize,
+    /// Global cap on concurrent registered hosts (see [`DEFAULT_MAX_HOSTS`]).
+    max_hosts: usize,
 }
 
 impl Default for WsState {
@@ -81,6 +92,7 @@ impl Default for WsState {
             pending_queries: Arc::default(),
             guest_idle_timeout: DEFAULT_GUEST_IDLE_TIMEOUT,
             max_guests: DEFAULT_MAX_GUESTS,
+            max_hosts: DEFAULT_MAX_HOSTS,
         }
     }
 }
@@ -156,6 +168,26 @@ impl WsState {
     /// Whether another guest connection may be admitted under the global cap.
     pub async fn guest_slot_available(&self) -> bool {
         self.guest_count().await < self.max_guests
+    }
+
+    /// Override the global cap on concurrent hosts (tests, tuning).
+    #[must_use]
+    pub fn with_max_hosts(mut self, max: usize) -> Self {
+        self.max_hosts = max;
+        self
+    }
+
+    /// Number of currently registered hosts (one per hosted notebook).
+    pub async fn host_count(&self) -> usize {
+        self.hosts.read().await.len()
+    }
+
+    /// Whether another host may be admitted under the global cap. A re-claim
+    /// of an ALREADY-hosted notebook is always allowed (it replaces, adding
+    /// no entry) so a legitimate reconnect is never starved by the cap.
+    pub async fn host_slot_available(&self, notebook_id: &str) -> bool {
+        let hosts = self.hosts.read().await;
+        hosts.contains_key(notebook_id) || hosts.len() < self.max_hosts
     }
 
     // ── Host management ─────────────────────────────────────────────────
@@ -765,6 +797,32 @@ mod tests {
         assert!(
             !ws.guest_slot_available().await,
             "no slot should be available once the cap of 2 is reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_count_and_cap() {
+        let ws = WsState::default().with_max_hosts(2);
+        assert_eq!(ws.host_count().await, 0);
+        assert!(ws.host_slot_available("nb-new").await);
+
+        let (tx1, _r1) = mpsc::channel(8);
+        let (tx2, _r2) = mpsc::channel(8);
+        ws.register_host("nb-1", "c1", tx1).await;
+        ws.register_host("nb-2", "c2", tx2).await;
+        assert_eq!(ws.host_count().await, 2);
+
+        // A THIRD distinct notebook is refused at the cap...
+        assert!(
+            !ws.host_slot_available("nb-3").await,
+            "a new notebook must be refused once the host cap is reached"
+        );
+        // ...but reconnecting an already-hosted notebook is always allowed
+        // (register_host replaces, adding no entry), so the cap never
+        // starves a legitimate reconnect.
+        assert!(
+            ws.host_slot_available("nb-1").await,
+            "a reconnect for an already-hosted notebook must be exempt"
         );
     }
 

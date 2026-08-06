@@ -128,6 +128,7 @@ impl Db {
                 DEFINE FIELD IF NOT EXISTS notebook_json ON mutable_share TYPE string;
                 DEFINE FIELD IF NOT EXISTS manifest_json ON mutable_share TYPE option<string>;
                 DEFINE FIELD IF NOT EXISTS draft_json ON mutable_share TYPE option<string>;
+                DEFINE FIELD IF NOT EXISTS draft_bytes ON mutable_share TYPE option<int>;
                 DEFINE FIELD IF NOT EXISTS private ON mutable_share TYPE bool DEFAULT false;
                 DEFINE FIELD IF NOT EXISTS bytes ON mutable_share TYPE int;
                 DEFINE FIELD IF NOT EXISTS pushed_at ON mutable_share TYPE string;
@@ -438,10 +439,22 @@ impl Db {
     /// cannot occur behind the ownership gate.
     #[tracing::instrument(name = "db_save_draft", level = "debug", skip_all, fields(id = %id))]
     pub async fn save_draft(&self, id: &str, notebook_json: &str) -> Result<()> {
+        // draft_bytes is a Rust-computed BYTE length, cleared to NONE by
+        // promote/discard. total_mutable_bytes sums it directly rather than
+        // running SurrealQL string::len over draft_json, which counts CHARS
+        // and undercounts multibyte drafts 3-4x — the exact bug promote_draft
+        // already fixed for the published `bytes` field.
         self.inner
-            .query("UPDATE type::record('mutable_share', $id) SET draft_json = $nb")
+            .query(
+                "UPDATE type::record('mutable_share', $id) \
+                 SET draft_json = $nb, draft_bytes = $bytes",
+            )
             .bind(("id", id.to_string()))
             .bind(("nb", notebook_json.to_string()))
+            .bind((
+                "bytes",
+                i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
+            ))
             .await
             .context("draft save failed")?
             .check()
@@ -482,7 +495,10 @@ impl Db {
     #[tracing::instrument(name = "db_discard_draft", level = "info", skip_all, fields(id = %id))]
     pub async fn discard_draft(&self, id: &str) -> Result<()> {
         self.inner
-            .query("UPDATE type::record('mutable_share', $id) SET draft_json = NONE")
+            .query(
+                "UPDATE type::record('mutable_share', $id) \
+                 SET draft_json = NONE, draft_bytes = NONE",
+            )
             .bind(("id", id.to_string()))
             .await
             .context("draft discard failed")?
@@ -520,7 +536,8 @@ impl Db {
                     manifest_json = $mf, \
                     bytes = $bytes, \
                     pushed_at = $now, \
-                    draft_json = NONE \
+                    draft_json = NONE, \
+                    draft_bytes = NONE \
                  WHERE draft_json != NONE",
             )
             .bind(("id", id.to_string()))
@@ -758,7 +775,7 @@ impl Db {
         let row: Option<Row> = self
             .inner
             .query(
-                "SELECT math::sum(bytes + string::len(draft_json ?? '')) AS total \
+                "SELECT math::sum(bytes + (draft_bytes ?? 0)) AS total \
                  FROM mutable_share GROUP ALL",
             )
             .await
@@ -1036,6 +1053,12 @@ mod tests {
         db.save_draft("bbbbbbbbbbbbbbbb", "xx").await.unwrap();
         db.discard_draft("bbbbbbbbbbbbbbbb").await.unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 30);
+
+        // A multibyte draft counts BYTES, not chars: "日本語" is 3 chars but
+        // 9 bytes. The old SurrealQL string::len returned 3, undercounting
+        // the cap 3x for CJK/emoji drafts.
+        db.save_draft("bbbbbbbbbbbbbbbb", "日本語").await.unwrap();
+        assert_eq!(db.total_mutable_bytes().await.unwrap(), 30 + 9);
     }
 
     #[tokio::test]
