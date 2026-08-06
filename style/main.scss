@@ -2615,6 +2615,32 @@ code[class*="language-"] {
     overflow: hidden;
 }
 
+// Saved output (PRD-0056): the author's last-run snapshot, shown before any
+// live execution. The dashed border and badge distinguish it from a live
+// result at a glance.
+.view-only-output--saved {
+    border-style: dashed;
+}
+
+.view-only-saved-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.75rem;
+    color: var(--ip-text-muted);
+    background: var(--ip-bg-secondary);
+    border-bottom: 1px dashed var(--ip-border);
+}
+
+.view-only-saved-badge-icon {
+    opacity: 0.7;
+}
+
+.view-only-output--saved .view-only-output-panels {
+    padding: 0.6rem;
+}
+
 .view-only-output--collapsed .view-only-output-body {
     display: none;
 }

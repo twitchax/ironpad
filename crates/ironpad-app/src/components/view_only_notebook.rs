@@ -14,7 +14,8 @@ use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
 use crate::components::output_render::{
-    render_display_panel, CellOutputData, DisplayPanel, WidgetSink, VIEW_ONLY_PANEL_CLASSES,
+    render_display_panel, CellOutputData, DisplayPanel, PanelMode, WidgetSink,
+    VIEW_ONLY_PANEL_CLASSES,
 };
 #[cfg(feature = "hydrate")]
 use crate::server_fns::compile_cell;
@@ -914,6 +915,45 @@ fn ViewOnlyCodeCell(
                     <pre>{err}</pre>
                 </div>
             })}
+            // Saved output (PRD-0056): the author's last-run panels, shown
+            // until the FIRST live result or error replaces them. The badge
+            // is the product requirement: readers must know this is a
+            // serialized snapshot AND that Run executes it live.
+            {move || {
+                if execution_result.get().is_some() || error_message.get().is_some() {
+                    return None;
+                }
+                let saved = cell.with_value(|c| c.saved_output.clone())?;
+                let panels: Vec<DisplayPanel> = serde_json::from_str(&saved)
+                    .unwrap_or_else(|_| vec![DisplayPanel::Text(saved)]);
+                let preview_cell_id = cell.with_value(|c| c.id.clone());
+                Some(view! {
+                    <div class="view-only-output view-only-output--saved">
+                        <div class="view-only-saved-badge">
+                            <span class="view-only-saved-badge-icon">"◫"</span>
+                            <span>
+                                "Saved output from the author's last run — press ▶ Run to execute live in your browser."
+                            </span>
+                        </div>
+                        <div class="view-only-output-panels">
+                            {panels
+                                .into_iter()
+                                .map(|panel| {
+                                    render_display_panel(
+                                        panel,
+                                        VIEW_ONLY_PANEL_CLASSES,
+                                        Some(preview_cell_id.clone()),
+                                        // No sink: saved widgets are inert
+                                        // visuals; the live run wires them.
+                                        None,
+                                        PanelMode::Snapshot,
+                                    )
+                                })
+                                .collect_view()}
+                        </div>
+                    </div>
+                })
+            }}
             {move || execution_result.get().map(|result| {
                 if output_collapsed.get() {
                     return view! {
@@ -1073,7 +1113,7 @@ fn ViewOnlyOutput(
                 if collapsed.get() { "none" } else { "block" }
             }>
                 {panels.into_iter().map(|panel| {
-                    render_display_panel(panel, VIEW_ONLY_PANEL_CLASSES, Some(cell_id.clone()), sink)
+                    render_display_panel(panel, VIEW_ONLY_PANEL_CLASSES, Some(cell_id.clone()), sink, PanelMode::Live)
                 }).collect_view()}
             </div>
         </div>

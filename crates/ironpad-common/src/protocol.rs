@@ -19,7 +19,7 @@ use crate::types::{CellManifest, CellType, Diagnostic, IronpadCell, IronpadNoteb
 /// schema changes in a way a peer should be able to notice (a new payload
 /// variant, an added field, …). Decode sites (in the server/CLI crates) may
 /// log a warning when a received version differs from this constant.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Top-level message envelope. Every frame on the wire is one of these.
 ///
@@ -1151,7 +1151,7 @@ mod tests {
         // they became editable (PRD-0051).
         // 3: `Mutation::CellRun` + `MutationResult::CellRunStarted`, and
         // `CellExecuted` gained `success` (PRD-0052).
-        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 5);
     }
 
     /// Forward-compat (new → old), envelope level: a frame minted by a newer

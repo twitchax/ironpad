@@ -5,7 +5,7 @@ use leptos::prelude::*;
 
 use crate::components::error_panel::ErrorPanel;
 use crate::components::output_render::{
-    render_display_panel, DisplayPanel, WidgetSink, EDITOR_PANEL_CLASSES,
+    render_display_panel, DisplayPanel, PanelMode, WidgetSink, EDITOR_PANEL_CLASSES,
 };
 
 use super::state::{CellOutputData, CellStatus};
@@ -207,7 +207,7 @@ pub(super) fn CellOutputPanel(
                             <div class="ironpad-output-body">
                                 // Display panels section (shared with the read-only viewer).
                                 {panels.into_iter().map(|panel| {
-                                    render_display_panel(panel, EDITOR_PANEL_CLASSES, cell_id.clone(), widget_sink)
+                                    render_display_panel(panel, EDITOR_PANEL_CLASSES, cell_id.clone(), widget_sink, PanelMode::Live)
                                 }).collect::<Vec<_>>()}
 
                                 // Raw bytes hex dump section.

@@ -36,7 +36,12 @@ async fn flush_serialize_tags(
     toaster: Toaster,
     fail_title: &'static str,
 ) -> Option<(String, Vec<String>)> {
-    let nb = flush_and_read_notebook(state).await?;
+    let mut nb = flush_and_read_notebook(state).await?;
+    // Embed the author's last-run outputs into the OUTGOING copy only
+    // (PRD-0056): the model and the debounced autosaves stay lean.
+    if let Some(texts) = state.cell_display_texts.try_get_untracked() {
+        nb.embed_saved_outputs(&texts, ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES);
+    }
     let json = match serde_json::to_string(&nb) {
         Ok(j) => j,
         Err(e) => {
@@ -358,9 +363,14 @@ pub(super) fn unpublish_current_notebook(
 pub(super) fn download_current_notebook(state: &NotebookState, toaster: Toaster) {
     let state = *state;
     leptos::task::spawn_local(async move {
-        let Some(nb) = flush_and_read_notebook(&state).await else {
+        let Some(mut nb) = flush_and_read_notebook(&state).await else {
             return;
         };
+        // Downloads carry the outputs too (PRD-0056) — this is how a public
+        // blog notebook gets committed outputs.
+        if let Some(texts) = state.cell_display_texts.try_get_untracked() {
+            nb.embed_saved_outputs(&texts, ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES);
+        }
         match serde_json::to_string_pretty(&nb) {
             Ok(json) => super::export::trigger_ironpad_download(&json, &nb.title),
             Err(e) => toaster.toast(

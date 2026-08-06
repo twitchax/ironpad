@@ -882,6 +882,7 @@ mod tests {
             collapsed: false,
             output_collapsed: false,
             version: 1,
+            saved_output: None,
         }
     }
 

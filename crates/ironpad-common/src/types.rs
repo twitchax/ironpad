@@ -295,7 +295,46 @@ opt-level = 1\n\
 lto = false\n\
 codegen-units = 16\n";
 
+/// Per-cell budget for a saved output payload (PRD-0056). Inside the 4 MiB
+/// notebook cap with headroom; an over-budget output degrades to
+/// [`SAVED_OUTPUT_TOO_LARGE`] rather than failing the share.
+pub const SAVED_OUTPUT_BUDGET_BYTES: usize = 256 * 1024;
+
+/// The placeholder panels JSON substituted for an over-budget saved output.
+/// Shaped as a real `Text` panel so the viewer renders it through the normal
+/// panel path with no special casing.
+pub const SAVED_OUTPUT_TOO_LARGE: &str =
+    r#"[{"Text":"(output too large to embed; run the cell to regenerate it)"}]"#;
+
 impl IronpadNotebook {
+    /// Embed each cell's last-run output panels (PRD-0056), from the
+    /// editor's `cell_display_texts` capture, honoring the per-cell budget.
+    ///
+    /// Called at serialize time only (Share, Push's durable save, Download):
+    /// the editor's in-memory model and the debounced draft autosaves stay
+    /// lean. Cells with no recorded output keep `None`; a cell whose payload
+    /// exceeds `per_cell_budget` gets [`SAVED_OUTPUT_TOO_LARGE`] instead.
+    pub fn embed_saved_outputs(
+        &mut self,
+        display_texts: &std::collections::HashMap<String, String>,
+        per_cell_budget: usize,
+    ) {
+        for cell in &mut self.cells {
+            if let Some(panels) = display_texts.get(&cell.id) {
+                cell.saved_output = Some(if panels.len() <= per_cell_budget {
+                    panels.clone()
+                } else {
+                    SAVED_OUTPUT_TOO_LARGE.to_string()
+                });
+            }
+            // No fresh capture for this cell: KEEP any prior snapshot that
+            // traveled with the notebook. The /mutable editor after its
+            // hard navigation is the concrete case — the session never ran
+            // the cell, and assigning `None` here stripped the published
+            // snapshot on the very next Push (caught by the push-path e2e).
+        }
+    }
+
     /// Creates a new empty notebook with the given title.
     pub fn new(title: &str) -> Self {
         let now = Utc::now();
@@ -486,6 +525,14 @@ pub struct IronpadCell {
     /// Defaults to 0 for backward compatibility with existing notebooks.
     #[serde(default)]
     pub version: u64,
+    /// Saved output panels JSON from the author's last run (PRD-0056),
+    /// embedded at the editorial moments (Share, Push's durable save,
+    /// Download) so view-only pages render a finished document before any
+    /// compile. Display-only — piping bytes are never persisted — and set
+    /// only by [`IronpadNotebook::embed_saved_outputs`] at serialize time,
+    /// never by the editor's model or the wire protocol's mutations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_output: Option<String>,
 }
 
 impl IronpadCell {
@@ -662,6 +709,7 @@ mod tests {
             collapsed: false,
             output_collapsed: false,
             version: 0,
+            saved_output: None,
         });
         assert!(!base.content_matches(&cell_added));
     }
@@ -795,6 +843,7 @@ mod tests {
             collapsed: false,
             output_collapsed: false,
             version: 0,
+            saved_output: None,
         };
         // Out-of-order Vec on purpose: assembly must follow `order`, not
         // Vec position.
@@ -833,6 +882,7 @@ mod tests {
             collapsed: false,
             output_collapsed: false,
             version: 0,
+            saved_output: None,
         };
         // Multi-line sources, out-of-order Vec: offsets must follow `order`.
         let cells = vec![
@@ -882,6 +932,127 @@ mod tests {
     }
 
     #[test]
+    fn embed_saved_outputs_sets_skips_and_budgets() {
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells = vec![
+            IronpadCell {
+                id: "ran".into(),
+                order: 0,
+                label: "ran".into(),
+                cell_type: CellType::Code,
+                source: "42".into(),
+                cargo_toml: None,
+                shared: false,
+                collapsed: false,
+                output_collapsed: false,
+                version: 0,
+                saved_output: None,
+            },
+            IronpadCell {
+                id: "cold".into(),
+                order: 1,
+                label: "cold".into(),
+                cell_type: CellType::Code,
+                source: "43".into(),
+                cargo_toml: None,
+                shared: false,
+                collapsed: false,
+                output_collapsed: false,
+                version: 0,
+                saved_output: None,
+            },
+            IronpadCell {
+                id: "huge".into(),
+                order: 2,
+                label: "huge".into(),
+                cell_type: CellType::Code,
+                source: "44".into(),
+                cargo_toml: None,
+                shared: false,
+                collapsed: false,
+                output_collapsed: false,
+                version: 0,
+                saved_output: None,
+            },
+        ];
+        let mut texts = std::collections::HashMap::new();
+        texts.insert("ran".to_string(), r#"[{"Text":"42"}]"#.to_string());
+        texts.insert(
+            "huge".to_string(),
+            "x".repeat(SAVED_OUTPUT_BUDGET_BYTES + 1),
+        );
+
+        nb.embed_saved_outputs(&texts, SAVED_OUTPUT_BUDGET_BYTES);
+
+        assert_eq!(
+            nb.cells[0].saved_output.as_deref(),
+            Some(r#"[{"Text":"42"}]"#)
+        );
+        assert_eq!(
+            nb.cells[1].saved_output, None,
+            "never-captured cells stay empty"
+        );
+        assert_eq!(
+            nb.cells[2].saved_output.as_deref(),
+            Some(SAVED_OUTPUT_TOO_LARGE),
+            "over-budget outputs degrade to the placeholder, never fail"
+        );
+        // The placeholder itself is valid panels JSON (a Text panel).
+        assert!(SAVED_OUTPUT_TOO_LARGE.starts_with("[{\"Text\":"));
+
+        // A prior snapshot survives a session that never ran the cell (the
+        // /mutable editor after a hard navigation): re-embedding with no
+        // fresh capture must PRESERVE, not strip.
+        nb.cells[1].saved_output = Some(r#"[{"Text":"prior"}]"#.to_string());
+        nb.embed_saved_outputs(&std::collections::HashMap::new(), SAVED_OUTPUT_BUDGET_BYTES);
+        assert_eq!(
+            nb.cells[1].saved_output.as_deref(),
+            Some(r#"[{"Text":"prior"}]"#),
+            "no capture preserves the prior snapshot"
+        );
+        assert_eq!(
+            nb.cells[0].saved_output.as_deref(),
+            Some(r#"[{"Text":"42"}]"#),
+            "earlier fresh capture also survives"
+        );
+    }
+
+    #[test]
+    fn saved_output_round_trips_and_stays_lean_when_absent() {
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells = vec![IronpadCell {
+            id: "a".into(),
+            order: 0,
+            label: "a".into(),
+            cell_type: CellType::Code,
+            source: "42".into(),
+            cargo_toml: None,
+            shared: false,
+            collapsed: false,
+            output_collapsed: false,
+            version: 0,
+            saved_output: Some(r#"[{"Text":"42"}]"#.into()),
+        }];
+        let json = serde_json::to_string(&nb).unwrap();
+        let back: IronpadNotebook = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.cells[0].saved_output.as_deref(),
+            Some(r#"[{"Text":"42"}]"#)
+        );
+
+        // Absent field: parses (pre-0056 notebooks) and serializes away
+        // (lean drafts stay byte-identical to before).
+        let lean: IronpadNotebook = serde_json::from_str(
+            &json.replace(",\"saved_output\":\"[{\\\"Text\\\":\\\"42\\\"}]\"", ""),
+        )
+        .unwrap();
+        assert_eq!(lean.cells[0].saved_output, None);
+        assert!(!serde_json::to_string(&lean)
+            .unwrap()
+            .contains("saved_output"));
+    }
+
+    #[test]
     fn cell_with_version_field_round_trips() {
         let cell = IronpadCell {
             id: "cell-1".into(),
@@ -894,6 +1065,7 @@ mod tests {
             collapsed: false,
             output_collapsed: false,
             version: 7,
+            saved_output: None,
         };
         let json = serde_json::to_string(&cell).unwrap();
         let back: IronpadCell = serde_json::from_str(&json).unwrap();
@@ -913,6 +1085,7 @@ mod tests {
             collapsed: false,
             output_collapsed: false,
             version: 0,
+            saved_output: None,
         };
         let json = serde_json::to_string(&cell).unwrap();
         // version:0 should be present (not skipped).

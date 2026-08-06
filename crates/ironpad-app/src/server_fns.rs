@@ -2045,6 +2045,7 @@ mod tests {
             collapsed: false,
             output_collapsed: false,
             version: 0,
+            saved_output: None,
         }
     }
 

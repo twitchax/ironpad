@@ -23,8 +23,7 @@ mod js {
 // ── Live content rendering ──────────────────────────────────────────────────
 
 /// How a `LiveView` cell's content should reach the DOM.
-#[cfg(any(feature = "hydrate", test))]
-enum LiveContent<'a> {
+pub(crate) enum LiveContent<'a> {
     /// Sanitized HTML, safe to inject via `inner_html`.
     Html(String),
     /// Plain text, set via `text_content` (no HTML interpretation).
@@ -39,8 +38,7 @@ enum LiveContent<'a> {
 /// the shared `markdown_cell::render_markdown` so `KaTeX` math classes survive
 /// and there is a single markdown code path. No DOM calls, so the sanitization
 /// stays unit-testable.
-#[cfg(any(feature = "hydrate", test))]
-fn render_live_content<'a>(kind: &str, text: &'a str) -> LiveContent<'a> {
+pub(crate) fn render_live_content<'a>(kind: &str, text: &'a str) -> LiveContent<'a> {
     match kind {
         "html" => LiveContent::Html(crate::sanitize::sanitize_html(text)),
         "markdown" => LiveContent::Html(crate::components::markdown_cell::render_markdown(text)),

@@ -323,7 +323,7 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
         }
         // Supersede any pending debounce so it can't double-write after us.
         state.draft_save_epoch.update_untracked(|e| *e += 1);
-        save_draft_now(state).await
+        save_draft_now(state, true).await
     } else if let Err(e) = crate::storage::client::save_notebook(&nb).await {
         leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
         false
@@ -349,21 +349,32 @@ pub(super) fn schedule_draft_save(state: &NotebookState, after_ms: i32) {
         if state.draft_save_epoch.try_get_untracked() != Some(epoch) {
             return; // superseded by a newer edit or an immediate save
         }
-        save_draft_now(&state).await;
+        // Lean: the debounce path never embeds outputs (PRD-0056) — only
+        // the pre-Push durable save pays that weight.
+        save_draft_now(&state, false).await;
     });
 }
 
 /// Serialize the current notebook and write the server draft, updating the
 /// indicator. Returns whether the write landed; a failure schedules a retry
 /// (epoch-guarded, so an intervening edit's own save wins).
+///
+/// `enrich_outputs` embeds the author's last-run panels (PRD-0056) into the
+/// outgoing JSON. Only the pre-Push durable save sets it: the promote then
+/// publishes those outputs, while the 1.5s debounce autosaves stay lean.
 #[cfg(feature = "hydrate")]
-pub(super) async fn save_draft_now(state: &NotebookState) -> bool {
+pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) -> bool {
     let Some(share_id) = state.server_draft_share.try_get_untracked().flatten() else {
         return false;
     };
-    let Some(nb) = state.notebook.try_get_untracked().flatten() else {
+    let Some(mut nb) = state.notebook.try_get_untracked().flatten() else {
         return false;
     };
+    if enrich_outputs {
+        if let Some(texts) = state.cell_display_texts.try_get_untracked() {
+            nb.embed_saved_outputs(&texts, ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES);
+        }
+    }
     let json = match serde_json::to_string(&nb) {
         Ok(json) => json,
         Err(e) => {

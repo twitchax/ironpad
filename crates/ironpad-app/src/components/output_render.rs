@@ -275,11 +275,24 @@ pub(crate) const VIEW_ONLY_PANEL_CLASSES: PanelClasses = PanelClasses {
 /// Render a single [`DisplayPanel`] into a view, using the given class set and
 /// widget side-effect sink. Shared by the editor and the read-only viewer.
 #[allow(clippy::needless_pass_by_value)]
+/// How a panel renders: `Live` mounts the ticking components (simulation,
+/// live view) against a loaded WASM module; `Snapshot` renders the SAME
+/// panel statically for a saved output (PRD-0056) — a simulation shows its
+/// embedded first frame, a live view its captured content, with no tick
+/// loop and no module required. Every other panel is identical in both
+/// modes (animations embed their frames and replay without WASM).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PanelMode {
+    Live,
+    Snapshot,
+}
+
 pub(crate) fn render_display_panel(
     panel: DisplayPanel,
     classes: PanelClasses,
     cell_id: Option<String>,
     sink: Option<WidgetSink>,
+    mode: PanelMode,
 ) -> AnyView {
     match panel {
         DisplayPanel::Text(text) => {
@@ -388,6 +401,16 @@ pub(crate) fn render_display_panel(
             first_frame_data,
             sliders,
         } => {
+            if mode == PanelMode::Snapshot {
+                // Static first frame: a one-frame animation replay needs no
+                // WASM module and no tick loop.
+                return view! {
+                    <div class=classes.display>
+                        <AnimationCanvas width=width height=height fps=1 frame_count=1 data=first_frame_data />
+                    </div>
+                }
+                .into_any();
+            }
             let cid = cell_id.clone().unwrap_or_default();
             view! {
                 <div class=classes.display>
@@ -397,6 +420,25 @@ pub(crate) fn render_display_panel(
             .into_any()
         }
         DisplayPanel::LiveView { fps, kind, content } => {
+            if mode == PanelMode::Snapshot {
+                // The captured content, rendered once through the SAME
+                // sanitizing path the live ticker uses.
+                use crate::components::live_view_panel::{render_live_content, LiveContent};
+                return match render_live_content(&kind, &content) {
+                    LiveContent::Html(safe) => view! {
+                        <div class=classes.display>
+                            <div inner_html=safe></div>
+                        </div>
+                    }
+                    .into_any(),
+                    LiveContent::Text(text) => view! {
+                        <div class=classes.display>
+                            <pre class=classes.text>{text.to_string()}</pre>
+                        </div>
+                    }
+                    .into_any(),
+                };
+            }
             let cid = cell_id.clone().unwrap_or_default();
             view! {
                 <div class=classes.display>

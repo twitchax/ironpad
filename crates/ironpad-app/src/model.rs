@@ -343,6 +343,9 @@ impl NotebookModel {
             collapsed: false,
             output_collapsed: false,
             version: 0,
+            // Saved outputs are embedded at serialize time (PRD-0056),
+            // never minted by the model.
+            saved_output: None,
         };
 
         self.notebook.update(|nb_opt| {
@@ -674,6 +677,7 @@ mod collapse_tests {
             collapsed: false,
             output_collapsed: false,
             version: 0,
+            saved_output: None,
         });
         nb
     }
