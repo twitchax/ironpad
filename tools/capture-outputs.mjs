@@ -18,12 +18,44 @@
 // pays full build cost per distinct cell.
 
 import { chromium } from "@playwright/test";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const BASE = process.env.IRONPAD_BASE ?? "http://localhost:3111";
 const DIR = "public/notebooks";
+/**
+ * Freshness manifest: capture-time sha256 (16 hex) of every runnable code
+ * cell's source, per notebook. `tools/capture-outputs-check.py` (in ci)
+ * diffs it against the current notebooks, so editing a cell's code without
+ * recapturing its outputs fails the build instead of silently shipping
+ * snapshots of code that no longer exists.
+ */
+const MANIFEST = path.join(DIR, ".capture-manifest.json");
+
+const cellHash = (source) =>
+  crypto.createHash("sha256").update(source).digest("hex").slice(0, 16);
+
+const runnableHashes = (nb) =>
+  Object.fromEntries(
+    nb.cells
+      .filter((c) => (c.cell_type ?? "Code") === "Code" && !c.shared)
+      .map((c) => [c.id, cellHash(c.source)]),
+  );
+
+function recordManifest(name, nb) {
+  const manifest = fs.existsSync(MANIFEST)
+    ? JSON.parse(fs.readFileSync(MANIFEST, "utf-8"))
+    : {};
+  manifest[name] = runnableHashes(nb);
+  const sorted = Object.fromEntries(
+    Object.keys(manifest)
+      .sort()
+      .map((k) => [k, manifest[k]]),
+  );
+  fs.writeFileSync(MANIFEST, `${JSON.stringify(sorted, null, 2)}\n`);
+}
 /** Budget per runnable cell for the run-all drain. */
 const CELL_BUDGET_MS = Number(process.env.CELL_BUDGET_MS ?? 180_000);
 
@@ -118,6 +150,9 @@ for (const file of files) {
     );
     const captured = outputs.size;
     if (captured === 0) {
+      // Still a capture: the cells RAN (or deliberately failed); record the
+      // sources this attempt was made against so the freshness check holds.
+      recordManifest(file.replace(/\.ironpad$/, ""), source);
       results.push({
         file,
         status: `no outputs captured (${runnable} runnable)`,
@@ -138,6 +173,7 @@ for (const file of files) {
         }
       }
       fs.writeFileSync(full, `${JSON.stringify(source, null, 2)}\n`);
+      recordManifest(file.replace(/\.ironpad$/, ""), source);
       results.push({
         file,
         status: `captured ${captured}/${runnable}`,

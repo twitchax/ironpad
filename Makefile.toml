@@ -123,6 +123,16 @@ description = "Fail if the committed completions index is stale vs ironpad-cell'
 command = "python3"
 args = ["tools/gen-completions.py", "--check"]
 
+[tasks.capture-outputs]
+description = "Capture saved outputs into public notebooks (requires a server on :3111; pass names after -- for a subset)"
+command = "node"
+args = ["tools/capture-outputs.mjs", "${@}"]
+
+[tasks.capture-outputs-check]
+description = "Fail if a public notebook's code changed without an output recapture"
+command = "python3"
+args = ["tools/capture-outputs-check.py"]
+
 [tasks.warm-prod]
 description = "Converge a deployed instance's compile/check caches (post-deploy)"
 command = "bash"
@@ -148,8 +158,14 @@ args = ["nextest", "run", "--run-ignored=ignored-only", "--no-tests=pass"]
 # ── CI (fmt-check + clippy + test) ───────────────────────────────────────────
 
 [tasks.ci]
-description = "Full CI check: fmt-check → gen-completions-check → clippy → test"
-dependencies = ["fmt-check", "gen-completions-check", "clippy", "test"]
+description = "Full CI check: fmt-check → gen-completions-check → capture-outputs-check → clippy → test"
+dependencies = [
+    "fmt-check",
+    "gen-completions-check",
+    "capture-outputs-check",
+    "clippy",
+    "test",
+]
 
 # ── CLI Build ───────────────────────────────────────────────────────────
 

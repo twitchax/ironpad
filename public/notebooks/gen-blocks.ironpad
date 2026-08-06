@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "id": "1bbbed01-de12-4101-94c6-75a9206543e2",
+  "title": "Gen blocks: iterators the compiler writes",
+  "description": "gen blocks hand you a plain Iterator and stay movable; the price is E0626 on any borrow that crosses a yield. Plain coroutines obey the same rule, and the static form lifts it by paying with Pin.",
+  "tags": [
+    "gen",
+    "iterators",
+    "coroutines",
+    "nightly",
+    "blog"
+  ],
+  "created_at": "2026-08-06T00:00:00Z",
+  "updated_at": "2026-08-06T00:00:00Z",
+  "shared_cargo_toml": "[dependencies]\nironpad-cell = \"0.1\"\n\n[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n## Introduction\n\n**A `gen` block is an iterator the compiler writes for you.** You write straight-line code with `yield` in it; rustc compiles it to a state machine that implements `Iterator` directly, so `for` loops, `.collect()`, and every adapter work unchanged. The price is a single rule: **no borrow may live across a `yield`**.\n\nThe feature is nightly-only (`gen_blocks`, [RFC 3513](https://rust-lang.github.io/rfcs/3513-gen-blocks.html)); ironpad injects the gate automatically when a cell uses the block form, so every cell below runs as-is. This notebook pairs with [Pin, coroutines, and structs that point at themselves](/public/pin-coroutines): that one covers the machinery `Pin` exists for, this one covers the flavor of coroutine built to avoid needing `Pin` at all.\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_1",
+      "order": 1,
+      "label": "Cell 1",
+      "cell_type": "Code",
+      "source": "// The Collatz trajectory of 27, yielded one step at a time. No struct,\n// no Iterator impl, no cursor bookkeeping: the loop IS the iterator.\nlet g = gen {\n    let mut n = 27u64;\n    yield n;\n    while n != 1 {\n        n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };\n        yield n;\n    }\n};\n\n// It is a plain Iterator, so the standard adapters apply directly.\nlet trajectory: Vec<u64> = g.collect();\nlet peak = trajectory.iter().max().copied().unwrap_or(0);\nformat!(\"{} values, peak {peak}\", trajectory.len())\n",
+      "cargo_toml": null,
+      "saved_output": "[{\"Text\":\"112 values, peak 9232\"}]"
+    },
+    {
+      "id": "cell_2",
+      "order": 2,
+      "label": "The desugaring",
+      "cell_type": "Markdown",
+      "source": "## The desugaring\n\nThe block above compiled to a struct. Every local that survives a `yield` became a field (`n: u64` here), each `yield` became an exit point, and the result implements `Iterator<Item = u64>` with no trait ceremony on your side. The 112 values and the 9232 peak came out of `.collect()` and `.max()`, the same calls you would make on any iterator.\n\nCompare the signatures. `Iterator::next` takes `&mut self`. `Coroutine::resume`, the general mechanism underneath, takes `Pin<&mut Self>`. An ordinary `&mut` means the value can move between calls, and the next cell proves a started `gen` block survives exactly that.\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_3",
+      "order": 3,
+      "label": "Cell 3",
+      "cell_type": "Code",
+      "source": "fn is_unpin<T: Unpin>(_: &T) {}\n\nlet mut g = gen {\n    yield 1u32;\n    yield 2;\n    yield 3;\n};\nis_unpin(&g); // compiles: every gen block is Unpin\n\nlet first = g.next(); // start it...\nlet moved = g;        // ...move it mid-iteration...\nlet rest: Vec<u32> = moved.collect(); // ...and it keeps going\nformat!(\"{first:?} then {rest:?}\")\n",
+      "cargo_toml": null,
+      "saved_output": "[{\"Text\":\"Some(1) then [2, 3]\"}]"
+    },
+    {
+      "id": "cell_4",
+      "order": 4,
+      "label": "Movability",
+      "cell_type": "Markdown",
+      "source": "## Movability\n\n`Some(1) then [2, 3]`: the block yielded once, moved to a new binding, and kept going. `is_unpin` compiling is the type-level statement of the same fact. Every `gen` block implements `Unpin`, so nothing about it ever needs pinning.\n\nA state machine is only dangerous to move when one of its fields points at another, the self-referential shape the [pin-coroutines notebook](/public/pin-coroutines) is about. `gen` blocks rule that shape out at compile time. The cell below tries to smuggle one in.\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_5",
+      "order": 5,
+      "label": "Cell 5",
+      "cell_type": "Code",
+      "source": "// ironpad-test: compile-fail (this cell is a deliberate teaching failure)\nlet g = gen {\n    let owned = String::from(\"hello world\");\n    let first = &owned[0..5];\n    yield owned.len();\n    yield first.len(); // `first` must survive the suspension above it\n};\nlet total: usize = g.sum();\nformat!(\"{total}\")\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_6",
+      "order": 6,
+      "label": "Reading the refusal",
+      "cell_type": "Markdown",
+      "source": "## Reading the refusal\n\n`error[E0626]: borrow may still be in use when gen block yields`. The compiler is pointing at the suspension: at the first `yield`, `first` still has a use coming, so the suspended state would have to hold both `owned` and a pointer into `owned`. Resume after a move and that pointer dangles. `gen` blocks keep their movability by refusing to create the state at all.\n\nBoth escapes are mechanical: own the data (`.to_string()` the slice), or finish every use of the borrow before the `yield`. The next cell does both.\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_7",
+      "order": 7,
+      "label": "Cell 7",
+      "cell_type": "Code",
+      "source": "let g = gen {\n    let owned = String::from(\"hello world\");\n    let first = owned[0..5].to_string(); // owned copy, free to cross the yield\n    yield first;\n    yield owned; // moving OUT is fine; only borrows across yields are banned\n};\nlet words: Vec<String> = g.collect();\nformat!(\"{words:?}\")\n",
+      "cargo_toml": null,
+      "saved_output": "[{\"Text\":\"[\\\"hello\\\", \\\"hello world\\\"]\"}]"
+    },
+    {
+      "id": "cell_8",
+      "order": 8,
+      "label": "The static half",
+      "cell_type": "Markdown",
+      "source": "## The static half\n\nThe same borrow is legal in a coroutine, with one keyword. A plain `#[coroutine]` closure obeys the identical rule and fails with the identical E0626; adding `static` lifts it. The `static` form is allowed to build the self-referential state because it gives up movability: it no longer implements `Unpin`, and `resume` demands `Pin<&mut Self>` as proof you will not move it again.\n\nThat is the real division in Rust's coroutine design. **Movable** state machines (`gen` blocks, plain coroutine closures) ban borrows across suspension points; **static** ones allow them and route every use through `Pin`. `async` blocks sit in the static camp, which is why `Future::poll` pins.\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_9",
+      "order": 9,
+      "label": "Cell 9",
+      "cell_type": "Code",
+      "source": "use std::ops::{Coroutine, CoroutineState};\nuse std::pin::pin;\n\n// The exact borrow cell 5 refused, accepted under `static`: this coroutine\n// may hold a pointer into its own state, so it may never move once started.\nlet co = #[coroutine]\nstatic |_: ()| {\n    let owned = String::from(\"hello world\");\n    let first = &owned[0..5];\n    yield owned.len();\n    yield first.len();\n};\n\nlet mut co = pin!(co); // resume is unreachable without this\nlet mut got = Vec::new();\nwhile let CoroutineState::Yielded(n) = co.as_mut().resume(()) {\n    got.push(n);\n}\nformat!(\"{got:?}\")\n",
+      "cargo_toml": null,
+      "saved_output": "[{\"Text\":\"[11, 5]\"}]"
+    },
+    {
+      "id": "cell_10",
+      "order": 10,
+      "label": "Choosing between them",
+      "cell_type": "Markdown",
+      "source": "## Choosing between them\n\nReach for a `gen` block anywhere you would otherwise hand-roll a struct with an `Iterator` impl. The run-length encoder below is 19 lines inside a function returning `impl Iterator`; the equivalent struct carries the cursor, the pending run, and a `next` full of edge cases, at about twice the length. The state machine is the same either way; the difference is who writes it.\n\nReach for a coroutine when you need what `Iterator` cannot express: resume arguments (data flowing in at each suspension), a completion value distinct from the yielded ones, or the self-referential state above. The stabilization outlook differs too: `gen` has an accepted RFC and a keyword already reserved in edition 2024, while `#[coroutine]` has been unstable since the [2017 eRFC](https://rust-lang.github.io/rfcs/2033-experimental-coroutines.html) with no stabilization path.\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_11",
+      "order": 11,
+      "label": "Cell 11",
+      "cell_type": "Code",
+      "source": "fn runs(s: &str) -> impl Iterator<Item = (char, u32)> + '_ {\n    gen move {\n        let mut iter = s.chars();\n        if let Some(head) = iter.next() {\n            let mut cur = head;\n            let mut n = 1u32;\n            for c in iter {\n                if c == cur {\n                    n += 1;\n                } else {\n                    yield (cur, n);\n                    cur = c;\n                    n = 1;\n                }\n            }\n            yield (cur, n);\n        }\n    }\n}\n\nlet encoded: Vec<(char, u32)> = runs(\"aaabccccdd\").collect();\nformat!(\"{encoded:?}\")\n",
+      "cargo_toml": null,
+      "saved_output": "[{\"Text\":\"[('a', 3), ('b', 1), ('c', 4), ('d', 2)]\"}]"
+    },
+    {
+      "id": "cell_12",
+      "order": 12,
+      "label": "Limits",
+      "cell_type": "Markdown",
+      "source": "## Limits\n\nWhat `gen` blocks do not give you today: resume arguments, a meaningful completion value (the block finishes with `()`), or recursion without boxing. `async gen` blocks exist behind the same feature for yielding from async code. All of it is nightly; the keyword is reserved, and the iterator you get back is ordinary.\n\nA `gen` block is the movable, `Unpin`, plain-`Iterator` coroutine, and it keeps those properties by banning borrows across `yield`. E0626 is the compiler telling you your state machine just became self-referential. Either restructure (own the data, or shorten the borrow) or step up to a `static` coroutine and let `Pin` carry the proof.\n",
+      "cargo_toml": null
+    }
+  ]
+}
