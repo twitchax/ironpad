@@ -39,7 +39,7 @@
   /** Validate and normalize a data-notebook value; null if malformed. */
   function embedPath(spec) {
     if (typeof spec !== "string") return null;
-    var m = /^(shared|public)\/([A-Za-z0-9._-]+)$/.exec(spec.trim());
+    var m = /^(shared|public|mutable)\/([A-Za-z0-9._-]+)$/.exec(spec.trim());
     if (!m) return null;
     return "/embed/" + m[1] + "/" + encodeURIComponent(m[2]);
   }

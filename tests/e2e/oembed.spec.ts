@@ -79,13 +79,16 @@ test.describe("oEmbed provider (PRD-0051)", () => {
   });
 
   test("classes without an embed route do not resolve", async ({ request }) => {
-    // /embed/mutable does not exist, so resolving a mutable URL would hand
-    // back an iframe pointing at a 404. Same for a private notebook, which
-    // lives only in one browser's IndexedDB.
-    for (const path of ["/mutable/aaaa1111bbbb2222", "/local/some-uuid", "/"]) {
+    // A private notebook lives only in one browser's IndexedDB; the home
+    // page is not a notebook. (Mutable is embeddable as of PRD-0057 and is
+    // covered by its own test below.)
+    for (const path of ["/local/some-uuid", "/"]) {
       const res = await request.get(endpoint(path));
       expect(res.status(), `${path} should not resolve`).toBe(404);
     }
+    // An unknown mutable id maps to the class but 404s on resolution.
+    const res = await request.get(endpoint("/mutable/aaaa1111bbbb2222"));
+    expect(res.status()).toBe(404);
   });
 
   test("a missing notebook is a 404, not an empty embed", async ({

@@ -129,6 +129,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                                 str::to_string,
                                             )
                                         image_size=response.notebook.og_image_dimensions()
+                                        oembed=true
                                         noindex=true
                                     />
                                     <MutableReader id response manifest force_reader />
@@ -207,11 +208,13 @@ fn MutableReader(
         .into_any()
     });
 
+    let embed_spec = format!("mutable/{id}");
     view! {
         {attribution}
         <ViewOnlyNotebook
             notebook
             fork_label="Fork to Private".to_string()
+            embed_spec=embed_spec
             share_manifest=manifest
             controls=edit_back
         />

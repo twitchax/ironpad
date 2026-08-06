@@ -8,8 +8,7 @@
 //! render exactly that iframe, so this is a mapping from a canonical notebook
 //! URL to an embed URL, plus the notebook's title.
 //!
-//! Two limits worth knowing. Only `/public` and `/shared` are embeddable,
-//! because those are the only `/embed/*` routes that exist; a `/mutable` URL
+//! One limit worth knowing: a `/local` URL is private by construction, so it
 //! resolves to nothing here rather than to a broken frame. And the big social
 //! consumers (X, Reddit, Slack) use their own allowlists rather than
 //! discovery, so this changes nothing about how a link looks *there*, which is
@@ -71,7 +70,7 @@ pub struct Oembed {
 /// A notebook this provider can hand back an embed for.
 #[derive(Debug, PartialEq, Eq)]
 pub struct EmbedTarget {
-    /// Storage class segment, `public` or `shared`.
+    /// Storage class segment: `public`, `shared`, or `mutable` (PRD-0057).
     pub class: &'static str,
     /// The notebook's id within that class.
     pub id: String,
@@ -100,7 +99,8 @@ pub fn embed_target(public_url: &str, url: &str) -> Option<EmbedTarget> {
     let (class, id) = path
         .strip_prefix("/public/")
         .map(|id| ("public", id))
-        .or_else(|| path.strip_prefix("/shared/").map(|id| ("shared", id)))?;
+        .or_else(|| path.strip_prefix("/shared/").map(|id| ("shared", id)))
+        .or_else(|| path.strip_prefix("/mutable/").map(|id| ("mutable", id)))?;
 
     // The canonical public route is extension-less (PRD-0048), but the legacy
     // form still resolves and people paste what their address bar shows.
@@ -169,6 +169,7 @@ fn escape_attr(s: &str) -> String {
 /// `GET /oembed?url=…&format=json&maxheight=…`
 pub async fn oembed_handler(
     State(state): State<AppState>,
+    axum::Extension(db): axum::Extension<ironpad_app::db::Db>,
     Query(query): Query<OembedQuery>,
 ) -> Response {
     // The spec is explicit that an unsupported format is a 501, not a
@@ -183,11 +184,20 @@ pub async fn oembed_handler(
         return (StatusCode::NOT_FOUND, "not an embeddable ironpad URL").into_response();
     };
 
-    let notebook = if target.class == "public" {
-        let site_root = std::path::Path::new(state.leptos_options.site_root.as_ref()).to_path_buf();
-        ironpad_app::server_fns::get_public_notebook_core(&site_root, &target.id).await
-    } else {
-        ironpad_app::server_fns::get_shared_notebook_core(&state.config.data_dir, &target.id).await
+    let notebook = match target.class {
+        "public" => {
+            let site_root =
+                std::path::Path::new(state.leptos_options.site_root.as_ref()).to_path_buf();
+            ironpad_app::server_fns::get_public_notebook_core(&site_root, &target.id).await
+        }
+        // The reader resolve: published only, drafts never (PRD-0057).
+        "mutable" => ironpad_app::server_fns::get_mutable_notebook_core(&db, &target.id)
+            .await
+            .and_then(|nb| nb.ok_or_else(|| anyhow::anyhow!("no such notebook"))),
+        _ => {
+            ironpad_app::server_fns::get_shared_notebook_core(&state.config.data_dir, &target.id)
+                .await
+        }
     };
 
     let Ok(notebook) = notebook else {
@@ -236,6 +246,19 @@ mod tests {
                 class: "shared",
                 id: "a1b2c3d4e5f60718".into()
             })
+        );
+        // Published notebooks are embeddable too (PRD-0057).
+        assert_eq!(
+            target("https://ironpad.twitchax.com/mutable/a1b2c3d4e5f60718"),
+            Some(EmbedTarget {
+                class: "mutable",
+                id: "a1b2c3d4e5f60718".into()
+            })
+        );
+        assert_eq!(
+            target("https://ironpad.twitchax.com/mutable/../etc"),
+            None,
+            "traversal in a mutable id is rejected like the other classes"
         );
     }
 
@@ -287,9 +310,9 @@ mod tests {
 
     #[test]
     fn refuses_classes_without_an_embed_route() {
-        // `/embed/mutable` does not exist; resolving it would hand back an
-        // iframe pointing at a 404.
-        assert_eq!(target("https://ironpad.twitchax.com/mutable/abc123"), None);
+        // Private notebooks live in one browser's IndexedDB; the home page
+        // is not a notebook. (Mutable became embeddable in PRD-0057 and is
+        // asserted in `maps_the_canonical_notebook_routes`.)
         assert_eq!(target("https://ironpad.twitchax.com/local/some-uuid"), None);
         assert_eq!(target("https://ironpad.twitchax.com/"), None);
     }

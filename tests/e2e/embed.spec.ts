@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import { createNotebook } from "./helpers/session";
+import { loginTestUser } from "./helpers/auth";
 import { trackJsErrors } from "./helpers/errors";
 
 /**
@@ -177,5 +179,60 @@ test.describe("Notebook embedding", () => {
     expect(copied).toContain('/embed/public/welcome"');
 
     expect(jsErrors).toEqual([]);
+  });
+
+  test("a published notebook embeds and resolves through oEmbed (PRD-0057)", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const BASE = "http://localhost:3111";
+
+    // Publish a notebook to get a live /mutable id.
+    await loginTestUser(page, "alice");
+    await createNotebook(page);
+    await page.locator(".ironpad-notebook-title--editable").click();
+    const input = page.locator(".ironpad-header-title-input");
+    await input.fill("Embeddable Published");
+    await input.press("Enter");
+    await page
+      .locator('.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]')
+      .click();
+    await page
+      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Mutable" })
+      .click();
+    await expect(page).toHaveURL(/\/mutable\/[a-f0-9]{16}/, {
+      timeout: 30_000,
+    });
+    const shareId = page.url().match(/\/mutable\/([a-f0-9]{16})/)![1];
+
+    // oEmbed maps the canonical URL to the mutable embed route.
+    const oembed = await request.get(
+      `${BASE}/oembed?url=${encodeURIComponent(`${BASE}/mutable/${shareId}`)}`,
+    );
+    expect(oembed.status()).toBe(200);
+    const body = await oembed.json();
+    expect(body.html).toContain(`${BASE}/embed/mutable/${shareId}`);
+    expect(body.title).toBe("Embeddable Published");
+
+    // The reader page advertises the endpoint in its raw SSR body.
+    const raw = await (await request.get(`${BASE}/mutable/${shareId}`)).text();
+    expect(raw).toMatch(/<link[^>]+type="application\/json\+oembed"[^>]*>/i);
+
+    // The embed route renders chrome-less, badge linking to the canonical
+    // page, and never autoruns (idle status, published-author content).
+    await page.goto(`/embed/mutable/${shareId}`);
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator(".ironpad-header")).toHaveCount(0);
+    await expect(page.locator(".ironpad-embed-badge")).toHaveAttribute(
+      "href",
+      `/mutable/${shareId}`,
+    );
+    await page.waitForTimeout(2_000);
+    await expect(page.locator(".view-only-cell-status--running")).toHaveCount(
+      0,
+    );
   });
 });

@@ -5,7 +5,7 @@ pub mod notebook_editor;
 pub mod public_notebook;
 pub mod shared_notebook;
 
-pub use embed_notebook::{EmbedPublicPage, EmbedSharedPage};
+pub use embed_notebook::{EmbedMutablePage, EmbedPublicPage, EmbedSharedPage};
 pub use home_page::HomePage;
 pub use mutable_notebook::MutableNotebookPage;
 pub use notebook_editor::NotebookEditorPage;

@@ -13,7 +13,10 @@ use leptos_router::hooks::use_params_map;
 use ironpad_common::IronpadNotebook;
 
 use crate::components::view_only_notebook::ViewOnlyNotebook;
-use crate::server_fns::{get_public_notebook, get_shared_manifest, get_shared_notebook};
+use crate::server_fns::{
+    get_mutable_manifest, get_mutable_notebook, get_public_notebook, get_shared_manifest,
+    get_shared_notebook,
+};
 
 /// Route component for `/embed/shared/{hash}` — the iframe-embeddable variant
 /// of [`SharedNotebookPage`](super::SharedNotebookPage).
@@ -90,6 +93,58 @@ pub fn EmbedPublicPage() -> impl IntoView {
                         spec,
                         autorun,
                         "Public notebook not found",
+                    )
+                })
+            }}
+        </Suspense>
+    }
+}
+
+/// Route component for `/embed/mutable/{id}` — the iframe-embeddable variant
+/// of the `/mutable/{id}` reader (PRD-0057). Resolves the PUBLISHED copy
+/// (drafts never reach an embed) with live semantics: a Push updates every
+/// consumer's iframe on its next load.
+#[component]
+pub fn EmbedMutablePage() -> impl IntoView {
+    let params = use_params_map();
+    // Tracked: the router reuses this outlet on a param-only change.
+    let id = Memo::new(move |_| params.read().get("id").unwrap_or_default());
+
+    let notebook_resource = Resource::new(
+        move || id.get(),
+        |id| async move {
+            let response = get_mutable_notebook(id.clone()).await?;
+            let manifest = if response.is_some() {
+                get_mutable_manifest(id).await.unwrap_or(None)
+            } else {
+                None
+            };
+            Ok::<_, ServerFnError>((response, manifest))
+        },
+    );
+
+    view! {
+        <Suspense fallback=embed_loading>
+            {move || {
+                let spec = format!("mutable/{}", id.get());
+                Suspend::new(async move {
+                    let (result, manifest) = match notebook_resource.await {
+                        Ok((Some(response), manifest)) => (Ok(response.notebook), manifest),
+                        Ok((None, _)) => (
+                            Err(ServerFnError::new("not found")),
+                            None,
+                        ),
+                        Err(e) => (Err(e), None),
+                    };
+                    // A published notebook is one author's content, not
+                    // first-party showcase: never auto-run (PRD-0040 trust
+                    // boundary, same as shared embeds).
+                    embed_body(
+                        result,
+                        manifest,
+                        spec,
+                        false,
+                        "Published notebook not found",
                     )
                 })
             }}

@@ -197,9 +197,10 @@ The core of ironpad is a 5-stage WASM compiler:
 - Legacy `/notebook/{id}` and `/notebook/public/{filename}` redirect to canonical forever (bookmarks + third-party embed specs never break)
 - `/embed/shared/{hash}` — EmbedSharedPage (chrome-less iframe variant; PRD-0039)
 - `/embed/public/{filename}` — EmbedPublicPage (chrome-less iframe variant; PRD-0039)
+- `/embed/mutable/{id}` — EmbedMutablePage (PRD-0057: published copy, live resolve, never autoruns)
 - `/og/{class}/{id}.png`, `/og/ironpad.png` — generated social-preview cards (PRD-0050)
 - `/robots.txt`, `/sitemap.xml` — crawler files (PRD-0050)
-- `/oembed?url=…` — oEmbed provider (PRD-0051); maps a `/public` or `/shared` URL to its `/embed/*` iframe. Origin-locked; `/mutable` is excluded because it has no embed route
+- `/oembed?url=…` — oEmbed provider (PRD-0051); maps a `/public`, `/shared`, or `/mutable` URL (PRD-0057) to its `/embed/*` iframe. Origin-locked
 - `/ws/host?notebook_id=<id>` — WebSocket: browser connects as session host
 - `/ws/connect?token=<token>` — WebSocket: CLI connects as session guest
 

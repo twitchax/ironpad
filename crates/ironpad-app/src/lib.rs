@@ -55,8 +55,8 @@ use leptos_router::{
     ParamSegment, SsrMode, StaticSegment,
 };
 use pages::{
-    EmbedPublicPage, EmbedSharedPage, HomePage, MutableNotebookPage, NotebookEditorPage,
-    PublicNotebookPage, SharedNotebookPage,
+    EmbedMutablePage, EmbedPublicPage, EmbedSharedPage, HomePage, MutableNotebookPage,
+    NotebookEditorPage, PublicNotebookPage, SharedNotebookPage,
 };
 
 /// Appends a release-version query to a URL-stable static asset path so
@@ -169,6 +169,7 @@ pub fn App() -> impl IntoView {
                     <Route path=(StaticSegment("mutable"), ParamSegment("id")) view=MutableNotebookPage ssr=SsrMode::Async/>
                     <Route path=(StaticSegment("embed"), StaticSegment("shared"), ParamSegment("hash")) view=EmbedSharedPage/>
                     <Route path=(StaticSegment("embed"), StaticSegment("public"), ParamSegment("filename")) view=EmbedPublicPage/>
+                    <Route path=(StaticSegment("embed"), StaticSegment("mutable"), ParamSegment("id")) view=EmbedMutablePage/>
                     // Legacy routes redirect to canonical forever: bookmarks
                     // and old links must never break.
                     <Route path=(StaticSegment("notebook"), StaticSegment("public"), ParamSegment("filename")) view=LegacyPublicRedirect/>

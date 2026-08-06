@@ -42,6 +42,10 @@ fn canonical_path(spec: &str) -> Option<String> {
     spec.strip_prefix("shared/")
         .map(|h| format!("/shared/{h}"))
         .or_else(|| {
+            spec.strip_prefix("mutable/")
+                .map(|id| format!("/mutable/{id}"))
+        })
+        .or_else(|| {
             // Canonical public URLs are extension-less (PRD-0048); specs from
             // pre-0048 embeds still carry `.ironpad`.
             spec.strip_prefix("public/")
