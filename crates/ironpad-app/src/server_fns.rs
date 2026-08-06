@@ -1299,8 +1299,12 @@ pub(crate) async fn push_mutable_core(
     Ok(true)
 }
 
-/// Fetch just the notebook of a mutable share (the OG-card path and tests;
-/// the reader page uses [`get_mutable_notebook`] for attribution too).
+/// Fetch just the notebook of a mutable share for ANONYMOUS surfaces — the
+/// OG-card handler, the oEmbed provider, and tests. A private share returns
+/// `None` here unconditionally (PRD-0061): these surfaces serve crawlers and
+/// unfurlers, which never hold a session, and a title in an OG card is
+/// already a leak. The reader page uses [`get_mutable_notebook`], which
+/// resolves the caller's session.
 #[cfg(feature = "ssr")]
 pub async fn get_mutable_notebook_core(
     db: &crate::db::Db,
@@ -1309,21 +1313,12 @@ pub async fn get_mutable_notebook_core(
     let Some(row) = db.get_mutable_share(id).await? else {
         return Ok(None);
     };
+    if row.private {
+        return Ok(None);
+    }
     serde_json::from_str(&row.notebook_json)
         .map(Some)
         .map_err(|e| anyhow::anyhow!("invalid stored notebook: {e}"))
-}
-
-#[cfg(feature = "ssr")]
-pub(crate) async fn get_mutable_manifest_core(
-    db: &crate::db::Db,
-    id: &str,
-) -> anyhow::Result<Option<ironpad_common::ShareManifest>> {
-    Ok(db
-        .get_mutable_share(id)
-        .await?
-        .and_then(|row| row.manifest_json)
-        .and_then(|json| serde_json::from_str(&json).ok()))
 }
 
 #[cfg(feature = "ssr")]
@@ -1469,6 +1464,7 @@ pub async fn get_mutable_for_edit(
     Ok(Some(ironpad_common::MutableEditResponse {
         notebook,
         dirty: edit.dirty,
+        private: edit.private,
     }))
 }
 
@@ -1491,47 +1487,102 @@ pub async fn discard_mutable_draft(id: String) -> Result<(), ServerFnError> {
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
-/// Retrieve a mutable share's current notebook plus owner attribution, and
-/// whether the CALLER's session owns it — `None` if the id is unknown.
+/// Resolve a viewer's access to a mutable share (PRD-0061): the notebook
+/// with attribution, or the explicit `Private` / `NotFound` outcome.
+/// Content never rides the denied arms. `viewer` is the caller's resolved
+/// session, `None` for anonymous.
+#[cfg(feature = "ssr")]
+pub async fn mutable_access_core(
+    db: &crate::db::Db,
+    id: &str,
+    viewer: Option<&crate::db::AuthUser>,
+) -> anyhow::Result<ironpad_common::MutableNotebookAccess> {
+    use ironpad_common::{MutableNotebookAccess, MutableNotebookResponse, ShareOwner};
+
+    let Some(row) = db.get_mutable_share(id).await? else {
+        return Ok(MutableNotebookAccess::NotFound);
+    };
+
+    if row.private {
+        let can_read = match viewer {
+            Some(v) => db.user_can_read_share(&v.github_id, id).await?,
+            None => false,
+        };
+        if !can_read {
+            return Ok(MutableNotebookAccess::Private {
+                signed_in: viewer.is_some(),
+            });
+        }
+    }
+
+    let notebook: IronpadNotebook = serde_json::from_str(&row.notebook_json)
+        .map_err(|e| anyhow::anyhow!("invalid stored notebook: {e}"))?;
+    let is_owner = matches!(
+        (viewer, &row.owner),
+        (Some(v), Some(o)) if v.github_id == o.github_id
+    );
+    Ok(MutableNotebookAccess::Found(Box::new(
+        MutableNotebookResponse {
+            notebook,
+            owner: row.owner.map(|o| ShareOwner {
+                login: o.login,
+                avatar_url: o.avatar_url,
+            }),
+            is_owner,
+        },
+    )))
+}
+
+/// Retrieve a mutable share's current notebook plus owner attribution and
+/// whether the CALLER's session owns it — or the explicit `Private` /
+/// `NotFound` outcome (PRD-0061).
 #[server]
 pub async fn get_mutable_notebook(
     id: String,
-) -> Result<Option<ironpad_common::MutableNotebookResponse>, ServerFnError> {
-    use ironpad_common::{MutableNotebookResponse, ShareOwner};
-
+) -> Result<ironpad_common::MutableNotebookAccess, ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    let Some(row) = db
-        .get_mutable_share(&id)
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
-    else {
-        return Ok(None);
-    };
-    let notebook: IronpadNotebook = serde_json::from_str(&row.notebook_json)
-        .map_err(|e| ServerFnError::new(format!("invalid stored notebook: {e}")))?;
-
     let viewer = crate::auth::current_user(&db).await;
-    let is_owner = matches!(
-        (&viewer, &row.owner),
-        (Some(v), Some(o)) if v.github_id == o.github_id
-    );
-    Ok(Some(MutableNotebookResponse {
-        notebook,
-        owner: row.owner.map(|o| ShareOwner {
-            login: o.login,
-            avatar_url: o.avatar_url,
-        }),
-        is_owner,
-    }))
+    mutable_access_core(&db, &id, viewer.as_ref())
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
-/// Retrieve a mutable share's blob-snapshot manifest, if one exists.
+/// A mutable share's blob-snapshot manifest, gated like the notebook: a
+/// private share's manifest is withheld from non-grantees — the manifest is
+/// the hash list, and the content-addressed blob route is only reachable
+/// with hashes (PRD-0061).
+#[cfg(feature = "ssr")]
+pub(crate) async fn mutable_manifest_access_core(
+    db: &crate::db::Db,
+    id: &str,
+    viewer: Option<&crate::db::AuthUser>,
+) -> anyhow::Result<Option<ironpad_common::ShareManifest>> {
+    let Some(row) = db.get_mutable_share(id).await? else {
+        return Ok(None);
+    };
+    if row.private {
+        let can_read = match viewer {
+            Some(v) => db.user_can_read_share(&v.github_id, id).await?,
+            None => false,
+        };
+        if !can_read {
+            return Ok(None);
+        }
+    }
+    Ok(row
+        .manifest_json
+        .and_then(|json| serde_json::from_str(&json).ok()))
+}
+
+/// Retrieve a mutable share's blob-snapshot manifest, if one exists and the
+/// caller may view it (PRD-0061).
 #[server]
 pub async fn get_mutable_manifest(
     id: String,
 ) -> Result<Option<ironpad_common::ShareManifest>, ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    get_mutable_manifest_core(&db, &id)
+    let viewer = crate::auth::current_user(&db).await;
+    mutable_manifest_access_core(&db, &id, viewer.as_ref())
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
@@ -1544,6 +1595,110 @@ pub async fn delete_mutable_share(id: String) -> Result<(), ServerFnError> {
     delete_mutable_core(&db, &user.github_id, &id)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Require the caller to hold the OWNER grant on `id`, resolving them first.
+#[cfg(feature = "ssr")]
+async fn require_share_owner(
+    db: &crate::db::Db,
+    id: &str,
+) -> Result<crate::db::AuthUser, ServerFnError> {
+    let user = require_login(db).await?;
+    if !db
+        .user_owns_share(&user.github_id, id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+    {
+        return Err(ServerFnError::new(
+            "unauthorized: you do not own this share",
+        ));
+    }
+    Ok(user)
+}
+
+/// Flip a share's privacy flag (PRD-0061). Owner only.
+#[server]
+pub async fn set_mutable_private(id: String, private: bool) -> Result<(), ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    require_share_owner(&db, &id).await?;
+    db.set_share_private(&id, private)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Grant READ on a private share to a GitHub login (PRD-0061). Owner only.
+/// The target must have signed in to ironpad at least once: grants link to
+/// user records, and a bare login cannot be resolved to a GitHub id
+/// server-side without calling GitHub.
+#[server]
+pub async fn grant_mutable_read(
+    id: String,
+    login: String,
+) -> Result<ironpad_common::ShareGrant, ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    let owner = require_share_owner(&db, &id).await?;
+    let login = login.trim().trim_start_matches('@').to_string();
+    if login.is_empty() {
+        return Err(ServerFnError::new("enter a GitHub username"));
+    }
+    let Some(target) = db
+        .find_user_by_login(&login)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+    else {
+        return Err(ServerFnError::new(format!(
+            "no ironpad user named \"{login}\" — they need to sign in to ironpad once before you can grant them access"
+        )));
+    };
+    if target.github_id == owner.github_id {
+        return Err(ServerFnError::new("you already own this share"));
+    }
+    db.grant_read(&id, &target.github_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(ironpad_common::ShareGrant {
+        github_id: target.github_id,
+        login: target.login,
+        avatar_url: target.avatar_url,
+    })
+}
+
+/// Revoke a READ grant (PRD-0061). Owner only.
+#[server]
+pub async fn revoke_mutable_read(id: String, github_id: String) -> Result<(), ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    require_share_owner(&db, &id).await?;
+    db.revoke_read(&id, &github_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// The owner's access view — privacy flag plus READ grants — in one round
+/// trip for the Access UI (PRD-0061). Owner only.
+#[server]
+pub async fn get_mutable_access(id: String) -> Result<ironpad_common::ShareAccess, ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    require_share_owner(&db, &id).await?;
+    let row = db
+        .get_mutable_share(&id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+        .ok_or_else(|| ServerFnError::new("share not found"))?;
+    let grants = db
+        .list_read_grants(&id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+        .into_iter()
+        .map(|u| ironpad_common::ShareGrant {
+            github_id: u.github_id,
+            login: u.login,
+            avatar_url: u.avatar_url,
+        })
+        .collect();
+    Ok(ironpad_common::ShareAccess {
+        private: row.private,
+        grants,
+    })
 }
 
 /// Enumerate the mutable shares owned by the signed-in user (the home-page
@@ -2374,6 +2529,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_shares_gate_every_read_surface() {
+        use ironpad_common::MutableNotebookAccess as Access;
+
+        let (_dbdir, db) = accounts_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        let alice = crate::db::AuthUser {
+            github_id: "1".into(),
+            login: "alice".into(),
+            avatar_url: String::new(),
+        };
+        let bob = crate::db::AuthUser {
+            github_id: "2".into(),
+            login: "bob".into(),
+            avatar_url: String::new(),
+        };
+
+        let id = create_mutable_share_core(
+            &db,
+            data.path(),
+            cache.path(),
+            "1",
+            VALID_NOTEBOOK_JSON,
+            &[String::new()],
+            MAX_TOTAL_MUTABLE_BYTES,
+        )
+        .await
+        .unwrap();
+
+        // Public by default: everyone reads.
+        assert!(matches!(
+            mutable_access_core(&db, &id, None).await.unwrap(),
+            Access::Found(_)
+        ));
+
+        // Flip private: anonymous and non-grantees are denied with the
+        // explicit arm (signed_in picks the copy); the owner still reads.
+        db.set_share_private(&id, true).await.unwrap();
+        assert_eq!(
+            mutable_access_core(&db, &id, None).await.unwrap(),
+            Access::Private { signed_in: false }
+        );
+        assert_eq!(
+            mutable_access_core(&db, &id, Some(&bob)).await.unwrap(),
+            Access::Private { signed_in: true }
+        );
+        assert!(matches!(
+            mutable_access_core(&db, &id, Some(&alice)).await.unwrap(),
+            Access::Found(_)
+        ));
+
+        // The anonymous surfaces (OG card, oEmbed) and the manifest deny.
+        assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_none());
+        assert!(mutable_manifest_access_core(&db, &id, None)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Grant READ to bob (case-insensitive login lookup): he reads, and
+        // the grant is idempotent + listed. An unknown handle errors.
+        let target = db.find_user_by_login("BoB").await.unwrap().unwrap();
+        assert_eq!(target.github_id, "2");
+        assert!(db.find_user_by_login("ghost").await.unwrap().is_none());
+        db.grant_read(&id, "2").await.unwrap();
+        db.grant_read(&id, "2").await.unwrap(); // double-click is a no-op
+        let access = mutable_access_core(&db, &id, Some(&bob)).await.unwrap();
+        let Access::Found(found) = access else {
+            panic!("grantee must read a private share");
+        };
+        assert!(!found.is_owner, "READ is not ownership");
+        let grants = db.list_read_grants(&id).await.unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].login, "bob");
+
+        // Revoke: denied again. Flip public: everyone reads again.
+        db.revoke_read(&id, "2").await.unwrap();
+        assert_eq!(
+            mutable_access_core(&db, &id, Some(&bob)).await.unwrap(),
+            Access::Private { signed_in: true }
+        );
+        db.set_share_private(&id, false).await.unwrap();
+        assert!(matches!(
+            mutable_access_core(&db, &id, None).await.unwrap(),
+            Access::Found(_)
+        ));
+
+        // Unpublish wipes the READ grants with the share.
+        db.grant_read(&id, "2").await.unwrap();
+        delete_mutable_core(&db, "1", &id).await.unwrap();
+        assert!(db.list_read_grants(&id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn mutable_lifecycle_is_owner_gated() {
         let (_dbdir, db) = accounts_db().await;
         let data = tempfile::tempdir().unwrap();
@@ -2529,7 +2778,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(get_mutable_manifest_core(&db, &id).await.unwrap().is_none());
+        assert!(db
+            .get_mutable_share(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .manifest_json
+            .is_none());
 
         // Garbage JSON is rejected before anything is stored.
         assert!(create_mutable_share_core(

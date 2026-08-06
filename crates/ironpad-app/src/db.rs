@@ -30,8 +30,11 @@ const SESSION_RENEW_AFTER_SECS: i64 = 12 * 60 * 60;
 /// changes on the same table (PRD-0053 principles).
 const KIND_MUTABLE_SHARE: &str = "mutable_share";
 
-/// The one role minted today.
+/// The creator's role: full control (push, discard, privacy, grants, delete).
 const ROLE_OWNER: &str = "OWNER";
+
+/// Read access to a PRIVATE share (PRD-0061). Public shares need no grant.
+const ROLE_READ: &str = "READ";
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -51,6 +54,8 @@ pub struct MutableShareRow {
     pub notebook_json: String,
     pub manifest_json: Option<String>,
     pub pushed_at: String,
+    /// Only the owner and READ grantees may view (PRD-0061).
+    pub private: bool,
     /// `None` only for a share whose grant row is missing (should not happen;
     /// creates are transactional).
     pub owner: Option<AuthUser>,
@@ -73,6 +78,8 @@ pub struct ShareEditRow {
     /// True when a draft exists (draft may differ from published).
     pub dirty: bool,
     pub pushed_at: String,
+    /// The share's privacy flag, for the owner's Access UI (PRD-0061).
+    pub private: bool,
 }
 
 // ── Handle ──────────────────────────────────────────────────────────────────
@@ -352,12 +359,13 @@ impl Db {
             notebook_json: String,
             manifest_json: Option<String>,
             pushed_at: String,
+            private: Option<bool>,
         }
 
         let mut response = self
             .inner
             .query(
-                "SELECT notebook_json, manifest_json, pushed_at \
+                "SELECT notebook_json, manifest_json, pushed_at, private \
                  FROM ONLY type::record('mutable_share', $id);
                  SELECT record::id(user) AS github_id, user.login AS login, \
                     user.avatar_url AS avatar_url \
@@ -387,6 +395,8 @@ impl Db {
             notebook_json: share.notebook_json,
             manifest_json: share.manifest_json,
             pushed_at: share.pushed_at,
+            // Pre-PRD-0061 rows carry no field value; absent means public.
+            private: share.private.unwrap_or(false),
             owner,
         }))
     }
@@ -447,11 +457,12 @@ impl Db {
             notebook_json: String,
             draft_json: Option<String>,
             pushed_at: String,
+            private: Option<bool>,
         }
         let row: Option<Row> = self
             .inner
             .query(
-                "SELECT notebook_json, draft_json, pushed_at \
+                "SELECT notebook_json, draft_json, pushed_at, private \
                  FROM ONLY type::record('mutable_share', $id)",
             )
             .bind(("id", id.to_string()))
@@ -463,6 +474,7 @@ impl Db {
             dirty: r.draft_json.is_some(),
             notebook_json: r.draft_json.unwrap_or(r.notebook_json),
             pushed_at: r.pushed_at,
+            private: r.private.unwrap_or(false),
         }))
     }
 
@@ -563,6 +575,135 @@ impl Db {
             .context("ownership check failed")?
             .take(0)
             .context("ownership row malformed")?;
+        Ok(!rows.is_empty())
+    }
+
+    // ── Privacy + READ grants (PRD-0061) ────────────────────────────────
+
+    /// Flip a share's privacy flag. Ownership is checked by the caller.
+    #[tracing::instrument(name = "db_set_share_private", level = "info", skip_all, fields(id = %id, private = private))]
+    pub async fn set_share_private(&self, id: &str, private: bool) -> Result<()> {
+        self.inner
+            .query("UPDATE type::record('mutable_share', $id) SET private = $private")
+            .bind(("id", id.to_string()))
+            .bind(("private", private))
+            .await
+            .context("privacy update failed")?
+            .check()
+            .context("privacy update returned an error")?;
+        Ok(())
+    }
+
+    /// Resolve a GitHub login to a user who has signed in to ironpad.
+    /// Logins are matched case-insensitively (GitHub treats them that way).
+    #[tracing::instrument(name = "db_find_user_by_login", level = "debug", skip_all)]
+    pub async fn find_user_by_login(&self, login: &str) -> Result<Option<AuthUser>> {
+        let rows: Vec<AuthUser> = self
+            .inner
+            .query(
+                "SELECT record::id(id) AS github_id, login, avatar_url FROM user \
+                 WHERE string::lowercase(login) = string::lowercase($login) LIMIT 1",
+            )
+            .bind(("login", login.to_string()))
+            .await
+            .context("user lookup failed")?
+            .take(0)
+            .context("user row malformed")?;
+        Ok(rows.into_iter().next())
+    }
+
+    /// Mint a READ grant. Idempotent: the unique grant index rejects
+    /// duplicates, which this treats as success.
+    #[tracing::instrument(name = "db_grant_read", level = "info", skip_all, fields(id = %id))]
+    pub async fn grant_read(&self, id: &str, github_id: &str) -> Result<()> {
+        let result = self
+            .inner
+            .query(
+                "CREATE rbac_grant SET \
+                    user = type::record('user', $uid), \
+                    resource_kind = $kind, resource_id = $id, role = $role",
+            )
+            .bind(("uid", github_id.to_string()))
+            .bind(("kind", KIND_MUTABLE_SHARE))
+            .bind(("id", id.to_string()))
+            .bind(("role", ROLE_READ))
+            .await
+            .context("grant create failed")?
+            .check();
+        match result {
+            Ok(_) => Ok(()),
+            // A duplicate grant is the caller clicking twice, not an error.
+            Err(e) if e.to_string().contains("grant_unique") => Ok(()),
+            Err(e) => Err(e).context("grant create returned an error"),
+        }
+    }
+
+    /// Remove a READ grant (never the OWNER's).
+    #[tracing::instrument(name = "db_revoke_read", level = "info", skip_all, fields(id = %id))]
+    pub async fn revoke_read(&self, id: &str, github_id: &str) -> Result<()> {
+        self.inner
+            .query(
+                "DELETE rbac_grant \
+                 WHERE user = type::record('user', $uid) \
+                    AND resource_kind = $kind AND resource_id = $id AND role = $role",
+            )
+            .bind(("uid", github_id.to_string()))
+            .bind(("kind", KIND_MUTABLE_SHARE))
+            .bind(("id", id.to_string()))
+            .bind(("role", ROLE_READ))
+            .await
+            .context("grant revoke failed")?
+            .check()
+            .context("grant revoke returned an error")?;
+        Ok(())
+    }
+
+    /// Everyone holding a READ grant on a share, for the owner's Access UI.
+    #[tracing::instrument(name = "db_list_read_grants", level = "info", skip_all, fields(id = %id))]
+    pub async fn list_read_grants(&self, id: &str) -> Result<Vec<AuthUser>> {
+        let rows: Vec<AuthUser> = self
+            .inner
+            .query(
+                "SELECT record::id(user) AS github_id, user.login AS login, \
+                    user.avatar_url AS avatar_url \
+                 FROM rbac_grant \
+                 WHERE resource_kind = $kind AND resource_id = $id AND role = $role",
+            )
+            .bind(("kind", KIND_MUTABLE_SHARE))
+            .bind(("id", id.to_string()))
+            .bind(("role", ROLE_READ))
+            .await
+            .context("grant listing failed")?
+            .take(0)
+            .context("grant rows malformed")?;
+        Ok(rows)
+    }
+
+    /// May `github_id` view a PRIVATE share — OWNER or READ. (Public shares
+    /// never consult this.)
+    #[tracing::instrument(name = "db_user_can_read_share", level = "debug", skip_all, fields(id = %id))]
+    pub async fn user_can_read_share(&self, github_id: &str, id: &str) -> Result<bool> {
+        #[derive(SurrealValue)]
+        struct Row {
+            resource_id: String,
+        }
+        let rows: Vec<Row> = self
+            .inner
+            .query(
+                "SELECT resource_id FROM rbac_grant \
+                 WHERE user = type::record('user', $uid) \
+                    AND resource_kind = $kind AND resource_id = $id \
+                    AND (role = $owner OR role = $read)",
+            )
+            .bind(("uid", github_id.to_string()))
+            .bind(("kind", KIND_MUTABLE_SHARE))
+            .bind(("id", id.to_string()))
+            .bind(("owner", ROLE_OWNER))
+            .bind(("read", ROLE_READ))
+            .await
+            .context("read-access check failed")?
+            .take(0)
+            .context("read-access row malformed")?;
         Ok(!rows.is_empty())
     }
 

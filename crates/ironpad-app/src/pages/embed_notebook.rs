@@ -113,13 +113,13 @@ pub fn EmbedMutablePage() -> impl IntoView {
     let notebook_resource = Resource::new(
         move || id.get(),
         |id| async move {
-            let response = get_mutable_notebook(id.clone()).await?;
-            let manifest = if response.is_some() {
+            let access = get_mutable_notebook(id.clone()).await?;
+            let manifest = if matches!(access, ironpad_common::MutableNotebookAccess::Found(_)) {
                 get_mutable_manifest(id).await.unwrap_or(None)
             } else {
                 None
             };
-            Ok::<_, ServerFnError>((response, manifest))
+            Ok::<_, ServerFnError>((access, manifest))
         },
     );
 
@@ -128,9 +128,21 @@ pub fn EmbedMutablePage() -> impl IntoView {
             {move || {
                 let spec = format!("mutable/{}", id.get());
                 Suspend::new(async move {
+                    use ironpad_common::MutableNotebookAccess as Access;
                     let (result, manifest) = match notebook_resource.await {
-                        Ok((Some(response), manifest)) => (Ok(response.notebook), manifest),
-                        Ok((None, _)) => (
+                        Ok((Access::Found(response), manifest)) => {
+                            (Ok(response.notebook), manifest)
+                        }
+                        // A cross-site iframe carries no SameSite=Lax cookie,
+                        // so embeds of private shares deny by construction;
+                        // the compact panel says why (PRD-0061).
+                        Ok((Access::Private { .. }, _)) => (
+                            Err(ServerFnError::new(
+                                "This notebook is private; open it on ironpad to sign in",
+                            )),
+                            None,
+                        ),
+                        Ok((Access::NotFound, _)) => (
                             Err(ServerFnError::new("not found")),
                             None,
                         ),

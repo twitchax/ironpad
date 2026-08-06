@@ -287,7 +287,7 @@ scaffold → cache check → cargo build → diagnostics → wasm-opt
 
 3. **Build** (`compiler/build.rs`) — Runs `cargo build --target wasm32-unknown-unknown --release` with JSON message output and a 300-second timeout (override with `IRONPAD_BUILD_TIMEOUT_SECS`).
 
-4. **Diagnostics** (`compiler/diagnostics.rs`) — Parses rustc JSON output and adjusts line numbers by subtracting `WRAPPER_PREAMBLE_LINES` (4) to map errors back to user source.
+4. **Diagnostics** (`compiler/diagnostics.rs`) — Parses rustc JSON output and adjusts line numbers by subtracting the scaffold's computed `preamble_lines` (base 7 since the PRD-0060 trampoline) to map errors back to user source.
 
 5. **Optimize** (`compiler/optimize.rs`) — Best-effort `wasm-opt -O3` (binaryen; runtime speed over size). Failures are non-fatal.
 
@@ -350,7 +350,7 @@ All cells compile to **`wasm32-unknown-unknown`**:
 ### Diagnostic Mapping
 
 - Compiler reports spans in wrapper lines (`src/lib.rs` generated code)
-- `WRAPPER_PREAMBLE_LINES = 4` hardcoded offset
+- `preamble_lines` computed by the scaffold (base 7; grows with shared source and referenced-slot bindings)
 - Diagnostic parser adjusts all line numbers: `user_line = rustc_line - 4`
 - Error codes extracted for rust error index linking
 

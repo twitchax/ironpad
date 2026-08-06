@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
-use ironpad_common::{MutableNotebookResponse, ShareManifest};
+use ironpad_common::{MutableNotebookAccess, MutableNotebookResponse, ShareManifest};
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::social_meta::{mark_not_found, SocialMeta};
@@ -35,20 +35,20 @@ pub fn MutableNotebookPage() -> impl IntoView {
     let notebook_resource = Resource::new(
         move || id.get(),
         |id| async move {
-            let response = get_mutable_notebook(id.clone()).await?;
-            // Manifest only matters when the notebook exists; a
+            let access = get_mutable_notebook(id.clone()).await?;
+            // Manifest only matters when the notebook is viewable; a
             // missing/degraded manifest falls back to live compilation.
-            let manifest = if response.is_some() {
+            let manifest = if matches!(access, MutableNotebookAccess::Found(_)) {
                 get_mutable_manifest(id).await.unwrap_or(None)
             } else {
                 None
             };
-            Ok::<_, ServerFnError>((response, manifest))
+            Ok::<_, ServerFnError>((access, manifest))
         },
     );
 
     Effect::new(move || {
-        if let Some(Ok((Some(r), _))) = notebook_resource.get() {
+        if let Some(Ok((MutableNotebookAccess::Found(r), _))) = notebook_resource.get() {
             ctx.cell_count.set(r.notebook.cells.len());
         }
     });
@@ -114,7 +114,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
                         let id = id.clone();
                         Suspend::new(async move {
                             match notebook_resource.await {
-                                Ok((Some(response), manifest)) => view! {
+                                Ok((MutableNotebookAccess::Found(response), manifest)) => view! {
                                     // `noindex`: like immutable shares, a mutable
                                     // link is unlisted, so it unfurls without being
                                     // indexed.
@@ -132,9 +132,38 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                         oembed=true
                                         noindex=true
                                     />
-                                    <MutableReader id response manifest force_reader />
+                                    <MutableReader id response=*response manifest force_reader />
                                 }.into_any(),
-                                Ok((None, _)) => view! {
+                                Ok((MutableNotebookAccess::Private { signed_in }, _)) => view! {
+                                    // No SocialMeta: a private share must not
+                                    // hand its title to unfurlers. The prompt
+                                    // is the whole point — a private link
+                                    // given to the right person works after
+                                    // one sign-in (PRD-0061).
+                                    {mark_not_found()}
+                                    <div class="ironpad-error-boundary">
+                                        <div class="ironpad-error-boundary-icon">"🔒"</div>
+                                        <p class="ironpad-error-boundary-message">
+                                            "This notebook is private."
+                                        </p>
+                                        {if signed_in {
+                                            view! {
+                                                <p class="ironpad-error-boundary-hint">
+                                                    "Your account does not have access. Ask the author to grant your GitHub username."
+                                                </p>
+                                            }.into_any()
+                                        } else {
+                                            view! {
+                                                <p class="ironpad-error-boundary-hint">
+                                                    "If the author gave you access, "
+                                                    <a href="/auth/github" rel="external">"sign in with GitHub"</a>
+                                                    " to view it."
+                                                </p>
+                                            }.into_any()
+                                        }}
+                                    </div>
+                                }.into_any(),
+                                Ok((MutableNotebookAccess::NotFound, _)) => view! {
                                     {mark_not_found()}
                                     <div class="ironpad-error-boundary">
                                         <div class="ironpad-error-boundary-icon">"△"</div>

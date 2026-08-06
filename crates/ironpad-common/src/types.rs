@@ -638,6 +638,38 @@ pub struct MutableNotebookResponse {
     pub is_owner: bool,
 }
 
+/// The reader path's three-way outcome for a mutable share (PRD-0061).
+///
+/// `Private` is deliberately distinct from `NotFound`: a private link handed
+/// to the right person must render a sign-in prompt that WORKS after one
+/// sign-in, not dead-end on a 404. Content never rides the `Private` arm.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum MutableNotebookAccess {
+    Found(Box<MutableNotebookResponse>),
+    /// The share exists but the caller (anonymous, or signed in without a
+    /// grant) may not view it. `signed_in` picks the denial copy.
+    Private {
+        signed_in: bool,
+    },
+    NotFound,
+}
+
+/// One READ grant on a private share, for the owner's Access UI (PRD-0061).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShareGrant {
+    pub github_id: String,
+    pub login: String,
+    pub avatar_url: String,
+}
+
+/// The owner's access view of a share (PRD-0061): the privacy flag plus the
+/// current READ grants, fetched together when the Access UI mounts.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShareAccess {
+    pub private: bool,
+    pub grants: Vec<ShareGrant>,
+}
+
 /// The owner's editing payload for a mutable share (PRD-0054): the server
 /// draft when one exists (else the published copy), and whether they differ
 /// (which is what arms the Push button on load).
@@ -645,6 +677,10 @@ pub struct MutableNotebookResponse {
 pub struct MutableEditResponse {
     pub notebook: IronpadNotebook,
     pub dirty: bool,
+    /// The share's privacy flag (PRD-0061). Serde default keeps pre-0061
+    /// clients decoding.
+    #[serde(default)]
+    pub private: bool,
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
