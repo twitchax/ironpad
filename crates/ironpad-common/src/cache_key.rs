@@ -257,6 +257,26 @@ pub fn extract_user_dependencies(cargo_toml: &str) -> String {
     render_dep_entries(user_dependency_entries(cargo_toml))
 }
 
+/// True when the manifest declares any dependency beyond `ironpad-cell`, in
+/// either the inline or dotted form. The single source for "does this cell
+/// pull in a custom dep" — the scaffold merge, and the live-check warmth
+/// gate ([`crate::types::manifest_has_custom_deps`]) both read it, so a new
+/// dependency shape can never be understood by one and missed by the other.
+#[must_use]
+pub fn has_user_dependencies(cargo_toml: &str) -> bool {
+    !user_dependency_entries(cargo_toml).is_empty()
+}
+
+/// True when `header` is a single-segment `[dependencies.NAME]` subtable —
+/// exactly the form [`merge_dependencies`] captures and renders back out
+/// under `[dependencies]`. The scaffold's extra-section collector must skip
+/// these, or the subtable is emitted twice and cargo rejects the manifest
+/// with `duplicate key`.
+#[must_use]
+pub fn is_dotted_dependency_section(header: &str) -> bool {
+    dotted_dependency_name(header.trim()).is_some()
+}
+
 /// Merge shared (notebook-level) and cell-level dependencies.
 ///
 /// Cell deps take precedence by normalized crate name, ACROSS forms: a cell

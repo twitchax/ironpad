@@ -147,32 +147,15 @@ pub struct CheckResponse {
 /// first check would pay a full dependency build and must wait for a
 /// successful compile instead.
 ///
-/// Line-based on purpose (mirrors the scaffold's dependency merging): a dep
-/// is any non-comment `name = ...` line inside a `[dependencies]` section.
+/// Delegates to [`crate::cache_key::has_user_dependencies`] — the SAME
+/// dotted-aware parser the scaffold merge uses — so the inline and dotted
+/// `[dependencies.NAME]` forms are understood identically. A hand-rolled
+/// line scan here once missed the dotted form and mis-classified such a cell
+/// as warm, dispatching a cold check on every keystroke.
 #[must_use]
 pub fn manifest_has_custom_deps(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str) -> bool {
-    fn has_custom(toml: &str) -> bool {
-        let mut in_deps = false;
-        for line in toml.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') {
-                in_deps = trimmed == "[dependencies]";
-                continue;
-            }
-            if !in_deps || trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let Some(name) = trimmed.split('=').next() else {
-                continue;
-            };
-            let name = name.trim().trim_matches('"');
-            if !name.is_empty() && name != "ironpad-cell" {
-                return true;
-            }
-        }
-        false
-    }
-    shared_cargo_toml.is_some_and(has_custom) || has_custom(cell_cargo_toml)
+    shared_cargo_toml.is_some_and(crate::cache_key::has_user_dependencies)
+        || crate::cache_key::has_user_dependencies(cell_cargo_toml)
 }
 
 // ── Cell Type ────────────────────────────────────────────────────────────────
@@ -714,6 +697,23 @@ mod tests {
         assert!(!manifest_has_custom_deps(
             None,
             "[profile.release]\nopt-level = 1",
+        ));
+        // Dotted `[dependencies.NAME]` subtables DO count — the build
+        // pipeline supports them, so the warmth gate must see them too
+        // (previously a hand-rolled line scan missed the form and
+        // dispatched a cold check on every keystroke).
+        assert!(manifest_has_custom_deps(
+            None,
+            "[dependencies.tokio]\nversion = \"1\"\nfeatures = [\"rt\"]",
+        ));
+        assert!(manifest_has_custom_deps(
+            Some("[dependencies.rayon]\nversion = \"1\""),
+            "",
+        ));
+        // ...but a dotted ironpad-cell subtable is still filtered.
+        assert!(!manifest_has_custom_deps(
+            None,
+            "[dependencies.ironpad-cell]\npath = \"x\"",
         ));
     }
 

@@ -627,7 +627,12 @@ impl From<canvas::Animation> for CellOutput {
         Self {
             bytes: vec![],
             panels,
-            type_tag: Some("Animation".into()),
+            // A display-only value with EMPTY bytes: advertising a type tag
+            // makes a downstream cell bind `let cellN: Animation =
+            // …deserialize()` and panic at runtime on the zero-byte slot
+            // (and `last` binds every tagged slot). No tag means piping skips
+            // it — same rationale as SimulationMeta/LiveViewMeta below.
+            type_tag: None,
         }
     }
 }
@@ -1103,7 +1108,14 @@ fn truncate_debug<T: std::fmt::Debug>(val: &T) -> String {
     if full.len() <= DISPLAY_ELEMENT_MAX_CHARS {
         return full;
     }
-    let mut s = full[..DISPLAY_ELEMENT_MAX_CHARS].to_string();
+    // Floor the cut to a char boundary: a naive byte slice at 80 panics when
+    // that index lands mid-UTF-8-character (e.g. a Vec of accented or CJK
+    // strings), trapping the whole cell during output formatting.
+    let mut cut = DISPLAY_ELEMENT_MAX_CHARS;
+    while cut > 0 && !full.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut s = full[..cut].to_string();
     s.push('…');
     s
 }
@@ -2272,6 +2284,21 @@ mod tests {
     }
 
     #[test]
+    fn truncate_debug_cuts_on_a_char_boundary() {
+        // A byte slice at 80 would land mid-character here and panic; the
+        // element's Debug repr is well over 80 bytes of multibyte text.
+        let v = vec!["é".repeat(60)];
+        let panels = v.into_panels();
+        let DisplayPanel::Text(text) = &panels[0] else {
+            panic!("expected Text panel");
+        };
+        assert!(text.ends_with("…]"), "got: {text}");
+        // Emoji (4-byte) also crosses the boundary.
+        let v2 = vec!["🦀".repeat(40)];
+        assert!(matches!(&v2.into_panels()[0], DisplayPanel::Text(_)));
+    }
+
+    #[test]
     fn into_panels_svg_html() {
         assert_eq!(
             Svg("<svg/>".into()).into_panels(),
@@ -2682,7 +2709,9 @@ mod tests {
         let f = canvas::Canvas::new(2, 2);
         let anim = canvas::Animation::new(vec![f], 30);
         let output = CellOutput::from(anim);
-        assert_eq!(output.type_tag.as_deref(), Some("Animation"));
+        // No type tag: the output is display-only with empty bytes, so a
+        // downstream cell must not bind (and then panic deserializing) it.
+        assert_eq!(output.type_tag, None);
         assert!(output.bytes.is_empty());
         assert_eq!(output.panels.len(), 1);
     }

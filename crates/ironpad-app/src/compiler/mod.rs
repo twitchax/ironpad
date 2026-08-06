@@ -19,17 +19,32 @@ use std::sync::{Arc, Mutex};
 /// race: one overwrites the other's scaffolded source, and the loser builds the
 /// wrong source and caches it under its *own* content hash — cache poisoning.
 /// Holding the per-cell lock across scaffold → build → cache makes those
-/// requests run one at a time. Distinct cell ids use distinct dirs and never
-/// contend. Cloneable; all clones share one lock table.
+/// requests run one at a time. Cloneable; all clones share one lock table.
+///
+/// The lock keys on the `-`→`_`-NORMALIZED id, not the raw id, because cargo
+/// derives one lib target name (`cell_a_b`) for both `cell-a-b` and
+/// `cell-a_b`, so two ids differing only by `-`/`_` uplift to the SAME shared
+/// artifact (`targets/default/.../cell_a_b.wasm`). Keying on the raw id let
+/// those two run concurrently and one build's WASM be read + cached under the
+/// other's content hash. Normalizing to the artifact identity makes them
+/// contend, which is exactly what the shared output requires.
 #[derive(Clone, Default)]
 pub struct CompileLocks {
     locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
+/// The lock identity for `cell_id`: the same `-`→`_` normalization cargo
+/// applies to derive the uplifted lib artifact name (`expected_wasm_path`).
+fn lock_key(cell_id: &str) -> String {
+    cell_id.replace('-', "_")
+}
+
 impl CompileLocks {
-    /// Acquire the lock for `cell_id`, awaiting any in-flight compile of the
-    /// same id. The returned guard must be held for the whole compile.
+    /// Acquire the lock for `cell_id`, awaiting any in-flight compile that
+    /// shares its artifact identity. The returned guard must be held for the
+    /// whole compile.
     pub async fn acquire(&self, cell_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = lock_key(cell_id);
         let cell_lock = {
             let mut table = self.locks.lock().expect("compile-lock table poisoned");
             // Prune entries no longer in use so the table can't grow without
@@ -40,8 +55,8 @@ impl CompileLocks {
             // lock, so a concurrent acquirer for a pruned id simply recreates a
             // fresh lock — mutual exclusion is preserved because a count of 1
             // means no compile is currently inside the critical section.
-            table.retain(|id, lock| id == cell_id || Arc::strong_count(lock) > 1);
-            table.entry(cell_id.to_string()).or_default().clone()
+            table.retain(|id, lock| *id == key || Arc::strong_count(lock) > 1);
+            table.entry(key).or_default().clone()
         };
         cell_lock.lock_owned().await
     }
@@ -50,10 +65,11 @@ impl CompileLocks {
     /// holds it. Returns `None` when busy — live checks use this to SKIP
     /// rather than queue behind a long build (PRD-0045).
     pub fn try_acquire(&self, cell_id: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let key = lock_key(cell_id);
         let cell_lock = {
             let mut table = self.locks.lock().expect("compile-lock table poisoned");
-            table.retain(|id, lock| id == cell_id || Arc::strong_count(lock) > 1);
-            table.entry(cell_id.to_string()).or_default().clone()
+            table.retain(|id, lock| *id == key || Arc::strong_count(lock) > 1);
+            table.entry(key).or_default().clone()
         };
         cell_lock.try_lock_owned().ok()
     }
@@ -120,6 +136,23 @@ mod compile_locks_tests {
         // A different cell must not contend on the first cell's lock.
         let other = tokio::time::timeout(Duration::from_millis(500), locks.acquire("cell-2")).await;
         assert!(other.is_ok(), "distinct cells should not block each other");
+    }
+
+    #[tokio::test]
+    async fn dash_and_underscore_variants_share_one_lock() {
+        // `a-b` and `a_b` uplift to the SAME cargo lib artifact, so they must
+        // contend — otherwise one build's WASM lands under the other's hash.
+        let locks = CompileLocks::default();
+        let guard = locks.acquire("cell-a-b").await;
+        assert!(
+            locks.try_acquire("cell-a_b").is_none(),
+            "the `_` variant must block on the `-` variant's lock"
+        );
+        let blocked =
+            tokio::time::timeout(Duration::from_millis(50), locks.acquire("cell-a_b")).await;
+        assert!(blocked.is_err(), "same-artifact ids must serialize");
+        drop(guard);
+        assert_eq!(locks.table_len(), 1, "both variants map to one entry");
     }
 
     #[tokio::test]

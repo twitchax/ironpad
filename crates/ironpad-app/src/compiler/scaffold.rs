@@ -294,6 +294,11 @@ fn extract_extra_sections(shared_cargo_toml: Option<&str>, cell_cargo_toml: &str
 ///
 /// Returns a list of `(header, body)` pairs where `header` is the full section
 /// line (e.g. `[profile.release]`) and `body` is the content below it.
+///
+/// A dotted `[dependencies.NAME]` subtable is NOT an extra section: the merge
+/// in `ironpad_common::cache_key` already captures and re-renders it under
+/// `[dependencies]`, so collecting it here too would emit the subtable twice
+/// and cargo would reject the manifest with `duplicate key`.
 fn collect_extra_sections(cargo_toml: &str) -> Vec<(String, String)> {
     let mut sections: Vec<(String, String)> = Vec::new();
     let mut current_header: Option<String> = None;
@@ -314,7 +319,8 @@ fn collect_extra_sections(cargo_toml: &str) -> Vec<(String, String)> {
             }
             current_body.clear();
 
-            let is_ignored = ignored_sections.contains(&trimmed);
+            let is_ignored = ignored_sections.contains(&trimmed)
+                || ironpad_common::cache_key::is_dotted_dependency_section(trimmed);
             if !is_ignored {
                 current_header = Some(trimmed.to_string());
             }
@@ -1413,6 +1419,25 @@ serde = { git = \"https://github.com/serde-rs/serde\" }
         let result = extract_extra_sections(Some(shared), "");
         assert!(result.contains("[patch.crates-io]"));
         assert!(result.contains("serde = { git ="));
+    }
+
+    #[test]
+    fn dotted_dependency_subtable_appears_exactly_once() {
+        // Regression: a `[dependencies.NAME]` subtable is rendered by
+        // merge_dependencies AND was also collected as an extra section, so
+        // the generated manifest carried it twice and cargo rejected it with
+        // `duplicate key` — breaking every cell in the notebook.
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let cell = "[dependencies.rand]\nversion = \"0.8\"\n";
+        let result = generate_cargo_toml("abc", cell, &cell_path, None, false, false);
+        assert_eq!(
+            result.matches("[dependencies.rand]").count(),
+            1,
+            "the dotted subtable must be emitted exactly once:\n{result}"
+        );
+        assert!(result.contains("version = \"0.8\""));
+        // And it must not be collected as a standalone extra section.
+        assert!(collect_extra_sections(cell).is_empty());
     }
 
     #[test]
