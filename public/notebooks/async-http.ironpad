@@ -21,7 +21,8 @@
       "cell_type": "Code",
       "source": "// Fetch JSON from a public API\nlet response = ironpad_cell::http::get(\"https://httpbin.org/get\").await.unwrap();\n\n// Return the raw JSON string so downstream cells can parse it\nresponse\n",
       "cargo_toml": null,
-      "collapsed": true
+      "collapsed": true,
+      "saved_output": "[{\"Text\":\"{\\n  \\\"args\\\": {}, \\n  \\\"headers\\\": {\\n    \\\"Accept\\\": \\\"*/*\\\", \\n    \\\"Accept-Encoding\\\": \\\"gzip, deflate, br, zstd\\\", \\n    \\\"Host\\\": \\\"httpbin.org\\\", \\n    \\\"Origin\\\": \\\"http://localhost:3111\\\", \\n    \\\"Priority\\\": \\\"u=1, i\\\", \\n    \\\"Referer\\\": \\\"http://localhost:3111/\\\", \\n    \\\"Sec-Fetch-Dest\\\": \\\"empty\\\", \\n    \\\"Sec-Fetch-Mode\\\": \\\"cors\\\", \\n    \\\"Sec-Fetch-Site\\\": \\\"cross-site\\\", \\n    \\\"User-Agent\\\": \\\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/145.0.7632.6 Safari/537.36\\\", \\n    \\\"X-Amzn-Trace-Id\\\": \\\"Root=1-6a73e40b-68a176d55c83455e60311d1c\\\"\\n  }, \\n  \\\"origin\\\": \\\"174.164.136.150\\\", \\n  \\\"url\\\": \\\"https://httpbin.org/get\\\"\\n}\\n\"}]"
     },
     {
       "id": "cell_2",
@@ -38,7 +39,8 @@
       "cell_type": "Code",
       "source": "use serde_json::Value;\n\n// Parse raw JSON\nlet data: Value = serde_json::from_str(&cell1).unwrap();\n\n// Extract fields\nlet origin = data[\"origin\"].as_str().unwrap_or(\"unknown\");\nlet url = data[\"url\"].as_str().unwrap_or(\"unknown\");\n\nHtml(format!(\n    \"<table style='border-collapse:collapse; width:100%;'>\n        <tr><th style='border:1px solid #0f3460; padding:8px; text-align:left; background:#1a1a2e;'>Field</th>\n            <th style='border:1px solid #0f3460; padding:8px; text-align:left; background:#1a1a2e;'>Value</th></tr>\n        <tr><td style='border:1px solid #0f3460; padding:8px;'>Origin IP</td>\n            <td style='border:1px solid #0f3460; padding:8px;'>{origin}</td></tr>\n        <tr><td style='border:1px solid #0f3460; padding:8px;'>URL</td>\n            <td style='border:1px solid #0f3460; padding:8px;'>{url}</td></tr>\n    </table>\"\n))\n",
       "cargo_toml": null,
-      "collapsed": true
+      "collapsed": true,
+      "saved_output": "[{\"Html\":\"<table style='border-collapse:collapse; width:100%;'>\\n        <tr><th style='border:1px solid #0f3460; padding:8px; text-align:left; background:#1a1a2e;'>Field</th>\\n            <th style='border:1px solid #0f3460; padding:8px; text-align:left; background:#1a1a2e;'>Value</th></tr>\\n        <tr><td style='border:1px solid #0f3460; padding:8px;'>Origin IP</td>\\n            <td style='border:1px solid #0f3460; padding:8px;'>174.164.136.150</td></tr>\\n        <tr><td style='border:1px solid #0f3460; padding:8px;'>URL</td>\\n            <td style='border:1px solid #0f3460; padding:8px;'>https://httpbin.org/get</td></tr>\\n    </table>\"}]"
     }
   ],
   "description": "Make HTTP requests from Rust cells using async/await.",

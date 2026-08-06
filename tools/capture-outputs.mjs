@@ -72,18 +72,30 @@ for (const file of files) {
     await page.waitForSelector(".ironpad-cell-card", { timeout: 30_000 });
     await page.waitForTimeout(2_000);
 
-    await page.locator(".ironpad-run-all-button").click();
-    const deadline = Date.now() + CELL_BUDGET_MS * runnable;
-    for (;;) {
-      const busy = await page.evaluate(
-        () =>
-          document.querySelectorAll(
-            ".ironpad-cell-status--compiling, .ironpad-cell-status--running, .ironpad-cell-status--queued",
-          ).length,
-      );
-      if (busy === 0) break;
-      if (Date.now() > deadline) throw new Error("run-all timed out");
-      await page.waitForTimeout(2_000);
+    // Run cells ONE AT A TIME rather than Run All: several teaching
+    // notebooks open with a deliberate compile-fail cell, and the run-all
+    // cascade correctly aborts the queue there — which would leave every
+    // later cell in the notebook without a snapshot. A per-cell run still
+    // cascades that cell's own prerequisites.
+    const runButtons = page.locator('button[title="Run cell"]');
+    const count = await runButtons.count();
+    for (let i = 0; i < count; i += 1) {
+      await runButtons.nth(i).click();
+      const deadline = Date.now() + CELL_BUDGET_MS;
+      for (;;) {
+        const busy = await page.evaluate(
+          () =>
+            document.querySelectorAll(
+              ".ironpad-cell-status--compiling, .ironpad-cell-status--running, .ironpad-cell-status--queued",
+            ).length,
+        );
+        // A cell that fails to compile settles into Error; either way the
+        // absence of busy cells means this run is done.
+        if (busy === 0) break;
+        if (Date.now() > deadline) throw new Error(`cell ${i} timed out`);
+        await page.waitForTimeout(1_500);
+      }
+      await page.waitForTimeout(500);
     }
     await page.waitForTimeout(2_000); // let the last output settle
 
@@ -101,7 +113,10 @@ for (const file of files) {
     const enriched = JSON.parse(fs.readFileSync(tmp, "utf-8"));
     fs.unlinkSync(tmp);
 
-    const captured = enriched.cells.filter((c) => c.saved_output).length;
+    const outputs = new Map(
+      enriched.cells.filter((c) => c.saved_output).map((c) => [c.id, c.saved_output]),
+    );
+    const captured = outputs.size;
     if (captured === 0) {
       results.push({
         file,
@@ -109,12 +124,20 @@ for (const file of files) {
         seconds: Math.round((Date.now() - started) / 1000),
       });
     } else {
-      // Only outputs change: keep the notebook's identity and timestamps so
-      // the diff is exactly the new saved_output fields.
-      enriched.id = source.id;
-      enriched.created_at = source.created_at;
-      enriched.updated_at = source.updated_at;
-      fs.writeFileSync(full, `${JSON.stringify(enriched, null, 2)}\n`);
+      // Write saved_output INTO THE SOURCE object rather than writing the
+      // round-tripped notebook: a round trip also materializes serde
+      // defaults (version, collapse flags) the hand-written files omit,
+      // which would bury the real change in noise. The diff is exactly the
+      // new saved_output fields.
+      for (const cell of source.cells) {
+        const panels = outputs.get(cell.id);
+        if (panels) {
+          cell.saved_output = panels;
+        } else {
+          delete cell.saved_output;
+        }
+      }
+      fs.writeFileSync(full, `${JSON.stringify(source, null, 2)}\n`);
       results.push({
         file,
         status: `captured ${captured}/${runnable}`,

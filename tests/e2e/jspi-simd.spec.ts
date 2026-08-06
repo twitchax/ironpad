@@ -28,14 +28,10 @@ async function runCellToSuccess(page, cell) {
   await expect(runButton).toBeVisible();
   await runButton.click();
 
-  await expect(cell.locator(".ironpad-cell-status--compiling")).toBeVisible({
-    timeout: 5_000,
-  });
-  await expect(cell.locator(".ironpad-cell-status--compiling")).toBeHidden({
-    timeout: 120_000,
-  });
+  // Assert the TERMINAL state: "compiling" is transient and a warm
+  // cache can skip past it between polls.
   await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
-    timeout: 15_000,
+    timeout: 120_000,
   });
 }
 

@@ -75,11 +75,9 @@ test.describe("Notebook", () => {
     await runButton.click();
 
     // Wait for compilation to start.
-    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeVisible({
-      timeout: 5_000,
-    });
-
-    // Wait for compilation to finish (status leaves "compiling").
+    // Wait for compilation to finish. Only the terminal state is
+    // asserted: "compiling" is transient and a warm cache can skip
+    // past it between polls.
     await expect(cell.locator(".ironpad-cell-status--compiling")).toBeHidden({
       timeout: 120_000,
     });
@@ -153,15 +151,13 @@ test.describe("Notebook", () => {
     // ── Run all cells via Ctrl+Shift+Enter ──────────────────────────────
     await page.keyboard.press("Control+Shift+Enter");
 
-    // ── Wait for Cell 0 to compile and succeed ──────────────────────────
-    await expect(c0.locator(".ironpad-cell-status--compiling")).toBeVisible({
-      timeout: 10_000,
-    });
-    await expect(c0.locator(".ironpad-cell-status--compiling")).toBeHidden({
-      timeout: 120_000,
-    });
+    // ── Wait for Cell 0 to succeed ──────────────────────────────────────
+    //
+    // Assert the TERMINAL state only: "compiling" is transient, and on a
+    // warm cache it can come and go between polls (this assertion failed
+    // exactly once, right after a run that warmed these cells' blobs).
     await expect(c0.locator(".ironpad-cell-status--success")).toBeVisible({
-      timeout: 10_000,
+      timeout: 120_000,
     });
 
     // Verify Cell 0 output shows the sent data.

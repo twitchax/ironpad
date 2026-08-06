@@ -1,132 +1,138 @@
 {
- "version": 1,
- "id": "b7d3f9a2-5c81-4e60-9b47-1f8e62ad0c35",
- "title": "Uncolored Functions: Blocking I/O with WASM JSPI",
- "created_at": "2026-07-10T00:00:00Z",
- "updated_at": "2026-07-12T00:00:00Z",
- "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
- "shared_source": null,
- "description": "Plain synchronous Rust that sleeps and calls HTTP APIs from inside iterator chains: JSPI suspends the whole WASM stack, so no async is needed anywhere. Requires Chrome or Edge 137+.",
- "tags": [
-  "jspi",
-  "blocking",
-  "async",
-  "http",
-  "wasm",
-  "blog"
- ],
- "cells": [
-  {
-   "id": "cell_banner",
-   "cell_type": "Markdown",
-   "label": "Read this first",
-   "source": "> *AI authored to showcase ironpad capabilities.*\n\n## Introduction\n\n> **Heads up: this notebook needs Chrome or Edge 137+.** It uses the WebAssembly JavaScript Promise Integration API (JSPI), which Firefox still keeps behind a flag and Safari has not shipped yet. On those browsers the code cells below will stop with a message saying exactly that.\n\nRust folks know the [\"What Color Is Your Function?\"](https://journal.stuffwithstuff.com/2015/02/01/what-color-is-your-function/) problem by heart: the moment one call does I/O, `async` spreads through every signature above it. Trait impls, iterator adapters, plain helper functions: none of them can await, so they can never do I/O. You restructure your program around the runtime.\n\n**JSPI deletes the color.** It is a [phase 4 WebAssembly proposal](https://github.com/WebAssembly/js-promise-integration) that lets the browser **suspend an entire WASM stack** while a JavaScript promise settles, then resume it exactly where it stopped. To the Rust code, a network call is just a function that takes a while, like it always was on a thread.\n\nEvery code cell in this notebook is **fully synchronous Rust**: not a single `.await` or `Future` anywhere. ironpad already runs async cells (see the [async HTTP notebook](/public/async-http)); this one exists to show what happens when you stop needing them. The plan: sleep, measure what a suspension costs, fetch from inside iterators and trait impls, then walk the executor mechanics that keep it all sound.",
-   "order": 0,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_color_problem",
-   "cell_type": "Markdown",
-   "label": "The coloring problem, properly",
-   "source": "## The coloring problem, properly\n\nBob Nystrom named the problem in 2015 in [\"What Color Is Your Function?\"](https://journal.stuffwithstuff.com/2015/02/01/what-color-is-your-function/), and his rules for a fictional language describe async Rust precisely a decade later. Every function is red (async) or blue (sync). Red can call blue. Blue **cannot call red**, and that one asymmetry is the entire problem: the moment a leaf function needs I/O, every function on the path from `main` to that leaf turns red, one signature at a time.\n\nRust makes the wall taller than most languages, because so much of it is built from blue-only holes: closures handed to `Iterator::map` or `sort_by`, trait methods like `Display::fmt` and `Drop::drop`. These can never be async; they are structural commitments baked into the standard library. And the classic escape hatch is not an escape:\n\n```rust\n// Sync-to-async bridging, the traditional way. You now own an entire\n// runtime, and calling this from inside an existing runtime panics.\nfn title_of(stem: &str) -> Result<String, Error> {\n    let rt = tokio::runtime::Runtime::new()?;\n    rt.block_on(async {\n        let nb: Value = get_json(&format!(\"/notebooks/{stem}.ironpad\")).await?;\n        Ok(nb[\"title\"].as_str().unwrap_or(\"?\").to_owned())\n    })\n}\n```\n\nNative code always had the original uncolored answer: **threads**. A thread that calls `read()` simply stops; the OS keeps its stack alive, and no signature anywhere changes. The web never allowed that, because blocking the one thread blocks the event loop, so the platform standardized on red instead. JSPI is the web finally shipping the thread-shaped answer: the engine keeps your suspended stack the way a kernel keeps a blocked thread's, while the event loop keeps spinning. Time to prove it, starting with the bluntest possible instrument.",
-   "order": 1,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_sleep",
-   "cell_type": "Code",
-   "label": "Sleeping without an executor",
-   "source": "// Plain synchronous Rust. blocking::sleep_ms parks the WHOLE WASM stack\n// via JSPI while the browser runs a setTimeout; the tab stays perfectly\n// responsive because the suspended stack costs nothing.\nlet sw = Stopwatch::new();\n\nblocking::sleep_ms(400.0);\n\nlet elapsed = sw.elapsed_ms();\n\nMd(format!(\n    \"This cell just **blocked for {elapsed:.0} ms** in the middle of a \\\n     synchronous function. No async runtime, no callback, no `await` in \\\n     sight: the engine suspended the stack and resumed it on the same line.\",\n))",
-   "order": 2,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_how_md",
-   "cell_type": "Markdown",
-   "label": "What just happened",
-   "source": "## What just happened\n\nTwo `WebAssembly` API calls, both on the JavaScript side, both invisible from Rust. Here is the actual bridge, condensed. First, any import that might block is wrapped in **`WebAssembly.Suspending`**, which turns an ordinary async JS function into an import the engine may park a WASM stack on:\n\n```js\nimports.env.ironpad_blocking_sleep_ms = new WebAssembly.Suspending(\n  (ms) => new Promise((resolve) => setTimeout(resolve, ms))\n);\n\nimports.env.ironpad_blocking_fetch = new WebAssembly.Suspending(\n  async (urlPtr, urlLen) => {\n    const url = readUtf8(memory, urlPtr, urlLen);\n    const resp = await fetch(url);                        // stack is parked here\n    stash = new Uint8Array(await resp.arrayBuffer());\n    return stash.length;    // resuming the stack, this becomes the return value\n  }\n);\n```\n\nSecond, the entry point is invoked through **`WebAssembly.promising`**, which is what makes that suspension legal on this stack in the first place. The synchronous WASM export becomes an ordinary promise-returning function:\n\n```js\nconst main = WebAssembly.promising(instance.exports.cell_main);\nconst resultPtr = await main(inputPtr, inputLen);\n```\n\nThe two halves are a matched pair with an exact contract. `promising(f)` runs `f` on a **fresh, suspendable stack** and immediately hands back a `Promise` for the eventual return value. `Suspending(g)` marks an import: when WASM on a suspendable stack calls it and `g` returns a promise, the engine **detaches every WASM frame** between the `promising` entry and the import call, parks the segment, and returns to the event loop. When the promise settles, the segment is reattached and the import returns the resolved value to the exact instruction that called it. From inside the module, it is indistinguishable from a slow syscall.\n\nOn the Rust side there is nothing exotic at all: `blocking::fetch_text` is a plain extern import plus a copy. The fetch reports how many bytes arrived while the stack was parked; the cell then allocates and a second, non-suspending import copies them in:\n\n```rust\n#[link(wasm_import_module = \"env\")]\nextern \"C\" {\n    fn ironpad_blocking_fetch(url_ptr: *const u8, url_len: u32) -> u32;\n    fn ironpad_blocking_fetch_ok() -> u32;\n    fn ironpad_blocking_read(buf_ptr: *mut u8, buf_len: u32) -> u32;\n}\n\npub fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {\n    let len = unsafe { ironpad_blocking_fetch(url.as_ptr(), url.len() as u32) };\n    let ok = unsafe { ironpad_blocking_fetch_ok() } == 1;\n    let mut buf = vec![0u8; len as usize];\n    unsafe { ironpad_blocking_read(buf.as_mut_ptr(), len) };\n    if ok { Ok(buf) } else { Err(String::from_utf8_lossy(&buf).into_owned()) }\n}\n```\n\nNote what is missing: no compiler flags, no special codegen, no async runtime linked into the module. The same `.wasm` binary runs unmodified in any engine that ships JSPI. **The async machinery moved out of your program and into the VM**, which is where threads always kept it on native targets.\n\nSleeping is a parlor trick, though. The point of deleting function colors is doing I/O from places `async` cannot reach.",
-   "order": 3,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_suspend_cost",
-   "cell_type": "Code",
-   "label": "The price of a suspension",
-   "source": "// What does a suspension actually cost? sleep_ms(0.0) waits for nothing,\n// so each call measures one full park-and-resume round trip: suspend the\n// stack, hop through the event loop via setTimeout(0), reattach, resume.\nlet n = 5_u32;\nlet sw = Stopwatch::new();\n\nfor _ in 0..n {\n    blocking::sleep_ms(0.0);\n}\n\nlet per_call = sw.elapsed_ms() / f64::from(n);\n\nMd(format!(\n    \"**{n} suspensions, {per_call:.1} ms each.** Nearly all of that is the \\\n     browser's timer clamp, not JSPI: the engine-side stack switch is \\\n     nanoseconds. Directional rather than precise (clamping varies with \\\n     nesting depth), but the shape holds: a suspension costs one \\\n     event-loop hop, roughly a setTimeout(0).\"\n))",
-   "order": 4,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_mechanics_md",
-   "cell_type": "Markdown",
-   "label": "Where the stack goes",
-   "source": "## Where the stack goes\n\nFor a mental model, `WebAssembly.promising` is `pthread_create` and a `Suspending` import is a blocking syscall. The engine allocates the stack for a promising call as its own heap-backed segment, separate from the JavaScript stack that invoked it. Suspension is a stack **switch**, not a stack copy: save the segment's registers, flip the stack pointer back to the JS side, return to the event loop. The parked frames sit in memory untouched until the promise settles; resumption is the same switch in reverse. That is why the measurement above is all `setTimeout` and no JSPI.\n\nThree rules fall out of that implementation:\n\n1. **Only WASM frames can suspend.** If the stack between the `promising` entry and the `Suspending` import contains a JavaScript frame (WASM called JS, which called back into WASM), the suspension throws instead; JS frames belong to the JS stack and cannot be detached.\n2. **A parked stack is absent code, not paused code.** Nothing gets locked. The instance's linear memory and exports remain fully reachable from JavaScript while it is suspended, and the engine will happily let you call back in. Whether that is *sound* is entirely your problem.\n3. **The outer promise settles once.** A single `promising` call can suspend and resume hundreds of times; the promise resolves only when `cell_main` finally returns.\n\nRule 2 is the sharp one, and ironpad's fetch protocol is shaped entirely around refusing to ever test it. We will get there; first, what it buys.",
-   "order": 5,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_iter",
-   "cell_type": "Code",
-   "label": "I/O in the middle of an iterator",
-   "source": "// Three HTTP GETs issued lazily from inside a plain iterator adapter.\n// There is no async block, no join_all, no collecting futures: each call\n// parks the stack mid-`map` while the browser fetches, then resumes.\nlet rows: Vec<Vec<String>> = [\"welcome\", \"tutorial\", \"cannon\"]\n    .iter()\n    .map(|stem| {\n        let url = format!(\"/notebooks/{stem}.ironpad\");\n        match blocking::fetch_json::<serde_json::Value>(&url) {\n            Ok(nb) => vec![\n                format!(\"{stem}.ironpad\"),\n                nb[\"title\"].as_str().unwrap_or(\"?\").to_string(),\n                nb[\"cells\"].as_array().map_or(0, Vec::len).to_string(),\n            ],\n            Err(e) => vec![format!(\"{stem}.ironpad\"), format!(\"error: {e}\"), \"-\".to_string()],\n        }\n    })\n    .collect();\n\nTable::new(vec![\"file\", \"title\", \"cells\"], rows)",
-   "order": 6,
-   "cargo_toml": "[dependencies]\nserde_json = \"1\""
-  },
-  {
-   "id": "cell_color_md",
-   "cell_type": "Markdown",
-   "label": "Try writing that with async",
-   "source": "## Try writing that with async\n\nThe colored version of the last cell is a small essay. `Iterator::map` takes a plain closure, so the async rewrite abandons iterators for streams:\n\n```rust\nuse futures::stream::{self, StreamExt};\n\nlet rows: Vec<Vec<String>> = stream::iter(stems)\n    .then(|stem| async move {\n        let url = format!(\"/notebooks/{stem}.ironpad\");\n        row_for(http::get_json(&url).await)  // and row_for's caller changes,\n    })                                       // and its caller's caller...\n    .collect()\n    .await;\n```\n\nA new crate, a new vocabulary (`then`, not `map`), and the enclosing function turned red, so its caller turns red next. The I/O reshaped code that never touches the network.\n\nHere the closure just... calls a function. The iterator has no idea the network was involved, and neither does anything else on the stack. That is what \"uncolored\" buys: **composition with every synchronous abstraction you already have**. And a closure inside `map` is the easy case; the next cell goes where async cannot follow at all: I/O inside `Iterator::next` itself.",
-   "order": 7,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_iterator_impl",
-   "cell_type": "Code",
-   "label": "I/O inside Iterator::next",
-   "source": "// I/O inside a trait method. Iterator::next is a synchronous trait\n// function: there is no async variant of it, and no executor can give you\n// one without switching to a different trait and a different ecosystem.\n// With JSPI, next() just... fetches.\nstruct Titles {\n    stems: std::vec::IntoIter<&'static str>,\n}\n\nimpl Iterator for Titles {\n    type Item = Vec<String>;\n\n    fn next(&mut self) -> Option<Vec<String>> {\n        let stem = self.stems.next()?;\n        let url = format!(\"/notebooks/{stem}.ironpad\");\n        let title = blocking::fetch_json::<serde_json::Value>(&url).map_or_else(\n            |e| format!(\"error: {e}\"),\n            |nb| nb[\"title\"].as_str().unwrap_or(\"?\").to_string(),\n        );\n        Some(vec![format!(\"{stem}.ironpad\"), title])\n    }\n}\n\n// Three stems, but take(2) means the third URL is never requested: the\n// fetch happens exactly when a consumer pulls, like any lazy iterator,\n// because it IS any lazy iterator.\nlet titles = Titles { stems: vec![\"welcome\", \"tutorial\", \"cannon\"].into_iter() };\nlet rows: Vec<Vec<String>> = titles.take(2).collect();\n\nTable::new(vec![\"file\", \"title\"], rows)",
-   "order": 8,
-   "cargo_toml": "[dependencies]\nserde_json = \"1\""
-  },
-  {
-   "id": "cell_detect_md",
-   "cell_type": "Markdown",
-   "label": "Detection and the two-phase protocol",
-   "source": "## Detection and the two-phase protocol\n\nNothing scans your source for `blocking::` calls, and no compile flag marks the cell. Detection happens at the **binary** level: the executor compiles the bytes once, then inspects the module's import section for the telltale prefix. The actual code from ironpad's executor:\n\n```js\nvar JSPI_IMPORT_PREFIX = \"ironpad_blocking_\";\n\nfunction _moduleNeedsJspi(module) {\n  return WebAssembly.Module.imports(module).some(function (imp) {\n    return imp.module === \"env\" && imp.name.indexOf(JSPI_IMPORT_PREFIX) === 0;\n  });\n}\n```\n\nInspecting the binary instead of the source is load-bearing: the linker dead-strips unused imports, so a `blocking::` call in a branch the optimizer removed leaves no import behind, and the cell stays on the ordinary path. The binary is the truth. When the scan hits and the browser lacks JSPI, execution stops **before entering the module** with a plain message naming Chrome/Edge 137+. When it hits and JSPI exists, the executor bypasses the wasm-bindgen wrapper and enters the raw `cell_main` export through `WebAssembly.promising`.\n\nThat covers getting in. Getting data back out is where the design earns its keep. The full exchange behind one `blocking::fetch_bytes` call:\n\n```\ncell (WASM)                            host (JS)\n-----------                            ---------\nironpad_blocking_fetch(url) -------->  copy url out of linear memory\n    [entire stack parks]               resp = fetch(url)  ...time passes...\n                                       stash {ok, bytes} for this cell\n    [stack resumes]         <--------  return bytes.length\nbuf = vec![0u8; len]\nironpad_blocking_fetch_ok() -------->  1 or 0 (synchronous)\nironpad_blocking_read(ptr, len) ---->  copy stash into buf (synchronous)\n```\n\nOnly the first call suspends; the other two are plain synchronous imports. Why the dance? Because the obvious one-phase design is unsound. The tempting version writes the response directly into the cell's memory while it is still parked:\n\n```js\n// The one-phase version. Do not do this.\nconst bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());\nconst ptr = instance.exports.ironpad_alloc(bytes.length); // re-entry!\nnew Uint8Array(memory.buffer, ptr, bytes.length).set(bytes);\nreturn ptr;\n```\n\nThat `ironpad_alloc` call **re-enters a suspended instance**. Rule 2 says the engine allows it: the parked stack is absent, and the instance is wide open. But the second activation shares one linear memory, one allocator, and one shadow stack pointer (the global where Rust spills address-taken locals) with frames frozen mid-function. If the interleaving is kind, it composes like a nested call. If the second activation ever suspends too, resumption order decides whose spilled locals get overwritten: no trap, just wrong values two calls later. \"Usually gets away with it\" is not a memory model. So ironpad's host **never calls back into a suspended instance**: it returns only a length, the resumed cell allocates under its own stack discipline, and a synchronous import copies the bytes in afterwards.\n\nThe two cells below exercise both arms of the protocol: the error path first, then the happy path against a real cross-origin API.",
-   "order": 9,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_err_404",
-   "cell_type": "Code",
-   "label": "Errors are just Err",
-   "source": "// The error arm of the two-phase protocol. A failed fetch stashes the\n// error text host-side exactly like a body, flags ok = 0, and the whole\n// thing surfaces as a plain Result::Err. No rejected promises, no catch,\n// no error-conversion layers between here and the network.\nlet urls = [\"/notebooks/welcome.ironpad\", \"/notebooks/does-not-exist.ironpad\"];\n\nlet rows: Vec<Vec<String>> = urls\n    .iter()\n    .map(|url| {\n        let outcome = match blocking::fetch_text(url) {\n            Ok(body) => format!(\"Ok ({} bytes)\", body.len()),\n            Err(e) => format!(\"Err ({e})\"),\n        };\n        vec![(*url).to_string(), outcome]\n    })\n    .collect();\n\nTable::new(vec![\"url\", \"outcome\"], rows)",
-   "order": 10,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_github",
-   "cell_type": "Code",
-   "label": "A real API, still no await",
-   "source": "// A real cross-origin API, still zero async. api.github.com sends CORS\n// headers, so the browser's fetch is happy to oblige. If you are offline\n// or rate-limited, the Err arm reports it gracefully instead of trapping.\nlet sw = Stopwatch::new();\n\nmatch blocking::fetch_json::<serde_json::Value>(\"https://api.github.com/repos/rust-lang/rust\") {\n    Ok(repo) => {\n        let ms = sw.elapsed_ms();\n        let count = |key: &str| {\n            repo[key]\n                .as_u64()\n                .map_or_else(|| \"?\".to_string(), |v| v.to_string())\n        };\n        CellOutput::from(Table::new(\n            vec![\"rust-lang/rust\", \"count\"],\n            vec![\n                vec![\"stars\".to_string(), count(\"stargazers_count\")],\n                vec![\"forks\".to_string(), count(\"forks_count\")],\n                vec![\"open issues\".to_string(), count(\"open_issues_count\")],\n                vec![\"round trip (ms)\".to_string(), format!(\"{ms:.0}\")],\n            ],\n        ))\n    }\n    Err(e) => CellOutput::text(format!(\n        \"GitHub said no ({e}). Offline or rate-limited; the point stands: \\\n         this error came back through a plain synchronous call.\"\n    )),\n}",
-   "order": 11,
-   "cargo_toml": "[dependencies]\nserde_json = \"1\""
-  },
-  {
-   "id": "cell_compare_md",
-   "cell_type": "Markdown",
-   "label": "Three kinds of cell",
-   "source": "## Three kinds of cell\n\nironpad now runs three execution shapes side by side. Same compiler, same runtime crate; the difference is entirely in how `cell_main` is entered:\n\n| | Sync cell | Async cell | JSPI cell |\n|---|---|---|---|\n| You write | plain Rust | Rust with `.await` | plain Rust + `blocking::*` |\n| Entry | direct call, returns a value | async wrapper, returns a `Promise` | raw export via `WebAssembly.promising` |\n| Mid-cell I/O | none | `http::*` futures | suspending imports |\n| I/O inside traits and closures | n/a | no | **yes** |\n| Async machinery in the binary | none | state machines + executor glue | **none** |\n| Browsers | all | all | Chrome/Edge 137+ |\n| Cost per I/O call | n/a | poll-loop wakeups | one stack switch + one event-loop hop |\n\nOne footnote worth having: the async column is triggered by a substring. A cell whose text contains the literal `.await` **anywhere**, even inside a string, compiles to the async wrapper, and that wrapper cannot be entered through `WebAssembly.promising`; a JSPI cell keeps the substring out entirely. The lane is per cell, not per notebook, so one notebook can mix all three columns freely.",
-   "order": 12,
-   "cargo_toml": null
-  },
-  {
-   "id": "cell_notes",
-   "cell_type": "Markdown",
-   "label": "Support and sharp edges",
-   "source": "## Support and sharp edges\n\n| Engine | JSPI status |\n|---|---|\n| Chrome / Edge | **shipped, 137+** (mid-2025) |\n| Firefox | implemented, behind a flag through 155 |\n| Safari | in development (objection withdrawn late 2025) |\n\nJSPI is one of the [Interop 2026 focus areas](https://web.dev/blog/interop-2026), so the missing engines have a public deadline of sorts. Until then, ironpad detects the `ironpad_blocking_*` imports at load time and fails **before execution** with a plain-language message on unsupported browsers, rather than letting the cell trap.\n\nThree rules to keep out of the weeds:\n\n- **Sync cells only.** A cell containing `.await` compiles to an async entry point, which cannot be entered through `WebAssembly.promising`. Pick a lane per cell: `blocking::*` or `.await`, never both.\n- **Keep suspensions coarse.** Every blocking call is an event-loop round trip, a few milliseconds as measured above; a thousand tiny calls are several seconds of pure hops. Fetch once, parse locally.\n- **Fetches follow browser rules.** Same-origin is always fine; cross-origin needs CORS from the server, exactly like the async `http` module.",
-   "order": 13,
-   "cargo_toml": null
-  }
- ]
+  "version": 1,
+  "id": "b7d3f9a2-5c81-4e60-9b47-1f8e62ad0c35",
+  "title": "Uncolored Functions: Blocking I/O with WASM JSPI",
+  "created_at": "2026-07-10T00:00:00Z",
+  "updated_at": "2026-07-12T00:00:00Z",
+  "shared_cargo_toml": "[profile.release]\nopt-level = 1\nlto = false\ncodegen-units = 16",
+  "shared_source": null,
+  "description": "Plain synchronous Rust that sleeps and calls HTTP APIs from inside iterator chains: JSPI suspends the whole WASM stack, so no async is needed anywhere. Requires Chrome or Edge 137+.",
+  "tags": [
+    "jspi",
+    "blocking",
+    "async",
+    "http",
+    "wasm",
+    "blog"
+  ],
+  "cells": [
+    {
+      "id": "cell_banner",
+      "cell_type": "Markdown",
+      "label": "Read this first",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n## Introduction\n\n> **Heads up: this notebook needs Chrome or Edge 137+.** It uses the WebAssembly JavaScript Promise Integration API (JSPI), which Firefox still keeps behind a flag and Safari has not shipped yet. On those browsers the code cells below will stop with a message saying exactly that.\n\nRust folks know the [\"What Color Is Your Function?\"](https://journal.stuffwithstuff.com/2015/02/01/what-color-is-your-function/) problem by heart: the moment one call does I/O, `async` spreads through every signature above it. Trait impls, iterator adapters, plain helper functions: none of them can await, so they can never do I/O. You restructure your program around the runtime.\n\n**JSPI deletes the color.** It is a [phase 4 WebAssembly proposal](https://github.com/WebAssembly/js-promise-integration) that lets the browser **suspend an entire WASM stack** while a JavaScript promise settles, then resume it exactly where it stopped. To the Rust code, a network call is just a function that takes a while, like it always was on a thread.\n\nEvery code cell in this notebook is **fully synchronous Rust**: not a single `.await` or `Future` anywhere. ironpad already runs async cells (see the [async HTTP notebook](/public/async-http)); this one exists to show what happens when you stop needing them. The plan: sleep, measure what a suspension costs, fetch from inside iterators and trait impls, then walk the executor mechanics that keep it all sound.",
+      "order": 0,
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_color_problem",
+      "cell_type": "Markdown",
+      "label": "The coloring problem, properly",
+      "source": "## The coloring problem, properly\n\nBob Nystrom named the problem in 2015 in [\"What Color Is Your Function?\"](https://journal.stuffwithstuff.com/2015/02/01/what-color-is-your-function/), and his rules for a fictional language describe async Rust precisely a decade later. Every function is red (async) or blue (sync). Red can call blue. Blue **cannot call red**, and that one asymmetry is the entire problem: the moment a leaf function needs I/O, every function on the path from `main` to that leaf turns red, one signature at a time.\n\nRust makes the wall taller than most languages, because so much of it is built from blue-only holes: closures handed to `Iterator::map` or `sort_by`, trait methods like `Display::fmt` and `Drop::drop`. These can never be async; they are structural commitments baked into the standard library. And the classic escape hatch is not an escape:\n\n```rust\n// Sync-to-async bridging, the traditional way. You now own an entire\n// runtime, and calling this from inside an existing runtime panics.\nfn title_of(stem: &str) -> Result<String, Error> {\n    let rt = tokio::runtime::Runtime::new()?;\n    rt.block_on(async {\n        let nb: Value = get_json(&format!(\"/notebooks/{stem}.ironpad\")).await?;\n        Ok(nb[\"title\"].as_str().unwrap_or(\"?\").to_owned())\n    })\n}\n```\n\nNative code always had the original uncolored answer: **threads**. A thread that calls `read()` simply stops; the OS keeps its stack alive, and no signature anywhere changes. The web never allowed that, because blocking the one thread blocks the event loop, so the platform standardized on red instead. JSPI is the web finally shipping the thread-shaped answer: the engine keeps your suspended stack the way a kernel keeps a blocked thread's, while the event loop keeps spinning. Time to prove it, starting with the bluntest possible instrument.",
+      "order": 1,
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_sleep",
+      "cell_type": "Code",
+      "label": "Sleeping without an executor",
+      "source": "// Plain synchronous Rust. blocking::sleep_ms parks the WHOLE WASM stack\n// via JSPI while the browser runs a setTimeout; the tab stays perfectly\n// responsive because the suspended stack costs nothing.\nlet sw = Stopwatch::new();\n\nblocking::sleep_ms(400.0);\n\nlet elapsed = sw.elapsed_ms();\n\nMd(format!(\n    \"This cell just **blocked for {elapsed:.0} ms** in the middle of a \\\n     synchronous function. No async runtime, no callback, no `await` in \\\n     sight: the engine suspended the stack and resumed it on the same line.\",\n))",
+      "order": 2,
+      "cargo_toml": null,
+      "saved_output": "[{\"Markdown\":\"This cell just **blocked for 400 ms** in the middle of a synchronous function. No async runtime, no callback, no `await` in sight: the engine suspended the stack and resumed it on the same line.\"}]"
+    },
+    {
+      "id": "cell_how_md",
+      "cell_type": "Markdown",
+      "label": "What just happened",
+      "source": "## What just happened\n\nTwo `WebAssembly` API calls, both on the JavaScript side, both invisible from Rust. Here is the actual bridge, condensed. First, any import that might block is wrapped in **`WebAssembly.Suspending`**, which turns an ordinary async JS function into an import the engine may park a WASM stack on:\n\n```js\nimports.env.ironpad_blocking_sleep_ms = new WebAssembly.Suspending(\n  (ms) => new Promise((resolve) => setTimeout(resolve, ms))\n);\n\nimports.env.ironpad_blocking_fetch = new WebAssembly.Suspending(\n  async (urlPtr, urlLen) => {\n    const url = readUtf8(memory, urlPtr, urlLen);\n    const resp = await fetch(url);                        // stack is parked here\n    stash = new Uint8Array(await resp.arrayBuffer());\n    return stash.length;    // resuming the stack, this becomes the return value\n  }\n);\n```\n\nSecond, the entry point is invoked through **`WebAssembly.promising`**, which is what makes that suspension legal on this stack in the first place. The synchronous WASM export becomes an ordinary promise-returning function:\n\n```js\nconst main = WebAssembly.promising(instance.exports.cell_main);\nconst resultPtr = await main(inputPtr, inputLen);\n```\n\nThe two halves are a matched pair with an exact contract. `promising(f)` runs `f` on a **fresh, suspendable stack** and immediately hands back a `Promise` for the eventual return value. `Suspending(g)` marks an import: when WASM on a suspendable stack calls it and `g` returns a promise, the engine **detaches every WASM frame** between the `promising` entry and the import call, parks the segment, and returns to the event loop. When the promise settles, the segment is reattached and the import returns the resolved value to the exact instruction that called it. From inside the module, it is indistinguishable from a slow syscall.\n\nOn the Rust side there is nothing exotic at all: `blocking::fetch_text` is a plain extern import plus a copy. The fetch reports how many bytes arrived while the stack was parked; the cell then allocates and a second, non-suspending import copies them in:\n\n```rust\n#[link(wasm_import_module = \"env\")]\nextern \"C\" {\n    fn ironpad_blocking_fetch(url_ptr: *const u8, url_len: u32) -> u32;\n    fn ironpad_blocking_fetch_ok() -> u32;\n    fn ironpad_blocking_read(buf_ptr: *mut u8, buf_len: u32) -> u32;\n}\n\npub fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {\n    let len = unsafe { ironpad_blocking_fetch(url.as_ptr(), url.len() as u32) };\n    let ok = unsafe { ironpad_blocking_fetch_ok() } == 1;\n    let mut buf = vec![0u8; len as usize];\n    unsafe { ironpad_blocking_read(buf.as_mut_ptr(), len) };\n    if ok { Ok(buf) } else { Err(String::from_utf8_lossy(&buf).into_owned()) }\n}\n```\n\nNote what is missing: no compiler flags, no special codegen, no async runtime linked into the module. The same `.wasm` binary runs unmodified in any engine that ships JSPI. **The async machinery moved out of your program and into the VM**, which is where threads always kept it on native targets.\n\nSleeping is a parlor trick, though. The point of deleting function colors is doing I/O from places `async` cannot reach.",
+      "order": 3,
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_suspend_cost",
+      "cell_type": "Code",
+      "label": "The price of a suspension",
+      "source": "// What does a suspension actually cost? sleep_ms(0.0) waits for nothing,\n// so each call measures one full park-and-resume round trip: suspend the\n// stack, hop through the event loop via setTimeout(0), reattach, resume.\nlet n = 5_u32;\nlet sw = Stopwatch::new();\n\nfor _ in 0..n {\n    blocking::sleep_ms(0.0);\n}\n\nlet per_call = sw.elapsed_ms() / f64::from(n);\n\nMd(format!(\n    \"**{n} suspensions, {per_call:.1} ms each.** Nearly all of that is the \\\n     browser's timer clamp, not JSPI: the engine-side stack switch is \\\n     nanoseconds. Directional rather than precise (clamping varies with \\\n     nesting depth), but the shape holds: a suspension costs one \\\n     event-loop hop, roughly a setTimeout(0).\"\n))",
+      "order": 4,
+      "cargo_toml": null,
+      "saved_output": "[{\"Markdown\":\"**5 suspensions, 0.0 ms each.** Nearly all of that is the browser's timer clamp, not JSPI: the engine-side stack switch is nanoseconds. Directional rather than precise (clamping varies with nesting depth), but the shape holds: a suspension costs one event-loop hop, roughly a setTimeout(0).\"}]"
+    },
+    {
+      "id": "cell_mechanics_md",
+      "cell_type": "Markdown",
+      "label": "Where the stack goes",
+      "source": "## Where the stack goes\n\nFor a mental model, `WebAssembly.promising` is `pthread_create` and a `Suspending` import is a blocking syscall. The engine allocates the stack for a promising call as its own heap-backed segment, separate from the JavaScript stack that invoked it. Suspension is a stack **switch**, not a stack copy: save the segment's registers, flip the stack pointer back to the JS side, return to the event loop. The parked frames sit in memory untouched until the promise settles; resumption is the same switch in reverse. That is why the measurement above is all `setTimeout` and no JSPI.\n\nThree rules fall out of that implementation:\n\n1. **Only WASM frames can suspend.** If the stack between the `promising` entry and the `Suspending` import contains a JavaScript frame (WASM called JS, which called back into WASM), the suspension throws instead; JS frames belong to the JS stack and cannot be detached.\n2. **A parked stack is absent code, not paused code.** Nothing gets locked. The instance's linear memory and exports remain fully reachable from JavaScript while it is suspended, and the engine will happily let you call back in. Whether that is *sound* is entirely your problem.\n3. **The outer promise settles once.** A single `promising` call can suspend and resume hundreds of times; the promise resolves only when `cell_main` finally returns.\n\nRule 2 is the sharp one, and ironpad's fetch protocol is shaped entirely around refusing to ever test it. We will get there; first, what it buys.",
+      "order": 5,
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_iter",
+      "cell_type": "Code",
+      "label": "I/O in the middle of an iterator",
+      "source": "// Three HTTP GETs issued lazily from inside a plain iterator adapter.\n// There is no async block, no join_all, no collecting futures: each call\n// parks the stack mid-`map` while the browser fetches, then resumes.\nlet rows: Vec<Vec<String>> = [\"welcome\", \"tutorial\", \"cannon\"]\n    .iter()\n    .map(|stem| {\n        let url = format!(\"/notebooks/{stem}.ironpad\");\n        match blocking::fetch_json::<serde_json::Value>(&url) {\n            Ok(nb) => vec![\n                format!(\"{stem}.ironpad\"),\n                nb[\"title\"].as_str().unwrap_or(\"?\").to_string(),\n                nb[\"cells\"].as_array().map_or(0, Vec::len).to_string(),\n            ],\n            Err(e) => vec![format!(\"{stem}.ironpad\"), format!(\"error: {e}\"), \"-\".to_string()],\n        }\n    })\n    .collect();\n\nTable::new(vec![\"file\", \"title\", \"cells\"], rows)",
+      "order": 6,
+      "cargo_toml": "[dependencies]\nserde_json = \"1\"",
+      "saved_output": "[{\"Table\":{\"headers\":[\"file\",\"title\",\"cells\"],\"rows\":[[\"welcome.ironpad\",\"Welcome to ironpad\",\"5\"],[\"tutorial.ironpad\",\"Interactive Tutorial\",\"6\"],[\"cannon.ironpad\",\"The compiler fires a cannon\",\"28\"]]}}]"
+    },
+    {
+      "id": "cell_color_md",
+      "cell_type": "Markdown",
+      "label": "Try writing that with async",
+      "source": "## Try writing that with async\n\nThe colored version of the last cell is a small essay. `Iterator::map` takes a plain closure, so the async rewrite abandons iterators for streams:\n\n```rust\nuse futures::stream::{self, StreamExt};\n\nlet rows: Vec<Vec<String>> = stream::iter(stems)\n    .then(|stem| async move {\n        let url = format!(\"/notebooks/{stem}.ironpad\");\n        row_for(http::get_json(&url).await)  // and row_for's caller changes,\n    })                                       // and its caller's caller...\n    .collect()\n    .await;\n```\n\nA new crate, a new vocabulary (`then`, not `map`), and the enclosing function turned red, so its caller turns red next. The I/O reshaped code that never touches the network.\n\nHere the closure just... calls a function. The iterator has no idea the network was involved, and neither does anything else on the stack. That is what \"uncolored\" buys: **composition with every synchronous abstraction you already have**. And a closure inside `map` is the easy case; the next cell goes where async cannot follow at all: I/O inside `Iterator::next` itself.",
+      "order": 7,
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_iterator_impl",
+      "cell_type": "Code",
+      "label": "I/O inside Iterator::next",
+      "source": "// I/O inside a trait method. Iterator::next is a synchronous trait\n// function: there is no async variant of it, and no executor can give you\n// one without switching to a different trait and a different ecosystem.\n// With JSPI, next() just... fetches.\nstruct Titles {\n    stems: std::vec::IntoIter<&'static str>,\n}\n\nimpl Iterator for Titles {\n    type Item = Vec<String>;\n\n    fn next(&mut self) -> Option<Vec<String>> {\n        let stem = self.stems.next()?;\n        let url = format!(\"/notebooks/{stem}.ironpad\");\n        let title = blocking::fetch_json::<serde_json::Value>(&url).map_or_else(\n            |e| format!(\"error: {e}\"),\n            |nb| nb[\"title\"].as_str().unwrap_or(\"?\").to_string(),\n        );\n        Some(vec![format!(\"{stem}.ironpad\"), title])\n    }\n}\n\n// Three stems, but take(2) means the third URL is never requested: the\n// fetch happens exactly when a consumer pulls, like any lazy iterator,\n// because it IS any lazy iterator.\nlet titles = Titles { stems: vec![\"welcome\", \"tutorial\", \"cannon\"].into_iter() };\nlet rows: Vec<Vec<String>> = titles.take(2).collect();\n\nTable::new(vec![\"file\", \"title\"], rows)",
+      "order": 8,
+      "cargo_toml": "[dependencies]\nserde_json = \"1\"",
+      "saved_output": "[{\"Table\":{\"headers\":[\"file\",\"title\"],\"rows\":[[\"welcome.ironpad\",\"Welcome to ironpad\"],[\"tutorial.ironpad\",\"Interactive Tutorial\"]]}}]"
+    },
+    {
+      "id": "cell_detect_md",
+      "cell_type": "Markdown",
+      "label": "Detection and the two-phase protocol",
+      "source": "## Detection and the two-phase protocol\n\nNothing scans your source for `blocking::` calls, and no compile flag marks the cell. Detection happens at the **binary** level: the executor compiles the bytes once, then inspects the module's import section for the telltale prefix. The actual code from ironpad's executor:\n\n```js\nvar JSPI_IMPORT_PREFIX = \"ironpad_blocking_\";\n\nfunction _moduleNeedsJspi(module) {\n  return WebAssembly.Module.imports(module).some(function (imp) {\n    return imp.module === \"env\" && imp.name.indexOf(JSPI_IMPORT_PREFIX) === 0;\n  });\n}\n```\n\nInspecting the binary instead of the source is load-bearing: the linker dead-strips unused imports, so a `blocking::` call in a branch the optimizer removed leaves no import behind, and the cell stays on the ordinary path. The binary is the truth. When the scan hits and the browser lacks JSPI, execution stops **before entering the module** with a plain message naming Chrome/Edge 137+. When it hits and JSPI exists, the executor bypasses the wasm-bindgen wrapper and enters the raw `cell_main` export through `WebAssembly.promising`.\n\nThat covers getting in. Getting data back out is where the design earns its keep. The full exchange behind one `blocking::fetch_bytes` call:\n\n```\ncell (WASM)                            host (JS)\n-----------                            ---------\nironpad_blocking_fetch(url) -------->  copy url out of linear memory\n    [entire stack parks]               resp = fetch(url)  ...time passes...\n                                       stash {ok, bytes} for this cell\n    [stack resumes]         <--------  return bytes.length\nbuf = vec![0u8; len]\nironpad_blocking_fetch_ok() -------->  1 or 0 (synchronous)\nironpad_blocking_read(ptr, len) ---->  copy stash into buf (synchronous)\n```\n\nOnly the first call suspends; the other two are plain synchronous imports. Why the dance? Because the obvious one-phase design is unsound. The tempting version writes the response directly into the cell's memory while it is still parked:\n\n```js\n// The one-phase version. Do not do this.\nconst bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());\nconst ptr = instance.exports.ironpad_alloc(bytes.length); // re-entry!\nnew Uint8Array(memory.buffer, ptr, bytes.length).set(bytes);\nreturn ptr;\n```\n\nThat `ironpad_alloc` call **re-enters a suspended instance**. Rule 2 says the engine allows it: the parked stack is absent, and the instance is wide open. But the second activation shares one linear memory, one allocator, and one shadow stack pointer (the global where Rust spills address-taken locals) with frames frozen mid-function. If the interleaving is kind, it composes like a nested call. If the second activation ever suspends too, resumption order decides whose spilled locals get overwritten: no trap, just wrong values two calls later. \"Usually gets away with it\" is not a memory model. So ironpad's host **never calls back into a suspended instance**: it returns only a length, the resumed cell allocates under its own stack discipline, and a synchronous import copies the bytes in afterwards.\n\nThe two cells below exercise both arms of the protocol: the error path first, then the happy path against a real cross-origin API.",
+      "order": 9,
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_err_404",
+      "cell_type": "Code",
+      "label": "Errors are just Err",
+      "source": "// The error arm of the two-phase protocol. A failed fetch stashes the\n// error text host-side exactly like a body, flags ok = 0, and the whole\n// thing surfaces as a plain Result::Err. No rejected promises, no catch,\n// no error-conversion layers between here and the network.\nlet urls = [\"/notebooks/welcome.ironpad\", \"/notebooks/does-not-exist.ironpad\"];\n\nlet rows: Vec<Vec<String>> = urls\n    .iter()\n    .map(|url| {\n        let outcome = match blocking::fetch_text(url) {\n            Ok(body) => format!(\"Ok ({} bytes)\", body.len()),\n            Err(e) => format!(\"Err ({e})\"),\n        };\n        vec![(*url).to_string(), outcome]\n    })\n    .collect();\n\nTable::new(vec![\"url\", \"outcome\"], rows)",
+      "order": 10,
+      "cargo_toml": null,
+      "saved_output": "[{\"Table\":{\"headers\":[\"url\",\"outcome\"],\"rows\":[[\"/notebooks/welcome.ironpad\",\"Ok (2923 bytes)\"],[\"/notebooks/does-not-exist.ironpad\",\"Err (HTTP 404 Not Found)\"]]}}]"
+    },
+    {
+      "id": "cell_github",
+      "cell_type": "Code",
+      "label": "A real API, still no await",
+      "source": "// A real cross-origin API, still zero async. api.github.com sends CORS\n// headers, so the browser's fetch is happy to oblige. If you are offline\n// or rate-limited, the Err arm reports it gracefully instead of trapping.\nlet sw = Stopwatch::new();\n\nmatch blocking::fetch_json::<serde_json::Value>(\"https://api.github.com/repos/rust-lang/rust\") {\n    Ok(repo) => {\n        let ms = sw.elapsed_ms();\n        let count = |key: &str| {\n            repo[key]\n                .as_u64()\n                .map_or_else(|| \"?\".to_string(), |v| v.to_string())\n        };\n        CellOutput::from(Table::new(\n            vec![\"rust-lang/rust\", \"count\"],\n            vec![\n                vec![\"stars\".to_string(), count(\"stargazers_count\")],\n                vec![\"forks\".to_string(), count(\"forks_count\")],\n                vec![\"open issues\".to_string(), count(\"open_issues_count\")],\n                vec![\"round trip (ms)\".to_string(), format!(\"{ms:.0}\")],\n            ],\n        ))\n    }\n    Err(e) => CellOutput::text(format!(\n        \"GitHub said no ({e}). Offline or rate-limited; the point stands: \\\n         this error came back through a plain synchronous call.\"\n    )),\n}",
+      "order": 11,
+      "cargo_toml": "[dependencies]\nserde_json = \"1\"",
+      "saved_output": "[{\"Table\":{\"headers\":[\"rust-lang/rust\",\"count\"],\"rows\":[[\"stars\",\"115282\"],[\"forks\",\"15373\"],[\"open issues\",\"12685\"],[\"round trip (ms)\",\"386\"]]}}]"
+    },
+    {
+      "id": "cell_compare_md",
+      "cell_type": "Markdown",
+      "label": "Three kinds of cell",
+      "source": "## Three kinds of cell\n\nironpad now runs three execution shapes side by side. Same compiler, same runtime crate; the difference is entirely in how `cell_main` is entered:\n\n| | Sync cell | Async cell | JSPI cell |\n|---|---|---|---|\n| You write | plain Rust | Rust with `.await` | plain Rust + `blocking::*` |\n| Entry | direct call, returns a value | async wrapper, returns a `Promise` | raw export via `WebAssembly.promising` |\n| Mid-cell I/O | none | `http::*` futures | suspending imports |\n| I/O inside traits and closures | n/a | no | **yes** |\n| Async machinery in the binary | none | state machines + executor glue | **none** |\n| Browsers | all | all | Chrome/Edge 137+ |\n| Cost per I/O call | n/a | poll-loop wakeups | one stack switch + one event-loop hop |\n\nOne footnote worth having: the async column is triggered by a substring. A cell whose text contains the literal `.await` **anywhere**, even inside a string, compiles to the async wrapper, and that wrapper cannot be entered through `WebAssembly.promising`; a JSPI cell keeps the substring out entirely. The lane is per cell, not per notebook, so one notebook can mix all three columns freely.",
+      "order": 12,
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_notes",
+      "cell_type": "Markdown",
+      "label": "Support and sharp edges",
+      "source": "## Support and sharp edges\n\n| Engine | JSPI status |\n|---|---|\n| Chrome / Edge | **shipped, 137+** (mid-2025) |\n| Firefox | implemented, behind a flag through 155 |\n| Safari | in development (objection withdrawn late 2025) |\n\nJSPI is one of the [Interop 2026 focus areas](https://web.dev/blog/interop-2026), so the missing engines have a public deadline of sorts. Until then, ironpad detects the `ironpad_blocking_*` imports at load time and fails **before execution** with a plain-language message on unsupported browsers, rather than letting the cell trap.\n\nThree rules to keep out of the weeds:\n\n- **Sync cells only.** A cell containing `.await` compiles to an async entry point, which cannot be entered through `WebAssembly.promising`. Pick a lane per cell: `blocking::*` or `.await`, never both.\n- **Keep suspensions coarse.** Every blocking call is an event-loop round trip, a few milliseconds as measured above; a thousand tiny calls are several seconds of pure hops. Fetch once, parse locally.\n- **Fetches follow browser rules.** Same-origin is always fine; cross-origin needs CORS from the server, exactly like the async `http` module.",
+      "order": 13,
+      "cargo_toml": null
+    }
+  ]
 }

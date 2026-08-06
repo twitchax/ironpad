@@ -34,15 +34,10 @@ test.describe("Cell execution and output", () => {
     await runButton.click();
 
     // Wait for compilation.
-    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeVisible({
-      timeout: 5_000,
-    });
-    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeHidden({
-      timeout: 120_000,
-    });
-
+    // Assert the TERMINAL state: "compiling" is transient and a warm
+    // cache can skip past it between polls.
     await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
-      timeout: 5_000,
+      timeout: 120_000,
     });
 
     const outputText = cell.locator(".ironpad-output-display-text");
@@ -85,15 +80,10 @@ test.describe("Cell execution and output", () => {
     await runButton.click();
 
     // Wait for compilation.
-    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeVisible({
-      timeout: 5_000,
-    });
-    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeHidden({
-      timeout: 120_000,
-    });
-
+    // Assert the TERMINAL state: "compiling" is transient and a warm
+    // cache can skip past it between polls.
     await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
-      timeout: 5_000,
+      timeout: 120_000,
     });
 
     const outputText = cell.locator(".ironpad-output-display-text");
@@ -145,15 +135,10 @@ test.describe("Cell execution and output", () => {
     await runButton.click();
 
     // Wait for compilation.
-    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeVisible({
-      timeout: 5_000,
-    });
-    await expect(cell.locator(".ironpad-cell-status--compiling")).toBeHidden({
-      timeout: 120_000,
-    });
-
+    // Assert the TERMINAL state: "compiling" is transient and a warm
+    // cache can skip past it between polls.
     await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
-      timeout: 5_000,
+      timeout: 120_000,
     });
 
     // The SVG chart must render...

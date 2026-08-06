@@ -21,7 +21,8 @@
       "cell_type": "Code",
       "collapsed": true,
       "source": "// Change these values — downstream cells re-execute automatically!\nlet count: u32 = 10;\nlet multiplier: u32 = 3;\n\n(count, multiplier)\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "saved_output": "[{\"Text\":\"10\"},{\"Text\":\"3\"}]"
     },
     {
       "id": "cell_2",
@@ -30,7 +31,8 @@
       "cell_type": "Code",
       "collapsed": true,
       "source": "let (count, multiplier) = cell1;\n\nlet sequence: Vec<u32> = (1..=count)\n    .map(|i| i * multiplier)\n    .collect();\n\nsequence\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "saved_output": "[{\"Text\":\"[3, 6, 9, 12, 15, 18, 21, 24, 27, 30]\"}]"
     },
     {
       "id": "cell_3",
@@ -39,7 +41,8 @@
       "cell_type": "Code",
       "collapsed": true,
       "source": "let (count, multiplier) = cell1;\nlet total: u32 = cell2.iter().sum();\nlet max = cell2.iter().max().copied().unwrap_or(0);\n\nHtml(format!(\n    \"<div style='padding:1rem; background:linear-gradient(135deg, #1a1a2e, #16213e); border-radius:8px;'>\\\n        <h3 style='color:#e94560; margin:0 0 0.5rem;'>⚡ Reactive Pipeline Result</h3>\\\n        <p style='color:#eaeaea;'>Generated <strong>{count}</strong> values with multiplier <strong>×{multiplier}</strong></p>\\\n        <p style='color:#eaeaea;'>Sequence: <code style='color:#e94560;'>{seq:?}</code></p>\\\n        <p style='color:#eaeaea;'>Sum: <code style='color:#e94560;'>{total}</code> · Max: <code style='color:#e94560;'>{max}</code></p>\\\n    </div>\",\n    seq = cell2,\n))\n",
-      "cargo_toml": null
+      "cargo_toml": null,
+      "saved_output": "[{\"Html\":\"<div style='padding:1rem; background:linear-gradient(135deg, #1a1a2e, #16213e); border-radius:8px;'><h3 style='color:#e94560; margin:0 0 0.5rem;'>⚡ Reactive Pipeline Result</h3><p style='color:#eaeaea;'>Generated <strong>10</strong> values with multiplier <strong>×3</strong></p><p style='color:#eaeaea;'>Sequence: <code style='color:#e94560;'>[3, 6, 9, 12, 15, 18, 21, 24, 27, 30]</code></p><p style='color:#eaeaea;'>Sum: <code style='color:#e94560;'>165</code> · Max: <code style='color:#e94560;'>30</code></p></div>\"}]"
     },
     {
       "id": "cell_4",
@@ -50,5 +53,9 @@
     }
   ],
   "description": "Demonstrates reactive dataflow: editing an upstream cell auto-executes all downstream cells.",
-  "tags": ["reactive", "dataflow", "beginner"]
+  "tags": [
+    "reactive",
+    "dataflow",
+    "beginner"
+  ]
 }
