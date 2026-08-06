@@ -1,293 +1,431 @@
 {
   "async-http": {
-    "cell_1": "9f8c438728c5cb45",
-    "cell_3": "9114901abdcb897e"
+    "cells": {
+      "cell_1": "fef8ea1bb016ed69",
+      "cell_3": "5304a911dac602b2"
+    },
+    "shared": "eb0be46f7107f047"
   },
   "autodiff": {
-    "cell_chain_steps": "b4b1dd44b5357ef9",
-    "cell_point": "b470bf4e7684ea7d",
-    "cell_plot": "0970eb096dbdd5c6",
-    "cell_accuracy": "c9e568bfe00c4875",
-    "cell_jvp": "a88b510c205af989",
-    "cell_reverse": "74f511c44d3ec103",
-    "cell_tape_dump": "521a9a2c432eb333",
-    "cell_cost_count": "51733a1c788f7d13"
+    "cells": {
+      "cell_chain_steps": "cd1d61fdd094db98",
+      "cell_point": "ab8476b1e1a11452",
+      "cell_plot": "3529a5a9c8f81652",
+      "cell_accuracy": "21adb423fc763ac0",
+      "cell_jvp": "70bd59a549b5c08a",
+      "cell_reverse": "378abe28127258c9",
+      "cell_tape_dump": "c7ea952f8859b150",
+      "cell_cost_count": "5e92c3ee665cf3b7"
+    },
+    "shared": "5d884ba8d3da35ac"
   },
   "borrows": {
-    "cell_2": "af06d37d1fc028a1",
-    "cell_split_destructure": "e304f7027e3ccfe6",
-    "cell_free_fns": "530303d273e4606d",
-    "cell_mem_take": "502d16477b4f6f7c",
-    "cell_closure_capture": "6a947be712a381df",
-    "cell_5": "42cd09e0412f57b2",
-    "cell_7": "5f8bfa584ecda6e2",
-    "cell_10": "416b17620e195cea"
+    "cells": {
+      "cell_2": "d1eb0ae3e51a9659",
+      "cell_split_destructure": "cd427dc9fcfe1c4f",
+      "cell_free_fns": "f7b02c4054dd3efe",
+      "cell_mem_take": "6e47032757c11dac",
+      "cell_closure_capture": "11a1c361c596ed18",
+      "cell_5": "ac209ae23d859dc6",
+      "cell_7": "40f0ac83f1ef5dd4",
+      "cell_10": "9e63e35f184c0c7e"
+    },
+    "shared": "c052200633fb89e5"
   },
   "cannon": {
-    "cell_fan": "78af8c98a8fea5f5",
-    "cell_vacuum_gap": "cab68b63b5f2f4ad",
-    "cell_dt_sweep": "7e207410d4d528ed",
-    "cell_grad": "68772428272c33c0",
-    "cell_adjoint_hand": "cf6e688a66473937",
-    "cell_newton_slider": "abf693a346898453",
-    "cell_newton_tangents": "3643798d5e9fe34a",
-    "cell_newton": "da2c8c18f387eb26",
-    "cell_newton_digits": "020dbe5f06911607",
-    "cell_two_solutions": "6423a7a5863ecbcb",
-    "cell_basins": "52ddf8300cf8284f"
+    "cells": {
+      "cell_fan": "6a0b62812bfd0122",
+      "cell_vacuum_gap": "b92b6f2872444d13",
+      "cell_dt_sweep": "bf7785fb66f3790a",
+      "cell_grad": "e2effac029250464",
+      "cell_adjoint_hand": "61c605845e71260b",
+      "cell_newton_slider": "4aa34f0107ebfd0b",
+      "cell_newton_tangents": "310272747de5735a",
+      "cell_newton": "0859b16a7e91e519",
+      "cell_newton_digits": "a7d4e8a61d7fc2dd",
+      "cell_two_solutions": "b271dcbc1497e562",
+      "cell_basins": "5a7db8ae31a59793"
+    },
+    "shared": "fb4d987c78737c89"
   },
   "charts-with-plot": {
-    "cell_1": "9d65a2d5ff73d681",
-    "cell_3": "27bacd9bbee8ecb8",
-    "cell_5": "cb8b07ae7b715fa3",
-    "cell_7": "66fd5e63183c7e60",
-    "cell_9": "b8fa032e8743e8ef",
-    "cell_10": "d919263358e9f3f5"
+    "cells": {
+      "cell_1": "190f01de33cfe56e",
+      "cell_3": "9dd5f0c93eabf186",
+      "cell_5": "716afdf3182b067a",
+      "cell_7": "3b4991a34f4096f8",
+      "cell_9": "cbed37532db3b99d",
+      "cell_10": "587d3703a21b2e88"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "conformal-maps": {
-    "cell_rotate_scale_check": "2595cdc79a2a4a54",
-    "cell_2": "e30df5289524a2c9",
-    "cell_4": "71b717ee3dc985a5",
-    "cell_angle_doubling_check": "f3b4e73433cf5094",
-    "cell_6": "84ba09e2520b8c05",
-    "cell_8": "0057297882679161",
-    "cell_10": "f70da8c777266fc8",
-    "cell_12": "4f0dd657e897a817",
-    "cell_mobius_circles": "9da4027a58e781d0",
-    "cell_joukowski": "832db5e0a8250923"
+    "cells": {
+      "cell_rotate_scale_check": "2e8473c2464035ee",
+      "cell_2": "8e250645a4e17b2e",
+      "cell_4": "e04f13710dae6e71",
+      "cell_angle_doubling_check": "bd1344f479903b46",
+      "cell_6": "f796a0e7cd286854",
+      "cell_8": "38dbdfdf4ea53c86",
+      "cell_10": "7a8e5fe933728da3",
+      "cell_12": "18cc5f4d108f0a3b",
+      "cell_mobius_circles": "c25c35e8f46916e7",
+      "cell_joukowski": "80afea7522d5f047"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "double-pendulum": {
-    "cell_controls": "e28975c12ab3409c",
-    "cell_sim": "0942e351251452eb",
-    "cell_dashboard": "c95fcd634a6474a9"
+    "cells": {
+      "cell_controls": "b20c19f563837d70",
+      "cell_sim": "eaecf928f653ee27",
+      "cell_dashboard": "5f001b0a1814ff4b"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "dynosaur": {
-    "cell_2": "ab015c73a39bdf5b",
-    "cell_vtable_anatomy": "bd671458ee4a57d4",
-    "cell_future_sizes": "fc5aae83fad93fb3",
-    "cell_4": "a0ac68504d77d8ad",
-    "cell_manual_erasure": "a3a9450b4b45aaba",
-    "cell_6": "e6288d09f47e555b"
+    "cells": {
+      "cell_2": "adf332c46cdbd937",
+      "cell_vtable_anatomy": "f0a20674472c6f17",
+      "cell_future_sizes": "6434a0117fb8778c",
+      "cell_4": "f715fd50d795cbc8",
+      "cell_manual_erasure": "3bf28967045fe3d4",
+      "cell_6": "dfa15d1e784504a1"
+    },
+    "shared": "c84911f7bec5b2e0"
   },
   "facet": {
-    "cell_1": "777ad3bc5cb301be",
-    "cell_3": "59b8578ff5f2e99b",
-    "cell_shape_metadata": "430aa27a5a6f346c",
-    "cell_def_inspect": "b24e1157c063819e",
-    "cell_5": "457c51962c051158",
-    "cell_7": "dcf72da21aeb726e",
-    "cell_struct_diff": "78db012784f06bbe",
-    "cell_schema": "bd9a10bdda4ba0dc"
+    "cells": {
+      "cell_1": "d335174f8d6964fd",
+      "cell_3": "9e37299a70ec7daa",
+      "cell_shape_metadata": "432b4bf80b7a7b50",
+      "cell_def_inspect": "e44282c46915c091",
+      "cell_5": "e66cad9ad9388866",
+      "cell_7": "ccff21e7191db4b0",
+      "cell_struct_diff": "2c29d0e6fc614f37",
+      "cell_schema": "db28efe11a669095"
+    },
+    "shared": "fef0a03d5bc762c4"
   },
   "fourier-series": {
-    "cell_controls": "610345dd33eacac3",
-    "cell_vis": "347264489cb39a2a"
+    "cells": {
+      "cell_controls": "7d91b5fa45fb861a",
+      "cell_vis": "2de7143390cf101b"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "fractal-tree": {
-    "cell_1": "8585d9d89f29567d",
-    "cell_2": "3ef009ecce89494f"
-  },
-  "game-of-life": {
-    "cell_1": "dd1abf4c27fddf5f",
-    "cell_2": "49f9282e283bec07"
+    "cells": {
+      "cell_1": "ae3c3dfb2667b96a",
+      "cell_2": "977da78a6d83162d"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "game-of-life-glider-gun": {
-    "cell_1": "dd2c8e00cc1953e7",
-    "cell_2": "302afc1ddffbc353"
+    "cells": {
+      "cell_1": "b2deacfbf4082ed5",
+      "cell_2": "9b927169d7d955a7"
+    },
+    "shared": "c6ebd33f69397748"
+  },
+  "game-of-life": {
+    "cells": {
+      "cell_1": "1db3e07dd95a9cfa",
+      "cell_2": "c803b5a9702cd830"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "gen-blocks": {
-    "cell_1": "6fc3e5a42c4139b4",
-    "cell_3": "7847a6f4b2a521a1",
-    "cell_5": "aff33604a248681d",
-    "cell_7": "0c67fb7a9f4b81e1",
-    "cell_9": "e13e566809f3e08a",
-    "cell_11": "9ee455018a9fb774"
+    "cells": {
+      "cell_1": "85c8b83a4258e2ef",
+      "cell_3": "a4354c0c0e74948a",
+      "cell_5": "0d32c224317e7638",
+      "cell_7": "134d0458003a524e",
+      "cell_9": "2d409c2ae6446f84",
+      "cell_11": "73d4b7b1a84966a7"
+    },
+    "shared": "1b7cc894c9c93094"
   },
   "heat-equation": {
-    "cell_1": "a04e9ec04d01de1f"
+    "cells": {
+      "cell_1": "23401d5700742a99"
+    },
+    "shared": "6e340b9cffb37a98"
   },
   "interactive-button": {
-    "cell_1": "6032a4271caf83db",
-    "cell_2": "e1bbc464dd165328",
-    "cell_3": "16a14c357398cbb1"
+    "cells": {
+      "cell_1": "230e2f03c6da746a",
+      "cell_2": "10cd85e7ed53e012",
+      "cell_3": "b4268044692d3880"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "interactive-widgets": {
-    "cell_1": "217ec7377e7b8275",
-    "cell_2": "b5940d9e9e659644",
-    "cell_3": "a4b85ffad2fa22e6",
-    "cell_4": "4dc4208cde30aa0f",
-    "cell_5": "a0a10c27e3e0b7dd",
-    "cell_6": "0d0206593be9766b",
-    "cell_8": "1e49106345d3241b",
-    "cell_9": "c34ce01a79d529a3",
-    "cell_10": "21d99142cedfa89f",
-    "cell_11": "b33adb1afdb1377d"
+    "cells": {
+      "cell_1": "ffe95b92810932e5",
+      "cell_2": "8c2ec5d4ee6fe904",
+      "cell_3": "accc0a1024b6c7a8",
+      "cell_4": "56cc0e265d9fc142",
+      "cell_5": "aa9abd6e59e445df",
+      "cell_6": "a446d85544f1d2cf",
+      "cell_8": "8832a2055c4ef87b",
+      "cell_9": "ef3191bae9de4d55",
+      "cell_10": "b75688643e2cb0e0",
+      "cell_11": "87ba7c307bde7c26"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "jspi-blocking": {
-    "cell_sleep": "18de8ba4fcb610c2",
-    "cell_suspend_cost": "24ee8b7a5986fbe5",
-    "cell_iter": "5ff0a2acc246b01d",
-    "cell_iterator_impl": "9e429fe61e141bbe",
-    "cell_err_404": "dbd4af44330bc12d",
-    "cell_github": "b9b7b293edd2d816"
+    "cells": {
+      "cell_sleep": "a424502874d30f5c",
+      "cell_suspend_cost": "d1a4e66121b55738",
+      "cell_iter": "ba37fb16773d2b00",
+      "cell_iterator_impl": "dcc504ddfbf408aa",
+      "cell_err_404": "319cd895501dedca",
+      "cell_github": "4d4c37273c192304"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "julia-set": {
-    "cell_1": "c9751fb269ea4904",
-    "cell_2": "a038478a73825d78"
+    "cells": {
+      "cell_1": "e12990b40d9ce355",
+      "cell_2": "20548212f42951d0"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "kord": {
-    "cell_parse": "df196e45aafea8a4",
-    "cell_interval_stack": "8cba4b64b81f0445",
-    "cell_modes": "4ddf4b8ffc83d04d",
-    "cell_infer": "d335b32f19dc5824",
-    "cell_temperament": "842474eebe1fd373",
-    "cell_harmonics": "381416547f208c6d"
+    "cells": {
+      "cell_parse": "450b1415fff4c12c",
+      "cell_interval_stack": "3337764f95edc847",
+      "cell_modes": "4633550bf00ea351",
+      "cell_infer": "98ef95877097a454",
+      "cell_temperament": "2ce704df50f4f141",
+      "cell_harmonics": "0ff1dc92be7ebc7b"
+    },
+    "shared": "1423d9580ab117c4"
   },
   "lagrange-points": {
-    "cell_controls": "22d91d978b0c7dba",
-    "cell_sim": "d9d6f30780eacf86",
-    "cell_dashboard": "b7cacee30929c3a6",
-    "cell_lpoint_solver": "a525fe87d6d6bab3",
-    "cell_l1l2_distance": "69647572f8e6208a",
-    "cell_routh_criterion": "b2c46fd554a0a228"
+    "cells": {
+      "cell_controls": "80bbd475459dc3fb",
+      "cell_sim": "07d14154f49dc43c",
+      "cell_dashboard": "432ca3cfec575561",
+      "cell_lpoint_solver": "ae035c61132e4e55",
+      "cell_l1l2_distance": "9dc94d613e840ba4",
+      "cell_routh_criterion": "6a6b49187b765fe4"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "langtons-ant": {
-    "cell_1": "ae0d18d0ce148e5f"
+    "cells": {
+      "cell_1": "2ac31f54685b60f8"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "lorenz-attractor": {
-    "cell_params": "22305cef8ccdfcdc",
-    "cell_sim": "ddbf80c5e077b14c",
-    "cell_dashboard": "9ded643b7330bc9f"
-  },
-  "mandelbrot": {
-    "cell_1": "c44e9546c0dd08a0",
-    "cell_4": "2157aacfbae20480",
-    "cell_2": "e38550b543c3d3bc"
+    "cells": {
+      "cell_params": "18931289164d19fa",
+      "cell_sim": "98b87fec72aa8590",
+      "cell_dashboard": "b0b845aebd5b169c"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "mandelbrot-gpu": {
-    "cell_1": "d35f98554d3cdcfe",
-    "cell_2": "5571d5f82388e7dd",
-    "cell_3": "9a6a75544de4f23c"
+    "cells": {
+      "cell_1": "96b676df426aa7f7",
+      "cell_2": "2971efbcda08dd79",
+      "cell_3": "9512277de9af1f5e"
+    },
+    "shared": "c1e4c08989cf0b4b"
+  },
+  "mandelbrot": {
+    "cells": {
+      "cell_1": "174c3d202bc9d54e",
+      "cell_4": "087c2afe54703eb2",
+      "cell_2": "2d70b1c0ab0e0c83"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "maze-generator": {
-    "cell_1": "d972a2a4095901b3",
-    "cell_2": "da63898b03d2bd90",
-    "cell_3": "813020e8a1e6aba0"
+    "cells": {
+      "cell_1": "814c19cec15c2aae",
+      "cell_2": "b60dd21fa312d5fa",
+      "cell_3": "b01d885e263c326a"
+    },
+    "shared": "9cf25be1c543c52c"
   },
   "n-body": {
-    "cell_1": "6a2360bc9452a7f5",
-    "cell_2": "6d2d83c7d1fb80aa"
+    "cells": {
+      "cell_1": "5cdcb78ea670d266",
+      "cell_2": "fc52328d50305127"
+    },
+    "shared": "fe1db9b692ad3818"
   },
   "nuclear-reactor": {
-    "cell_point_kinetics": "58e5bb0b6cc5d5c9",
-    "cell_timescales": "3adc300dd2e29065",
-    "cell_dollars": "c65750f9c0a44917",
-    "cell_rod_worth": "289e8d6adccc1d98",
-    "cell_controls": "3867a9ebd53498d1",
-    "cell_0": "0ab9c82a70ad3d17",
-    "cell_instruments": "de3272605c445ce2",
-    "cell_dashboard": "f246c122093ebc21"
+    "cells": {
+      "cell_point_kinetics": "bb0fac82cdf4631f",
+      "cell_timescales": "357ae2eb5c6631aa",
+      "cell_dollars": "31f7ddb6b4654d3f",
+      "cell_rod_worth": "519310ec7bbc4bee",
+      "cell_controls": "c422db03c04b01c9",
+      "cell_0": "2809f01c7b3e5ecd",
+      "cell_instruments": "6930f80b4e776aa7",
+      "cell_dashboard": "18d012747447c56e"
+    },
+    "shared": "6e340b9cffb37a98"
   },
   "particle-system": {
-    "cell_1": "9e9be01c2578cba6",
-    "cell_2": "0ba905217bed988c",
-    "cell_3": "887e79e0c6536c87"
+    "cells": {
+      "cell_1": "a51e9e385b3b5e7e",
+      "cell_2": "5db3fbf2d44bc8b2",
+      "cell_3": "f8b437b03cd62e06"
+    },
+    "shared": "22648d33d561845b"
   },
   "pin-coroutines": {
-    "cell_1": "c4044d11bbe3b116",
-    "cell_3": "39aac8de0bdcf18f",
-    "cell_5": "d28f2e683b02227f",
-    "cell_7": "98e32dffa4b2bf77",
-    "cell_9": "7972ba4bccc169eb",
-    "cell_11": "dc1444c2fd146f31"
+    "cells": {
+      "cell_1": "a2ff0c6a83fbe137",
+      "cell_3": "0822c8b6aff26f4e",
+      "cell_5": "d15c78b3d0607968",
+      "cell_7": "e9a252dc5ce66fa0",
+      "cell_9": "9ab1fe8e9db0c88d",
+      "cell_11": "afe59da437f1a401"
+    },
+    "shared": "62b8d6d957f3c46f"
   },
   "progress-bar": {
-    "cell_1": "d8d39d8dfd547dfa",
-    "cell_2": "96bac54fb1da08ea"
+    "cells": {
+      "cell_1": "4e4f16daa2493e29",
+      "cell_2": "a23064996c7c5dc1"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "ray-marching": {
-    "cell_1": "98aa001de2badbec",
-    "cell_2": "194f7f048e1e08e9"
+    "cells": {
+      "cell_1": "399079210acbe989",
+      "cell_2": "442a6ddb48e4460b"
+    },
+    "shared": "be23dde71029bac8"
   },
   "reactive-demo": {
-    "cell_1": "f9594b25e29332ce",
-    "cell_2": "d0bc595004d82e75",
-    "cell_3": "a142232e9d8b2dcf"
+    "cells": {
+      "cell_1": "09ae2a28acbfaa33",
+      "cell_2": "00d58223ae62d129",
+      "cell_3": "1f3c8e145aa77385"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "rtz": {
-    "cell_first_lookups": "837843dcfd7832f3",
-    "cell_record": "090cebbd09aa3298",
-    "cell_dataset_stats": "af288a323cdf61d6",
-    "cell_world_map": "dca6e658ba6cd5bf",
-    "cell_perf": "48d2ed0f70de4ddf",
-    "cell_honesty": "4c9b85d0aec94b63"
+    "cells": {
+      "cell_first_lookups": "9e309a4d1d1e2e00",
+      "cell_record": "da01234aff784540",
+      "cell_dataset_stats": "7385bd424222bb66",
+      "cell_world_map": "80a06cd42156bf29",
+      "cell_perf": "dc8605880da37f18",
+      "cell_honesty": "3989785cf6b33ea0"
+    },
+    "shared": "0e30f9e565879a3d"
   },
   "rule-110": {
-    "cell_1": "6714cb25f740137d"
+    "cells": {
+      "cell_1": "3cd0f02974e9cf77"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "sansio": {
-    "cell_2": "37d5040c1e870671",
-    "cell_stale_txid": "f88e630528603882",
-    "cell_4": "9f3e3e913a160c1f",
-    "cell_5": "9481d3ae801850d7",
-    "cell_6": "7ada6cfaea39f998",
-    "cell_backoff_ladder": "1d1de55a038f005b",
-    "cell_7": "308dc2937c1ea07c",
-    "cell_fuzz_sweep": "dbe2b3b6d4d6d898"
+    "cells": {
+      "cell_2": "cdbdad6b6c5ea9c6",
+      "cell_stale_txid": "92703d731da05b18",
+      "cell_4": "3e607889eadb7908",
+      "cell_5": "b5c85804c344d8c2",
+      "cell_6": "40d405a29d5a8563",
+      "cell_backoff_ladder": "55abaf04e92748f4",
+      "cell_7": "b91f29bc66aa01fc",
+      "cell_fuzz_sweep": "e2dd7ec344b08979"
+    },
+    "shared": "c5ccf1f64cd03cce"
   },
   "shared-code": {
-    "cell_1": "daf9887e917b6829",
-    "cell_2": "bbdc248dd5335198",
-    "cell_fib_ratio_table": "fd93413ddc26119a",
-    "cell_3": "01b2d9c753b288a8"
+    "cells": {
+      "cell_1": "1940773a12aa5376",
+      "cell_2": "a992411de3d9f631",
+      "cell_fib_ratio_table": "f4e5e75e0a28e4a6",
+      "cell_3": "13cb5683d4007121"
+    },
+    "shared": "08fbfbb9fb794175"
   },
   "sierpinski": {
-    "cell_1": "5f1b8d14496ed308",
-    "cell_2": "8297f1cac3923368"
+    "cells": {
+      "cell_1": "647e7905fda95c42",
+      "cell_2": "d2da17cacd360cc3"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "simd-lanes": {
-    "cell_scalar": "c28ce2e6a9211991",
-    "cell_float_assoc": "47becdb36f840c15",
-    "cell_autovec": "300ad69c46dd3a02",
-    "cell_tour_construct": "d7bdf3218d392175",
-    "cell_tour_reduce": "1a0f23924f2f4782",
-    "cell_tour_masks": "2b6ff49fe644d95c",
-    "cell_tail": "d7f3c30e3691b8a9",
-    "cell_explicit": "b0cfa4c6342de634",
-    "cell_mandel": "748bbd5f966144ae"
+    "cells": {
+      "cell_scalar": "8ed2d773bf47769f",
+      "cell_float_assoc": "c754427fd139fc98",
+      "cell_autovec": "5f89b6c839d9dc0c",
+      "cell_tour_construct": "43f05b26bb101fb5",
+      "cell_tour_reduce": "e9e4e9db63e94f98",
+      "cell_tour_masks": "51cd5fdec9320319",
+      "cell_tail": "19ed2d6ef727c5c5",
+      "cell_explicit": "8e272a246200764c",
+      "cell_mandel": "44b3bb14bba98304"
+    },
+    "shared": "6e340b9cffb37a98"
   },
   "sine-phase-explorer": {
-    "cell_1": "c2cd1386d3e036da",
-    "cell_2": "6e4384069381838c"
+    "cells": {
+      "cell_1": "e903b33e637e93d6",
+      "cell_2": "f59aa707a38f3a9a"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "sorting-visualizer": {
-    "cell_controls": "4f7cf94c1ef0b478",
-    "cell_1": "91bfc91787a71636",
-    "cell_2": "94f3a7960e4c864c"
+    "cells": {
+      "cell_controls": "285f411dda220438",
+      "cell_1": "0e73b426cb5c3d1e",
+      "cell_2": "72eaa105d2f380d9"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "spring-mass-damper": {
-    "cell_controls": "0a5a514003414541",
-    "cell_sim": "f259b648368e6356",
-    "cell_dashboard": "853c679c2ddf33a6"
+    "cells": {
+      "cell_controls": "0b92377111fffc5e",
+      "cell_sim": "92923e9be3eae086",
+      "cell_dashboard": "4b24a3cf263c8ad3"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "tutorial": {
-    "cell_1": "d2b5acbbf568b071",
-    "cell_3": "eca7e5f27f84c940",
-    "cell_5": "c2c3d83bc8e96bf0"
+    "cells": {
+      "cell_1": "e7733cf99fdb73f5",
+      "cell_3": "e609d19abbee0d63",
+      "cell_5": "e58574e2cfd597a8"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "wave-equation": {
-    "cell_1": "bd46b8019ed7ed09"
+    "cells": {
+      "cell_1": "36b07c14d4e7ec88"
+    },
+    "shared": "c6ebd33f69397748"
   },
   "welcome": {
-    "cell_0": "1a75bc53b0dfed84",
-    "cell_1": "636eba1f69c05e2d",
-    "cell_2": "ceff08d741098942",
-    "cell_3": "813db1890a2df972"
+    "cells": {
+      "cell_0": "4c0b84c5701bd548",
+      "cell_1": "aa47ff4a6fc0126e",
+      "cell_2": "bad348435bf985e9",
+      "cell_3": "854e060c39e9d858"
+    },
+    "shared": "fe1db9b692ad3818"
   },
   "working-with-json": {
-    "cell_1": "bcdfead7d915384b",
-    "cell_3": "75abcced8fed9165",
-    "cell_5": "92845a3901bcf517",
-    "cell_7": "eb2409a194c319f7"
+    "cells": {
+      "cell_1": "495a93035901b6f8",
+      "cell_3": "148d8958da4263b5",
+      "cell_5": "70811c36fc953f42",
+      "cell_7": "110cab577108ba3e"
+    },
+    "shared": "9a55979b8dd2de4e"
   }
 }

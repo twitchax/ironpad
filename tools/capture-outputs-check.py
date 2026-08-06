@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Fail when a public notebook's code changed without an output recapture.
+"""Fail when a public notebook's compiled text changed without a recapture.
 
-`tools/capture-outputs.mjs` records a sha256 of every runnable code cell's
-source into `public/notebooks/.capture-manifest.json` as it captures. This
-check recomputes those hashes from the current notebooks and diffs: a
-mismatch means someone edited a cell's code and the committed `saved_output`
-snapshots (PRD-0056) now show a run of code that no longer exists.
+`tools/capture-outputs.mjs` records, per notebook, a `cells` map (sha256 of
+every runnable code cell's source + its per-cell Cargo.toml, 16 hex) and a
+`shared` digest of the notebook-wide compile context (notebook
+shared_source, shared cells' sources in order, shared Cargo.toml) into
+`public/notebooks/.capture-manifest.json` as it captures. This check
+recomputes the SAME recipe from the current notebooks and diffs: a mismatch
+means someone edited text that compiles into cells and the committed
+`saved_output` snapshots (PRD-0056) now show a run of code that no longer
+exists. Keep the two recipes in lockstep — the committed manifest is the
+cross-check between them (unilateral drift on either side fails ci loudly).
 
 The manifest records capture-time sources for EVERY runnable cell, including
 cells that produced no output (deliberate compile-fail teaching cells): the
 capture ran them, and their text is part of what the snapshot set is honest
-against.
+against. Notebooks with no runnable cells still get an entry (empty `cells`
+map) so a markdown-only notebook cannot read as permanently stale.
 
 Fix: `cargo make capture-outputs -- <name>` against a dev server, then
 commit the refreshed notebook + manifest.
@@ -25,15 +31,26 @@ DIR = pathlib.Path("public/notebooks")
 MANIFEST = DIR / ".capture-manifest.json"
 
 
-def runnable_hashes(path: pathlib.Path) -> dict[str, str]:
+def digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def notebook_entry(path: pathlib.Path) -> dict:
     nb = json.loads(path.read_text())
-    out = {}
+    cells = {}
     for cell in nb.get("cells", []):
         if cell.get("cell_type", "Code") != "Code" or cell.get("shared"):
             continue
-        digest = hashlib.sha256(cell["source"].encode()).hexdigest()[:16]
-        out[cell["id"]] = digest
-    return out
+        cells[cell["id"]] = digest(
+            f"{cell['source']}\x00{cell.get('cargo_toml') or ''}"
+        )
+    # NUL-joined so ("a", "b") and ("ab", "") cannot collide across parts.
+    shared_parts = [nb.get("shared_source") or ""]
+    shared_parts += [
+        c["source"] for c in nb.get("cells", []) if c.get("shared")
+    ]
+    shared_parts.append(nb.get("shared_cargo_toml") or "")
+    return {"cells": cells, "shared": digest("\x00".join(shared_parts))}
 
 
 def main() -> int:
@@ -45,7 +62,7 @@ def main() -> int:
     stale: list[str] = []
     for path in sorted(DIR.glob("*.ironpad")):
         name = path.stem
-        current = runnable_hashes(path)
+        current = notebook_entry(path)
         recorded = manifest.get(name)
         if recorded != current:
             stale.append(name)
@@ -54,7 +71,7 @@ def main() -> int:
 
     if stale or orphans:
         for name in stale:
-            print(f"stale saved outputs: {name} (code changed since last capture)")
+            print(f"stale saved outputs: {name} (compiled text changed since last capture)")
         for name in orphans:
             print(f"manifest entry for deleted notebook: {name}")
         print(

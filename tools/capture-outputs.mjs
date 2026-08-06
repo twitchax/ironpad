@@ -26,11 +26,17 @@ import path from "node:path";
 const BASE = process.env.IRONPAD_BASE ?? "http://localhost:3111";
 const DIR = "public/notebooks";
 /**
- * Freshness manifest: capture-time sha256 (16 hex) of every runnable code
- * cell's source, per notebook. `tools/capture-outputs-check.py` (in ci)
- * diffs it against the current notebooks, so editing a cell's code without
- * recapturing its outputs fails the build instead of silently shipping
- * snapshots of code that no longer exists.
+ * Freshness manifest: per notebook, `cells` maps every runnable code cell's
+ * id to a capture-time sha256 (16 hex) of its source + its per-cell
+ * Cargo.toml, and `shared` digests the notebook-wide compile context
+ * (notebook shared_source, shared cells' sources in order, and the shared
+ * Cargo.toml) — all of it compiles into every runnable cell, so editing any
+ * of it stales every snapshot in the notebook. `tools/capture-outputs-check.py`
+ * (in ci) recomputes the SAME recipe from the current notebooks and diffs,
+ * so editing compiled text without recapturing fails the build instead of
+ * silently shipping snapshots of code that no longer exists. Keep the two
+ * recipes in lockstep — the committed manifest is the cross-check between
+ * them (unilateral drift on either side fails ci loudly).
  */
 const MANIFEST = path.join(DIR, ".capture-manifest.json");
 
@@ -41,14 +47,24 @@ const runnableHashes = (nb) =>
   Object.fromEntries(
     nb.cells
       .filter((c) => (c.cell_type ?? "Code") === "Code" && !c.shared)
-      .map((c) => [c.id, cellHash(c.source)]),
+      .map((c) => [c.id, cellHash(`${c.source}\u0000${c.cargo_toml ?? ""}`)]),
+  );
+
+// NUL-joined so ("a", "b") and ("ab", "") cannot collide across parts.
+const sharedContextHash = (nb) =>
+  cellHash(
+    [
+      nb.shared_source ?? "",
+      ...nb.cells.filter((c) => c.shared).map((c) => c.source),
+      nb.shared_cargo_toml ?? "",
+    ].join("\u0000"),
   );
 
 function recordManifest(name, nb) {
   const manifest = fs.existsSync(MANIFEST)
     ? JSON.parse(fs.readFileSync(MANIFEST, "utf-8"))
     : {};
-  manifest[name] = runnableHashes(nb);
+  manifest[name] = { cells: runnableHashes(nb), shared: sharedContextHash(nb) };
   const sorted = Object.fromEntries(
     Object.keys(manifest)
       .sort()
@@ -81,6 +97,10 @@ for (const file of files) {
     (c) => (c.cell_type ?? "Code") === "Code" && !c.shared,
   ).length;
   if (runnable === 0) {
+    // Still record a manifest entry: the checker computes one for every
+    // notebook on disk, and a missing entry reads as permanently stale —
+    // a markdown-only notebook would brick ci with no tool path to fix it.
+    recordManifest(file.replace(/\.ironpad$/, ""), source);
     results.push({ file, status: "skipped (no runnable cells)" });
     console.log(JSON.stringify(results.at(-1)));
     continue;
@@ -96,6 +116,17 @@ for (const file of files) {
 
     const scratchId = await page.evaluate(async (nb) => {
       const copy = { ...nb, id: crypto.randomUUID() };
+      // Strip prior snapshots from the seed: Download PRESERVES saved_output
+      // for cells with no fresh capture (PRD-0056), so a stale snapshot
+      // seeded in would ride back out under this session's new source
+      // hashes — an edited-to-failing cell would ship its old code's output
+      // behind a green freshness check. An empty slate means the download
+      // reflects only cells that really ran here.
+      copy.cells = copy.cells.map((c) => {
+        const cell = { ...c };
+        delete cell.saved_output;
+        return cell;
+      });
       await window.IronpadStorage.saveNotebook(copy);
       return copy.id;
     }, source);
@@ -149,37 +180,38 @@ for (const file of files) {
       enriched.cells.filter((c) => c.saved_output).map((c) => [c.id, c.saved_output]),
     );
     const captured = outputs.size;
-    if (captured === 0) {
-      // Still a capture: the cells RAN (or deliberately failed); record the
-      // sources this attempt was made against so the freshness check holds.
-      recordManifest(file.replace(/\.ironpad$/, ""), source);
-      results.push({
-        file,
-        status: `no outputs captured (${runnable} runnable)`,
-        seconds: Math.round((Date.now() - started) / 1000),
-      });
-    } else {
-      // Write saved_output INTO THE SOURCE object rather than writing the
-      // round-tripped notebook: a round trip also materializes serde
-      // defaults (version, collapse flags) the hand-written files omit,
-      // which would bury the real change in noise. The diff is exactly the
-      // new saved_output fields.
-      for (const cell of source.cells) {
-        const panels = outputs.get(cell.id);
-        if (panels) {
-          cell.saved_output = panels;
-        } else {
-          delete cell.saved_output;
-        }
+
+    // Write saved_output INTO THE SOURCE object rather than writing the
+    // round-tripped notebook: a round trip also materializes serde
+    // defaults (version, collapse flags) the hand-written files omit,
+    // which would bury the real change in noise. The diff is exactly the
+    // saved_output fields. Because the seed was stripped, `outputs` holds
+    // only this session's real runs — a cell that failed here loses its
+    // stale snapshot (the delete arm), on every path including captured=0.
+    const before = JSON.stringify(source);
+    for (const cell of source.cells) {
+      const panels = outputs.get(cell.id);
+      if (panels) {
+        cell.saved_output = panels;
+      } else {
+        delete cell.saved_output;
       }
-      fs.writeFileSync(full, `${JSON.stringify(source, null, 2)}\n`);
-      recordManifest(file.replace(/\.ironpad$/, ""), source);
-      results.push({
-        file,
-        status: `captured ${captured}/${runnable}`,
-        seconds: Math.round((Date.now() - started) / 1000),
-      });
     }
+    if (JSON.stringify(source) !== before) {
+      fs.writeFileSync(full, `${JSON.stringify(source, null, 2)}\n`);
+    }
+    // Either way this WAS a capture: the cells ran (or deliberately
+    // failed); record the sources the attempt was made against so the
+    // freshness check holds.
+    recordManifest(file.replace(/\.ironpad$/, ""), source);
+    results.push({
+      file,
+      status:
+        captured === 0
+          ? `no outputs captured (${runnable} runnable)`
+          : `captured ${captured}/${runnable}`,
+      seconds: Math.round((Date.now() - started) / 1000),
+    });
   } catch (e) {
     results.push({
       file,
