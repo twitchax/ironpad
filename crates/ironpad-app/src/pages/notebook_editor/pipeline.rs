@@ -60,6 +60,22 @@ impl CellRunCtx {
             self.model.emit_event(event);
         }
     }
+
+    /// Continue-past-failures with the drop REPORT structurally tied to the
+    /// drop decision: drop `failed_cell_id`'s transitive dependents from the
+    /// queue and emit `CellBlocked` for each — the browser makes the drop
+    /// decision, so it reports it, and a waiting agent terminal-izes on the
+    /// report instead of inferring dependencies from a possibly stale
+    /// notebook cache. ONE call for every failure path; a future path that
+    /// drops without reporting cannot exist by construction.
+    fn fail_and_report(&self, failed_cell_id: &str) {
+        for dep in self.state.fail_in_run_queue(failed_cell_id) {
+            self.emit_session_event(ironpad_common::protocol::Event::CellBlocked {
+                cell_id: dep,
+                blocked_by: failed_cell_id.to_string(),
+            });
+        }
+    }
 }
 
 // ── Pure stages ─────────────────────────────────────────────────────────────
@@ -98,9 +114,11 @@ fn merged_run_queue(
     let mut merged: Vec<String> = Vec::with_capacity(wanted.len());
     // Pin the front unless it IS the target: a front target has not started
     // compiling yet (the dispatch guard returns before that), and its
-    // dependencies must run first, so it re-sorts with everything else.
+    // dependencies must run first, so it re-sorts with everything else. A
+    // front no longer present in `cells` (deleted mid-run) is a ghost no
+    // watcher can advance — never pin it, let the merge drop it.
     if let Some(front) = queue.first() {
-        if front != cell_id {
+        if front != cell_id && cells.iter().any(|c| &c.id == front) {
             wanted.remove(front.as_str());
             merged.push(front.clone());
         }
@@ -434,6 +452,24 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                                 // AbortError means the user cancelled via terminate().
                                 if err_msg.contains("AbortError") {
                                     cell_status.set(CellStatus::Idle);
+                                    // Cancelling drops every queued cell —
+                                    // report the drops BEFORE clearing, or a
+                                    // waiting agent only learns at its
+                                    // timeout (drops are always reported).
+                                    let dropped: Vec<String> = state
+                                        .run_all_queue
+                                        .try_get_untracked()
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .filter(|id| id != &cell_id_for_exec)
+                                        .collect();
+                                    if !dropped.is_empty() {
+                                        emit_session_event(
+                                            ironpad_common::protocol::Event::RunCancelled {
+                                                cell_ids: dropped,
+                                            },
+                                        );
+                                    }
                                     state.run_all_queue.set(vec![]);
                                 } else {
                                     execution_result.set(Some(ExecutionResult {
@@ -445,21 +481,10 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                                     }));
                                     cell_status.set(CellStatus::Error);
 
-                                    // Drop this cell's dependents from the
-                                    // queue; independents keep running
-                                    // (PRD-0060). The browser makes the drop
-                                    // decision, so it REPORTS it: a waiting
-                                    // agent terminal-izes on this instead of
-                                    // inferring dependencies from a possibly
-                                    // stale notebook cache.
-                                    for dep in state.fail_in_run_queue(&cell_id_for_exec) {
-                                        emit_session_event(
-                                            ironpad_common::protocol::Event::CellBlocked {
-                                                cell_id: dep,
-                                                blocked_by: cell_id_for_exec.clone(),
-                                            },
-                                        );
-                                    }
+                                    // Drop dependents; independents keep
+                                    // running (PRD-0060). Drop + report is
+                                    // one act (`fail_and_report`).
+                                    ctx.fail_and_report(&cell_id_for_exec);
                                 }
                             }
                         }
@@ -490,14 +515,8 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         cell_status.set(CellStatus::Error);
                         last_compile.set(Some(response));
 
-                        // Drop dependents; independents keep running. The
-                        // drops are reported for waiting agents (see above).
-                        for dep in state.fail_in_run_queue(&cell_id_for_exec) {
-                            emit_session_event(ironpad_common::protocol::Event::CellBlocked {
-                                cell_id: dep,
-                                blocked_by: cell_id_for_exec.clone(),
-                            });
-                        }
+                        // Drop + report is one act (`fail_and_report`).
+                        ctx.fail_and_report(&cell_id_for_exec);
                     }
                 }
                 Err(e) => {
@@ -521,14 +540,8 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         js_glue: None,
                     }));
 
-                    // Drop dependents; independents keep running. The drops
-                    // are reported for waiting agents (see above).
-                    for dep in state.fail_in_run_queue(&cell_id_for_exec) {
-                        emit_session_event(ironpad_common::protocol::Event::CellBlocked {
-                            cell_id: dep,
-                            blocked_by: cell_id_for_exec.clone(),
-                        });
-                    }
+                    // Drop + report is one act (`fail_and_report`).
+                    ctx.fail_and_report(&cell_id_for_exec);
                 }
             }
         });
@@ -901,6 +914,18 @@ mod tests {
         assert_eq!(
             merged_run_queue(&cells, &ids(&["y", "z"]), &ids(&["d"]), "y"),
             ids(&["d", "y", "z"])
+        );
+    }
+
+    #[test]
+    fn merged_run_queue_drops_a_ghost_front() {
+        // The queued front was deleted mid-run (agent CellDelete): it must
+        // not be pinned — nothing can ever advance a front that has no
+        // watcher — and it vanishes from the merge entirely.
+        let cells = vec![manifest("b", CellType::Code), manifest("c", CellType::Code)];
+        assert_eq!(
+            merged_run_queue(&cells, &ids(&["ghost", "b", "c"]), &[], "c"),
+            ids(&["b", "c"])
         );
     }
 

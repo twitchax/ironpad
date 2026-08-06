@@ -149,25 +149,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             )
             .is_ok()
         {
-            // Clean up execution state (UI concern, not model concern).
-            state.cell_outputs.update(|map| {
-                map.remove(&cid_cleanup);
-            });
-            state.cell_display_texts.update(|map| {
-                map.remove(&cid_cleanup);
-            });
-            // Drop the deleted cell from the run-all queue so a Run All that was
-            // in flight doesn't stall on a gone cell (leaving the rest "Queued").
-            state
-                .run_all_queue
-                .update(|q| q.retain(|id| id != &cid_cleanup));
-            // And from the blocked-by map, on both sides: its own entry, and
-            // entries blaming it — otherwise a cell blocked by a since-deleted
-            // cell could never clear except by page reload.
-            state.cell_blocked_by.update(|b| {
-                b.remove(&cid_cleanup);
-                b.retain(|_, blocker| blocker != &cid_cleanup);
-            });
+            // Clean up execution state (UI concern, not model concern) —
+            // the shared scrub, same as the agent CellDelete path.
+            state.scrub_deleted_cell(&cid_cleanup);
             persist_notebook(&state);
         }
     };

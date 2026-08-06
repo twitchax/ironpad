@@ -372,6 +372,7 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
         | protocol::Event::CellCompiled { .. }
         | protocol::Event::CellExecuted { .. }
         | protocol::Event::CellBlocked { .. }
+        | protocol::Event::RunCancelled { .. }
         | protocol::Event::Error { .. }
         | protocol::Event::Unknown => {}
     }
@@ -522,8 +523,16 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
     }
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    // A dependency-inference verdict is HELD for a grace window rather than
+    // returned: the browser reports real drops (`CellBlocked`, protocol v6)
+    // right after the failure event, and our own cell's activity refutes the
+    // inference outright — the inference only wins when neither arrives
+    // (a pre-v6 browser, or a genuinely dead queue).
+    let mut held: Option<serde_json::Value> = None;
+    let mut grace_until: Option<tokio::time::Instant> = None;
     loop {
-        let event = match tokio::time::timeout_at(deadline, events.recv()).await {
+        let wait_until = grace_until.map_or(deadline, |g| g.min(deadline));
+        let event = match tokio::time::timeout_at(wait_until, events.recv()).await {
             Ok(Ok(envelope)) => envelope.event,
             // Lagged: older events were dropped from the ring; ours may be
             // among the survivors, so keep reading.
@@ -535,10 +544,16 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
                 )
             }
             Err(_) => {
+                // Grace (or the overall deadline) expired with a held
+                // inference and no authoritative signal either way — the
+                // pre-v6 fallback verdict stands.
+                if let Some(verdict) = held.take() {
+                    return IpcResponse::success(verdict);
+                }
                 return IpcResponse::error_with_code(
                     format!("timed out after {timeout_secs}s waiting for the run to finish"),
                     "timeout",
-                )
+                );
             }
         };
         // A dependency check only matters for ANOTHER cell's failure, and
@@ -554,9 +569,48 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
         } else {
             None
         };
-        if let Some(outcome) = run_outcome(cell_id, &event, notebook.as_ref()) {
+        if let Some(outcome) =
+            apply_signal(&mut held, run_signal(cell_id, &event, notebook.as_ref()))
+        {
             return IpcResponse::success(outcome);
         }
+        grace_until = match (&held, grace_until) {
+            (Some(_), None) => Some(
+                tokio::time::Instant::now() + std::time::Duration::from_millis(INFERENCE_GRACE_MS),
+            ),
+            (Some(_), some) => some,
+            (None, _) => None,
+        };
+    }
+}
+
+/// How long a dependency-INFERENCE verdict is held before it is trusted.
+/// A v6 browser emits `CellBlocked` synchronously after the failure event,
+/// so the real report arrives within relay latency (tens of ms); the window
+/// only elapses fully against a pre-v6 browser or a genuinely stale guess.
+const INFERENCE_GRACE_MS: u64 = 1_500;
+
+/// Fold one classified event into the wait: authoritative terminals return
+/// immediately; an inference is held (first one wins) for the grace window;
+/// our cell showing life cancels a held inference — the browser evidently
+/// kept us past the failure, so the stale-cache guess was wrong.
+fn apply_signal(
+    held: &mut Option<serde_json::Value>,
+    signal: RunSignal,
+) -> Option<serde_json::Value> {
+    match signal {
+        RunSignal::Terminal(v) => Some(v),
+        RunSignal::Inferred(v) => {
+            if held.is_none() {
+                *held = Some(v);
+            }
+            None
+        }
+        RunSignal::OursAlive => {
+            *held = None;
+            None
+        }
+        RunSignal::None => None,
     }
 }
 
@@ -581,35 +635,53 @@ fn target_depends_on(notebook: &IronpadNotebook, target_id: &str, failed_id: &st
     ironpad_common::cell_deps::transitive_dep_indices(&graph, target).contains(&failed)
 }
 
-/// Maps an incoming event to the terminal outcome of a run of `cell_id`, or
-/// `None` if the run is still in flight.
+/// Classification of an incoming event relative to a waited-on run.
+#[derive(Debug)]
+enum RunSignal {
+    /// Authoritative terminal outcome — return it immediately.
+    Terminal(serde_json::Value),
+    /// Terminal only by DEPENDENCY INFERENCE against the daemon's cached
+    /// notebook — held for a grace window (see [`serve_cells_run`]) rather
+    /// than returned, because the cache can trail the browser's live Monaco
+    /// buffers by the save debounce and guess wrong in both directions.
+    Inferred(serde_json::Value),
+    /// Our cell is visibly alive (compiling, or compiled cleanly): the
+    /// browser kept it past whatever failed, refuting any held inference.
+    OursAlive,
+    /// Nothing to conclude; keep waiting.
+    None,
+}
+
+/// Maps an incoming event to a [`RunSignal`] for a run of `cell_id`.
 ///
-/// Terminal shapes:
+/// Authoritative terminals:
 /// - `CellExecuted` for our cell — done, successfully or not.
 /// - `CellCompiled { success: false }` for our cell — compile failure.
-/// - `CellBlocked` for our cell — the browser's AUTHORITATIVE report that
-///   our queued run was dropped because a dependency failed (protocol v6).
-///   The browser decides drops against sources that include live Monaco
-///   buffers this daemon's cache never sees, so its verdict beats any local
-///   inference.
+/// - `CellBlocked` for our cell — the browser's report that our queued run
+///   was dropped because a dependency failed (protocol v6). The browser
+///   decides drops against sources that include live Monaco buffers this
+///   daemon's cache never sees, so its verdict beats any local inference.
+/// - `RunCancelled` naming our cell — the user terminated the run and every
+///   queued cell was dropped, dependents and independents alike.
 /// - `CellDeleted` for our cell — the target is gone mid-run and will never
 ///   emit a compile/execute event; without this arm the wait could only end
 ///   at the timeout.
-/// - Fallback inference: a compile OR runtime failure of a cell our cell
-///   transitively DEPENDS ON (PRD-0060) — `prerequisite_failed`, payload
-///   naming the cell. Kept for browsers predating `CellBlocked` (a cached
-///   bundle can lag a deploy). The dependency test runs the same shared
-///   recipe as the browser (`cell_deps`) against the daemon's cached
-///   notebook; with no cached notebook it degrades to terminal (the
-///   pre-0060 behavior — never a hang).
 ///
-/// An UNRELATED cell's failure is NOT terminal anymore: the queue continues
-/// past it and our run still executes (continue-past-failures).
-fn run_outcome(
+/// Fallback inference ([`RunSignal::Inferred`], grace-held): a compile OR
+/// runtime failure of a cell our cell transitively DEPENDS ON (PRD-0060) —
+/// `prerequisite_failed`, payload naming the cell. Kept for browsers
+/// predating `CellBlocked` (a cached bundle can lag a deploy). The
+/// dependency test runs the same shared recipe as the browser (`cell_deps`)
+/// against the daemon's cached notebook; with no cached notebook every
+/// other-cell failure is inferred-terminal (conservative — never a hang).
+///
+/// An UNRELATED cell's failure concludes nothing: the queue continues past
+/// it and our run still executes (continue-past-failures).
+fn run_signal(
     cell_id: &str,
     event: &protocol::Event,
     notebook: Option<&IronpadNotebook>,
-) -> Option<serde_json::Value> {
+) -> RunSignal {
     match event {
         protocol::Event::CellExecuted {
             cell_id: id,
@@ -617,7 +689,7 @@ fn run_outcome(
             type_tag,
             execution_time_ms,
             success,
-        } if id == cell_id => Some(serde_json::json!({
+        } if id == cell_id => RunSignal::Terminal(serde_json::json!({
             "status": if *success { "executed" } else { "execution_error" },
             "cell_id": id,
             "display_text": display_text,
@@ -631,9 +703,9 @@ fn run_outcome(
             ..
         } => {
             if notebook.is_some_and(|nb| !target_depends_on(nb, cell_id, id)) {
-                return None; // independent failure: the queue continues, keep waiting
+                return RunSignal::None; // independent failure: the queue continues
             }
-            Some(serde_json::json!({
+            RunSignal::Inferred(serde_json::json!({
                 "status": "prerequisite_failed",
                 "cell_id": id,
                 "display_text": display_text,
@@ -644,28 +716,49 @@ fn run_outcome(
             diagnostics,
             success: false,
         } => {
-            if id != cell_id && notebook.is_some_and(|nb| !target_depends_on(nb, cell_id, id)) {
-                return None; // independent failure: the queue continues, keep waiting
+            if id == cell_id {
+                return RunSignal::Terminal(serde_json::json!({
+                    "status": "compile_error",
+                    "cell_id": id,
+                    "diagnostics": diagnostics,
+                }));
             }
-            Some(serde_json::json!({
-                "status": if id == cell_id { "compile_error" } else { "prerequisite_failed" },
+            if notebook.is_some_and(|nb| !target_depends_on(nb, cell_id, id)) {
+                return RunSignal::None; // independent failure: the queue continues
+            }
+            RunSignal::Inferred(serde_json::json!({
+                "status": "prerequisite_failed",
                 "cell_id": id,
                 "diagnostics": diagnostics,
             }))
         }
+        protocol::Event::CellCompiling { cell_id: id }
+        | protocol::Event::CellCompiled {
+            cell_id: id,
+            success: true,
+            ..
+        } if id == cell_id => RunSignal::OursAlive,
         protocol::Event::CellBlocked {
             cell_id: id,
             blocked_by,
-        } if id == cell_id => Some(serde_json::json!({
+        } if id == cell_id => RunSignal::Terminal(serde_json::json!({
             "status": "prerequisite_failed",
             "cell_id": blocked_by,
             "blocked_cell_id": id,
         })),
-        protocol::Event::CellDeleted { cell_id: id } if id == cell_id => Some(serde_json::json!({
-            "status": "cell_deleted",
-            "cell_id": id,
-        })),
-        _ => None,
+        protocol::Event::RunCancelled { cell_ids } if cell_ids.iter().any(|id| id == cell_id) => {
+            RunSignal::Terminal(serde_json::json!({
+                "status": "cancelled",
+                "cell_id": cell_id,
+            }))
+        }
+        protocol::Event::CellDeleted { cell_id: id } if id == cell_id => {
+            RunSignal::Terminal(serde_json::json!({
+                "status": "cell_deleted",
+                "cell_id": id,
+            }))
+        }
+        _ => RunSignal::None,
     }
 }
 
@@ -1024,42 +1117,63 @@ mod tests {
         assert!(translate_command(&ipc("cells.run", json!({}))).is_err());
     }
 
+    /// Unwrap helpers for the [`RunSignal`] shape.
+    fn terminal(sig: RunSignal) -> serde_json::Value {
+        match sig {
+            RunSignal::Terminal(v) => v,
+            other => panic!("expected Terminal, got {other:?}"),
+        }
+    }
+    fn inferred(sig: RunSignal) -> serde_json::Value {
+        match sig {
+            RunSignal::Inferred(v) => v,
+            other => panic!("expected Inferred, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn run_outcome_terminal_shapes() {
-        // Still in flight: compiling, or someone else's success.
-        assert!(run_outcome(
-            "mine",
-            &Event::CellCompiling {
-                cell_id: "mine".into()
-            },
-            None,
-        )
-        .is_none());
-        assert!(run_outcome(
-            "mine",
-            &Event::CellCompiled {
-                cell_id: "mine".into(),
-                diagnostics: vec![],
-                success: true,
-            },
-            None,
-        )
-        .is_none());
-        assert!(run_outcome(
-            "mine",
-            &Event::CellExecuted {
-                cell_id: "other".into(),
-                display_text: None,
-                type_tag: None,
-                execution_time_ms: 1.0,
-                success: true,
-            },
-            None,
-        )
-        .is_none());
+    fn run_signal_terminal_and_alive_shapes() {
+        // Our own activity is OursAlive (it refutes a held inference), and
+        // someone else's success concludes nothing.
+        assert!(matches!(
+            run_signal(
+                "mine",
+                &Event::CellCompiling {
+                    cell_id: "mine".into()
+                },
+                None,
+            ),
+            RunSignal::OursAlive
+        ));
+        assert!(matches!(
+            run_signal(
+                "mine",
+                &Event::CellCompiled {
+                    cell_id: "mine".into(),
+                    diagnostics: vec![],
+                    success: true,
+                },
+                None,
+            ),
+            RunSignal::OursAlive
+        ));
+        assert!(matches!(
+            run_signal(
+                "mine",
+                &Event::CellExecuted {
+                    cell_id: "other".into(),
+                    display_text: None,
+                    type_tag: None,
+                    execution_time_ms: 1.0,
+                    success: true,
+                },
+                None,
+            ),
+            RunSignal::None
+        ));
 
         // Terminal: our execution, either way.
-        let ok = run_outcome(
+        let ok = terminal(run_signal(
             "mine",
             &Event::CellExecuted {
                 cell_id: "mine".into(),
@@ -1069,12 +1183,11 @@ mod tests {
                 success: true,
             },
             None,
-        )
-        .unwrap();
+        ));
         assert_eq!(ok["status"], "executed");
         assert_eq!(ok["display_text"], "42");
 
-        let failed = run_outcome(
+        let failed = terminal(run_signal(
             "mine",
             &Event::CellExecuted {
                 cell_id: "mine".into(),
@@ -1084,13 +1197,13 @@ mod tests {
                 success: false,
             },
             None,
-        )
-        .unwrap();
+        ));
         assert_eq!(failed["status"], "execution_error");
 
-        // Terminal: our compile failure; with NO cached notebook another
-        // cell's failure degrades to terminal too (conservative, no hangs).
-        let compile_err = run_outcome(
+        // Terminal: our compile failure. Another cell's failure with NO
+        // cached notebook is INFERRED (conservative) — held for the grace
+        // window rather than returned outright, never a hang.
+        let compile_err = terminal(run_signal(
             "mine",
             &Event::CellCompiled {
                 cell_id: "mine".into(),
@@ -1098,11 +1211,10 @@ mod tests {
                 success: false,
             },
             None,
-        )
-        .unwrap();
+        ));
         assert_eq!(compile_err["status"], "compile_error");
 
-        let prereq = run_outcome(
+        let prereq = inferred(run_signal(
             "mine",
             &Event::CellCompiled {
                 cell_id: "upstream".into(),
@@ -1110,14 +1222,11 @@ mod tests {
                 success: false,
             },
             None,
-        )
-        .unwrap();
+        ));
         assert_eq!(prereq["status"], "prerequisite_failed");
         assert_eq!(prereq["cell_id"], "upstream");
 
-        // Terminal (no cached notebook): a RUNTIME failure elsewhere too —
-        // without dependency knowledge, waiting longer only hits the timeout.
-        let runtime_prereq = run_outcome(
+        let runtime_prereq = inferred(run_signal(
             "mine",
             &Event::CellExecuted {
                 cell_id: "upstream".into(),
@@ -1127,64 +1236,86 @@ mod tests {
                 success: false,
             },
             None,
-        )
-        .unwrap();
+        ));
         assert_eq!(runtime_prereq["status"], "prerequisite_failed");
-        assert_eq!(runtime_prereq["cell_id"], "upstream");
         assert_eq!(runtime_prereq["display_text"], "panicked at 'boom'");
     }
 
     #[test]
-    fn run_outcome_cell_blocked_and_deleted_are_terminal_for_the_target_only() {
+    fn run_signal_blocked_cancelled_deleted_are_terminal_for_the_target_only() {
         // The browser's authoritative drop report (protocol v6): terminal
         // even with no cached notebook — no inference needed.
-        let blocked = run_outcome(
+        let blocked = terminal(run_signal(
             "mine",
             &Event::CellBlocked {
                 cell_id: "mine".into(),
                 blocked_by: "dep".into(),
             },
             None,
-        )
-        .unwrap();
+        ));
         assert_eq!(blocked["status"], "prerequisite_failed");
         assert_eq!(blocked["cell_id"], "dep");
         assert_eq!(blocked["blocked_cell_id"], "mine");
 
         // Another cell's drop keeps our wait open: the queue continues.
-        assert!(run_outcome(
+        assert!(matches!(
+            run_signal(
+                "mine",
+                &Event::CellBlocked {
+                    cell_id: "other".into(),
+                    blocked_by: "dep".into(),
+                },
+                None,
+            ),
+            RunSignal::None
+        ));
+
+        // User-terminate drops the whole queue and reports it: terminal for
+        // every named cell (dependent or independent), no one waits out the
+        // timeout.
+        let cancelled = terminal(run_signal(
             "mine",
-            &Event::CellBlocked {
-                cell_id: "other".into(),
-                blocked_by: "dep".into(),
+            &Event::RunCancelled {
+                cell_ids: vec!["other".into(), "mine".into()],
             },
             None,
-        )
-        .is_none());
+        ));
+        assert_eq!(cancelled["status"], "cancelled");
+        assert!(matches!(
+            run_signal(
+                "mine",
+                &Event::RunCancelled {
+                    cell_ids: vec!["other".into()],
+                },
+                None,
+            ),
+            RunSignal::None
+        ));
 
         // Target deleted mid-run: no compile/execute event will ever come,
         // so this must be terminal rather than a guaranteed timeout.
-        let deleted = run_outcome(
+        let deleted = terminal(run_signal(
             "mine",
             &Event::CellDeleted {
                 cell_id: "mine".into(),
             },
             None,
-        )
-        .unwrap();
+        ));
         assert_eq!(deleted["status"], "cell_deleted");
-        assert!(run_outcome(
-            "mine",
-            &Event::CellDeleted {
-                cell_id: "other".into(),
-            },
-            None,
-        )
-        .is_none());
+        assert!(matches!(
+            run_signal(
+                "mine",
+                &Event::CellDeleted {
+                    cell_id: "other".into(),
+                },
+                None,
+            ),
+            RunSignal::None
+        ));
     }
 
     #[test]
-    fn run_outcome_is_dependency_aware_with_a_cached_notebook() {
+    fn run_signal_is_dependency_aware_with_a_cached_notebook() {
         use ironpad_common::IronpadCell;
 
         fn code(id: &str, source: &str, order: u32) -> IronpadCell {
@@ -1217,12 +1348,15 @@ mod tests {
             success: false,
         };
 
-        // An INDEPENDENT cell's failure is not terminal: the queue continues
-        // past it (PRD-0060) and our run still executes.
-        assert!(run_outcome("mine", &failure("indep"), Some(&nb)).is_none());
+        // An INDEPENDENT cell's failure concludes nothing: the queue
+        // continues past it (PRD-0060) and our run still executes.
+        assert!(matches!(
+            run_signal("mine", &failure("indep"), Some(&nb)),
+            RunSignal::None
+        ));
 
-        // A cell we depend on failing IS terminal.
-        let out = run_outcome("mine", &failure("dep"), Some(&nb)).unwrap();
+        // A cell we depend on failing is INFERRED terminal (grace-held).
+        let out = inferred(run_signal("mine", &failure("dep"), Some(&nb)));
         assert_eq!(out["status"], "prerequisite_failed");
         assert_eq!(out["cell_id"], "dep");
 
@@ -1234,11 +1368,47 @@ mod tests {
             execution_time_ms: 0.0,
             success: false,
         };
-        assert!(run_outcome("mine", &runtime("indep"), Some(&nb)).is_none());
-        assert!(run_outcome("mine", &runtime("dep"), Some(&nb)).is_some());
+        assert!(matches!(
+            run_signal("mine", &runtime("indep"), Some(&nb)),
+            RunSignal::None
+        ));
+        assert!(matches!(
+            run_signal("mine", &runtime("dep"), Some(&nb)),
+            RunSignal::Inferred(_)
+        ));
 
-        // Unknown failed id degrades to terminal (never a hang).
-        assert!(run_outcome("mine", &failure("ghost"), Some(&nb)).is_some());
+        // Unknown failed id degrades to inferred-terminal (never a hang).
+        assert!(matches!(
+            run_signal("mine", &failure("ghost"), Some(&nb)),
+            RunSignal::Inferred(_)
+        ));
+    }
+
+    #[test]
+    fn apply_signal_holds_inference_until_refuted_or_confirmed() {
+        let prereq = serde_json::json!({ "status": "prerequisite_failed" });
+        let executed = serde_json::json!({ "status": "executed" });
+
+        // Inference is held, not returned; a second inference doesn't
+        // overwrite the first.
+        let mut held = None;
+        assert!(apply_signal(&mut held, RunSignal::Inferred(prereq.clone())).is_none());
+        assert_eq!(held.as_ref().unwrap()["status"], "prerequisite_failed");
+        assert!(apply_signal(
+            &mut held,
+            RunSignal::Inferred(serde_json::json!({ "status": "second" }))
+        )
+        .is_none());
+        assert_eq!(held.as_ref().unwrap()["status"], "prerequisite_failed");
+
+        // Our cell showing life refutes the held guess entirely...
+        assert!(apply_signal(&mut held, RunSignal::OursAlive).is_none());
+        assert!(held.is_none());
+
+        // ...and the authoritative terminal wins immediately, held or not.
+        assert!(apply_signal(&mut held, RunSignal::Inferred(prereq)).is_none());
+        let out = apply_signal(&mut held, RunSignal::Terminal(executed)).unwrap();
+        assert_eq!(out["status"], "executed");
     }
 
     // ── translate_command ────────────────────────────────────────────────

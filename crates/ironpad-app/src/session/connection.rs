@@ -364,6 +364,14 @@ fn handle_incoming(
 
         // Agent sent a mutation → apply via model (same path as UI edits).
         MessageKind::Mutation(mutation) => {
+            // A structural delete must also scrub the editor's execution
+            // state (queue + blame + cached outputs) — the same shared
+            // cleanup the UI delete performs. Without it a deleted queued
+            // cell becomes a ghost front no watcher can advance.
+            let deleted_cell = match &mutation {
+                protocol::Mutation::CellDelete { cell_id, .. } => Some(cell_id.clone()),
+                _ => None,
+            };
             // The server relay forwards the raw message; extract a client
             // identifier from the message ID prefix when available, otherwise
             // fall back to a generic agent identity.
@@ -377,6 +385,9 @@ fn handle_incoming(
                             kind: MessageKind::Event(envelope),
                         },
                     );
+                    if let Some(cell_id) = &deleted_cell {
+                        nb_state.scrub_deleted_cell(cell_id);
+                    }
                     // Persist the change (captured state, same rationale as
                     // the CellRun arm: no context lookup in a WS callback).
                     crate::pages::notebook_editor::state::persist_notebook(nb_state);

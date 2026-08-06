@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
-import { createNotebook } from "./helpers/session";
 import { loginTestUser, logout } from "./helpers/auth";
+import { menuClick } from "./helpers/menu";
+import { createNotebook } from "./helpers/session";
 
 /**
  * PRD-0053: GitHub-account sign-in. The e2e server runs with
@@ -78,12 +79,7 @@ test.describe("Accounts (PRD-0053)", () => {
     // Anonymous: the Share Mutable action exists but the server refuses it
     // with a toast that says what to do.
     await createNotebook(page);
-    await page
-      .locator('.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]')
-      .click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Mutable" })
-      .click();
+    await menuClick(page, "Share Mutable");
     await expect(
       page.locator(".ironpad-toast-body", { hasText: "sign in" }),
     ).toBeVisible({ timeout: 30_000 });

@@ -218,11 +218,19 @@ pub fn fail_in_queue(
 /// carries is stale the moment it retries. Without this, a blocked cell
 /// edited to drop the failing dependency would run to success and then snap
 /// back to "blocked" — the surviving map entry outvoted the fresh result.
+///
+/// Disposal-safe by construction: callers include detached completion tasks
+/// that can outlive their page, and a READ on a disposed arena signal
+/// panics (writes no-op) — so the has-anything-to-do guard uses the `try`
+/// read and treats "disposed" as "nothing to do".
 pub fn clear_own_blame(
     blocked_by: RwSignal<std::collections::HashMap<String, String>>,
     cell_id: &str,
 ) {
-    if blocked_by.with_untracked(|b| b.contains_key(cell_id)) {
+    if blocked_by
+        .try_with_untracked(|b| b.contains_key(cell_id))
+        .unwrap_or(false)
+    {
         blocked_by.update(|b| {
             b.remove(cell_id);
         });
@@ -231,12 +239,17 @@ pub fn clear_own_blame(
 
 /// `cell_id` produced a fresh successful result: blame entries naming it as
 /// the blocker are stale. Guarded so a run that blocked nothing does not
-/// notify every blocked-by watcher for no reason.
+/// notify every blocked-by watcher for no reason; the guard is a `try` read
+/// for the same disposal reason as [`clear_own_blame`] — the viewer calls
+/// this from a detached task that can complete after navigation.
 pub fn clear_blame_held_by(
     blocked_by: RwSignal<std::collections::HashMap<String, String>>,
     cell_id: &str,
 ) {
-    if blocked_by.with_untracked(|b| b.values().any(|blocker| blocker == cell_id)) {
+    if blocked_by
+        .try_with_untracked(|b| b.values().any(|blocker| blocker == cell_id))
+        .unwrap_or(false)
+    {
         blocked_by.update(|b| b.retain(|_, blocker| blocker != cell_id));
     }
 }

@@ -1,7 +1,7 @@
 import { test, expect, Page } from "@playwright/test";
 import { loginTestUser } from "./helpers/auth";
 import { setCellSource } from "./helpers/monaco";
-import { MENU } from "./helpers/mutable";
+import { MENU, shareMutable } from "./helpers/mutable";
 import { createNotebook } from "./helpers/session";
 
 /**
@@ -100,14 +100,7 @@ test.describe("Persisted cell outputs (PRD-0056)", () => {
     await addRunCell(page, 'CellOutput::text(format!("{}", 41 + 1))', "42");
 
     // Share Mutable: the create path embeds outputs like Share Immutable.
-    await page.locator(MENU).click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Mutable" })
-      .click();
-    await expect(page).toHaveURL(/\/mutable\/[a-f0-9]{16}/, {
-      timeout: 30_000,
-    });
-    const shareId = page.url().match(/\/mutable\/([a-f0-9]{16})/)![1];
+    const shareId = await shareMutable(page);
 
     const readerSeesSaved = async () => {
       const anon = await browser.newContext();

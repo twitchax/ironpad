@@ -1,4 +1,5 @@
 import { test, expect, APIRequestContext, Page } from "@playwright/test";
+import { menuClick } from "./helpers/menu";
 import { createNotebook } from "./helpers/session";
 
 /**
@@ -58,10 +59,7 @@ async function shareNotebookTitled(page: Page, title: string): Promise<string> {
     { timeout: 10_000 }
   );
 
-  await page.locator('button[title="Notebook menu"]').click();
-  await page
-    .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
-    .click();
+  await menuClick(page, "Share Immutable");
 
   // Filtered, not just `.ironpad-toast-body`: renaming fires its own "changes
   // saved" toast, so two are on screen and a bare locator is not strict-safe.

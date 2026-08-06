@@ -422,6 +422,15 @@ pub enum Event {
         /// The failed cell it depends on.
         blocked_by: String,
     },
+    /// The user cancelled the run (terminate/Stop): every still-queued cell
+    /// was dropped, dependents and independents alike. The other half of
+    /// the drops-are-always-reported contract — without it an agent waiting
+    /// on an independent queued cell only learns at its timeout.
+    RunCancelled {
+        /// The cells dropped from the queue (the aborted cell itself
+        /// reports separately via `CellExecuted { success: false }`).
+        cell_ids: Vec<String>,
+    },
     NotebookMetaUpdated {
         #[serde(flatten)]
         meta: NotebookMetaPatch,
@@ -1163,9 +1172,10 @@ mod tests {
         // they became editable (PRD-0051).
         // 3: `Mutation::CellRun` + `MutationResult::CellRunStarted`, and
         // `CellExecuted` gained `success` (PRD-0052).
-        // 6: `Event::CellBlocked` — the browser reports queue drops from the
-        // continue-past-failures policy (PRD-0060 remediation), so agents
-        // stop inferring them.
+        // 6: `Event::CellBlocked` + `Event::RunCancelled` — the browser
+        // reports EVERY queue drop (continue-past-failures dependents and
+        // user-terminate, PRD-0060 remediation), so agents stop inferring
+        // them.
         assert_eq!(PROTOCOL_VERSION, 6);
     }
 

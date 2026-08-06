@@ -1,4 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
+import { menuClick } from "./helpers/menu";
 import { createNotebook } from "./helpers/session";
 
 /**
@@ -160,10 +161,7 @@ test.describe("Notebook metadata panel (PRD-0051)", () => {
     await section.locator(".ironpad-search-input").fill("e2e");
     await saveMetadata(page, section);
 
-    await page.locator('button[title="Notebook menu"]').click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
-      .click();
+    await menuClick(page, "Share Immutable");
 
     const toastBody = page.locator(".ironpad-toast-body", {
       hasText: "/shared/",

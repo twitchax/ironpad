@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { MENU, menuClick } from "./helpers/menu";
 import { setCellSource } from "./helpers/monaco";
 import { createNotebook as newNotebook } from "./helpers/session";
 
@@ -101,7 +102,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     });
 
     // Available: hamburger + close. Hidden: editing-only toolbar chrome.
-    await expect(page.locator('button[title="Notebook menu"]')).toBeVisible();
+    await expect(page.locator(MENU)).toBeVisible();
     await expect(
       page.locator('button[title="Back to notebook list"]')
     ).toBeVisible();
@@ -111,10 +112,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     await expect(page.locator(".ironpad-run-all-button")).toHaveCount(0);
 
     // The menu's actions work from view mode: Share surfaces the share URL.
-    await page.locator('button[title="Notebook menu"]').click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
-      .click();
+    await menuClick(page, "Share Immutable");
     await expect(page.getByText(/\/shared\//).first()).toBeVisible({
       timeout: 30_000,
     });

@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
 import { trackJsErrors } from "./helpers/errors";
+import { menuClick } from "./helpers/menu";
 
 // Extend Window to include IronpadStorage (defined in public/storage.js).
 declare global {
@@ -70,25 +71,10 @@ test.describe("Notebook import/export", () => {
     // Allow time for the notebook to persist to IndexedDB.
     await page.waitForTimeout(3_000);
 
-    // ── Open hamburger menu and download ─────────────────────────────────
-    const hamburgerBtn = page
-      .locator(".ironpad-toolbar-dropdown-toggle")
-      .first();
-    await expect(hamburgerBtn).toBeVisible();
-    await hamburgerBtn.click();
-
-    // Wait for the dropdown menu to appear.
-    await expect(
-      page.locator(".ironpad-toolbar-dropdown-menu").first()
-    ).toBeVisible();
-
-    // Start waiting for the download before clicking.
+    // ── Download via the hamburger menu ──────────────────────────────────
+    // Register the download listener BEFORE the click that triggers it.
     const downloadPromise = page.waitForEvent("download");
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", {
-        hasText: "Download .ironpad",
-      })
-      .click();
+    await menuClick(page, "Download .ironpad");
 
     const download = await downloadPromise;
 

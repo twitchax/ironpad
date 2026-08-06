@@ -75,7 +75,12 @@ function recordManifest(name, nb) {
 /** Budget per runnable cell for the run-all drain. */
 const CELL_BUDGET_MS = Number(process.env.CELL_BUDGET_MS ?? 180_000);
 
-const only = process.argv.slice(2);
+// --allow-empty overrides the zero-capture guard below: without it, a run
+// that captures NOTHING for a notebook whose committed file holds snapshots
+// is treated as an environmental failure (broken server, missing toolchain,
+// blocked registry) rather than a truth to record.
+const ALLOW_EMPTY = process.argv.includes("--allow-empty");
+const only = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const files = fs
   .readdirSync(DIR)
   .filter((f) => f.endsWith(".ironpad"))
@@ -180,39 +185,56 @@ for (const file of files) {
       enriched.cells.filter((c) => c.saved_output).map((c) => [c.id, c.saved_output]),
     );
     const captured = outputs.size;
+    const hadSnapshots = source.cells.filter((c) => c.saved_output).length;
 
-    // Write saved_output INTO THE SOURCE object rather than writing the
-    // round-tripped notebook: a round trip also materializes serde
-    // defaults (version, collapse flags) the hand-written files omit,
-    // which would bury the real change in noise. The diff is exactly the
-    // saved_output fields. Because the seed was stripped, `outputs` holds
-    // only this session's real runs — a cell that failed here loses its
-    // stale snapshot (the delete arm), on every path including captured=0.
-    const before = JSON.stringify(source);
-    for (const cell of source.cells) {
-      const panels = outputs.get(cell.id);
-      if (panels) {
-        cell.saved_output = panels;
-      } else {
-        delete cell.saved_output;
+    if (captured === 0 && hadSnapshots > 0 && !ALLOW_EMPTY) {
+      // Zero captures against a file that HAS snapshots is always
+      // anomalous (every committed notebook captures at least one cell):
+      // an environmental failure — server missing a pinned toolchain,
+      // blocked registry — settles every cell into Error without throwing,
+      // and recording it would strip the whole snapshot corpus under a
+      // green freshness check. Keep the file, fail the run.
+      process.exitCode = 1;
+      results.push({
+        file,
+        status: `SUSPECT: 0 captured but the committed file holds ${hadSnapshots} snapshot(s) — kept as-is (rerun with --allow-empty to force)`,
+        seconds: Math.round((Date.now() - started) / 1000),
+      });
+    } else {
+      // Write saved_output INTO THE SOURCE object rather than writing the
+      // round-tripped notebook: a round trip also materializes serde
+      // defaults (version, collapse flags) the hand-written files omit,
+      // which would bury the real change in noise. The diff is exactly the
+      // saved_output fields. Because the seed was stripped, `outputs` holds
+      // only this session's real runs — a cell that failed here loses its
+      // stale snapshot (the delete arm).
+      const before = JSON.stringify(source);
+      for (const cell of source.cells) {
+        const panels = outputs.get(cell.id);
+        if (panels) {
+          cell.saved_output = panels;
+        } else {
+          delete cell.saved_output;
+        }
       }
+      if (JSON.stringify(source) !== before) {
+        fs.writeFileSync(full, `${JSON.stringify(source, null, 2)}\n`);
+      }
+      // This WAS a capture: the cells ran (or deliberately failed); record
+      // the sources the attempt was made against so the freshness check
+      // holds.
+      recordManifest(file.replace(/\.ironpad$/, ""), source);
+      results.push({
+        file,
+        status:
+          captured === 0
+            ? `no outputs captured (${runnable} runnable)`
+            : `captured ${captured}/${runnable}`,
+        seconds: Math.round((Date.now() - started) / 1000),
+      });
     }
-    if (JSON.stringify(source) !== before) {
-      fs.writeFileSync(full, `${JSON.stringify(source, null, 2)}\n`);
-    }
-    // Either way this WAS a capture: the cells ran (or deliberately
-    // failed); record the sources the attempt was made against so the
-    // freshness check holds.
-    recordManifest(file.replace(/\.ironpad$/, ""), source);
-    results.push({
-      file,
-      status:
-        captured === 0
-          ? `no outputs captured (${runnable} runnable)`
-          : `captured ${captured}/${runnable}`,
-      seconds: Math.round((Date.now() - started) / 1000),
-    });
   } catch (e) {
+    process.exitCode = 1;
     results.push({
       file,
       status: `FAILED: ${e.message}`,

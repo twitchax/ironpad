@@ -120,17 +120,17 @@
     },
     "shared": "c6ebd33f69397748"
   },
-  "game-of-life-glider-gun": {
-    "cells": {
-      "cell_1": "b2deacfbf4082ed5",
-      "cell_2": "9b927169d7d955a7"
-    },
-    "shared": "c6ebd33f69397748"
-  },
   "game-of-life": {
     "cells": {
       "cell_1": "1db3e07dd95a9cfa",
       "cell_2": "c803b5a9702cd830"
+    },
+    "shared": "c6ebd33f69397748"
+  },
+  "game-of-life-glider-gun": {
+    "cells": {
+      "cell_1": "b2deacfbf4082ed5",
+      "cell_2": "9b927169d7d955a7"
     },
     "shared": "c6ebd33f69397748"
   },
@@ -228,14 +228,6 @@
     },
     "shared": "c6ebd33f69397748"
   },
-  "mandelbrot-gpu": {
-    "cells": {
-      "cell_1": "96b676df426aa7f7",
-      "cell_2": "2971efbcda08dd79",
-      "cell_3": "9512277de9af1f5e"
-    },
-    "shared": "c1e4c08989cf0b4b"
-  },
   "mandelbrot": {
     "cells": {
       "cell_1": "174c3d202bc9d54e",
@@ -243,6 +235,14 @@
       "cell_2": "2d70b1c0ab0e0c83"
     },
     "shared": "c6ebd33f69397748"
+  },
+  "mandelbrot-gpu": {
+    "cells": {
+      "cell_1": "96b676df426aa7f7",
+      "cell_2": "2971efbcda08dd79",
+      "cell_3": "9512277de9af1f5e"
+    },
+    "shared": "c1e4c08989cf0b4b"
   },
   "maze-generator": {
     "cells": {

@@ -1,6 +1,7 @@
 import { test, expect, Page } from "@playwright/test";
-import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
+import { menuClick } from "./helpers/menu";
+import { setCellSource } from "./helpers/monaco";
 import { createNotebook } from "./helpers/session";
 
 /**
@@ -63,10 +64,7 @@ test.describe("Blob delivery (PRD-0047)", () => {
 
     // Share via the hamburger menu; the success toast body carries the URL.
     // Filtered: the immediate "Sharing…" progress toast coexists with it.
-    await page.locator('button[title="Notebook menu"]').click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
-      .click();
+    await menuClick(page, "Share Immutable");
     const toastBody = page.locator(".ironpad-toast-body", {
       hasText: "/shared/",
     });

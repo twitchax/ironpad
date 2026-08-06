@@ -1,22 +1,15 @@
 import { expect, Page } from "@playwright/test";
 
+import { menuClick } from "./menu";
+
 /**
- * The notebook (hamburger) menu contract and the Share Mutable flow, shared
- * by every spec that drives them (mutable-shares, private-shares,
- * local-history, persisted-outputs). One home: a dropdown-class rename or a
- * change to the publish flow lands here once, instead of leaving a weaker
- * copy green against a broken flow.
+ * The Share Mutable publish flow, shared by every spec that drives it. One
+ * home: a change to the flow lands here once, instead of leaving a weaker
+ * copy green against a broken flow. The generic menu contract lives in
+ * `./menu` (re-exported here for existing importers).
  */
 
-export const MENU = '.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]';
-
-/** Open the notebook (hamburger) menu and click an item by its label. */
-export async function menuClick(page: Page, label: string): Promise<void> {
-  await page.locator(MENU).click();
-  await page
-    .locator(".ironpad-toolbar-dropdown-item", { hasText: label })
-    .click();
-}
+export { MENU, menuClick } from "./menu";
 
 /** The owner's editor is mounted: cells UI + the Push button. */
 export async function expectOwnerEditor(page: Page): Promise<void> {

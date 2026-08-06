@@ -280,6 +280,27 @@ impl NotebookState {
         map
     }
 
+    /// Execution-state cleanup for a deleted cell: cached outputs, display
+    /// texts, the run-all queue, and BOTH sides of the blame map. ONE
+    /// definition for the UI delete handler (`cell_item.rs`) and the agent's
+    /// `CellDelete` mutation (`session/connection.rs`) — a queued cell
+    /// deleted by either path would otherwise linger in the queue as a ghost
+    /// front no watcher can advance, stalling everything behind it, and
+    /// blame entries naming it could never clear except by page reload.
+    pub(crate) fn scrub_deleted_cell(&self, cell_id: &str) {
+        self.cell_outputs.update(|map| {
+            map.remove(cell_id);
+        });
+        self.cell_display_texts.update(|map| {
+            map.remove(cell_id);
+        });
+        self.run_all_queue.update(|q| q.retain(|id| id != cell_id));
+        self.cell_blocked_by.update(|b| {
+            b.remove(cell_id);
+            b.retain(|_, blocker| blocker != cell_id);
+        });
+    }
+
     /// Continue-past-failures policy (PRD-0060): drop `failed_cell_id` and
     /// its transitive dependents from the run queue — marking the dependents
     /// blocked-by the failure so the UI says WHY they were skipped — while

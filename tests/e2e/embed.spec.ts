@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { createNotebook } from "./helpers/session";
 import { loginTestUser } from "./helpers/auth";
 import { trackJsErrors } from "./helpers/errors";
+import { shareMutable } from "./helpers/mutable";
+import { createNotebook } from "./helpers/session";
 
 /**
  * Notebook embedding (PRD-0039): chrome-less /embed routes, the embed.js
@@ -195,16 +196,7 @@ test.describe("Notebook embedding", () => {
     const input = page.locator(".ironpad-header-title-input");
     await input.fill("Embeddable Published");
     await input.press("Enter");
-    await page
-      .locator('.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]')
-      .click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Mutable" })
-      .click();
-    await expect(page).toHaveURL(/\/mutable\/[a-f0-9]{16}/, {
-      timeout: 30_000,
-    });
-    const shareId = page.url().match(/\/mutable\/([a-f0-9]{16})/)![1];
+    const shareId = await shareMutable(page);
 
     // oEmbed maps the canonical URL to the mutable embed route.
     const oembed = await request.get(
