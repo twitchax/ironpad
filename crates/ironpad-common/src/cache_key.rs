@@ -354,8 +354,7 @@ pub fn uses_coroutines(source: &str, shared_source: Option<&str>) -> bool {
 /// clear rustc error naming the gate, same failure mode as before.
 #[must_use]
 pub fn uses_gen_blocks(source: &str, shared_source: Option<&str>) -> bool {
-    let hit =
-        |s: &str| s.contains("gen {") || s.contains("gen move {") || s.contains("async gen");
+    let hit = |s: &str| s.contains("gen {") || s.contains("gen move {") || s.contains("async gen");
     hit(source) || shared_source.is_some_and(hit)
 }
 
@@ -419,7 +418,10 @@ mod tests {
         assert!(uses_gen_blocks("let it = gen move { yield x; };", None));
         assert!(uses_gen_blocks("let s = async gen { yield 1; };", None));
         // Shared source counts too.
-        assert!(uses_gen_blocks("42", Some("pub fn f() { gen { yield 1; }; }")));
+        assert!(uses_gen_blocks(
+            "42",
+            Some("pub fn f() { gen { yield 1; }; }")
+        ));
         // Bare "gen" is ordinary prose/identifier text, never an opt-in.
         assert!(!uses_gen_blocks("// generate the gen next", None));
         assert!(!uses_gen_blocks("let gen_count = 3;", None));
