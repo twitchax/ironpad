@@ -16,6 +16,7 @@ use leptos::prelude::*;
 
 use crate::components::monaco_editor::MonacoEditorHandle;
 use crate::model::NotebookModel;
+#[cfg(not(feature = "hydrate"))]
 use crate::server_fns::compile_cell;
 
 #[cfg(feature = "hydrate")]
@@ -217,18 +218,17 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                 shared_check: None,
             };
 
-            // Local blob store (PRD-0047): cache mode probes IndexedDB before
-            // paying the compile round trip; Fresh mode always compiles, and
-            // the fresh result overwrites the local entry below.
+            // The shared acquisition engine (PRD-0059): local blob probe
+            // (PRD-0047) then server compile with transport retries. The
+            // editor has no share snapshot, so that layer is `None`.
             #[cfg(feature = "hydrate")]
             let (result, served_locally, request_hash) = {
-                let (request_hash, local_hit) = crate::blob_cache::probe_local(&request).await;
-                let served_locally = local_hit.is_some();
-                let result = match local_hit {
-                    Some(response) => Ok(response),
-                    None => compile_cell(request).await,
-                };
-                (result, served_locally, request_hash)
+                let acquisition = crate::components::run_flow::acquire_blob(&request, None).await;
+                (
+                    acquisition.result,
+                    acquisition.served_without_server,
+                    acquisition.request_hash,
+                )
             };
             #[cfg(not(feature = "hydrate"))]
             let result = compile_cell(request).await;
@@ -275,7 +275,7 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         // Compilation succeeded — load and execute the WASM blob.
                         #[cfg(feature = "hydrate")]
                         {
-                            use crate::components::executor;
+                            use crate::components::run_flow;
 
                             cell_status.set(CellStatus::Running);
 
@@ -287,103 +287,77 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                             )
                             .await;
 
-                            let blob = response.wasm_blob.clone();
-                            let js_glue = response.js_glue.clone();
-                            last_compile.set(Some(response));
+                            last_compile.set(Some(response.clone()));
 
-                            let hash = executor::hash_wasm_blob(&blob);
-
-                            let exec_err =
-                                match executor::load_blob(&cell_id_for_exec, &hash, &blob, js_glue)
-                                    .await
-                                {
-                                    Ok(()) => {
-                                        let exec_start = js_sys::Date::now();
-                                        match executor::execute_cell(
-                                            &cell_id_for_exec,
-                                            &input_bytes,
-                                        )
-                                        .await
-                                        {
-                                            Ok((
-                                                output_bytes,
-                                                display_text,
-                                                type_tag,
-                                                ran_on_main_thread,
-                                            )) => {
-                                                // Disposed during load/exec — bail
-                                                // before touching cell/page signals.
-                                                if cell_status.try_get_untracked().is_none() {
-                                                    return;
-                                                }
-                                                // Store output for downstream cells.
-                                                state.cell_outputs.update(|map| {
-                                                    map.insert(
-                                                        cell_id_for_exec.clone(),
-                                                        CellOutputData {
-                                                            bytes: output_bytes.clone(),
-                                                            type_tag: type_tag.clone(),
-                                                        },
-                                                    );
-                                                });
-
-                                                // Store display text for export.
-                                                if let Some(ref dt) = display_text {
-                                                    state.cell_display_texts.update(|map| {
-                                                        map.insert(
-                                                            cell_id_for_exec.clone(),
-                                                            dt.clone(),
-                                                        );
-                                                    });
-                                                }
-
-                                                let exec_ms = js_sys::Date::now() - exec_start;
-                                                emit_session_event(
-                                                    ironpad_common::protocol::Event::CellExecuted {
-                                                        cell_id: cell_id_for_exec.clone(),
-                                                        display_text: display_text.clone(),
-                                                        type_tag: type_tag.clone(),
-                                                        execution_time_ms: exec_ms,
-                                                        success: true,
-                                                    },
-                                                );
-                                                execution_result.set(Some(ExecutionResult {
-                                                    display_text,
-                                                    output_bytes,
-                                                    execution_time_ms: exec_ms,
-                                                    type_tag,
-                                                    ran_on_main_thread,
-                                                }));
-                                                cell_status.set(CellStatus::Success);
-
-                                                // Clear stale flag on successful execution.
-                                                state.cell_stale.update(|stale| {
-                                                    stale.remove(&cell_id_for_exec);
-                                                });
-
-                                                // Clear blocked-by entries that referenced this cell.
-                                                state.cell_blocked_by.update(|blocked| {
-                                                    blocked.retain(|_, blocker| {
-                                                        *blocker != cell_id_for_exec
-                                                    });
-                                                });
-
-                                                // Advance run-all queue on success.
-                                                state.run_all_queue.update(|q| {
-                                                    if q.first()
-                                                        .is_some_and(|id| id == &cell_id_for_exec)
-                                                    {
-                                                        q.remove(0);
-                                                    }
-                                                });
-
-                                                None
-                                            }
-                                            Err(e) => Some(format!("Execution error: {e}")),
-                                        }
+                            let exec_err = match run_flow::load_and_execute(
+                                &cell_id_for_exec,
+                                &response,
+                                &input_bytes,
+                            )
+                            .await
+                            {
+                                Ok((
+                                    (output_bytes, display_text, type_tag, ran_on_main_thread),
+                                    exec_ms,
+                                )) => {
+                                    // Disposed during load/exec — bail
+                                    // before touching cell/page signals.
+                                    if cell_status.try_get_untracked().is_none() {
+                                        return;
                                     }
-                                    Err(e) => Some(format!("WASM load error: {e}")),
-                                };
+                                    // Store output for downstream cells.
+                                    state.cell_outputs.update(|map| {
+                                        map.insert(
+                                            cell_id_for_exec.clone(),
+                                            CellOutputData {
+                                                bytes: output_bytes.clone(),
+                                                type_tag: type_tag.clone(),
+                                            },
+                                        );
+                                    });
+
+                                    // Store display text for export.
+                                    if let Some(ref dt) = display_text {
+                                        state.cell_display_texts.update(|map| {
+                                            map.insert(cell_id_for_exec.clone(), dt.clone());
+                                        });
+                                    }
+
+                                    emit_session_event(
+                                        ironpad_common::protocol::Event::CellExecuted {
+                                            cell_id: cell_id_for_exec.clone(),
+                                            display_text: display_text.clone(),
+                                            type_tag: type_tag.clone(),
+                                            execution_time_ms: exec_ms,
+                                            success: true,
+                                        },
+                                    );
+                                    execution_result.set(Some(ExecutionResult {
+                                        display_text,
+                                        output_bytes,
+                                        execution_time_ms: exec_ms,
+                                        type_tag,
+                                        ran_on_main_thread,
+                                    }));
+                                    cell_status.set(CellStatus::Success);
+
+                                    // Clear stale flag on successful execution.
+                                    state.cell_stale.update(|stale| {
+                                        stale.remove(&cell_id_for_exec);
+                                    });
+
+                                    // Clear blocked-by entries that referenced this cell.
+                                    state.cell_blocked_by.update(|blocked| {
+                                        blocked.retain(|_, blocker| *blocker != cell_id_for_exec);
+                                    });
+
+                                    // Advance run-all queue on success.
+                                    run_flow::advance_queue(state.run_all_queue, &cell_id_for_exec);
+
+                                    None
+                                }
+                                Err(e) => Some(e),
+                            };
 
                             // Disposed during load/exec (error path) — bail before
                             // writing status onto a reclaimed reactive slot.
@@ -437,11 +411,10 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                             });
 
                             // Advance run-all queue (SSR path).
-                            state.run_all_queue.update(|q| {
-                                if q.first().is_some_and(|id| id == &cell_id_for_exec) {
-                                    q.remove(0);
-                                }
-                            });
+                            crate::components::run_flow::advance_queue(
+                                state.run_all_queue,
+                                &cell_id_for_exec,
+                            );
                         }
                     } else {
                         cell_status.set(CellStatus::Error);

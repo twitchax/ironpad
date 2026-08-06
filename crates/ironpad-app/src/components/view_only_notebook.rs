@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use leptos::prelude::*;
 
-use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 #[cfg(feature = "hydrate")]
-use ironpad_common::{CompileRequest, CompileResponse};
+use ironpad_common::CompileRequest;
+use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 
 use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
@@ -17,24 +17,8 @@ use crate::components::output_render::{
     render_display_panel, CellOutputData, DisplayPanel, PanelMode, WidgetSink,
     VIEW_ONLY_PANEL_CLASSES,
 };
-#[cfg(feature = "hydrate")]
-use crate::server_fns::compile_cell;
 
 // ── ViewOnlyNotebook ────────────────────────────────────────────────────────
-
-/// Await `ms` milliseconds via a `setTimeout`-backed promise, for spacing
-/// compile-transport retries.
-#[cfg(feature = "hydrate")]
-async fn transport_backoff(ms: i32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        if let Some(window) = leptos::web_sys::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
-        } else {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
-        }
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-}
 
 /// Derive the canonical (full-page) route for an embed spec:
 /// `shared/{hash}` → `/shared/{hash}`, `public/{name}` → `/public/{name}`.
@@ -686,69 +670,15 @@ fn ViewOnlyCodeCell(
 
                 let compile_start = js_sys::Date::now();
 
-                // Snapshotted share blob (PRD-0047): in cache mode, a manifest
-                // entry replaces the compile round trip with an immutable
-                // static GET. Fresh mode skips the snapshot so the server
-                // really recompiles; any fetch failure falls back to the live
-                // pipeline below.
-                let force = force_recompile.get_untracked();
-                let mut snapshot_response: Option<CompileResponse> = None;
-                if !force {
-                    if let Some(entry) = stored_share_blob.get_value() {
-                        match crate::components::executor::fetch_share_blob(&entry).await {
-                            Ok((wasm_blob, js_glue)) => {
-                                snapshot_response = Some(CompileResponse {
-                                    wasm_blob,
-                                    diagnostics: vec![],
-                                    cached: true,
-                                    preamble_lines: 0,
-                                    js_glue,
-                                });
-                            }
-                            Err(e) => leptos::logging::warn!(
-                                "share blob fetch failed ({e}); falling back to compile"
-                            ),
-                        }
-                    }
-                }
-
-                // Local blob store (PRD-0047): the shared probe policy —
-                // skipped entirely when the share snapshot already served
-                // the blob, which keeps a snapshot replay free of even the
-                // fingerprint round trip.
-                let request_hash = if snapshot_response.is_some() {
-                    None
-                } else {
-                    let (hash, local_hit) = crate::blob_cache::probe_local(&request).await;
-                    snapshot_response = local_hit;
-                    hash
-                };
-                let served_without_server = snapshot_response.is_some();
-
-                // Compile requests are idempotent (cache-keyed server-side), so
-                // TRANSPORT failures — a dropped connection mid-build, a network
-                // change on a mobile client — are safe to retry; the server's
-                // incremental target dir makes retried builds much cheaper than
-                // the first attempt. Compile diagnostics are Ok responses and
-                // never retried.
-                let compile_result = if let Some(response) = snapshot_response {
-                    Ok(response)
-                } else {
-                    let mut attempt: i32 = 0;
-                    loop {
-                        match compile_cell(request.clone()).await {
-                            Err(e) if attempt < 2 => {
-                                attempt += 1;
-                                leptos::logging::warn!(
-                                    "compile transport error (attempt {attempt}): {e}; retrying"
-                                );
-                                transport_backoff(1_500 * attempt).await;
-                            }
-                            other => break other,
-                        }
-                    }
-                };
-                match compile_result {
+                // The shared acquisition engine (PRD-0059): share snapshot
+                // (PRD-0047) -> local blob probe -> server compile with
+                // transport retries.
+                let acquisition = crate::components::run_flow::acquire_blob(
+                    &request,
+                    stored_share_blob.get_value().as_ref(),
+                )
+                .await;
+                match acquisition.result {
                     Ok(response) => {
                         compile_time_ms.set(Some(js_sys::Date::now() - compile_start));
                         if response.wasm_blob.is_empty() {
@@ -761,61 +691,42 @@ fn ViewOnlyCodeCell(
                         } else {
                             // Persist server results locally (PRD-0047).
                             crate::blob_cache::store_unless_served(
-                                served_without_server,
-                                request_hash.as_deref(),
+                                acquisition.served_without_server,
+                                acquisition.request_hash.as_deref(),
                                 &response,
                             )
                             .await;
-                            let hash =
-                                crate::components::executor::hash_wasm_blob(&response.wasm_blob);
-                            match crate::components::executor::load_blob(
+                            match crate::components::run_flow::load_and_execute(
                                 &cell_data.id,
-                                &hash,
-                                &response.wasm_blob,
-                                response.js_glue,
+                                &response,
+                                &input_buf,
                             )
                             .await
                             {
-                                Ok(()) => {
-                                    let exec_start = js_sys::Date::now();
-                                    match crate::components::executor::execute_cell(
-                                        &cell_data.id,
-                                        &input_buf,
-                                    )
-                                    .await
-                                    {
-                                        Ok((
-                                            output_bytes,
-                                            display_text,
-                                            type_tag,
-                                            ran_on_main_thread,
-                                        )) => {
-                                            cell_outputs.update(|map| {
-                                                map.insert(
-                                                    cell_data.id.clone(),
-                                                    CellOutputData {
-                                                        bytes: output_bytes.clone(),
-                                                        type_tag: type_tag.clone(),
-                                                    },
-                                                );
-                                            });
+                                Ok((
+                                    (output_bytes, display_text, type_tag, ran_on_main_thread),
+                                    exec_ms,
+                                )) => {
+                                    cell_outputs.update(|map| {
+                                        map.insert(
+                                            cell_data.id.clone(),
+                                            CellOutputData {
+                                                bytes: output_bytes.clone(),
+                                                type_tag: type_tag.clone(),
+                                            },
+                                        );
+                                    });
 
-                                            execution_result.set(Some(ExecutionResult {
-                                                display_text,
-                                                output_bytes,
-                                                execution_time_ms: js_sys::Date::now() - exec_start,
-                                                type_tag,
-                                                ran_on_main_thread,
-                                            }));
-                                        }
-                                        Err(e) => {
-                                            error_message
-                                                .set(Some(format!("Execution error: {e}")));
-                                        }
-                                    }
+                                    execution_result.set(Some(ExecutionResult {
+                                        display_text,
+                                        output_bytes,
+                                        execution_time_ms: exec_ms,
+                                        type_tag,
+                                        ran_on_main_thread,
+                                    }));
                                 }
                                 Err(e) => {
-                                    error_message.set(Some(format!("WASM load error: {e}")));
+                                    error_message.set(Some(e));
                                 }
                             }
                         }
@@ -830,11 +741,7 @@ fn ViewOnlyCodeCell(
                 // (sometimes deliberately — teaching cells fail on purpose),
                 // and the cells behind it must still run; aborting the queue
                 // used to strand every later cell with no indication why.
-                run_all_queue.update(|q| {
-                    if q.first().is_some_and(|id| id == &cell_id) {
-                        q.remove(0);
-                    }
-                });
+                crate::components::run_flow::advance_queue(run_all_queue, &cell_id);
 
                 compiling.set(false);
             });

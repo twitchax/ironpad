@@ -395,11 +395,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // queue immediately (shared cells compile as part of every
                 // OTHER cell's shared.rs, never on their own).
                 if is_markdown || is_shared.get_untracked() {
-                    state.run_all_queue.update(|q| {
-                        if q.first().is_some_and(|id| id == &cid) {
-                            q.remove(0);
-                        }
-                    });
+                    crate::components::run_flow::advance_queue(state.run_all_queue, &cid);
                     return;
                 }
 

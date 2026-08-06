@@ -8,6 +8,7 @@ pub mod live_view_panel;
 pub mod markdown_cell;
 pub mod monaco_editor;
 pub(crate) mod output_render;
+pub(crate) mod run_flow;
 pub mod session_panel;
 pub mod social_meta;
 pub mod toaster;
