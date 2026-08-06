@@ -49,15 +49,17 @@ fn absolute(path: String) -> String {
 }
 
 /// Card size the server renders, declared so unfurlers can lay out the
-/// preview before the image finishes downloading. Must track
-/// `ironpad_server::og::svg::{WIDTH, HEIGHT}`.
+/// preview before the image finishes downloading. Single-sourced with the
+/// size the server rasterizes the card at (`ironpad_common::OG_CARD_*`, which
+/// `ironpad_server::og::svg` also reads) so the announced and rendered
+/// dimensions can never drift.
 ///
 /// Only correct for the *generated* card. A notebook overriding `og_image`
 /// with a screenshot of another shape passes its own size through the
 /// `image_size` prop; before that existed, a tall image was still announced as
 /// 1200x630 and came out letterboxed or cropped in the feed.
-const IMAGE_WIDTH: u32 = 1200;
-const IMAGE_HEIGHT: u32 = 630;
+const IMAGE_WIDTH: u32 = ironpad_common::OG_CARD_WIDTH;
+const IMAGE_HEIGHT: u32 = ironpad_common::OG_CARD_HEIGHT;
 
 /// Longest `og:description` worth emitting. Most unfurlers truncate somewhere
 /// between 200 and 300 characters; clipping here means *we* choose where the

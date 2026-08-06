@@ -162,6 +162,18 @@ async fn handle_connection(client: TcpStream, allowlist: &DomainAllowlist) {
         return;
     }
 
+    // Any bytes the client pipelined after the CONNECT header block (e.g. a
+    // TLS ClientHello coalesced into the same segment) are sitting in the
+    // BufReader's buffer; `into_inner()` would discard them, silently
+    // truncating the head of the tunnel. Flush them upstream first.
+    let buffered = buf_reader.buffer().to_vec();
+    if !buffered.is_empty() {
+        if let Err(e) = upstream.write_all(&buffered).await {
+            warn!(peer = %peer, target = %target, error = %e, "failed to forward pipelined bytes");
+            return;
+        }
+    }
+
     // Re-join the halves so we can use copy_bidirectional.
     let mut client = buf_reader
         .into_inner()
@@ -455,5 +467,56 @@ mod tests {
         let mut echo_buf = vec![0u8; 64];
         let n = stream.read(&mut echo_buf).await.unwrap();
         assert_eq!(&echo_buf[..n], b"hello");
+    }
+
+    #[tokio::test]
+    async fn proxy_forwards_bytes_pipelined_with_the_connect_head() {
+        // A client that writes payload in the SAME segment as the CONNECT
+        // head (a coalesced TLS ClientHello) must not lose those bytes: they
+        // land in the proxy's header BufReader and were being discarded by
+        // into_inner().
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_host = format!("127.0.0.1:{}", upstream_addr.port());
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = upstream.accept().await {
+                let mut buf = vec![0u8; 64];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let _ = stream.write_all(&buf[..n]).await;
+            }
+        });
+
+        let addr = spawn_proxy("127.0.0.1").await;
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+
+        // CONNECT head AND pipelined payload in one write.
+        let combined = format!(
+            "CONNECT {upstream_host} HTTP/1.1\r\nHost: {upstream_host}\r\n\r\nPIPELINED_HELLO"
+        );
+        stream.write_all(combined.as_bytes()).await.unwrap();
+
+        // Read until we've seen both the 200 and the echoed pipelined bytes.
+        let mut acc = Vec::new();
+        let mut buf = vec![0u8; 256];
+        for _ in 0..4 {
+            let n = stream.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            acc.extend_from_slice(&buf[..n]);
+            if acc.windows(15).any(|w| w == b"PIPELINED_HELLO") {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&acc);
+        assert!(
+            text.contains("200 Connection Established"),
+            "no 200: {text}"
+        );
+        assert!(
+            text.contains("PIPELINED_HELLO"),
+            "pipelined bytes were dropped: {text}"
+        );
     }
 }

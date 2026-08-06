@@ -196,7 +196,12 @@ pub fn LiveViewPanel(
                                     // 0 and anything else: plain text.
                                     _ => "text",
                                 };
-                                if let Some(el) = content_ref_tick.get_untracked() {
+                                // try_ read: this task resumes after a worker
+                                // round trip and the panel may have been
+                                // disposed (cell re-run, output collapse,
+                                // navigation) — a plain get_untracked on the
+                                // disposed NodeRef panics and halts hydration.
+                                if let Some(el) = content_ref_tick.try_get_untracked().flatten() {
                                     let el: &web_sys::HtmlElement = &el;
                                     apply_tick(el, Some(kind_str), &live_result.content);
                                 }
@@ -268,7 +273,9 @@ pub fn LiveViewPanel(
                             // 0 and anything else: plain text.
                             _ => "text",
                         };
-                        if let Some(el) = content_ref_step.get_untracked() {
+                        // try_ read for the same disposal reason as the tick
+                        // handler above.
+                        if let Some(el) = content_ref_step.try_get_untracked().flatten() {
                             let el: &web_sys::HtmlElement = &el;
                             apply_s(el, Some(kind_str), &live_result.content);
                         }

@@ -728,7 +728,12 @@ async fn share_notebook_core_capped(
         }
     }
 
-    tokio::fs::write(&path, notebook_json.as_bytes())
+    // Atomic write (temp + rename), not a truncating fs::write: re-sharing an
+    // existing hash overwrites in place, so a plain write truncates the live
+    // file to zero first and a concurrent reader of that hash could read a
+    // partial/empty file ("invalid shared notebook") for a share that is
+    // perfectly valid. The blobs and manifest already use this helper.
+    atomic_write_async(&path, notebook_json.as_bytes())
         .await
         .map_err(|e| anyhow::anyhow!("failed to write shared notebook: {e}"))?;
 
@@ -1453,16 +1458,7 @@ pub async fn get_mutable_for_edit(
     id: String,
 ) -> Result<Option<ironpad_common::MutableEditResponse>, ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    let user = require_login(&db).await?;
-    if !db
-        .user_owns_share(&user.github_id, &id)
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
-    {
-        return Err(ServerFnError::new(
-            "unauthorized: you do not own this share",
-        ));
-    }
+    require_share_owner(&db, &id).await?;
     let Some(edit) = db
         .get_share_for_edit(&id)
         .await
@@ -1483,16 +1479,7 @@ pub async fn get_mutable_for_edit(
 #[server]
 pub async fn discard_mutable_draft(id: String) -> Result<(), ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    let user = require_login(&db).await?;
-    if !db
-        .user_owns_share(&user.github_id, &id)
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
-    {
-        return Err(ServerFnError::new(
-            "unauthorized: you do not own this share",
-        ));
-    }
+    require_share_owner(&db, &id).await?;
     db.discard_draft(&id)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))

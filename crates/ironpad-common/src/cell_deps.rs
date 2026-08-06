@@ -94,7 +94,16 @@ pub fn referenced_slots(source: &str) -> SlotRefs {
     for (start, _) in source.match_indices("last") {
         if start > 0 {
             let prev = bytes[start - 1];
-            if is_ident_char(prev) || prev == b'.' {
+            if is_ident_char(prev) {
+                continue; // `mylast`, `xlast` — identifier fragment
+            }
+            // A LONE preceding `.` is a method call (`x.last()`) and does not
+            // reference the alias. But `..` is the range / struct-update
+            // operator, whose second byte is also `.`, and `..last.clone()`
+            // or `0..last.len()` DO reference the alias — excluding them
+            // dropped a real dependency and omitted the `last` binding
+            // (E0425). Only skip a `.` that is not the tail of a `..`.
+            if prev == b'.' && !(start >= 2 && bytes[start - 2] == b'.') {
                 continue;
             }
         }
@@ -216,6 +225,11 @@ mod tests {
         // .last() method calls are the common false positive — excluded.
         assert!(!referenced_slots("v.iter().last()").last);
         assert!(!referenced_slots("xs.last()").last);
+        // ...but `..last` is the range / struct-update operator and DOES
+        // reference the alias (its `.` is the tail of `..`, not a method dot).
+        assert!(referenced_slots("Config { retries: 5, ..last.clone() }").last);
+        assert!(referenced_slots("for i in 0..last.len() {}").last);
+        assert!(referenced_slots("&v[0..last]").last);
         // Identifier fragments.
         assert!(!referenced_slots("let lastly = 1; blast!").last);
         // A shadowing user binding still counts: over-cascade, never break.

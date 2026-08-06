@@ -306,10 +306,13 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
             #[cfg(not(feature = "hydrate"))]
             let result = compile_cell(request).await;
 
-            // If the cell (or the whole page) was disposed while the compile was
-            // in flight, its signals are gone — drop the result rather than panic
-            // on a reclaimed reactive slot (PRD-0045 async lifecycle).
-            if cell_status.try_get_untracked().is_none() {
+            // Proceed only if the cell is still mid-compile. Two other cases
+            // land here and must drop the result: the cell/page was DISPOSED
+            // (try_ read is None — a reclaimed slot would panic, PRD-0045), or
+            // the user CANCELLED during the compile (the ⏹ set status back to
+            // Idle — the compile server fn is unabortable, so this is the
+            // Compiling-phase cancel path).
+            if !matches!(cell_status.try_get_untracked(), Some(CellStatus::Compiling)) {
                 return;
             }
 
@@ -735,19 +738,10 @@ fn dispatch_live_check_with_retries(
         let cells = state.cells.get_untracked();
         let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
         let outputs = state.cell_outputs.get_untracked();
-        let types: Vec<String> = cells[..my_idx]
-            .iter()
-            .map(|c| {
-                if c.cell_type == CellType::Code {
-                    outputs
-                        .get(&c.id)
-                        .and_then(|d| d.type_tag.clone())
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                }
-            })
-            .collect();
+        // THE shared projection — same vector the compile path scaffolds and
+        // cache-keys from (`assemble_cell_inputs`), so a check never forks
+        // its scaffold or cache key from the eventual compile.
+        let types = crate::components::executor::previous_cell_types(&cells, my_idx, &outputs);
         // The shared detection recipe (PRD-0060): handles slots >= 10 and
         // the `last` alias, which the old 0..10 substring scan missed.
         let refs = ironpad_common::cell_deps::referenced_slots(&current_source);

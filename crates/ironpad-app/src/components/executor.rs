@@ -121,14 +121,14 @@ pub async fn fetch_share_blob(
 ) -> Result<(Vec<u8>, Option<String>), String> {
     use wasm_bindgen_futures::JsFuture;
 
-    let resp = fetch_response(&format!("/share-blobs/{}.wasm", entry.blob)).await?;
+    let resp = fetch_response(&ironpad_common::share_blob_url(&entry.blob, false)).await?;
     let buf = JsFuture::from(resp.array_buffer().map_err(|e| format!("{e:?}"))?)
         .await
         .map_err(|e| format!("blob read failed: {e:?}"))?;
     let wasm_bytes = js_sys::Uint8Array::new(&buf).to_vec();
 
     let js_glue = if entry.has_js_glue {
-        let resp = fetch_response(&format!("/share-blobs/{}.js", entry.blob)).await?;
+        let resp = fetch_response(&ironpad_common::share_blob_url(&entry.blob, true)).await?;
         let text = JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
             .await
             .map_err(|e| format!("glue read failed: {e:?}"))?;
@@ -335,18 +335,46 @@ pub fn assemble_cell_inputs<C: PipingCell, S: std::hash::BuildHasher>(
         // buffer and the zero-count header alike; the empty buffer is free.
         return (Vec::new(), Vec::new());
     }
-    let mut all_outputs: Vec<&[u8]> = Vec::with_capacity(my_idx);
-    let mut types: Vec<String> = Vec::with_capacity(my_idx);
-    for c in &cells[..my_idx] {
-        if let Some(data) = c.is_code().then(|| outputs.get(c.id())).flatten() {
-            all_outputs.push(&data.bytes);
-            types.push(data.type_tag.clone().unwrap_or_default());
-        } else {
-            all_outputs.push(&[]);
-            types.push(String::new());
-        }
-    }
-    (encode_cell_inputs(&all_outputs), types)
+    let all_outputs: Vec<&[u8]> = cells[..my_idx]
+        .iter()
+        .map(|c| {
+            c.is_code()
+                .then(|| outputs.get(c.id()))
+                .flatten()
+                .map_or(&[][..], |data| &data.bytes)
+        })
+        .collect();
+    (
+        encode_cell_inputs(&all_outputs),
+        previous_cell_types(cells, my_idx, outputs),
+    )
+}
+
+/// The `previous_cell_types` half of [`assemble_cell_inputs`], on its own: one
+/// type tag per preceding cell (a code cell's latest output tag, empty for
+/// markdown/unexecuted/shared). THE single definition — the live-check path
+/// needs this vector but not the byte buffer, and a hand-rolled copy would
+/// fork the check scaffold from the compile scaffold (phantom/missing
+/// squiggles) and the check cache key from the run cache key.
+pub fn previous_cell_types<C: PipingCell, S: std::hash::BuildHasher>(
+    cells: &[C],
+    my_idx: usize,
+    outputs: &std::collections::HashMap<
+        String,
+        crate::components::output_render::CellOutputData,
+        S,
+    >,
+) -> Vec<String> {
+    cells[..my_idx]
+        .iter()
+        .map(|c| {
+            c.is_code()
+                .then(|| outputs.get(c.id()))
+                .flatten()
+                .and_then(|d| d.type_tag.clone())
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 /// The projection [`assemble_cell_inputs`] and [`unexecuted_dependencies`] need

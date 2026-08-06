@@ -55,9 +55,9 @@
       ironpad_sim_read_all:
         "function(ptr, len) { return " + g + " ? " + g + "._simReadAll(" + cid + ", ptr, len) : 0; }",
       ironpad_gpu_available:
-        "function() { return " + g + "._gpuAvailableSync(); }",
+        "function() { return " + g + " ? " + g + "._gpuAvailableSync() : 0; }",
       ironpad_gpu_create_buffer:
-        "function(s, u) { return " + g + "._gpuCreateBuffer(s, u); }",
+        "function(s, u) { return " + g + " ? " + g + "._gpuCreateBuffer(s, u) : 0; }",
       ironpad_gpu_write_buffer:
         "function(h, p, l) { if (" + g + ") " + g + "._gpuWriteBufferForCell(" + cid + ", h, p, l); }",
       ironpad_gpu_dispatch_compute:
@@ -66,7 +66,7 @@
         "function(ms) { return new Promise(function(res) { setTimeout(res, ms); }); }"
       ),
       ironpad_blocking_fetch: jspiGuarded(
-        "function(p, l) { return " + g + "._blockingFetch(" + cid + ", p, l); }"
+        "function(p, l) { return " + g + " ? " + g + "._blockingFetch(" + cid + ", p, l) : 0; }"
       ),
       ironpad_blocking_fetch_ok:
         "function() { return " + g + " ? " + g + "._blockingFetchOk(" + cid + ") : 0; }",

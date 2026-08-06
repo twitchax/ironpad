@@ -644,13 +644,16 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
             let variables = js_sys::Array::new();
 
-            // Only Code cells produce output — skip markdown cells and use
-            // sequential indices so variable names match CellInputs indices.
-            for (i, c) in cells[..my_idx]
-                .iter()
-                .filter(|c| c.cell_type == CellType::Code)
-                .enumerate()
-            {
+            // Piping slots are POSITIONAL over every preceding cell (markdown
+            // included, as an empty slot) — the scaffold binds `cellN` by
+            // index into that full vector. Enumerate all preceding cells and
+            // only SUGGEST the Code ones, so `cellN` matches the actual
+            // binding: numbering by code-cell-only index offered the wrong
+            // name (and type) in any notebook opening with a markdown cell.
+            for (i, c) in cells[..my_idx].iter().enumerate() {
+                if c.cell_type != CellType::Code {
+                    continue;
+                }
                 let type_str = outputs
                     .get(&c.id)
                     .and_then(|d| d.type_tag.as_deref())
@@ -1341,11 +1344,20 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         })
                         on:click=move |ev: leptos::ev::MouseEvent| {
                             ev.stop_propagation();
-                            if matches!(cell_status.get_untracked(), CellStatus::Compiling | CellStatus::Running) {
-                                #[cfg(feature = "hydrate")]
-                                crate::components::executor::terminate_executor();
-                            } else {
-                                run_trigger.update(|g| *g += 1);
+                            match cell_status.get_untracked() {
+                                // During compile the in-flight work is the
+                                // (unabortable) compile server fn — terminate()
+                                // would only respawn the worker and evict every
+                                // other loaded cell for nothing. Mark Idle; the
+                                // pipeline discards the result when it resolves.
+                                CellStatus::Compiling => cell_status.set(CellStatus::Idle),
+                                // During execution the worker holds the run, so
+                                // terminate() aborts it (AbortError path).
+                                CellStatus::Running => {
+                                    #[cfg(feature = "hydrate")]
+                                    crate::components::executor::terminate_executor();
+                                }
+                                _ => run_trigger.update(|g| *g += 1),
                             }
                         }
                     >

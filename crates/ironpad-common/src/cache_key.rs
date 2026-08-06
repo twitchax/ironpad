@@ -71,7 +71,14 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// scaffold binds only the `cellN` slots the source references — with
 /// `previous_cell_types` normalized to match inside this hash, so
 /// unreferenced upstream types no longer fork the key.
-pub const CACHE_EPOCH: u32 = 9;
+///
+/// Bumped 9 -> 10 (all-up review): the `last`-alias matcher excluded any
+/// `last` preceded by `.`, which also swallowed the `..` range / struct
+/// update operator (`..last.clone()`, `0..last.len()`), so a cell whose only
+/// alias use was in `..last` form under-cascaded and omitted the binding.
+/// Fixing detection changes which cells depend-on-all, so cached blobs keyed
+/// on the old verdict must invalidate.
+pub const CACHE_EPOCH: u32 = 10;
 
 // ── Content hash ─────────────────────────────────────────────────────────────
 

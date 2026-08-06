@@ -191,7 +191,10 @@ async fn main() {
         .nest_service("/auth", auth_router)
         .route("/ws/host", get(ws::ws_host_handler))
         .route("/ws/connect", get(ws::ws_connect_handler))
-        .route("/share-blobs/{file}", get(share_blob_handler))
+        .route(
+            &format!("{}{{file}}", ironpad_common::SHARE_BLOBS_PREFIX),
+            get(share_blob_handler),
+        )
         // Social-preview cards and crawler files (PRD-0050). These sit outside
         // the Leptos routes because a crawler wants bytes, not an SSR page.
         .route("/og/ironpad.png", get(og::site_card_handler))

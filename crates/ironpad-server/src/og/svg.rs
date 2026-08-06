@@ -9,13 +9,13 @@ use super::text::{mono, sans, sans_bold, MONO_FAMILY, SANS_FAMILY};
 
 // ── Canvas ──────────────────────────────────────────────────────────────────
 
-/// Card width in pixels. 1200x630 is the size every major unfurler asks for
-/// (Reddit, X, Slack, Discord, and `LinkedIn` all converge on it); smaller images
-/// get demoted to a thumbnail beside the title instead of a full-bleed card.
-pub const WIDTH: u32 = 1200;
+/// Card width in pixels. Single-sourced with the size the client advertises
+/// (`ironpad_common::OG_CARD_WIDTH`) so the rendered card and the announced
+/// dimensions can never drift.
+pub const WIDTH: u32 = ironpad_common::OG_CARD_WIDTH;
 
 /// Card height in pixels. See [`WIDTH`].
-pub const HEIGHT: u32 = 630;
+pub const HEIGHT: u32 = ironpad_common::OG_CARD_HEIGHT;
 
 const W: f64 = WIDTH as f64;
 const H: f64 = HEIGHT as f64;

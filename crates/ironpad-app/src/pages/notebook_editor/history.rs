@@ -167,11 +167,12 @@ fn restore_snapshot(state: &NotebookState, toaster: Toaster, saved_at: f64) {
             let Some(id) = state.notebook_id.try_get_untracked() else {
                 return;
             };
-            // Flush in-progress editor content and persist it, so the
-            // pre-restore snapshot holds what the author actually sees.
-            let _ = super::state::persist_notebook_durable(&state).await;
-            crate::storage::client::snapshot_now(&id).await;
-
+            // Read the target snapshot FIRST, before the pre-restore writes:
+            // the history ring is capped, so persisting + force-snapshotting
+            // the current version can prune the oldest entry — which is the
+            // one being restored when the user picks it at a full ring. Doing
+            // the writes first destroyed the chosen snapshot instead of
+            // restoring it.
             let Some(json) = crate::storage::client::get_history_snapshot(&id, saved_at).await
             else {
                 toaster.toast(
@@ -182,6 +183,11 @@ fn restore_snapshot(state: &NotebookState, toaster: Toaster, saved_at: f64) {
                 );
                 return;
             };
+            // Now flush in-progress editor content and force a pre-restore
+            // snapshot, so the restore itself is undoable. Safe to prune the
+            // ring now — the target JSON is already in hand.
+            let _ = super::state::persist_notebook_durable(&state).await;
+            crate::storage::client::snapshot_now(&id).await;
             match serde_json::from_str::<ironpad_common::IronpadNotebook>(&json) {
                 Ok(nb) => {
                     if let Err(e) = crate::storage::client::save_notebook(&nb).await {

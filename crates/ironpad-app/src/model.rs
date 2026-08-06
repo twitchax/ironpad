@@ -481,6 +481,23 @@ impl NotebookModel {
         cell_id: String,
         version: u64,
     ) -> Result<(MutationResult, Event), ModelError> {
+        // Existence check BEFORE the OCC check (cell_update does the same):
+        // an unknown id reads version 0, so `CellDelete { version: 0 }` would
+        // otherwise report success and broadcast a phantom CellDeleted for a
+        // cell that never existed — masking a typo and terminal-izing any
+        // matching `cells.run` wait as "cell_deleted".
+        let exists = self.notebook.with_untracked(|nb_opt| {
+            nb_opt
+                .as_ref()
+                .is_some_and(|nb| nb.cells.iter().any(|c| c.id == cell_id))
+        });
+        if !exists {
+            return Err(ModelError {
+                code: ErrorCode::CellNotFound,
+                message: format!("Cell {cell_id} not found"),
+            });
+        }
+
         let current = self.cell_version(&cell_id);
         if version != current {
             return Err(ModelError {
@@ -742,6 +759,47 @@ mod collapse_tests {
                 }
                 other => panic!("unexpected event: {other:?}"),
             }
+        });
+    }
+
+    /// Deleting an unknown cell id must error (`CellNotFound`), not report a
+    /// phantom success — an unknown id reads version 0, so without the
+    /// existence check `CellDelete { version: 0 }` slipped through the OCC
+    /// gate and broadcast a delete for a cell that never existed.
+    #[test]
+    fn cell_delete_unknown_id_errors_instead_of_phantom_success() {
+        Owner::new().with(|| {
+            let nb_signal = RwSignal::new(Some(notebook_with_one_cell()));
+            let model = NotebookModel::new(
+                nb_signal,
+                RwSignal::new(Vec::new()),
+                RwSignal::new(HashMap::new()),
+                RwSignal::new(0),
+            );
+            model.sync_from_notebook();
+
+            let err = model
+                .apply(
+                    Mutation::CellDelete {
+                        cell_id: "ghost".into(),
+                        version: 0,
+                    },
+                    ClientId::browser(),
+                )
+                .expect_err("deleting a nonexistent cell must error");
+            assert_eq!(err.code, ErrorCode::CellNotFound);
+
+            // The real cell still deletes.
+            model
+                .apply(
+                    Mutation::CellDelete {
+                        cell_id: "c1".into(),
+                        version: 0,
+                    },
+                    ClientId::browser(),
+                )
+                .expect("deleting an existing cell must succeed");
+            assert!(nb_signal.get_untracked().unwrap().cells.is_empty());
         });
     }
 

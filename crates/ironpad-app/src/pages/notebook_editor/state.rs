@@ -206,6 +206,18 @@ impl NotebookState {
     pub(crate) fn request_cell_run(&self, cell_id: &str) -> Result<(), String> {
         use ironpad_common::types::CellType;
 
+        // The editor's per-cell run-queue watchers only exist while the cell
+        // list is mounted, and View mode unmounts them (it renders a separate
+        // ViewOnlyNotebook with its own private queue). Queuing here would
+        // push onto a queue nothing drains — the daemon would wait out its
+        // timeout, and the run would fire as a surprise when the user flips
+        // back to Edit. Refuse with a distinct error the agent can surface.
+        if self.is_view_mode.try_get_untracked() == Some(true) {
+            return Err(format!(
+                "cell {cell_id} cannot run: the host notebook is in View mode (the editor is not mounted). Switch it to Edit mode and retry."
+            ));
+        }
+
         let runnable = self
             .cells
             .try_get_untracked()

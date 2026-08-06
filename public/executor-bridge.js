@@ -258,6 +258,28 @@
       jsGlue: jsGlue || null,
     }).then(function () {
       self._loadedCache.set(cellId, hash);
+    }).catch(async function (workerError) {
+      // A deliberate cancellation must surface as-is (see execute()).
+      if (workerError && workerError.name === "AbortError") {
+        throw workerError;
+      }
+      // The worker is unavailable (e.g. the respawn cap tripped after
+      // repeated crashes). Without a fallback here every run would fail with
+      // "Worker unavailable" BEFORE execute()'s own main-thread fallback
+      // could fire (the Rust flow loads then executes). Load on the
+      // main-thread executor so the cell still runs; execute() then runs it
+      // there too. Do NOT touch _loadedCache — that tracks the WORKER's
+      // loaded state, and this blob is loaded on the main executor.
+      console.warn(
+        "ironpad: worker loadBlob failed for " + cellId +
+        ", loading on main thread. Worker error: " + workerError.message
+      );
+      var exec = await self._ensureMainExecutor();
+      var blob = self._blobCache.get(cellId);
+      if (!blob) throw workerError;
+      if (!exec.isLoaded(cellId, blob.hash)) {
+        await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
+      }
     });
   };
 

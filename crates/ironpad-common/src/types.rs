@@ -267,6 +267,34 @@ pub const OG_IMAGE_MIN_PX: u32 = 200;
 /// someone's feed before the image itself is ever fetched.
 pub const OG_IMAGE_MAX_PX: u32 = 8192;
 
+/// Generated OG-card dimensions. 1200x630 is the size every major unfurler
+/// asks for (Reddit, X, Slack, Discord, `LinkedIn` all converge on it); a
+/// smaller image gets demoted to a thumbnail beside the title. ONE source:
+/// the server rasterizes the card at this size (`ironpad_server::og::svg`)
+/// and the client advertises it via `og:image:width/height`
+/// (`social_meta`) — two constants would let the rendered card and the
+/// announced size drift, and unfurlers lay out against the announced one.
+pub const OG_CARD_WIDTH: u32 = 1200;
+/// Generated OG-card height. See [`OG_CARD_WIDTH`].
+pub const OG_CARD_HEIGHT: u32 = 630;
+
+/// Route prefix for immutable content-addressed share blobs (PRD-0047). ONE
+/// source for the client fetch URL ([`share_blob_url`]), the axum route
+/// registration, and the immutable-cache prefix check — a drift here breaks
+/// blob delivery silently (viewers fall back to live compilation).
+pub const SHARE_BLOBS_PREFIX: &str = "/share-blobs/";
+
+/// Client-side URL for a snapshotted share blob. `glue` selects the
+/// wasm-bindgen JS glue (`.js`) over the wasm module (`.wasm`); both share
+/// the `{blob}.{ext}` scheme with the server's on-disk filenames.
+#[must_use]
+pub fn share_blob_url(blob: &str, glue: bool) -> String {
+    format!(
+        "{SHARE_BLOBS_PREFIX}{blob}.{}",
+        if glue { "js" } else { "wasm" }
+    )
+}
+
 /// Default shared `Cargo.toml` for new notebooks. Provides `ironpad-cell`
 /// and relaxed release-profile settings so cells compile quickly.
 pub const DEFAULT_SHARED_CARGO_TOML: &str = "\

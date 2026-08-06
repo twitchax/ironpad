@@ -64,7 +64,7 @@ pub(crate) async fn embed_corp_header(
 /// pages) is served under URL-stable paths, so browsers must revalidate on
 /// each use (`no-cache` still allows conditional 304s via `Last-Modified`).
 fn cache_control_value(path: &str) -> HeaderValue {
-    if path.starts_with("/pkg/") || path.starts_with("/share-blobs/") {
+    if path.starts_with("/pkg/") || path.starts_with(ironpad_common::SHARE_BLOBS_PREFIX) {
         HeaderValue::from_static("public, max-age=31536000, immutable")
     } else {
         HeaderValue::from_static("no-cache")
