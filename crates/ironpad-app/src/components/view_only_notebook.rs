@@ -596,10 +596,6 @@ fn ViewOnlyCodeCell(
             return; // a run is already in flight; the queue owns execution
         }
         let cid = cell.with_value(|c| c.id.clone());
-        // A direct Run is a fresh attempt: clear any blocked notice.
-        blocked_by.update(|b| {
-            b.remove(&cid);
-        });
         let outputs = cell_outputs.get_untracked();
         let mut prereqs = all_cells.with_value(|cells| {
             crate::components::executor::unexecuted_dependencies(cells, &cid, &outputs, |id| {
@@ -658,6 +654,9 @@ fn ViewOnlyCodeCell(
         {
             compiling.set(true);
             error_message.set(None);
+            // A dispatched run is a fresh attempt: clear any blocked notice
+            // this cell carries (same policy as the editor).
+            crate::components::run_flow::clear_own_blame(blocked_by, &cell_id_for_exec.get_value());
 
             leptos::task::spawn_local(async move {
                 let cell_data = cell.get_value();
@@ -768,20 +767,17 @@ fn ViewOnlyCodeCell(
                             |id| cells.iter().find(|c| c.id == id).map(|c| c.source.clone()),
                         )
                     });
-                    if !dependents.is_empty() {
-                        blocked_by.update(|b| {
-                            for dep in &dependents {
-                                b.insert(dep.clone(), cell_id.clone());
-                            }
-                        });
-                        run_all_queue.update(|q| {
-                            q.retain(|id| !dependents.contains(id));
-                        });
-                    }
+                    // Shared bookkeeping (run_flow): blame + drop, one
+                    // policy with the editor. Also drops this cell itself,
+                    // making the advance below a no-op on failure.
+                    crate::components::run_flow::fail_in_queue(
+                        run_all_queue,
+                        blocked_by,
+                        &cell_id,
+                        &dependents,
+                    );
                 } else {
-                    blocked_by.update(|b| {
-                        b.retain(|_, blocker| blocker != &cell_id);
-                    });
+                    crate::components::run_flow::clear_blame_held_by(blocked_by, &cell_id);
                 }
                 crate::components::run_flow::advance_queue(run_all_queue, &cell_id);
 

@@ -161,6 +161,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             state
                 .run_all_queue
                 .update(|q| q.retain(|id| id != &cid_cleanup));
+            // And from the blocked-by map, on both sides: its own entry, and
+            // entries blaming it — otherwise a cell blocked by a since-deleted
+            // cell could never clear except by page reload.
+            state.cell_blocked_by.update(|b| {
+                b.remove(&cid_cleanup);
+                b.retain(|_, blocker| blocker != &cid_cleanup);
+            });
             persist_notebook(&state);
         }
     };

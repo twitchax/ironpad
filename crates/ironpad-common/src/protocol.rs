@@ -19,7 +19,7 @@ use crate::types::{CellManifest, CellType, Diagnostic, IronpadCell, IronpadNoteb
 /// schema changes in a way a peer should be able to notice (a new payload
 /// variant, an added field, …). Decode sites (in the server/CLI crates) may
 /// log a warning when a received version differs from this constant.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Top-level message envelope. Every frame on the wire is one of these.
 ///
@@ -409,6 +409,18 @@ pub enum Event {
         /// terminal event on the failure path too.
         #[serde(default = "default_true")]
         success: bool,
+    },
+    /// A queued run was dropped because a cell it transitively depends on
+    /// failed (continue-past-failures, PRD-0060). The browser is the party
+    /// that makes the drop decision — its sources include live Monaco
+    /// buffers no other peer can see — so it REPORTS the drop, and a waiting
+    /// agent terminal-izes on this event instead of inferring the dependency
+    /// from a possibly stale notebook cache.
+    CellBlocked {
+        /// The dropped cell.
+        cell_id: String,
+        /// The failed cell it depends on.
+        blocked_by: String,
     },
     NotebookMetaUpdated {
         #[serde(flatten)]
@@ -1151,7 +1163,10 @@ mod tests {
         // they became editable (PRD-0051).
         // 3: `Mutation::CellRun` + `MutationResult::CellRunStarted`, and
         // `CellExecuted` gained `success` (PRD-0052).
-        assert_eq!(PROTOCOL_VERSION, 5);
+        // 6: `Event::CellBlocked` — the browser reports queue drops from the
+        // continue-past-failures policy (PRD-0060 remediation), so agents
+        // stop inferring them.
+        assert_eq!(PROTOCOL_VERSION, 6);
     }
 
     /// Forward-compat (new → old), envelope level: a frame minted by a newer

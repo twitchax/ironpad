@@ -177,3 +177,91 @@ pub fn advance_queue(queue: RwSignal<Vec<String>>, cell_id: &str) {
         }
     });
 }
+
+/// Continue-past-failures core (PRD-0060): record blame for `dependents`
+/// (blocked-by the failed cell) and drop them, plus `failed_id` itself, from
+/// the queue. Independent queued cells survive. ONE policy for the editor
+/// and the viewer — the two surfaces once hand-rolled diverging copies, and
+/// the divergence shipped a sticky-blocked bug.
+pub fn fail_in_queue_core(
+    queue: &mut Vec<String>,
+    blocked: &mut std::collections::HashMap<String, String>,
+    failed_id: &str,
+    dependents: &[String],
+) {
+    for dep in dependents {
+        blocked.insert(dep.clone(), failed_id.to_string());
+    }
+    queue.retain(|id| id != failed_id && !dependents.iter().any(|d| d == id));
+}
+
+/// Signal-level wrapper for [`fail_in_queue_core`]. The two signals are
+/// distinct arena slots, so the nested update is safe; blame lands before
+/// the queue's subscribers run, so a watcher never sees a dropped cell
+/// without its reason.
+pub fn fail_in_queue(
+    queue: RwSignal<Vec<String>>,
+    blocked_by: RwSignal<std::collections::HashMap<String, String>>,
+    failed_id: &str,
+    dependents: &[String],
+) {
+    queue.update(|q| {
+        blocked_by.update(|b| fail_in_queue_core(q, b, failed_id, dependents));
+    });
+}
+
+/// A dispatched run of `cell_id` is a fresh attempt: any blocked notice it
+/// carries is stale the moment it retries. Without this, a blocked cell
+/// edited to drop the failing dependency would run to success and then snap
+/// back to "blocked" — the surviving map entry outvoted the fresh result.
+pub fn clear_own_blame(
+    blocked_by: RwSignal<std::collections::HashMap<String, String>>,
+    cell_id: &str,
+) {
+    if blocked_by.with_untracked(|b| b.contains_key(cell_id)) {
+        blocked_by.update(|b| {
+            b.remove(cell_id);
+        });
+    }
+}
+
+/// `cell_id` produced a fresh successful result: blame entries naming it as
+/// the blocker are stale. Guarded so a run that blocked nothing does not
+/// notify every blocked-by watcher for no reason.
+pub fn clear_blame_held_by(
+    blocked_by: RwSignal<std::collections::HashMap<String, String>>,
+    cell_id: &str,
+) {
+    if blocked_by.with_untracked(|b| b.values().any(|blocker| blocker == cell_id)) {
+        blocked_by.update(|b| b.retain(|_, blocker| blocker != cell_id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fail_in_queue_core;
+    use std::collections::HashMap;
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn fail_in_queue_drops_failed_and_dependents_keeps_independents() {
+        let mut queue = ids(&["a", "b", "c", "d"]);
+        let mut blocked = HashMap::new();
+        fail_in_queue_core(&mut queue, &mut blocked, "a", &ids(&["c"]));
+        assert_eq!(queue, ids(&["b", "d"]));
+        assert_eq!(blocked.get("c").map(String::as_str), Some("a"));
+        assert!(!blocked.contains_key("b"));
+    }
+
+    #[test]
+    fn fail_in_queue_with_no_dependents_only_drops_the_failed_cell() {
+        let mut queue = ids(&["a", "b"]);
+        let mut blocked = HashMap::new();
+        fail_in_queue_core(&mut queue, &mut blocked, "a", &[]);
+        assert_eq!(queue, ids(&["b"]));
+        assert!(blocked.is_empty());
+    }
+}

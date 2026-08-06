@@ -112,5 +112,18 @@ test.describe("Dependency-aware cascade (PRD-0060)", () => {
     await expect(
       cells.nth(1).locator(".ironpad-cell-status--blocked"),
     ).toBeVisible({ timeout: 30_000 });
+
+    // A rerun is a fresh attempt: edit the blocked cell to drop the failing
+    // dependency and run it — it must land on Success and STAY there (the
+    // stale blocked-by entry once snapped it back to Blocked over fresh
+    // output).
+    await setCellSource(page, cells.nth(1), "2 + 2");
+    await page.locator('button[title="Run cell"]').nth(1).click();
+    await expect(
+      cells.nth(1).locator(".ironpad-cell-status--success"),
+    ).toBeVisible({ timeout: 120_000 });
+    await expect(
+      cells.nth(1).locator(".ironpad-cell-status--blocked"),
+    ).toHaveCount(0);
   });
 });

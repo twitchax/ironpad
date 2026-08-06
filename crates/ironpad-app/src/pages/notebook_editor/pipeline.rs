@@ -76,6 +76,44 @@ fn downstream_code_ids(cells: &[CellManifest], cell_id: &str) -> Vec<String> {
         .collect()
 }
 
+/// Merge a single-cell run request into the run queue. A non-empty queue is
+/// never REPLACED: pre-0060 the replacement set was all-unexecuted-upstream,
+/// which happened to re-include queued cells, but the dependency closure is
+/// narrower — replacing with it silently dropped queued independents (they
+/// flipped Queued → Idle and never ran). The current front stays pinned (it
+/// may be mid-compile, and one cell runs at a time); every other surviving
+/// entry, the target's unexecuted dependencies, and the target itself join
+/// in notebook order — a dependency is always upstream of its consumer, so
+/// notebook order runs it first.
+fn merged_run_queue(
+    cells: &[CellManifest],
+    queue: &[String],
+    unexecuted: &[String],
+    cell_id: &str,
+) -> Vec<String> {
+    let mut wanted: std::collections::HashSet<&str> = queue.iter().map(String::as_str).collect();
+    wanted.extend(unexecuted.iter().map(String::as_str));
+    wanted.insert(cell_id);
+
+    let mut merged: Vec<String> = Vec::with_capacity(wanted.len());
+    // Pin the front unless it IS the target: a front target has not started
+    // compiling yet (the dispatch guard returns before that), and its
+    // dependencies must run first, so it re-sorts with everything else.
+    if let Some(front) = queue.first() {
+        if front != cell_id {
+            wanted.remove(front.as_str());
+            merged.push(front.clone());
+        }
+    }
+    merged.extend(
+        cells
+            .iter()
+            .filter(|c| wanted.contains(c.id.as_str()))
+            .map(|c| c.id.clone()),
+    );
+    merged
+}
+
 // ── The run pipeline ────────────────────────────────────────────────────────
 
 /// Wire the compile/execute flow to `run_trigger`: cascade prerequisites,
@@ -132,7 +170,9 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
         // this cell) — the one shared recipe (`unexecuted_dependencies`,
         // PRD-0060), same as the viewer and the agent path. Independent
         // upstream cells no longer cascade: the scaffold binds only
-        // referenced slots, so skipping them is safe.
+        // referenced slots, so skipping them is safe. While a queue is in
+        // flight, the request MERGES into it (`merged_run_queue`) — the
+        // queue owns execution, and this cell waits its turn.
         {
             let cells = state.cells.get_untracked();
             let outputs = state.cell_outputs.get_untracked();
@@ -143,14 +183,22 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                 &outputs,
                 |id| sources.get(id).cloned(),
             );
+            let queue = state.run_all_queue.get_untracked();
+            let front_is_me = queue.first().is_some_and(|id| *id == cid);
 
-            if !unexecuted.is_empty() {
-                let mut queue = unexecuted;
-                queue.push(cid.clone());
-                state.run_all_queue.set(queue);
+            // Direct run only when nothing needs to cascade AND no other
+            // cell holds the queue (front-is-me is the queue dispatching us).
+            if !unexecuted.is_empty() || (!queue.is_empty() && !front_is_me) {
+                state
+                    .run_all_queue
+                    .set(merged_run_queue(&cells, &queue, &unexecuted, &cid));
                 return;
             }
         }
+
+        // A dispatched run is a fresh attempt: clear any blocked notice this
+        // cell carries (same policy as the viewer) before status changes.
+        crate::components::run_flow::clear_own_blame(state.cell_blocked_by, &cid);
 
         // Collect previous cell outputs for the I/O pipeline — the one
         // shared recipe (`assemble_cell_inputs`): positional slots, empty
@@ -353,10 +401,11 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                                         stale.remove(&cell_id_for_exec);
                                     });
 
-                                    // Clear blocked-by entries that referenced this cell.
-                                    state.cell_blocked_by.update(|blocked| {
-                                        blocked.retain(|_, blocker| *blocker != cell_id_for_exec);
-                                    });
+                                    // Blame held by this cell is stale now.
+                                    run_flow::clear_blame_held_by(
+                                        state.cell_blocked_by,
+                                        &cell_id_for_exec,
+                                    );
 
                                     // Advance run-all queue on success.
                                     run_flow::advance_queue(state.run_all_queue, &cell_id_for_exec);
@@ -398,8 +447,19 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
 
                                     // Drop this cell's dependents from the
                                     // queue; independents keep running
-                                    // (PRD-0060).
-                                    state.fail_in_run_queue(&cell_id_for_exec);
+                                    // (PRD-0060). The browser makes the drop
+                                    // decision, so it REPORTS it: a waiting
+                                    // agent terminal-izes on this instead of
+                                    // inferring dependencies from a possibly
+                                    // stale notebook cache.
+                                    for dep in state.fail_in_run_queue(&cell_id_for_exec) {
+                                        emit_session_event(
+                                            ironpad_common::protocol::Event::CellBlocked {
+                                                cell_id: dep,
+                                                blocked_by: cell_id_for_exec.clone(),
+                                            },
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -414,10 +474,11 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                                 stale.remove(&cell_id_for_exec);
                             });
 
-                            // Clear blocked-by entries that referenced this cell (SSR path).
-                            state.cell_blocked_by.update(|blocked| {
-                                blocked.retain(|_, blocker| *blocker != cell_id_for_exec);
-                            });
+                            // Blame held by this cell is stale now (SSR path).
+                            crate::components::run_flow::clear_blame_held_by(
+                                state.cell_blocked_by,
+                                &cell_id_for_exec,
+                            );
 
                             // Advance run-all queue (SSR path).
                             crate::components::run_flow::advance_queue(
@@ -429,8 +490,14 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         cell_status.set(CellStatus::Error);
                         last_compile.set(Some(response));
 
-                        // Drop dependents; independents keep running.
-                        state.fail_in_run_queue(&cell_id_for_exec);
+                        // Drop dependents; independents keep running. The
+                        // drops are reported for waiting agents (see above).
+                        for dep in state.fail_in_run_queue(&cell_id_for_exec) {
+                            emit_session_event(ironpad_common::protocol::Event::CellBlocked {
+                                cell_id: dep,
+                                blocked_by: cell_id_for_exec.clone(),
+                            });
+                        }
                     }
                 }
                 Err(e) => {
@@ -454,8 +521,14 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         js_glue: None,
                     }));
 
-                    // Drop dependents; independents keep running.
-                    state.fail_in_run_queue(&cell_id_for_exec);
+                    // Drop dependents; independents keep running. The drops
+                    // are reported for waiting agents (see above).
+                    for dep in state.fail_in_run_queue(&cell_id_for_exec) {
+                        emit_session_event(ironpad_common::protocol::Event::CellBlocked {
+                            cell_id: dep,
+                            blocked_by: cell_id_for_exec.clone(),
+                        });
+                    }
                 }
             }
         });
@@ -780,6 +853,70 @@ mod tests {
         // Unknown id degrades to index 0 (invalidate everything runnable),
         // never to a panic.
         assert_eq!(downstream_code_ids(&cells, "gone").len(), 3);
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn merged_run_queue_from_empty_is_deps_then_target() {
+        let cells = vec![
+            manifest("a", CellType::Code),
+            manifest("b", CellType::Code),
+            manifest("c", CellType::Code),
+        ];
+        assert_eq!(
+            merged_run_queue(&cells, &[], &ids(&["a"]), "c"),
+            ids(&["a", "c"])
+        );
+    }
+
+    #[test]
+    fn merged_run_queue_preserves_queued_independents() {
+        // Run All in flight ([a, b, c], a at front), user clicks ▶ on queued
+        // c (which depends on a): the old wholesale replacement produced
+        // [a, c] and silently dropped b.
+        let cells = vec![
+            manifest("a", CellType::Code),
+            manifest("b", CellType::Code),
+            manifest("c", CellType::Code),
+        ];
+        assert_eq!(
+            merged_run_queue(&cells, &ids(&["a", "b", "c"]), &ids(&["a"]), "c"),
+            ids(&["a", "b", "c"])
+        );
+    }
+
+    #[test]
+    fn merged_run_queue_front_target_yields_to_deps_and_keeps_the_tail() {
+        // Agent path: queue [y, z], y reaches the front with a cold
+        // dependency d. The old replacement produced [d, y] and z's waiting
+        // agent timed out.
+        let cells = vec![
+            manifest("d", CellType::Code),
+            manifest("y", CellType::Code),
+            manifest("z", CellType::Code),
+        ];
+        assert_eq!(
+            merged_run_queue(&cells, &ids(&["y", "z"]), &ids(&["d"]), "y"),
+            ids(&["d", "y", "z"])
+        );
+    }
+
+    #[test]
+    fn merged_run_queue_routes_a_direct_click_through_a_busy_queue() {
+        // Independent cell x clicked while [a, b] runs: x joins in notebook
+        // order behind the pinned (possibly mid-compile) front.
+        let cells = vec![
+            manifest("a", CellType::Code),
+            manifest("x", CellType::Code),
+            manifest("b", CellType::Code),
+        ];
+        assert_eq!(
+            merged_run_queue(&cells, &ids(&["a", "b"]), &[], "x"),
+            ids(&["a", "x", "b"])
+        );
     }
 
     #[test]

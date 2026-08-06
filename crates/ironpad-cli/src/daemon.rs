@@ -371,6 +371,7 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
         protocol::Event::CellCompiling { .. }
         | protocol::Event::CellCompiled { .. }
         | protocol::Event::CellExecuted { .. }
+        | protocol::Event::CellBlocked { .. }
         | protocol::Event::Error { .. }
         | protocol::Event::Unknown => {}
     }
@@ -586,13 +587,21 @@ fn target_depends_on(notebook: &IronpadNotebook, target_id: &str, failed_id: &st
 /// Terminal shapes:
 /// - `CellExecuted` for our cell — done, successfully or not.
 /// - `CellCompiled { success: false }` for our cell — compile failure.
-/// - A compile OR runtime failure of a cell our cell transitively DEPENDS ON
-///   (PRD-0060): the browser drops dependents from the queue on a failure,
-///   so our queued run is dead — `prerequisite_failed`, payload naming the
-///   cell. The dependency test runs the same shared recipe as the browser
-///   (`cell_deps`) against the daemon's cached notebook; with no cached
-///   notebook it degrades to terminal (the pre-0060 behavior — never a
-///   hang).
+/// - `CellBlocked` for our cell — the browser's AUTHORITATIVE report that
+///   our queued run was dropped because a dependency failed (protocol v6).
+///   The browser decides drops against sources that include live Monaco
+///   buffers this daemon's cache never sees, so its verdict beats any local
+///   inference.
+/// - `CellDeleted` for our cell — the target is gone mid-run and will never
+///   emit a compile/execute event; without this arm the wait could only end
+///   at the timeout.
+/// - Fallback inference: a compile OR runtime failure of a cell our cell
+///   transitively DEPENDS ON (PRD-0060) — `prerequisite_failed`, payload
+///   naming the cell. Kept for browsers predating `CellBlocked` (a cached
+///   bundle can lag a deploy). The dependency test runs the same shared
+///   recipe as the browser (`cell_deps`) against the daemon's cached
+///   notebook; with no cached notebook it degrades to terminal (the
+///   pre-0060 behavior — never a hang).
 ///
 /// An UNRELATED cell's failure is NOT terminal anymore: the queue continues
 /// past it and our run still executes (continue-past-failures).
@@ -644,6 +653,18 @@ fn run_outcome(
                 "diagnostics": diagnostics,
             }))
         }
+        protocol::Event::CellBlocked {
+            cell_id: id,
+            blocked_by,
+        } if id == cell_id => Some(serde_json::json!({
+            "status": "prerequisite_failed",
+            "cell_id": blocked_by,
+            "blocked_cell_id": id,
+        })),
+        protocol::Event::CellDeleted { cell_id: id } if id == cell_id => Some(serde_json::json!({
+            "status": "cell_deleted",
+            "cell_id": id,
+        })),
         _ => None,
     }
 }
@@ -1111,6 +1132,55 @@ mod tests {
         assert_eq!(runtime_prereq["status"], "prerequisite_failed");
         assert_eq!(runtime_prereq["cell_id"], "upstream");
         assert_eq!(runtime_prereq["display_text"], "panicked at 'boom'");
+    }
+
+    #[test]
+    fn run_outcome_cell_blocked_and_deleted_are_terminal_for_the_target_only() {
+        // The browser's authoritative drop report (protocol v6): terminal
+        // even with no cached notebook — no inference needed.
+        let blocked = run_outcome(
+            "mine",
+            &Event::CellBlocked {
+                cell_id: "mine".into(),
+                blocked_by: "dep".into(),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(blocked["status"], "prerequisite_failed");
+        assert_eq!(blocked["cell_id"], "dep");
+        assert_eq!(blocked["blocked_cell_id"], "mine");
+
+        // Another cell's drop keeps our wait open: the queue continues.
+        assert!(run_outcome(
+            "mine",
+            &Event::CellBlocked {
+                cell_id: "other".into(),
+                blocked_by: "dep".into(),
+            },
+            None,
+        )
+        .is_none());
+
+        // Target deleted mid-run: no compile/execute event will ever come,
+        // so this must be terminal rather than a guaranteed timeout.
+        let deleted = run_outcome(
+            "mine",
+            &Event::CellDeleted {
+                cell_id: "mine".into(),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(deleted["status"], "cell_deleted");
+        assert!(run_outcome(
+            "mine",
+            &Event::CellDeleted {
+                cell_id: "other".into(),
+            },
+            None,
+        )
+        .is_none());
     }
 
     #[test]

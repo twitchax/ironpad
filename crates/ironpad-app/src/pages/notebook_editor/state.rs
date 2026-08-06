@@ -284,10 +284,12 @@ impl NotebookState {
     /// its transitive dependents from the run queue — marking the dependents
     /// blocked-by the failure so the UI says WHY they were skipped — while
     /// every independent queued cell keeps running. ONE definition for the
-    /// three error paths (execution, compile, transport); the daemon's
-    /// `prerequisite_failed` semantics mirror this recipe, so a fork here
-    /// would desync agents from the UI.
-    pub(super) fn fail_in_run_queue(&self, failed_cell_id: &str) {
+    /// three error paths (execution, compile, transport), delegating to the
+    /// shared bookkeeping in `run_flow` (the viewer runs the same helper);
+    /// the daemon's `prerequisite_failed` semantics mirror this recipe, so a
+    /// fork here would desync agents from the UI. Returns the dropped
+    /// dependents so the caller can report them (`Event::CellBlocked`).
+    pub(super) fn fail_in_run_queue(&self, failed_cell_id: &str) -> Vec<String> {
         let cells = self.cells.get_untracked();
         let queue = self.run_all_queue.get_untracked();
         let sources = self.current_cell_sources();
@@ -297,16 +299,13 @@ impl NotebookState {
             failed_cell_id,
             |id| sources.get(id).cloned(),
         );
-        if !dependents.is_empty() {
-            self.cell_blocked_by.update(|blocked| {
-                for dep in &dependents {
-                    blocked.insert(dep.clone(), failed_cell_id.to_string());
-                }
-            });
-        }
-        self.run_all_queue.update(|q| {
-            q.retain(|id| id != failed_cell_id && !dependents.contains(id));
-        });
+        crate::components::run_flow::fail_in_queue(
+            self.run_all_queue,
+            self.cell_blocked_by,
+            failed_cell_id,
+            &dependents,
+        );
+        dependents
     }
 }
 
