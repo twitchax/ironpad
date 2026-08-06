@@ -1,5 +1,6 @@
 import { test, expect, Page } from "@playwright/test";
 import { loginTestUser } from "./helpers/auth";
+import { shareMutable } from "./helpers/mutable";
 import { createNotebook } from "./helpers/session";
 
 /**
@@ -12,20 +13,6 @@ import { createNotebook } from "./helpers/session";
  */
 
 const BASE = "http://localhost:3111";
-const MENU = '.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]';
-
-async function menuClick(page: Page, label: string): Promise<void> {
-  await page.locator(MENU).click();
-  await page
-    .locator(".ironpad-toolbar-dropdown-item", { hasText: label })
-    .click();
-}
-
-async function shareMutable(page: Page): Promise<string> {
-  await menuClick(page, "Share Mutable");
-  await expect(page).toHaveURL(/\/mutable\/[a-f0-9]{16}/, { timeout: 30_000 });
-  return page.url().match(/\/mutable\/([a-f0-9]{16})/)![1];
-}
 
 /** Expand the metadata section and its Access controls. */
 async function openAccessControls(page: Page): Promise<void> {

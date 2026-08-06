@@ -2,9 +2,14 @@ import fs from "fs";
 import path from "path";
 
 import { test, expect, APIRequestContext, Page } from "@playwright/test";
-import { createNotebook } from "./helpers/session";
 import { loginTestUser } from "./helpers/auth";
 import { setCellSource } from "./helpers/monaco";
+import {
+  expectOwnerEditor,
+  menuClick,
+  shareMutable,
+} from "./helpers/mutable";
+import { createNotebook } from "./helpers/session";
 
 /**
  * PRD-0054: server-authoritative mutable shares with a draft/published
@@ -20,8 +25,6 @@ import { setCellSource } from "./helpers/monaco";
  * raw response bodies via `request`, never the hydrated DOM — unfurlers run
  * no JavaScript.
  */
-
-const MENU = '.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]';
 
 const BASE = "http://localhost:3111";
 
@@ -71,14 +74,6 @@ async function expectLiveCard(
   expect(body.readUInt32BE(20)).toBe(630);
 }
 
-/** Open the notebook (hamburger) menu and click an item by its label. */
-async function menuClick(page: Page, label: string): Promise<void> {
-  await page.locator(MENU).click();
-  await page
-    .locator(".ironpad-toolbar-dropdown-item", { hasText: label })
-    .click();
-}
-
 /** Rename via the header title input and confirm the change landed. */
 async function rename(page: Page, title: string): Promise<void> {
   await page.locator(".ironpad-notebook-title--editable").click();
@@ -91,30 +86,6 @@ async function rename(page: Page, title: string): Promise<void> {
     title,
     { timeout: 10_000 },
   );
-}
-
-/**
- * Share Mutable: converts, deletes the local copy, and hard-navigates to
- * /mutable/{id} where the owner's editor mounts. Returns the minted id.
- */
-async function shareMutable(page: Page): Promise<string> {
-  await menuClick(page, "Share Mutable");
-  await expect(page).toHaveURL(/\/mutable\/[a-f0-9]{16}/, { timeout: 30_000 });
-  const shareId = page.url().match(/\/mutable\/([a-f0-9]{16})/)![1];
-  // The publish toast rides sessionStorage across the navigation.
-  await expect(
-    page.locator(".ironpad-toast-title", { hasText: "Published" }),
-  ).toBeVisible({ timeout: 15_000 });
-  // The owner lands in the editor (auto-swap on hydrate), Push grayed.
-  await expectOwnerEditor(page);
-  return shareId;
-}
-
-/** The owner's editor is mounted: cells UI + the Push button. */
-async function expectOwnerEditor(page: Page): Promise<void> {
-  await expect(page.locator(".ironpad-push-button")).toBeVisible({
-    timeout: 30_000,
-  });
 }
 
 test.describe("Mutable shares (PRD-0054, draft/published)", () => {

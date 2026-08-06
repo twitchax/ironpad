@@ -1487,6 +1487,29 @@ pub async fn discard_mutable_draft(id: String) -> Result<(), ServerFnError> {
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
+/// The ONE private-share read predicate (PRD-0061): may `viewer` read a
+/// share whose row carries `private`? Public shares admit everyone; private
+/// shares admit sessions holding an OWNER or READ grant, never anonymous.
+/// Consumed by BOTH [`mutable_access_core`] and
+/// [`mutable_manifest_access_core`] — the manifest is the hash list that
+/// unlocks the deliberately ungated `/share-blobs/` route, so a policy
+/// change must not be able to land in one gate and not the other.
+#[cfg(feature = "ssr")]
+async fn private_share_readable(
+    db: &crate::db::Db,
+    id: &str,
+    private: bool,
+    viewer: Option<&crate::db::AuthUser>,
+) -> anyhow::Result<bool> {
+    if !private {
+        return Ok(true);
+    }
+    match viewer {
+        Some(v) => db.user_can_read_share(&v.github_id, id).await,
+        None => Ok(false),
+    }
+}
+
 /// Resolve a viewer's access to a mutable share (PRD-0061): the notebook
 /// with attribution, or the explicit `Private` / `NotFound` outcome.
 /// Content never rides the denied arms. `viewer` is the caller's resolved
@@ -1503,16 +1526,10 @@ pub async fn mutable_access_core(
         return Ok(MutableNotebookAccess::NotFound);
     };
 
-    if row.private {
-        let can_read = match viewer {
-            Some(v) => db.user_can_read_share(&v.github_id, id).await?,
-            None => false,
-        };
-        if !can_read {
-            return Ok(MutableNotebookAccess::Private {
-                signed_in: viewer.is_some(),
-            });
-        }
+    if !private_share_readable(db, id, row.private, viewer).await? {
+        return Ok(MutableNotebookAccess::Private {
+            signed_in: viewer.is_some(),
+        });
     }
 
     let notebook: IronpadNotebook = serde_json::from_str(&row.notebook_json)
@@ -1560,14 +1577,8 @@ pub(crate) async fn mutable_manifest_access_core(
     let Some(row) = db.get_mutable_share(id).await? else {
         return Ok(None);
     };
-    if row.private {
-        let can_read = match viewer {
-            Some(v) => db.user_can_read_share(&v.github_id, id).await?,
-            None => false,
-        };
-        if !can_read {
-            return Ok(None);
-        }
+    if !private_share_readable(db, id, row.private, viewer).await? {
+        return Ok(None);
     }
     Ok(row
         .manifest_json
@@ -2615,6 +2626,51 @@ mod tests {
             mutable_access_core(&db, &id, None).await.unwrap(),
             Access::Found(_)
         ));
+
+        // The manifest gate runs the SAME predicate, on all four arms — it
+        // is the hash list unlocking the ungated /share-blobs route, so the
+        // signed-in arms matter as much as the anonymous one. A share with
+        // an actual manifest distinguishes denial (None) from admission.
+        let manifest = serde_json::to_string(&ironpad_common::ShareManifest {
+            version: 1,
+            cells: std::collections::BTreeMap::new(),
+        })
+        .unwrap();
+        db.create_mutable_share("manifested0000ff", "1", VALID_NOTEBOOK_JSON, Some(manifest))
+            .await
+            .unwrap();
+        db.set_share_private("manifested0000ff", true)
+            .await
+            .unwrap();
+        assert!(
+            mutable_manifest_access_core(&db, "manifested0000ff", None)
+                .await
+                .unwrap()
+                .is_none(),
+            "anonymous: manifest withheld"
+        );
+        assert!(
+            mutable_manifest_access_core(&db, "manifested0000ff", Some(&bob))
+                .await
+                .unwrap()
+                .is_none(),
+            "signed-in non-grantee: manifest withheld"
+        );
+        db.grant_read("manifested0000ff", "2").await.unwrap();
+        assert!(
+            mutable_manifest_access_core(&db, "manifested0000ff", Some(&bob))
+                .await
+                .unwrap()
+                .is_some(),
+            "grantee: manifest served"
+        );
+        assert!(
+            mutable_manifest_access_core(&db, "manifested0000ff", Some(&alice))
+                .await
+                .unwrap()
+                .is_some(),
+            "owner: manifest served"
+        );
 
         // Unpublish wipes the READ grants with the share.
         db.grant_read(&id, "2").await.unwrap();

@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
-import { createNotebook, waitForPersistedCells } from "./helpers/session";
 import { setCellSource } from "./helpers/monaco";
+import { MENU } from "./helpers/mutable";
+import { createNotebook, waitForPersistedCells } from "./helpers/session";
 
 /**
  * PRD-0058: /local version history. Saves mint at most one snapshot per
@@ -9,7 +10,6 @@ import { setCellSource } from "./helpers/monaco";
  * current version, so the restore itself is undoable.
  */
 
-const MENU = '.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]';
 
 test.describe("Local version history (PRD-0058)", () => {
   test("edit, restore, and the restore itself is undoable", async ({

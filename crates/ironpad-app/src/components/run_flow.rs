@@ -32,14 +32,18 @@ const COMPILE_TRANSPORT_RETRIES: i32 = 2;
 #[cfg(feature = "hydrate")]
 const COMPILE_TRANSPORT_BACKOFF_MS: i32 = 1_500;
 
-/// Await `ms` milliseconds via a `setTimeout`-backed promise, for spacing
-/// compile-transport retries.
+/// Await `ms` milliseconds via a `setTimeout`-backed promise — THE async
+/// sleeper for this crate (there's no async-timer dependency in the
+/// workspace). Retry backoffs, effect-queue yields, and autosave polls all
+/// delegate here; a mechanism change (timer future, clamping, the no-window
+/// arm) lands once.
 #[cfg(feature = "hydrate")]
-async fn transport_backoff(ms: i32) {
+pub(crate) async fn sleep_ms(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         if let Some(window) = leptos::web_sys::window() {
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
         } else {
+            // No window (shouldn't happen in hydrate) — resolve immediately.
             let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
         }
     });
@@ -119,7 +123,7 @@ pub async fn acquire_blob(
                     leptos::logging::warn!(
                         "compile transport error (attempt {attempt}): {e}; retrying"
                     );
-                    transport_backoff(COMPILE_TRANSPORT_BACKOFF_MS * attempt).await;
+                    sleep_ms(COMPILE_TRANSPORT_BACKOFF_MS * attempt).await;
                 }
                 other => break other,
             }

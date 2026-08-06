@@ -4,6 +4,7 @@ mod export;
 mod history;
 mod metadata_panel;
 mod pipeline;
+mod share_access;
 mod shared_editor_panel;
 mod sharing;
 mod skeleton;
@@ -61,23 +62,13 @@ const CELL_FLUSH_YIELD_MS: i32 = 120;
 
 /// Awaits a `setTimeout` so queued Leptos effects — in particular each
 /// cell's notebook-level save-flush effect (`cell_item.rs`) — get a chance
-/// to run before the caller re-reads `state.notebook`. There's no
-/// async-timer dependency in this workspace, so this wraps `setTimeout` in a
-/// `Promise` (mirrors the `set_timeout_with_callback_and_timeout_and_arguments_0`
-/// usage elsewhere in this crate). The
-/// delay is a pragmatic yield for the effect queue, not a correctness
-/// guarantee — see the `CELL_FLUSH_YIELD_MS` docs.
+/// to run before the caller re-reads `state.notebook`. A thin semantic
+/// wrapper over the crate's one sleeper (`run_flow::sleep_ms`); the delay
+/// is a pragmatic yield for the effect queue, not a correctness guarantee —
+/// see the `CELL_FLUSH_YIELD_MS` docs.
 #[cfg(feature = "hydrate")]
 pub(super) async fn yield_for_cell_flush(ms: i32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        if let Some(window) = web_sys::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
-        } else {
-            // No window (shouldn't happen in hydrate) — resolve immediately.
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
-        }
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    crate::components::run_flow::sleep_ms(ms).await;
 }
 
 /// Call `.destroy()` on a stored `SortableJS` instance (if present) and clear the

@@ -1,7 +1,8 @@
 import { test, expect, Page } from "@playwright/test";
-import { createNotebook } from "./helpers/session";
-import { setCellSource } from "./helpers/monaco";
 import { loginTestUser } from "./helpers/auth";
+import { setCellSource } from "./helpers/monaco";
+import { MENU } from "./helpers/mutable";
+import { createNotebook } from "./helpers/session";
 
 /**
  * PRD-0056: persisted cell outputs. Sharing embeds the author's last-run
@@ -10,7 +11,6 @@ import { loginTestUser } from "./helpers/auth";
  * fresh reader sees a finished document with zero compiles.
  */
 
-const MENU = '.ironpad-toolbar-dropdown-toggle[title="Notebook menu"]';
 
 /** Add a cell, set its source, run it, and wait for the output text. */
 async function addRunCell(page: Page, source: string, expectText: string) {

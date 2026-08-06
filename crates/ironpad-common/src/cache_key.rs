@@ -365,12 +365,49 @@ pub fn uses_coroutines(source: &str, shared_source: Option<&str>) -> bool {
 /// markers. This closes the documented gap in the coroutine detection.
 ///
 /// A bare `gen` is ordinary English, so detection matches the block forms
-/// only: `gen {`, `gen move {`, and `async gen`. A false positive (the
-/// string in a comment) costs one harmless feature gate; a miss costs a
-/// clear rustc error naming the gate, same failure mode as before.
+/// only: a word-boundary `gen`, optionally followed by `move`, then a `{`
+/// after any whitespace (`gen{`, `gen  {`, `gen\n{`, `gen move{` are all
+/// valid token streams on edition 2024) — plus `async gen` as its own
+/// marker. A false positive (the string in a comment) costs one harmless
+/// feature gate; a miss dead-ends the author, because rustc's E0658 help
+/// names a crate-root attribute a cell cannot reach (the crate root belongs
+/// to the scaffold) — hence the whitespace-tolerant scan.
 #[must_use]
 pub fn uses_gen_blocks(source: &str, shared_source: Option<&str>) -> bool {
-    let hit = |s: &str| s.contains("gen {") || s.contains("gen move {") || s.contains("async gen");
+    fn is_ident(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+    fn hit(s: &str) -> bool {
+        let bytes = s.as_bytes();
+        let mut from = 0;
+        while let Some(pos) = s[from..].find("gen").map(|p| p + from) {
+            from = pos + 1;
+            let end = pos + 3;
+            let word_boundary = (pos == 0 || !is_ident(bytes[pos - 1]))
+                && (end >= bytes.len() || !is_ident(bytes[end]));
+            if !word_boundary {
+                continue;
+            }
+            // `async gen` is a marker on its own (async gen blocks).
+            let before = s[..pos].trim_end();
+            if before.ends_with("async")
+                && (before.len() == 5 || !is_ident(before.as_bytes()[before.len() - 6]))
+            {
+                return true;
+            }
+            // `gen [move] {` with any whitespace (including none).
+            let mut rest = s[end..].trim_start();
+            if let Some(after_move) = rest.strip_prefix("move") {
+                if after_move.starts_with(|c: char| c.is_whitespace() || c == '{') {
+                    rest = after_move.trim_start();
+                }
+            }
+            if rest.starts_with('{') {
+                return true;
+            }
+        }
+        false
+    }
     hit(source) || shared_source.is_some_and(hit)
 }
 
@@ -438,9 +475,20 @@ mod tests {
             "42",
             Some("pub fn f() { gen { yield 1; }; }")
         ));
+        // Whitespace variants are the same valid token stream on edition
+        // 2024 — a miss here dead-ends the author on an E0658 naming a
+        // crate-root gate a cell cannot reach.
+        assert!(uses_gen_blocks("let g = gen{ yield 1u32; };", None));
+        assert!(uses_gen_blocks("let g = gen  { yield 1; };", None));
+        assert!(uses_gen_blocks("let g = gen\n{ yield 1; };", None));
+        assert!(uses_gen_blocks("let g = gen move{ yield x; };", None));
+        assert!(uses_gen_blocks("let s = async\ngen { yield 1; };", None));
         // Bare "gen" is ordinary prose/identifier text, never an opt-in.
         assert!(!uses_gen_blocks("// generate the gen next", None));
         assert!(!uses_gen_blocks("let gen_count = 3;", None));
+        assert!(!uses_gen_blocks("degen { }", None));
+        assert!(!uses_gen_blocks("let masync = 1; masync gen", None));
+        assert!(!uses_gen_blocks("gen movee { }", None));
     }
 
     #[test]
