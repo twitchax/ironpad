@@ -413,14 +413,14 @@ mod pipeline_tests {
         );
 
         // Step 4: Parse mock build output (simulated cargo JSON diagnostics).
-        let mock_cargo_output = r#"{"reason":"compiler-message","package_id":"cell-cell-0 0.1.0 (path+file:///tmp/cell)","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-cell-0","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0308]: mismatched types\n","children":[],"code":{"code":"E0308","explanation":null},"level":"error","message":"mismatched types","spans":[{"byte_end":200,"byte_start":190,"column_end":30,"column_start":22,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected `i32`, found `&str`","line_end":7,"line_start":7,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+        let mock_cargo_output = r#"{"reason":"compiler-message","package_id":"cell-cell-0 0.1.0 (path+file:///tmp/cell)","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"cell-cell-0","src_path":"/tmp/cell/src/lib.rs","edition":"2021","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0308]: mismatched types\n","children":[],"code":{"code":"E0308","explanation":null},"level":"error","message":"mismatched types","spans":[{"byte_end":200,"byte_start":190,"column_end":30,"column_start":22,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected `i32`, found `&str`","line_end":8,"line_start":8,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
 
         let diagnostics = parse_diagnostics(mock_cargo_output, preamble_lines);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, ironpad_common::Severity::Error);
         assert_eq!(diagnostics[0].code.as_deref(), Some("E0308"));
 
-        // The error was on wrapper line 7 → user line 1.
+        // The error was on wrapper line 8 → user line 1 (preamble is 7).
         assert_eq!(diagnostics[0].spans[0].line_start, 1);
     }
 
@@ -428,22 +428,32 @@ mod pipeline_tests {
 
     #[test]
     fn scaffold_generates_typed_cell_bindings() {
-        // With two typed previous cells.
+        // Two typed previous cells, only cell0 referenced (PRD-0060): the
+        // scaffold binds exactly the referenced slot.
         let types: Vec<String> = vec!["u32".into(), "String".into()];
         let (code, preamble, ..) = generate_lib_rs("    let x = cell0 + 1;", &types, false);
 
         assert!(code.contains("let cell0: u32"));
-        assert!(code.contains("let cell1: String"));
-        assert!(code.contains("let last = &cell1"));
+        assert!(
+            !code.contains("let cell1:"),
+            "unreferenced slots stay unbound"
+        );
+        assert!(
+            !code.contains("let last"),
+            "the alias binds only when referenced"
+        );
         assert!(code.contains("__ironpad_inputs__"));
-        assert_eq!(preamble, 12, "6 base + 3 (ptr + inputs) + 2 cells + 1 last");
+        assert_eq!(
+            preamble, 11,
+            "7 base + 3 (ptr + inputs) + 1 referenced cell"
+        );
 
         // With no previous cells.
         let (code_empty, preamble_empty, ..) = generate_lib_rs("    let x = 1;", &[], false);
 
         assert!(!code_empty.contains("__ironpad_inputs__"));
         assert!(!code_empty.contains("let cell"));
-        assert_eq!(preamble_empty, 6);
+        assert_eq!(preamble_empty, 7);
     }
 
     // ── Cache round-trip with content hash ──────────────────────────────
@@ -789,6 +799,61 @@ pub fn range(angle: f64) -> f64 {
 
     #[tokio::test]
     #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn compile_cell_with_gen_block_builds_successfully() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "gen-block";
+
+        // `gen` blocks are edition-2024 syntax: this test would fail to
+        // PARSE on the 2021 micro-crates the scaffold used to generate,
+        // which is exactly how the v0.17.0 gen_blocks gate shipped inert —
+        // its unit tests covered detection and preamble math, never a real
+        // compile. A build success proves edition + feature gate together.
+        let source = "    let g = gen { yield 1u32; yield 2; yield 3; };\n    let total: u32 = g.sum();\n    CellOutput::from(total)";
+        let cargo_toml = "[dependencies]";
+
+        let (crate_dir, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+        )
+        .expect("scaffold should succeed");
+
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(lib_rs.starts_with("#![feature(gen_blocks)]\n"));
+        let manifest = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
+        assert!(manifest.contains("edition = \"2024\""));
+
+        let result = build_micro_crate(
+            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                let wasm_bytes = std::fs::read(&wasm_path).unwrap();
+                assert_eq!(&wasm_bytes[..4], b"\x00asm");
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "gen-block cell should build on edition 2024.\nstdout(tail): {}\nstderr(tail): {}",
+                    &stdout[stdout.len().saturating_sub(2000)..],
+                    &stderr[stderr.len().saturating_sub(1500)..],
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_cell_with_host_imports_links_successfully() {
         let cache_dir = tempdir();
         let cell_path = ironpad_cell_path();
@@ -979,10 +1044,11 @@ pub struct AlsoUnusedHere {
         let session_id = "e2e-session";
         let cell_id = "unused-inputs";
 
-        // Two typed upstream cells; this cell reads NEITHER cell0/cell1 nor
-        // `last`, which without the allow warns on all three bindings.
+        // Two typed upstream cells; the source references `last`, which
+        // binds BOTH cellN slots (the alias target is dynamic) while using
+        // neither by name — without the allow, cell0 and cell1 would warn.
         let previous_cell_types: Vec<String> = vec!["u32".into(), "String".into()];
-        let source = "    CellOutput::text(\"ignores its inputs\")";
+        let source = "    CellOutput::text(format!(\"{last}\"))";
         let cargo_toml = "[dependencies]";
 
         let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(

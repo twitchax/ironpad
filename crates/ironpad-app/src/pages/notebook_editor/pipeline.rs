@@ -6,8 +6,8 @@
 //! the shipped bugs were (the inline Unpublish flow missed the flush
 //! discipline every extracted sibling had). The stages consume the shared
 //! seams minted by the review waves (`assemble_cell_inputs`,
-//! `unexecuted_upstream`, `probe_local`/`store_unless_served`,
-//! `abort_run_cascade`) rather than re-wrapping them.
+//! `unexecuted_dependencies`, `probe_local`/`store_unless_served`,
+//! `fail_in_run_queue`) rather than re-wrapping them.
 
 use ironpad_common::{
     CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult, Severity,
@@ -128,14 +128,21 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
         let current_cargo_toml = cargo_toml.get_untracked();
 
         // ── Cascading execution ─────────────────────────────────────────
-        // Unexecuted upstream runnable cells queue first (plus this cell) —
-        // the one shared recipe (`unexecuted_upstream`), same as the viewer
-        // and the agent path.
+        // Unexecuted cells this one transitively CONSUMES queue first (plus
+        // this cell) — the one shared recipe (`unexecuted_dependencies`,
+        // PRD-0060), same as the viewer and the agent path. Independent
+        // upstream cells no longer cascade: the scaffold binds only
+        // referenced slots, so skipping them is safe.
         {
             let cells = state.cells.get_untracked();
             let outputs = state.cell_outputs.get_untracked();
-            let unexecuted =
-                crate::components::executor::unexecuted_upstream(&cells, &cid, &outputs);
+            let sources = state.current_cell_sources();
+            let unexecuted = crate::components::executor::unexecuted_dependencies(
+                &cells,
+                &cid,
+                &outputs,
+                |id| sources.get(id).cloned(),
+            );
 
             if !unexecuted.is_empty() {
                 let mut queue = unexecuted;
@@ -389,8 +396,10 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                                     }));
                                     cell_status.set(CellStatus::Error);
 
-                                    // Stop run-all on execution error.
-                                    state.abort_run_cascade(&cell_id_for_exec);
+                                    // Drop this cell's dependents from the
+                                    // queue; independents keep running
+                                    // (PRD-0060).
+                                    state.fail_in_run_queue(&cell_id_for_exec);
                                 }
                             }
                         }
@@ -420,8 +429,8 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         cell_status.set(CellStatus::Error);
                         last_compile.set(Some(response));
 
-                        // Stop run-all on compile error.
-                        state.abort_run_cascade(&cell_id_for_exec);
+                        // Drop dependents; independents keep running.
+                        state.fail_in_run_queue(&cell_id_for_exec);
                     }
                 }
                 Err(e) => {
@@ -445,8 +454,8 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         js_glue: None,
                     }));
 
-                    // Stop run-all on server error.
-                    state.abort_run_cascade(&cell_id_for_exec);
+                    // Drop dependents; independents keep running.
+                    state.fail_in_run_queue(&cell_id_for_exec);
                 }
             }
         });
@@ -523,6 +532,45 @@ pub(super) fn dispatch_live_check(
     cargo_toml: RwSignal<String>,
     last_check: RwSignal<Option<Vec<Diagnostic>>>,
     check_generation: RwSignal<u64>,
+) {
+    dispatch_live_check_with_retries(
+        state,
+        cid,
+        is_markdown,
+        is_shared,
+        cell_status,
+        source,
+        cargo_toml,
+        last_check,
+        check_generation,
+        CHECK_SKIP_RETRIES,
+    );
+}
+
+/// Retries after a `Skipped` check (the pool was busy). Each retry re-reads
+/// the CURRENT source and re-runs eligibility, so it never checks stale
+/// text; the generation guard makes a superseding edit's own dispatch win.
+#[cfg(feature = "hydrate")]
+const CHECK_SKIP_RETRIES: u8 = 5;
+
+/// Delay before a skip retry: long enough for a build slot to free, short
+/// enough that the squiggle still feels live.
+#[cfg(feature = "hydrate")]
+const CHECK_SKIP_RETRY_MS: i32 = 3_000;
+
+#[cfg(feature = "hydrate")]
+#[allow(clippy::too_many_arguments)]
+fn dispatch_live_check_with_retries(
+    state: &NotebookState,
+    cid: String,
+    is_markdown: bool,
+    is_shared: Signal<bool>,
+    cell_status: RwSignal<CellStatus>,
+    source: RwSignal<String>,
+    cargo_toml: RwSignal<String>,
+    last_check: RwSignal<Option<Vec<Diagnostic>>>,
+    check_generation: RwSignal<u64>,
+    retries_left: u8,
 ) {
     use ironpad_common::{manifest_has_custom_deps, CheckStatus, SharedCheckRange};
 
@@ -614,8 +662,10 @@ pub(super) fn dispatch_live_check(
                 }
             })
             .collect();
-        let references_pipes = (0..10).any(|i| current_source.contains(&format!("cell{i}")));
-        if references_pipes && types.iter().all(String::is_empty) {
+        // The shared detection recipe (PRD-0060): handles slots >= 10 and
+        // the `last` alias, which the old 0..10 substring scan missed.
+        let refs = ironpad_common::cell_deps::referenced_slots(&current_source);
+        if !refs.is_empty() && types.iter().all(String::is_empty) {
             return;
         }
         types
@@ -624,9 +674,13 @@ pub(super) fn dispatch_live_check(
     let generation = check_generation.get_untracked() + 1;
     check_generation.set(generation);
 
+    // Copied for the skip-retry redispatch: leptos context is not reliably
+    // reachable from a detached task, and the handle is `Copy` anyway.
+    let state_for_retry = *state;
+
     let request = CompileRequest {
         notebook_id: state.notebook_id.get_untracked(),
-        cell_id: cid,
+        cell_id: cid.clone(),
         source: if shared {
             SHARED_CHECK_BODY.to_string()
         } else {
@@ -661,8 +715,35 @@ pub(super) fn dispatch_live_check(
             CheckStatus::Clean | CheckStatus::Errors => {
                 last_check.set(Some(response.diagnostics));
             }
-            // Busy or cold: no information this round; keep current markers.
-            CheckStatus::Skipped | CheckStatus::TimedOut => {}
+            // Busy: the pool had no free slot THIS round. Without a retry
+            // the squiggle never appears even though the server frees up
+            // seconds later (the live-check e2e caught this under suite
+            // concurrency). Bounded, and the redispatch re-reads current
+            // state, so it degrades to a plain skip under sustained load.
+            CheckStatus::Skipped => {
+                if retries_left > 0 {
+                    super::yield_for_cell_flush(CHECK_SKIP_RETRY_MS).await;
+                    // Disposed while waiting: nothing to check.
+                    if check_generation.try_get_untracked().is_none() {
+                        return;
+                    }
+                    dispatch_live_check_with_retries(
+                        &state_for_retry,
+                        cid,
+                        is_markdown,
+                        is_shared,
+                        cell_status,
+                        source,
+                        cargo_toml,
+                        last_check,
+                        check_generation,
+                        retries_left - 1,
+                    );
+                }
+            }
+            // Cold: the server spent its whole time budget; a quick retry
+            // would spend another for the same answer.
+            CheckStatus::TimedOut => {}
         }
     });
 }

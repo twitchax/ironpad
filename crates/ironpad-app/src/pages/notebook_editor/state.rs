@@ -253,22 +253,60 @@ impl NotebookState {
     #[cfg(not(feature = "hydrate"))]
     pub(super) fn schedule_reactive_execution(&self) {}
 
-    /// Halt a run-all cascade at `failed_cell_id`: in reactive mode, mark
-    /// the remaining queued cells blocked-by the failure, then clear the
-    /// queue. ONE definition for the three error paths (execution, compile,
-    /// transport) that each used to hand-roll it — the daemon's
-    /// `prerequisite_failed` semantics lean on this behavior, so the copies
-    /// drifting apart would desync agents from the UI.
-    pub(super) fn abort_run_cascade(&self, failed_cell_id: &str) {
+    /// Each cell's CURRENT source text, for dependency detection: the model
+    /// as the base (it lags a live edit by the 1s save debounce), overlaid
+    /// with the mounted Monaco editors' live values, which are exact.
+    /// Collapsed cells have no mounted editor and cannot have unsaved edits,
+    /// so the model is already correct for them.
+    pub(super) fn current_cell_sources(&self) -> HashMap<String, String> {
+        let mut map: HashMap<String, String> = self
+            .notebook
+            .try_with_untracked(|nb| {
+                nb.as_ref().map(|nb| {
+                    nb.cells
+                        .iter()
+                        .map(|c| (c.id.clone(), c.source.clone()))
+                        .collect()
+                })
+            })
+            .flatten()
+            .unwrap_or_default();
+        #[cfg(feature = "hydrate")]
+        self.editor_handles.with_untracked(|handles| {
+            for (id, handle) in handles {
+                map.insert(id.clone(), handle.get_value());
+            }
+        });
+        map
+    }
+
+    /// Continue-past-failures policy (PRD-0060): drop `failed_cell_id` and
+    /// its transitive dependents from the run queue — marking the dependents
+    /// blocked-by the failure so the UI says WHY they were skipped — while
+    /// every independent queued cell keeps running. ONE definition for the
+    /// three error paths (execution, compile, transport); the daemon's
+    /// `prerequisite_failed` semantics mirror this recipe, so a fork here
+    /// would desync agents from the UI.
+    pub(super) fn fail_in_run_queue(&self, failed_cell_id: &str) {
+        let cells = self.cells.get_untracked();
         let queue = self.run_all_queue.get_untracked();
-        if self.reactive_mode.get_untracked() && queue.len() > 1 {
+        let sources = self.current_cell_sources();
+        let dependents = crate::components::executor::dependents_in_queue(
+            &cells,
+            &queue,
+            failed_cell_id,
+            |id| sources.get(id).cloned(),
+        );
+        if !dependents.is_empty() {
             self.cell_blocked_by.update(|blocked| {
-                for queued_id in &queue[1..] {
-                    blocked.insert(queued_id.clone(), failed_cell_id.to_string());
+                for dep in &dependents {
+                    blocked.insert(dep.clone(), failed_cell_id.to_string());
                 }
             });
         }
-        self.run_all_queue.set(vec![]);
+        self.run_all_queue.update(|q| {
+            q.retain(|id| id != failed_cell_id && !dependents.contains(id));
+        });
     }
 }
 

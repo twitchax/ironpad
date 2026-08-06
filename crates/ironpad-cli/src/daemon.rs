@@ -540,34 +540,67 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
                 )
             }
         };
-        if let Some(outcome) = run_outcome(cell_id, &event) {
+        // A dependency check only matters for ANOTHER cell's failure, and
+        // it needs the cached notebook — read it lazily per candidate event.
+        let needs_dep_check = matches!(
+            &event,
+            protocol::Event::CellExecuted { cell_id: id, success: false, .. }
+            | protocol::Event::CellCompiled { cell_id: id, success: false, .. }
+                if id != cell_id
+        );
+        let notebook = if needs_dep_check {
+            state.notebook.read().await.clone()
+        } else {
+            None
+        };
+        if let Some(outcome) = run_outcome(cell_id, &event, notebook.as_ref()) {
             return IpcResponse::success(outcome);
         }
     }
 }
 
+/// Does `target_id` transitively depend on `failed_id` in this notebook —
+/// the same shared recipe the browser's queue policy runs
+/// (`ironpad_common::cell_deps`), so daemon and UI classify a failure
+/// identically. Unknown ids degrade to `true` (terminal, never a hang).
+fn target_depends_on(notebook: &IronpadNotebook, target_id: &str, failed_id: &str) -> bool {
+    let target = notebook.cells.iter().position(|c| c.id == target_id);
+    let failed = notebook.cells.iter().position(|c| c.id == failed_id);
+    let (Some(target), Some(failed)) = (target, failed) else {
+        return true;
+    };
+    let graph: Vec<ironpad_common::cell_deps::DepCell<'_>> = notebook
+        .cells
+        .iter()
+        .map(|c| ironpad_common::cell_deps::DepCell {
+            runnable: c.is_runnable(),
+            source: Some(&c.source),
+        })
+        .collect();
+    ironpad_common::cell_deps::transitive_dep_indices(&graph, target).contains(&failed)
+}
+
 /// Maps an incoming event to the terminal outcome of a run of `cell_id`, or
 /// `None` if the run is still in flight.
 ///
-/// Four terminal shapes:
+/// Terminal shapes:
 /// - `CellExecuted` for our cell — done, successfully or not.
 /// - `CellCompiled { success: false }` for our cell — compile failure.
-/// - `CellCompiled { success: false }` for ANY other cell — a prerequisite in
-///   the cascade failed. The browser clears the run queue on compile failure,
-///   so our queued run is dead and waiting longer would only hit the timeout.
-/// - `CellExecuted { success: false }` for ANY other cell — same logic at
-///   runtime: the browser clears the queue when any cell's EXECUTION fails
-///   too (a prerequisite that compiled clean but panicked), so without this
-///   arm the daemon waited out the full timeout instead of reporting
-///   `prerequisite_failed`.
+/// - A compile OR runtime failure of a cell our cell transitively DEPENDS ON
+///   (PRD-0060): the browser drops dependents from the queue on a failure,
+///   so our queued run is dead — `prerequisite_failed`, payload naming the
+///   cell. The dependency test runs the same shared recipe as the browser
+///   (`cell_deps`) against the daemon's cached notebook; with no cached
+///   notebook it degrades to terminal (the pre-0060 behavior — never a
+///   hang).
 ///
-/// "ANY other cell" is deliberate, not an approximation: the browser's
-/// cascade abort clears the whole queue on any concurrent failure — even a
-/// manually-run unrelated cell's — so our queued run is dead regardless of
-/// whether the failing cell was literally upstream of ours. The
-/// `prerequisite_failed` status therefore means "the cascade halted because
-/// a cell failed", and the payload names which one.
-fn run_outcome(cell_id: &str, event: &protocol::Event) -> Option<serde_json::Value> {
+/// An UNRELATED cell's failure is NOT terminal anymore: the queue continues
+/// past it and our run still executes (continue-past-failures).
+fn run_outcome(
+    cell_id: &str,
+    event: &protocol::Event,
+    notebook: Option<&IronpadNotebook>,
+) -> Option<serde_json::Value> {
     match event {
         protocol::Event::CellExecuted {
             cell_id: id,
@@ -587,20 +620,30 @@ fn run_outcome(cell_id: &str, event: &protocol::Event) -> Option<serde_json::Val
             display_text,
             success: false,
             ..
-        } => Some(serde_json::json!({
-            "status": "prerequisite_failed",
-            "cell_id": id,
-            "display_text": display_text,
-        })),
+        } => {
+            if notebook.is_some_and(|nb| !target_depends_on(nb, cell_id, id)) {
+                return None; // independent failure: the queue continues, keep waiting
+            }
+            Some(serde_json::json!({
+                "status": "prerequisite_failed",
+                "cell_id": id,
+                "display_text": display_text,
+            }))
+        }
         protocol::Event::CellCompiled {
             cell_id: id,
             diagnostics,
             success: false,
-        } => Some(serde_json::json!({
-            "status": if id == cell_id { "compile_error" } else { "prerequisite_failed" },
-            "cell_id": id,
-            "diagnostics": diagnostics,
-        })),
+        } => {
+            if id != cell_id && notebook.is_some_and(|nb| !target_depends_on(nb, cell_id, id)) {
+                return None; // independent failure: the queue continues, keep waiting
+            }
+            Some(serde_json::json!({
+                "status": if id == cell_id { "compile_error" } else { "prerequisite_failed" },
+                "cell_id": id,
+                "diagnostics": diagnostics,
+            }))
+        }
         _ => None,
     }
 }
@@ -967,7 +1010,8 @@ mod tests {
             "mine",
             &Event::CellCompiling {
                 cell_id: "mine".into()
-            }
+            },
+            None,
         )
         .is_none());
         assert!(run_outcome(
@@ -976,7 +1020,8 @@ mod tests {
                 cell_id: "mine".into(),
                 diagnostics: vec![],
                 success: true,
-            }
+            },
+            None,
         )
         .is_none());
         assert!(run_outcome(
@@ -987,7 +1032,8 @@ mod tests {
                 type_tag: None,
                 execution_time_ms: 1.0,
                 success: true,
-            }
+            },
+            None,
         )
         .is_none());
 
@@ -1001,6 +1047,7 @@ mod tests {
                 execution_time_ms: 3.5,
                 success: true,
             },
+            None,
         )
         .unwrap();
         assert_eq!(ok["status"], "executed");
@@ -1015,12 +1062,13 @@ mod tests {
                 execution_time_ms: 0.0,
                 success: false,
             },
+            None,
         )
         .unwrap();
         assert_eq!(failed["status"], "execution_error");
 
-        // Terminal: our compile failure, and — because the browser clears the
-        // run queue on any compile failure — a prerequisite's too.
+        // Terminal: our compile failure; with NO cached notebook another
+        // cell's failure degrades to terminal too (conservative, no hangs).
         let compile_err = run_outcome(
             "mine",
             &Event::CellCompiled {
@@ -1028,6 +1076,7 @@ mod tests {
                 diagnostics: vec![],
                 success: false,
             },
+            None,
         )
         .unwrap();
         assert_eq!(compile_err["status"], "compile_error");
@@ -1039,14 +1088,14 @@ mod tests {
                 diagnostics: vec![],
                 success: false,
             },
+            None,
         )
         .unwrap();
         assert_eq!(prereq["status"], "prerequisite_failed");
         assert_eq!(prereq["cell_id"], "upstream");
 
-        // Terminal: a prerequisite's RUNTIME failure too — the browser clears
-        // the queue on execution errors, so waiting longer only hits the
-        // timeout (this hung for the full 360s before it had its own arm).
+        // Terminal (no cached notebook): a RUNTIME failure elsewhere too —
+        // without dependency knowledge, waiting longer only hits the timeout.
         let runtime_prereq = run_outcome(
             "mine",
             &Event::CellExecuted {
@@ -1056,11 +1105,70 @@ mod tests {
                 execution_time_ms: 0.0,
                 success: false,
             },
+            None,
         )
         .unwrap();
         assert_eq!(runtime_prereq["status"], "prerequisite_failed");
         assert_eq!(runtime_prereq["cell_id"], "upstream");
         assert_eq!(runtime_prereq["display_text"], "panicked at 'boom'");
+    }
+
+    #[test]
+    fn run_outcome_is_dependency_aware_with_a_cached_notebook() {
+        use ironpad_common::IronpadCell;
+
+        fn code(id: &str, source: &str, order: u32) -> IronpadCell {
+            IronpadCell {
+                id: id.to_string(),
+                order,
+                label: id.to_string(),
+                cell_type: ironpad_common::CellType::Code,
+                source: source.to_string(),
+                cargo_toml: None,
+                shared: false,
+                collapsed: false,
+                output_collapsed: false,
+                version: 0,
+                saved_output: None,
+            }
+        }
+
+        // mine consumes slot 0 ("dep"); "indep" is independent of everything.
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells = vec![
+            code("dep", "1 + 1", 0),
+            code("indep", "42", 1),
+            code("mine", "cell0 * 2", 2),
+        ];
+
+        let failure = |id: &str| Event::CellCompiled {
+            cell_id: id.into(),
+            diagnostics: vec![],
+            success: false,
+        };
+
+        // An INDEPENDENT cell's failure is not terminal: the queue continues
+        // past it (PRD-0060) and our run still executes.
+        assert!(run_outcome("mine", &failure("indep"), Some(&nb)).is_none());
+
+        // A cell we depend on failing IS terminal.
+        let out = run_outcome("mine", &failure("dep"), Some(&nb)).unwrap();
+        assert_eq!(out["status"], "prerequisite_failed");
+        assert_eq!(out["cell_id"], "dep");
+
+        // Runtime failures classify the same way.
+        let runtime = |id: &str| Event::CellExecuted {
+            cell_id: id.into(),
+            display_text: Some("boom".into()),
+            type_tag: None,
+            execution_time_ms: 0.0,
+            success: false,
+        };
+        assert!(run_outcome("mine", &runtime("indep"), Some(&nb)).is_none());
+        assert!(run_outcome("mine", &runtime("dep"), Some(&nb)).is_some());
+
+        // Unknown failed id degrades to terminal (never a hang).
+        assert!(run_outcome("mine", &failure("ghost"), Some(&nb)).is_some());
     }
 
     // ── translate_command ────────────────────────────────────────────────

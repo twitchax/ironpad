@@ -2608,6 +2608,68 @@ code[class*="language-"] {
     }
 }
 
+// Access controls (PRD-0061): private toggle + READ grants on a published
+// share, inside the metadata panel.
+.ironpad-access-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.ironpad-access-grants {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+.ironpad-access-grant {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.15rem 0.5rem;
+    background: rgba(var(--ip-info-rgb), 0.1);
+    border: 1px solid rgba(var(--ip-info-rgb), 0.3);
+    border-radius: 999px;
+    font-size: 0.85rem;
+}
+
+.ironpad-access-revoke {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--ip-text-muted);
+    padding: 0 0.1rem;
+
+    &:hover {
+        color: var(--ip-error);
+    }
+}
+
+.ironpad-access-add {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+
+    input {
+        flex: 1;
+    }
+}
+
+// Skipped-dependent notice (PRD-0060): a run-queue failure drops this cell
+// and says why, instead of stranding it silently.
+.view-only-blocked {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: rgba(var(--ip-warning-rgb), 0.08);
+    border: 1px dashed rgba(var(--ip-warning-rgb), 0.4);
+    border-radius: 4px;
+    font-size: 0.85rem;
+    color: var(--ip-warning);
+}
+
 .view-only-output {
     margin-top: 0.5rem;
     border: 1px solid var(--ip-border);

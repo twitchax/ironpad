@@ -135,6 +135,11 @@ pub(crate) fn ViewOnlyNotebook(
 
     // Run-all sequential execution queue (cell IDs in order).
     let run_all_queue: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
+    // Cells skipped because a cell they transitively depend on failed
+    // (PRD-0060 continue-past-failures): id -> failed cell's id. Rendered
+    // as an inline notice; cleared when the blocker succeeds or the cell
+    // is run directly.
+    let blocked_by: RwSignal<HashMap<String, String>> = RwSignal::new(HashMap::new());
     let running_all: RwSignal<bool> = RwSignal::new(false);
     let force_recompile: RwSignal<bool> = RwSignal::new(false);
 
@@ -425,6 +430,7 @@ pub(crate) fn ViewOnlyNotebook(
                                 notebook_id=nid
                                 cell_outputs=cell_outputs
                                 run_all_queue=run_all_queue
+                                blocked_by=blocked_by
                                 force_recompile=force_recompile
                                 share_blob=share_blob
                             />
@@ -511,6 +517,7 @@ fn ViewOnlyCell(
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
+    blocked_by: RwSignal<HashMap<String, String>>,
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
 ) -> impl IntoView {
@@ -532,6 +539,7 @@ fn ViewOnlyCell(
                 notebook_id=notebook_id
                 cell_outputs=cell_outputs
                 run_all_queue=run_all_queue
+                blocked_by=blocked_by
                 force_recompile=force_recompile
                 share_blob=share_blob
             />
@@ -558,6 +566,7 @@ fn ViewOnlyCodeCell(
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
+    blocked_by: RwSignal<HashMap<String, String>>,
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
 ) -> impl IntoView {
@@ -578,17 +587,24 @@ fn ViewOnlyCodeCell(
 
     // Run button click. A piped cell run in isolation reads empty inputs and
     // errors out on content the author already made work, so the click
-    // routes through the run-all queue with any unexecuted upstream
-    // runnable cells prepended — the same cascade agents get (PRD-0052).
-    // With no cold prerequisites it degrades to the direct trigger.
+    // routes through the run-all queue with any unexecuted cells this one
+    // transitively CONSUMES prepended (`unexecuted_dependencies`, PRD-0060)
+    // — the same cascade agents get (PRD-0052). With no cold dependencies
+    // it degrades to the direct trigger.
     let run_cell = move |_| {
         if !run_all_queue.get_untracked().is_empty() {
             return; // a run is already in flight; the queue owns execution
         }
         let cid = cell.with_value(|c| c.id.clone());
+        // A direct Run is a fresh attempt: clear any blocked notice.
+        blocked_by.update(|b| {
+            b.remove(&cid);
+        });
         let outputs = cell_outputs.get_untracked();
         let mut prereqs = all_cells.with_value(|cells| {
-            crate::components::executor::unexecuted_upstream(cells, &cid, &outputs)
+            crate::components::executor::unexecuted_dependencies(cells, &cid, &outputs, |id| {
+                cells.iter().find(|c| c.id == id).map(|c| c.source.clone())
+            })
         });
         if prereqs.is_empty() {
             run_trigger.update(|g| *g += 1);
@@ -736,11 +752,37 @@ fn ViewOnlyCodeCell(
                     }
                 }
 
-                // Advance the run-all queue past this cell whether it
-                // succeeded or failed. A failure renders inline on the cell
-                // (sometimes deliberately — teaching cells fail on purpose),
-                // and the cells behind it must still run; aborting the queue
-                // used to strand every later cell with no indication why.
+                // Continue-past-failures (PRD-0060): a failure drops this
+                // cell's transitive dependents from the queue — marked
+                // blocked so the reader sees WHY they were skipped — while
+                // every independent queued cell keeps running (teaching
+                // cells fail on purpose; the rest of the notebook is still
+                // the story). Success clears any blame this cell held.
+                if error_message.try_get_untracked().flatten().is_some() {
+                    let queue = run_all_queue.try_get_untracked().unwrap_or_default();
+                    let dependents = all_cells.with_value(|cells| {
+                        crate::components::executor::dependents_in_queue(
+                            cells,
+                            &queue,
+                            &cell_id,
+                            |id| cells.iter().find(|c| c.id == id).map(|c| c.source.clone()),
+                        )
+                    });
+                    if !dependents.is_empty() {
+                        blocked_by.update(|b| {
+                            for dep in &dependents {
+                                b.insert(dep.clone(), cell_id.clone());
+                            }
+                        });
+                        run_all_queue.update(|q| {
+                            q.retain(|id| !dependents.contains(id));
+                        });
+                    }
+                } else {
+                    blocked_by.update(|b| {
+                        b.retain(|_, blocker| blocker != &cell_id);
+                    });
+                }
                 crate::components::run_flow::advance_queue(run_all_queue, &cell_id);
 
                 compiling.set(false);
@@ -826,6 +868,25 @@ fn ViewOnlyCodeCell(
                     <pre>{err}</pre>
                 </div>
             })}
+            // Skipped because a dependency failed (PRD-0060): name the
+            // failed cell so the reader knows this is downstream damage,
+            // not this cell's own bug.
+            {move || {
+                let cid = cell.with_value(|c| c.id.clone());
+                blocked_by.get().get(&cid).map(|blocker| {
+                    let label = all_cells.with_value(|cells| {
+                        cells
+                            .iter()
+                            .find(|c| &c.id == blocker)
+                            .map_or_else(|| blocker.clone(), |c| c.label.clone())
+                    });
+                    view! {
+                        <div class="view-only-blocked">
+                            {format!("⊘ Skipped: this cell uses the output of \"{label}\", which failed. Fix that cell or press ▶ Run to retry.")}
+                        </div>
+                    }
+                })
+            }}
             // Saved output (PRD-0056): the author's last-run panels, shown
             // until the FIRST live result or error replaces them. The badge
             // is the product requirement: readers must know this is a

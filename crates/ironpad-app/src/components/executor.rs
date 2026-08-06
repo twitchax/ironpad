@@ -349,7 +349,7 @@ pub fn assemble_cell_inputs<C: PipingCell, S: std::hash::BuildHasher>(
     (encode_cell_inputs(&all_outputs), types)
 }
 
-/// The projection [`assemble_cell_inputs`] and [`unexecuted_upstream`] need
+/// The projection [`assemble_cell_inputs`] and [`unexecuted_dependencies`] need
 /// — implemented for both cell shapes so the editor (`CellManifest`) and the
 /// viewer (`IronpadCell`) run the SAME recipes instead of hand-synced
 /// copies.
@@ -384,13 +384,33 @@ impl PipingCell for ironpad_common::IronpadCell {
     }
 }
 
-/// Upstream runnable cells (strictly before `cell_id`, in notebook order)
-/// with no recorded output — the prerequisites a single-cell Run must
-/// execute first, or the target's piped inputs arrive empty and it errors
-/// out on content the author already made work. The same cascade semantics
-/// `run_all_queue` gives agents (PRD-0052), shared with the read-only
-/// viewer's Run button.
-pub fn unexecuted_upstream<C: PipingCell, S: std::hash::BuildHasher>(
+/// Project `cells` + a source lookup into the dependency graph's shape.
+fn dep_cells<'a, C: PipingCell>(
+    cells: &'a [C],
+    sources: &'a [Option<String>],
+) -> Vec<ironpad_common::cell_deps::DepCell<'a>> {
+    cells
+        .iter()
+        .zip(sources)
+        .map(|(c, s)| ironpad_common::cell_deps::DepCell {
+            runnable: c.is_runnable(),
+            source: s.as_deref(),
+        })
+        .collect()
+}
+
+/// The dependency-aware cascade recipe (PRD-0060): the unexecuted subset of
+/// `cell_id`'s transitive dependency closure, in notebook order — the
+/// prerequisites a single-cell Run must execute first, or the target's piped
+/// inputs arrive empty and it errors out on content the author already made
+/// work. Cells the target never consumes are NOT cascaded; the scaffold
+/// binds only referenced slots, so skipping them is safe.
+///
+/// `source_of` supplies each cell's current text; `None` degrades that cell
+/// to depends-on-all-upstream (the pre-0060 behavior). The same cascade
+/// semantics `run_all_queue` gives agents (PRD-0052), shared with the
+/// read-only viewer's Run button.
+pub fn unexecuted_dependencies<C: PipingCell, S: std::hash::BuildHasher>(
     cells: &[C],
     cell_id: &str,
     outputs: &std::collections::HashMap<
@@ -398,20 +418,58 @@ pub fn unexecuted_upstream<C: PipingCell, S: std::hash::BuildHasher>(
         crate::components::output_render::CellOutputData,
         S,
     >,
+    source_of: impl Fn(&str) -> Option<String>,
 ) -> Vec<String> {
     let Some(my_idx) = cells.iter().position(|c| c.id() == cell_id) else {
         return Vec::new();
     };
-    cells[..my_idx]
+    let sources: Vec<Option<String>> = cells.iter().map(|c| source_of(c.id())).collect();
+    let graph = dep_cells(cells, &sources);
+    ironpad_common::cell_deps::transitive_dep_indices(&graph, my_idx)
+        .into_iter()
+        .filter(|&i| !outputs.contains_key(cells[i].id()))
+        .map(|i| cells[i].id().to_string())
+        .collect()
+}
+
+/// Cells in `queue` whose transitive dependencies include `failed_id` — the
+/// ones that cannot produce an honest result after that failure and must be
+/// dropped (and surfaced as blocked). Everything else in the queue keeps
+/// running: the continue-past-failures policy (PRD-0060), which is what
+/// lets a notebook opening with a deliberate compile-fail teaching cell
+/// still run everything independent of it.
+pub fn dependents_in_queue<C: PipingCell>(
+    cells: &[C],
+    queue: &[String],
+    failed_id: &str,
+    source_of: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let Some(failed_idx) = cells.iter().position(|c| c.id() == failed_id) else {
+        return Vec::new();
+    };
+    let sources: Vec<Option<String>> = cells.iter().map(|c| source_of(c.id())).collect();
+    let graph = dep_cells(cells, &sources);
+    queue
         .iter()
-        .filter(|c| c.is_runnable() && !outputs.contains_key(c.id()))
-        .map(|c| c.id().to_string())
+        .filter(|qid| qid.as_str() != failed_id)
+        .filter(|qid| {
+            cells
+                .iter()
+                .position(|c| c.id() == qid.as_str())
+                .is_some_and(|qi| {
+                    ironpad_common::cell_deps::transitive_dep_indices(&graph, qi)
+                        .contains(&failed_idx)
+                })
+        })
+        .cloned()
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{assemble_cell_inputs, encode_cell_inputs, unexecuted_upstream};
+    use super::{
+        assemble_cell_inputs, dependents_in_queue, encode_cell_inputs, unexecuted_dependencies,
+    };
     use crate::components::output_render::CellOutputData;
     use ironpad_common::{CellManifest, CellType};
     use std::collections::HashMap;
@@ -459,29 +517,109 @@ mod tests {
     }
 
     #[test]
-    fn unexecuted_upstream_selects_only_runnable_cells_without_outputs() {
+    fn unexecuted_dependencies_cascade_only_consumed_cells() {
         let mut cells = vec![
-            manifest("ran", CellType::Code),
-            manifest("md", CellType::Markdown),
-            manifest("cold", CellType::Code),
-            manifest("shared", CellType::Code),
-            manifest("me", CellType::Code),
-            manifest("after", CellType::Code),
+            manifest("ran", CellType::Code),    // slot 0, executed
+            manifest("md", CellType::Markdown), // slot 1
+            manifest("cold", CellType::Code),   // slot 2, unexecuted
+            manifest("shared", CellType::Code), // slot 3, shared
+            manifest("me", CellType::Code),     // slot 4
+            manifest("after", CellType::Code),  // slot 5
         ];
         cells[3].shared = true;
         let mut outputs = HashMap::new();
         outputs.insert("ran".to_string(), CellOutputData::default());
 
-        // Only the unexecuted, runnable, strictly-upstream cell qualifies:
-        // executed cells are warm, markdown/shared never run, and cells
-        // after the target are not prerequisites.
+        // The target consumes slot 2 only: the unexecuted dependency
+        // cascades, and nothing else does.
+        let sources: HashMap<&str, &str> = [
+            ("ran", "1"),
+            ("cold", "2"),
+            ("me", "cell2 + 1"),
+            ("after", "3"),
+        ]
+        .into();
+        let source_of = |id: &str| sources.get(id).map(ToString::to_string);
         assert_eq!(
-            unexecuted_upstream(&cells, "me", &outputs),
+            unexecuted_dependencies(&cells, "me", &outputs, source_of),
             vec!["cold".to_string()]
         );
+
+        // A target consuming nothing cascades nothing — even with cold
+        // upstream cells present.
+        let independent = |id: &str| {
+            if id == "me" {
+                Some("40 + 2".to_string())
+            } else {
+                sources.get(id).map(ToString::to_string)
+            }
+        };
+        assert_eq!(
+            unexecuted_dependencies(&cells, "me", &outputs, independent),
+            Vec::<String>::new()
+        );
+
+        // An executed dependency is warm: consuming slot 0 cascades nothing.
+        let warm = |id: &str| {
+            if id == "me" {
+                Some("cell0".to_string())
+            } else {
+                sources.get(id).map(ToString::to_string)
+            }
+        };
+        assert_eq!(
+            unexecuted_dependencies(&cells, "me", &outputs, warm),
+            Vec::<String>::new()
+        );
+
+        // Missing source degrades to depends-on-all-upstream (pre-0060).
+        assert_eq!(
+            unexecuted_dependencies(&cells, "me", &outputs, |_| None),
+            vec!["cold".to_string()]
+        );
+
         // Unknown target: nothing (never "run everything").
         assert_eq!(
-            unexecuted_upstream(&cells, "gone", &outputs),
+            unexecuted_dependencies(&cells, "gone", &outputs, source_of),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn dependents_in_queue_partitions_by_transitive_dependency() {
+        let cells = vec![
+            manifest("fail", CellType::Code),  // slot 0
+            manifest("dep", CellType::Code),   // slot 1: consumes slot 0
+            manifest("indep", CellType::Code), // slot 2: independent
+            manifest("chain", CellType::Code), // slot 3: consumes slot 1 (transitively slot 0)
+        ];
+        let sources: HashMap<&str, &str> = [
+            ("fail", "compile error here"),
+            ("dep", "cell0 * 2"),
+            ("indep", "42"),
+            ("chain", "cell1 + 1"),
+        ]
+        .into();
+        let source_of = |id: &str| sources.get(id).map(ToString::to_string);
+
+        let queue: Vec<String> = ["fail", "dep", "indep", "chain"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            dependents_in_queue(&cells, &queue, "fail", source_of),
+            vec!["dep".to_string(), "chain".to_string()],
+            "direct and transitive dependents drop; the independent cell survives"
+        );
+
+        // The failed cell itself is never listed (it is popped, not blocked).
+        assert!(
+            !dependents_in_queue(&cells, &queue, "fail", source_of).contains(&"fail".to_string())
+        );
+
+        // Unknown failed id: nothing to drop.
+        assert_eq!(
+            dependents_in_queue(&cells, &queue, "gone", source_of),
             Vec::<String>::new()
         );
     }

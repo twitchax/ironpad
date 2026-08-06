@@ -171,11 +171,16 @@ fn generate_cargo_toml(
 
     let wasm_bindgen_dep = wasm_bindgen_dependency_line();
 
+    // Edition 2024 (PRD-0060): `gen` blocks are 2024-only syntax, so the
+    // `gen_blocks` feature gate was inert on 2021 — the parser rejected
+    // `gen {` before the gate mattered. NOTE: 2024 reserves `gen` as a
+    // keyword; user code naming a variable `gen` gets rustc's clear
+    // rename-or-`r#gen` error.
     let mut toml = format!(
         r#"[package]
 name = "cell-{cell_id}"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]
@@ -449,19 +454,32 @@ pub fn generate_lib_rs(
     }
 
     let is_async = needs_async(source);
-    let has_any_prev = !previous_cell_types.is_empty();
+
+    // Bind only the slots the source references (PRD-0060): the cascade
+    // skips unconsumed upstream cells, so an unreferenced typed slot would
+    // eagerly deserialize empty bytes and panic. The detection recipe is
+    // shared with the cache key (`normalize_previous_types` runs inside the
+    // hash) so codegen and cache identity cannot fork. A source referencing
+    // `last` keeps the full typed set — the alias target is dynamic.
+    let refs = ironpad_common::cell_deps::referenced_slots(source);
     let typed_cells: Vec<(usize, &str)> = previous_cell_types
         .iter()
         .enumerate()
-        .filter(|(_, tag)| !tag.is_empty())
+        .filter(|(i, tag)| !tag.is_empty() && (refs.last || refs.slots.contains(i)))
         .map(|(i, tag)| (i, tag.as_str()))
         .collect();
+    let has_bindings = !typed_cells.is_empty();
+    // Reconstruct the input buffer when something is bound — an unused
+    // `__ironpad_inputs__` would warn on every independent cell — OR when
+    // the source reads the raw buffer itself (the pre-typed-bindings
+    // surface; the user code needs the binding to exist).
+    let reconstruct_inputs = has_bindings || (refs.raw && !previous_cell_types.is_empty());
     // Cell count is always small (< 100), so truncation is not a concern.
     #[allow(clippy::cast_possible_truncation)]
     let typed_count = typed_cells.len() as u32;
 
     let async_kw = if is_async { "async " } else { "" };
-    let (ptr_param, len_param) = if has_any_prev {
+    let (ptr_param, len_param) = if reconstruct_inputs {
         ("input_ptr", "input_len")
     } else {
         ("_input_ptr", "_input_len")
@@ -469,26 +487,36 @@ pub fn generate_lib_rs(
 
     let shared_mod = shared_mod_decl(has_shared_source);
 
+    // `cell_main` is a one-line trampoline and the user's code lives in a
+    // plain inner fn, because `#[wasm_bindgen]` re-parses the whole fn body
+    // with syn — which lags rustc on new syntax (`gen { … }` blocks parse
+    // as a struct literal and die with "expected identifier or integer").
+    // Keeping user tokens out of the proc macro's reach makes the scaffold
+    // robust to every future syntax rustc learns before syn does.
+    let await_sfx = if is_async { ".await" } else { "" };
     let mut code = format!(
         "\
 use ironpad_cell::prelude::*;
 {shared_mod}
 #[wasm_bindgen]
-pub {async_kw}fn cell_main({ptr_param}: u32, {len_param}: u32) -> u32 {{
+pub {async_kw}fn cell_main(input_ptr: u32, input_len: u32) -> u32 {{ __ironpad_user__(input_ptr, input_len){await_sfx} }}
+{async_kw}fn __ironpad_user__({ptr_param}: u32, {len_param}: u32) -> u32 {{
 console_error_panic_hook::set_once();\n",
     );
 
-    if has_any_prev {
+    if reconstruct_inputs {
         code.push_str("let input_ptr = input_ptr as *const u8;\n");
         code.push_str("let input_len = input_len as usize;\n");
         code.push_str("let __ironpad_inputs__ = CellInputs::from_raw(unsafe { std::slice::from_raw_parts(input_ptr, input_len) });\n");
 
-        // `allow(unused_variables)`: every typed upstream output is bound
-        // whether or not this cell reads it, so unguarded bindings spray
-        // "unused variable: `cellN`" on cells that only use some (or none) of
-        // their inputs. The allow rides on each binding's line so
-        // `preamble_lines` (and therefore diagnostic mapping) is unaffected,
-        // and unused variables in the user's own code still warn.
+        // `allow(unused_variables)`: under a `last` reference every typed
+        // upstream output is bound whether or not this cell reads it by
+        // name; the allow rides on each binding's line so `preamble_lines`
+        // (and therefore diagnostic mapping) is unaffected, and unused
+        // variables in the user's own code still warn. Edition 2024: the
+        // raw-parts slice needs its unsafe op wrapped (unsafe_op_in_unsafe_fn
+        // does not apply here, but the expression form is identical on both
+        // editions).
         for &(i, tag) in &typed_cells {
             let _ = writeln!(
                 code,
@@ -496,12 +524,15 @@ console_error_panic_hook::set_once();\n",
             );
         }
 
-        // `last` references the last cell with a type tag.
-        if let Some(&(last_idx, _)) = typed_cells.last() {
-            let _ = writeln!(
-                code,
-                "#[allow(unused_variables)] let last = &cell{last_idx};"
-            );
+        // `last` aliases the last cell with a type tag, bound only when the
+        // source references it.
+        if refs.last {
+            if let Some(&(last_idx, _)) = typed_cells.last() {
+                let _ = writeln!(
+                    code,
+                    "#[allow(unused_variables)] let last = &cell{last_idx};"
+                );
+            }
         }
     }
 
@@ -531,13 +562,16 @@ Box::into_raw(Box::new(result)) as u32
         );
     }
 
-    // Preamble: 6 base (includes panic hook) + 1 if shared_source + optional (2 ptr reconstruction + 1 inputs) + cell decls + last.
+    // Preamble: 7 base (use, blank/shared line, attribute, trampoline,
+    // inner-fn header, panic hook, output-block open) + 1 if shared_source
+    // + optional (2 ptr reconstruction + 1 inputs, only when something
+    // binds) + cell decls + the `last` alias when generated.
     let shared_lines = u32::from(has_shared_source);
-    let preamble_lines = 6
+    let preamble_lines = 7
         + shared_lines
-        + if has_any_prev { 3 } else { 0 }
+        + if reconstruct_inputs { 3 } else { 0 }
         + typed_count
-        + u32::from(typed_count > 0);
+        + u32::from(refs.last && has_bindings);
 
     (code, preamble_lines, is_async, false)
 }
@@ -858,7 +892,7 @@ serde = { version = "1", features = ["derive"] }
     fn generate_lib_rs_no_previous_cells() {
         let (lib_rs, preamble, is_async, _) = generate_lib_rs("    // user code here", &[], false);
 
-        assert_eq!(preamble, 6);
+        assert_eq!(preamble, 7);
         assert!(!is_async);
         assert!(!lib_rs.contains("__ironpad_inputs__"));
         assert!(!lib_rs.contains("let cell"));
@@ -874,10 +908,10 @@ serde = { version = "1", features = ["derive"] }
     #[test]
     fn generate_lib_rs_with_typed_cells() {
         let types: Vec<String> = vec!["u32".into(), "String".into()];
-        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    (cell0, cell1, last)", &types, false);
 
-        // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
-        assert_eq!(preamble, 12);
+        // 7 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 13
+        assert_eq!(preamble, 13);
         assert!(lib_rs.contains("let input_ptr = input_ptr as *const u8;"));
         assert!(lib_rs.contains("let input_len = input_len as usize;"));
         assert!(lib_rs.contains("let __ironpad_inputs__ = CellInputs::from_raw("));
@@ -886,39 +920,78 @@ serde = { version = "1", features = ["derive"] }
         assert!(lib_rs.contains("let last = &cell1;"));
 
         let lines: Vec<&str> = lib_rs.lines().collect();
-        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+        assert_eq!(lines[preamble as usize].trim(), "(cell0, cell1, last)");
+    }
+
+    #[test]
+    fn generate_lib_rs_binds_only_referenced_slots() {
+        // PRD-0060: unreferenced typed slots are not bound (an eager
+        // deserialize of a skipped upstream's empty bytes would panic), and
+        // a cell referencing nothing gets no input machinery at all.
+        let types: Vec<String> = vec!["u32".into(), "String".into()];
+
+        let (lib_rs, preamble, ..) = generate_lib_rs("    cell1.len()", &types, false);
+        // 7 base + 3 (reconstruction) + 1 binding + 0 last = 11
+        assert_eq!(preamble, 11);
+        assert!(!lib_rs.contains("let cell0"));
+        assert!(lib_rs.contains("let cell1: String = __ironpad_inputs__.get(1).deserialize()"));
+        assert!(!lib_rs.contains("let last"));
+
+        let (lib_rs, preamble, ..) = generate_lib_rs("    40 + 2", &types, false);
+        assert_eq!(preamble, 7, "independent cells carry no input preamble");
+        assert!(!lib_rs.contains("__ironpad_inputs__"));
+        assert!(lib_rs.contains("_input_ptr: u32"));
+    }
+
+    #[test]
+    fn generate_lib_rs_raw_input_access_reconstructs_the_buffer() {
+        // `__ironpad_inputs__` is the pre-typed-bindings consuming surface:
+        // a cell reading it directly gets the buffer reconstructed even
+        // with no cellN reference (the two-cell bincode e2e regressed on
+        // exactly this when reconstruction became binding-gated).
+        let types: Vec<String> = vec!["Vec<i32>".into()];
+        let source = "    let d: Vec<i32> = __ironpad_inputs__.get(0).deserialize().unwrap();\n    CellOutput::text(format!(\"{d:?}\"))";
+        let (lib_rs, preamble, ..) = generate_lib_rs(source, &types, false);
+
+        assert!(lib_rs.contains("let __ironpad_inputs__ = CellInputs::from_raw("));
+        assert!(!lib_rs.contains("let cell0"), "no typed bindings generated");
+        // 7 base + 3 reconstruction + 0 bindings + 0 last = 10
+        assert_eq!(preamble, 10);
     }
 
     #[test]
     fn generate_lib_rs_with_mixed_types() {
         let types: Vec<String> = vec!["u32".into(), String::new(), "bool".into()];
-        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    (cell0, cell2, last)", &types, false);
 
-        // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
-        assert_eq!(preamble, 12);
+        // 7 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 13
+        assert_eq!(preamble, 13);
         assert!(lib_rs.contains("let cell0: u32 = __ironpad_inputs__.get(0).deserialize()"));
         assert!(!lib_rs.contains("let cell1:"));
         assert!(lib_rs.contains("let cell2: bool = __ironpad_inputs__.get(2).deserialize()"));
         assert!(lib_rs.contains("let last = &cell2;"));
 
         let lines: Vec<&str> = lib_rs.lines().collect();
-        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+        assert_eq!(lines[preamble as usize].trim(), "(cell0, cell2, last)");
     }
 
     #[test]
     fn generate_lib_rs_all_none_types() {
+        // References exist but nothing upstream is typed: no bindings can be
+        // generated, so the input machinery is omitted entirely (it would
+        // only warn as unused) and the user's reference fails to compile
+        // with a clear "cannot find value" — same as before.
         let types: Vec<String> = vec![String::new(), String::new()];
-        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    cell0 + cell1", &types, false);
 
-        // 6 base + 3 (ptr reconstruction + inputs) + 0 typed + 0 last = 9
-        assert_eq!(preamble, 9);
-        assert!(lib_rs.contains("let __ironpad_inputs__ = CellInputs::from_raw("));
+        assert_eq!(preamble, 7);
+        assert!(!lib_rs.contains("__ironpad_inputs__"));
         assert!(!lib_rs.contains("let cell0"));
         assert!(!lib_rs.contains("let cell1"));
         assert!(!lib_rs.contains("let last"));
 
         let lines: Vec<&str> = lib_rs.lines().collect();
-        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+        assert_eq!(lines[preamble as usize].trim(), "cell0 + cell1");
     }
 
     #[test]
@@ -926,18 +999,16 @@ serde = { version = "1", features = ["derive"] }
         // Simulates absolute-index semantics: Markdown cells at indices 0 and 2
         // produce empty type strings; Code cells at indices 1 and 3 have types.
         let types: Vec<String> = vec![String::new(), "u32".into(), String::new(), "String".into()];
-        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) =
+            generate_lib_rs("    format!(\"{cell1} {cell3} {last}\")", &types, false);
 
-        // 6 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 12
-        assert_eq!(preamble, 12);
+        // 7 base + 3 (ptr reconstruction + inputs) + 2 typed + 1 last = 13
+        assert_eq!(preamble, 13);
         assert!(!lib_rs.contains("let cell0:"));
         assert!(lib_rs.contains("let cell1: u32 = __ironpad_inputs__.get(1).deserialize()"));
         assert!(!lib_rs.contains("let cell2:"));
         assert!(lib_rs.contains("let cell3: String = __ironpad_inputs__.get(3).deserialize()"));
         assert!(lib_rs.contains("let last = &cell3;"));
-
-        let lines: Vec<&str> = lib_rs.lines().collect();
-        assert_eq!(lines[preamble as usize].trim(), "// user code here");
     }
 
     // ── scaffold_micro_crate (integration) ──────────────────────────────
@@ -965,7 +1036,7 @@ serde = "1"
         )
         .expect("scaffold should succeed");
 
-        assert_eq!(preamble_lines, 6);
+        assert_eq!(preamble_lines, 7);
         assert!(!is_async);
 
         // Verify directory structure.
@@ -1145,7 +1216,7 @@ serde = "1"
         let (lib_rs, preamble, is_async, _) = generate_lib_rs("    something.await", &[], false);
 
         assert!(is_async);
-        assert_eq!(preamble, 6);
+        assert_eq!(preamble, 7);
         assert!(lib_rs.contains("#[wasm_bindgen]"));
         assert!(lib_rs.contains("pub async fn cell_main("));
         assert!(lib_rs.contains("(async {"));
@@ -1162,7 +1233,8 @@ serde = "1"
         let (lib_rs, preamble, is_async, _) = generate_lib_rs("    cell0.await", &types, false);
 
         assert!(is_async);
-        // 6 base + 3 (ptr reconstruction + inputs) + 1 typed + 1 last = 11
+        // 7 base + 3 (ptr reconstruction + inputs) + 1 referenced cell = 11
+        // (no `last` alias: the source never references it — PRD-0060).
         assert_eq!(preamble, 11);
         assert!(lib_rs.contains("pub async fn cell_main(input_ptr: u32, input_len: u32)"));
         assert!(lib_rs.contains("let cell0: u32"));
@@ -1307,7 +1379,7 @@ codegen-units = 16
         let source = "    let msg = \"こんにちは世界 🦀\";\n    CellOutput::text(msg)";
         let (lib_rs, preamble, ..) = generate_lib_rs(source, &[], false);
 
-        assert_eq!(preamble, 6);
+        assert_eq!(preamble, 7);
         assert!(lib_rs.contains("こんにちは世界 🦀"));
         // Verify user code appears at the correct preamble offset.
         let lines: Vec<&str> = lib_rs.lines().collect();
@@ -1369,7 +1441,7 @@ serde = \"1\"
     fn generate_lib_rs_empty_source() {
         let (lib_rs, preamble, is_async, _) = generate_lib_rs("", &[], false);
 
-        assert_eq!(preamble, 6);
+        assert_eq!(preamble, 7);
         assert!(!is_async);
         // The empty source should still produce a compilable wrapper.
         assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
@@ -1386,8 +1458,8 @@ serde = \"1\"
             lib_rs.contains("mod shared;"),
             "should contain mod shared declaration"
         );
-        // 6 base + 1 shared = 7
-        assert_eq!(preamble, 7);
+        // 7 base + 1 shared = 8
+        assert_eq!(preamble, 8);
 
         // Verify user code starts at expected line.
         let lines: Vec<&str> = lib_rs.lines().collect();
@@ -1434,8 +1506,11 @@ serde = \"1\"
     /// `preamble_lines` (and diagnostic mapping) are unaffected.
     #[test]
     fn injected_bindings_allow_unused_without_shifting_preamble() {
+        // A `last` reference binds EVERY typed slot (the alias target is
+        // dynamic) while using none of them by name — the allow is what
+        // keeps cell0/cell1 from warning (PRD-0060).
         let types: Vec<String> = vec!["u32".into(), "String".into()];
-        let (lib_rs, preamble, ..) = generate_lib_rs("    // user code here", &types, false);
+        let (lib_rs, preamble, ..) = generate_lib_rs("    format!(\"{last}\")", &types, false);
 
         for needle in [
             "#[allow(unused_variables)] let cell0: u32 =",
@@ -1449,11 +1524,11 @@ serde = \"1\"
         }
 
         // Each allow rides on its binding's line, so the preamble count is
-        // exactly what it was without the attributes: 6 base + 3 inputs +
-        // 2 typed + 1 last = 12, with user code starting right after.
-        assert_eq!(preamble, 12);
+        // exactly what it was without the attributes: 7 base + 3 inputs +
+        // 2 typed + 1 last = 13, with user code starting right after.
+        assert_eq!(preamble, 13);
         let lines: Vec<&str> = lib_rs.lines().collect();
-        assert_eq!(lines[preamble as usize].trim(), "// user code here");
+        assert_eq!(lines[preamble as usize].trim(), "format!(\"{last}\")");
     }
 
     #[test]
@@ -1464,7 +1539,7 @@ serde = \"1\"
             !lib_rs.contains("mod shared;"),
             "should not contain mod shared declaration"
         );
-        assert_eq!(preamble, 6);
+        assert_eq!(preamble, 7);
 
         let lines: Vec<&str> = lib_rs.lines().collect();
         assert_eq!(lines[preamble as usize].trim(), "// user code here");
@@ -1498,8 +1573,8 @@ serde = \"1\"
         let lib = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
         assert!(lib.contains("mod shared;"));
 
-        // preamble should be 7 (6 base + 1 shared)
-        assert_eq!(preamble, 7);
+        // preamble should be 8 (7 base + 1 shared)
+        assert_eq!(preamble, 8);
     }
 
     #[test]
@@ -1526,7 +1601,7 @@ serde = \"1\"
         let lib = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
         assert!(!lib.contains("mod shared;"));
 
-        assert_eq!(preamble, 6);
+        assert_eq!(preamble, 7);
     }
 
     // ── T-006: Simulation detection and scaffold ────────────────────────
@@ -1642,7 +1717,7 @@ impl Simulation for Pendulum {
 
         assert!(!is_async);
         assert!(!is_sim);
-        assert_eq!(preamble, 6);
+        assert_eq!(preamble, 7);
         assert!(lib_rs.contains("let __ironpad_output__: CellOutput = ({"));
         assert!(!lib_rs.contains("cell_tick"));
         assert!(!lib_rs.contains("__IRONPAD_SIM__"));

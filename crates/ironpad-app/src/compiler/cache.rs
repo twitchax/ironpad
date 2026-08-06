@@ -312,7 +312,9 @@ mod tests {
     // Single-char names are idiomatic for hash-comparison test fixtures.
     #[allow(clippy::many_single_char_names)]
     fn hash_changes_when_previous_types_change() {
-        let s = "let x = 1;";
+        // The slot must be REFERENCED for its type to reach the key
+        // (PRD-0060 normalization).
+        let s = "let x = cell0;";
         let c = "[dependencies]";
         let a = content_hash(s, c, &[], None, None, false, false, false);
         let b = content_hash(s, c, &["u32".into()], None, None, false, false, false);
@@ -323,7 +325,8 @@ mod tests {
 
     #[test]
     fn hash_distinguishes_type_positions() {
-        let s = "x";
+        // Both slots referenced, so both positions survive normalization.
+        let s = "cell0 + cell1";
         let c = "y";
         let a = content_hash(
             s,

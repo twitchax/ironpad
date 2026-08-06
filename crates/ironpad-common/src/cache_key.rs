@@ -62,7 +62,16 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// a raw pointer, silencing the `static_mut_refs` warning that mapped past
 /// the end of the user's source. Same rationale as 6 -> 7: cached diagnostics
 /// would replay the stale warnings without the bump.
-pub const CACHE_EPOCH: u32 = 8;
+///
+/// Bumped 8 -> 9 (PRD-0060, three pipeline changes in one release): cells
+/// compile on edition 2024 (`gen` blocks are 2024-only syntax, so the
+/// `gen_blocks` gate was inert on 2021); `cell_main` became a one-line
+/// trampoline into a plain inner fn so `#[wasm_bindgen]`'s syn parser never
+/// sees user tokens (syn rejects `gen { … }` even on 2024); and the
+/// scaffold binds only the `cellN` slots the source references — with
+/// `previous_cell_types` normalized to match inside this hash, so
+/// unreferenced upstream types no longer fork the key.
+pub const CACHE_EPOCH: u32 = 9;
 
 // ── Content hash ─────────────────────────────────────────────────────────────
 
@@ -95,12 +104,19 @@ pub fn content_hash_with_fingerprint(
     // …`) lets distinct inputs whose bytes line up collide and serve each
     // other's cached WASM — e.g. `("ab", "c")` vs `("a", "bc")`, or a
     // `cargo_toml` ending in the target triple bytes vs a shorter one.
+    // Only the types the cell can actually consume feed the key (PRD-0060):
+    // the scaffold binds exactly the referenced slots, so an unreferenced
+    // upstream type tag cannot change the generated code and must not
+    // change the key. Normalizing HERE (not at call sites) keeps the
+    // server, the browser blob cache, and share-snapshot recomputes on one
+    // recipe by construction.
+    let previous_types = crate::cell_deps::normalize_previous_types(source, previous_types);
     let mut hasher = blake3::Hasher::new();
     update_framed(&mut hasher, source.as_bytes());
     update_framed(&mut hasher, cargo_toml.as_bytes());
     update_framed(&mut hasher, TARGET_TRIPLE.as_bytes());
     update_framed(&mut hasher, &(previous_types.len() as u64).to_le_bytes());
-    for t in previous_types {
+    for t in &previous_types {
         update_framed(&mut hasher, t.as_bytes());
     }
     update_framed_opt(&mut hasher, shared_cargo_toml.map(str::as_bytes));
@@ -503,6 +519,46 @@ mod tests {
             "toolchain-a",
         );
         assert_eq!(a, b);
+    }
+
+    #[test]
+    // Single-char names are idiomatic for hash-comparison test fixtures.
+    #[allow(clippy::many_single_char_names)]
+    fn hash_ignores_unreferenced_upstream_types() {
+        // A cell that consumes nothing hashes identically no matter what its
+        // upstream cells produced — or where in the notebook it sits.
+        let key = |types: &[String]| {
+            content_hash_with_fingerprint(
+                "40 + 2", "", types, None, None, false, false, false, "tc",
+            )
+        };
+        let a = key(&[]);
+        let b = key(&["u32".to_string(), "String".to_string()]);
+        assert_eq!(
+            a, b,
+            "independent cells are cache-portable across notebooks"
+        );
+
+        // A referenced slot's type still matters…
+        let key_ref = |types: &[String]| {
+            content_hash_with_fingerprint(
+                "cell1 * 2",
+                "",
+                types,
+                None,
+                None,
+                false,
+                false,
+                false,
+                "tc",
+            )
+        };
+        let c = key_ref(&["u32".to_string(), "u32".to_string()]);
+        let d = key_ref(&["u32".to_string(), "f64".to_string()]);
+        assert_ne!(c, d, "the referenced slot's type is part of the key");
+        // …while an unreferenced sibling's does not.
+        let e = key_ref(&["String".to_string(), "u32".to_string()]);
+        assert_eq!(c, e, "slot 0 is unreferenced and cannot fork the key");
     }
 
     #[test]
