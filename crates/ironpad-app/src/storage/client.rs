@@ -23,6 +23,15 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "searchNotebooks")]
     async fn js_search_notebooks(query: &str) -> Result<JsValue, JsValue>;
 
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "listHistory")]
+    async fn js_list_history(id: &str) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "getHistorySnapshot")]
+    async fn js_get_history_snapshot(id: &str, saved_at: f64) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "snapshotNow")]
+    async fn js_snapshot_now(id: &str) -> Result<JsValue, JsValue>;
+
     #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "importNotebook")]
     async fn js_import_notebook(json_string: &str) -> Result<JsValue, JsValue>;
 
@@ -121,6 +130,48 @@ pub async fn search_notebooks(query: &str) -> Vec<IronpadNotebook> {
             leptos::logging::warn!("searchNotebooks failed: {e:?}");
             Vec::new()
         }
+    }
+}
+
+/// One row of a notebook's version history (PRD-0058), newest first.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct HistoryEntry {
+    /// Snapshot key (epoch ms). `f64` because it crosses the JS boundary.
+    #[serde(rename = "savedAt")]
+    pub saved_at: f64,
+    pub title: String,
+    #[serde(rename = "cellCount")]
+    pub cell_count: u32,
+}
+
+/// Lists a notebook's history snapshots, newest first. Degrades to empty.
+pub async fn list_history(id: &str) -> Vec<HistoryEntry> {
+    match js_list_history(id).await {
+        Ok(val) => serde_wasm_bindgen::from_value(val).unwrap_or_default(),
+        Err(e) => {
+            leptos::logging::warn!("listHistory failed: {e:?}");
+            Vec::new()
+        }
+    }
+}
+
+/// Fetches one history snapshot's JSON, or `None`.
+pub async fn get_history_snapshot(id: &str, saved_at: f64) -> Option<String> {
+    match js_get_history_snapshot(id, saved_at).await {
+        Ok(val) => val.as_string(),
+        Err(e) => {
+            leptos::logging::warn!("getHistorySnapshot failed: {e:?}");
+            None
+        }
+    }
+}
+
+/// Force-snapshots the current stored record (the undoable-restore half of
+/// PRD-0058). Logs and swallows failures — a missing pre-restore snapshot
+/// must not block the restore the user asked for.
+pub async fn snapshot_now(id: &str) {
+    if let Err(e) = js_snapshot_now(id).await {
+        leptos::logging::warn!("snapshotNow failed: {e:?}");
     }
 }
 

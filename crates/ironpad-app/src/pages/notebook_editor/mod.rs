@@ -1,6 +1,7 @@
 mod cell_item;
 mod cell_output;
 mod export;
+mod history;
 mod metadata_panel;
 mod pipeline;
 mod shared_editor_panel;
@@ -28,6 +29,7 @@ use crate::components::session_panel::SessionButton;
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 
 use self::cell_item::CellItem;
+use self::history::HistoryPanel;
 use self::metadata_panel::NotebookMetadataSection;
 use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
 
@@ -425,6 +427,8 @@ fn NotebookContent() -> impl IntoView {
 
     let hamburger_open = RwSignal::new(false);
     let gear_open = RwSignal::new(false);
+    // Version-history overlay (PRD-0058), Local mode only.
+    let history_open = RwSignal::new(false);
 
     // ── Mutable-share binding (PRD-0054) ────────────────────────────────
     //
@@ -816,6 +820,20 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         "↓ Download .ironpad"
                                     </button>
+                                    // Version history (PRD-0058) — private
+                                    // notebooks only; published ones have
+                                    // draft/push semantics instead.
+                                    {move || mutable_binding.get().is_none().then(|| view! {
+                                        <button
+                                            class="ironpad-toolbar-dropdown-item"
+                                            on:click=move |_| {
+                                                hamburger_open.set(false);
+                                                history_open.set(true);
+                                            }
+                                        >
+                                            "🕘 History"
+                                        </button>
+                                    })}
                                     // Delete (private) / Unpublish (mutable, PRD-0049)
                                     {move || match mutable_binding.get() {
                                         Some(share_id) => view! {
@@ -1017,6 +1035,9 @@ fn NotebookContent() -> impl IntoView {
                 })
             })
         }}
+
+        // ── Version-history overlay (PRD-0058) ─────────────────────────
+        <HistoryPanel open=history_open />
 
         // ── Edit / View mode toggle (fixed bottom-left) ────────────────
         <div class="ironpad-mode-toggle">

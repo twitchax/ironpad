@@ -14,7 +14,7 @@
  */
 window.IronpadStorage = (function () {
     const DB_NAME = 'ironpad';
-    const DB_VERSION = 5;
+    const DB_VERSION = 6;
     const STORE_NAME = 'notebooks';
     // Local compiled-WASM blob cache (PRD-0047), content-addressed by the
     // same cache key the server uses. LRU-pruned to MAX_BLOB_ENTRIES.
@@ -27,6 +27,12 @@ window.IronpadStorage = (function () {
     // Device-scoped metadata, keyed by 'name'. Held over from PRD-0049 (it
     // stored the user key); kept as an empty store for future device prefs.
     const META_STORE = 'meta';
+    // Version history for private notebooks (PRD-0058): a rolling snapshot
+    // ring, one snapshot per bucket per notebook, pruned to a cap, deleted
+    // with the notebook. Local-only insurance — never synced anywhere.
+    const HISTORY_STORE = 'history';
+    const HISTORY_BUCKET_MS = 5 * 60 * 1000;
+    const HISTORY_CAP = 30;
 
     function openDb() {
         return new Promise((resolve, reject) => {
@@ -44,6 +50,13 @@ window.IronpadStorage = (function () {
                 }
                 if (!db.objectStoreNames.contains(META_STORE)) {
                     db.createObjectStore(META_STORE, { keyPath: 'name' });
+                }
+                // v6 (PRD-0058): the version-history ring.
+                if (!db.objectStoreNames.contains(HISTORY_STORE)) {
+                    const history = db.createObjectStore(HISTORY_STORE, {
+                        keyPath: ['notebookId', 'savedAt'],
+                    });
+                    history.createIndex('notebookId', 'notebookId');
                 }
                 // v5 (PRD-0054): published notebooks live on the server, so
                 // the local working-copy store dies. Any 0.15.0-era working
@@ -64,6 +77,42 @@ window.IronpadStorage = (function () {
 
     function tx(db, mode) {
         return db.transaction(STORE_NAME, mode).objectStore(STORE_NAME);
+    }
+
+    function historyTx(db, mode) {
+        return db.transaction(HISTORY_STORE, mode).objectStore(HISTORY_STORE);
+    }
+
+    /** All history entries for a notebook, newest first. */
+    async function historyEntries(db, notebookId) {
+        const idx = historyTx(db, 'readonly').index('notebookId');
+        const entries = await reqToPromise(idx.getAll(notebookId));
+        entries.sort((a, b) => b.savedAt - a.savedAt);
+        return entries;
+    }
+
+    /**
+     * Write a snapshot of `nb` into the history ring. Unless `force`, the
+     * write is skipped when the notebook's newest snapshot is younger than
+     * the bucket (one snapshot per HISTORY_BUCKET_MS per notebook); every
+     * write prunes the ring to HISTORY_CAP.
+     */
+    async function writeHistorySnapshot(db, nb, force) {
+        const entries = await historyEntries(db, nb.id);
+        const now = Date.now();
+        if (!force && entries.length > 0 && now - entries[0].savedAt < HISTORY_BUCKET_MS) {
+            return;
+        }
+        const store = historyTx(db, 'readwrite');
+        await reqToPromise(store.put({
+            notebookId: nb.id,
+            // Nudge past an existing key on a same-millisecond force write.
+            savedAt: entries.length > 0 && entries[0].savedAt >= now ? entries[0].savedAt + 1 : now,
+            json: JSON.stringify(nb),
+        }));
+        for (const stale of entries.slice(HISTORY_CAP - 1)) {
+            await reqToPromise(store.delete([stale.notebookId, stale.savedAt]));
+        }
     }
 
     function blobTx(db, mode) {
@@ -129,6 +178,13 @@ window.IronpadStorage = (function () {
             const db = await openDb();
             try {
                 await reqToPromise(tx(db, 'readwrite').put(nb));
+                // History capture (PRD-0058) rides the save choke point;
+                // best-effort — a history failure must never fail the save.
+                try {
+                    await writeHistorySnapshot(db, nb, false);
+                } catch (e) {
+                    console.warn('ironpad: history snapshot failed:', e);
+                }
             } finally {
                 db.close();
             }
@@ -144,6 +200,12 @@ window.IronpadStorage = (function () {
             try {
                 const store = tx(db, 'readwrite');
                 await reqToPromise(store.delete(id));
+                // The notebook's history dies with it (PRD-0058).
+                const entries = await historyEntries(db, id);
+                const history = historyTx(db, 'readwrite');
+                for (const entry of entries) {
+                    await reqToPromise(history.delete([entry.notebookId, entry.savedAt]));
+                }
             } finally {
                 db.close();
             }
@@ -164,6 +226,65 @@ window.IronpadStorage = (function () {
             return all.filter(
                 (nb) => typeof nb.title === "string" && nb.title.toLowerCase().includes(q)
             );
+        },
+
+        /**
+         * List a notebook's history snapshots, newest first (PRD-0058).
+         * Meta only — the JSON stays in the store until a restore asks.
+         * @param {string} id - Notebook UUID.
+         * @returns {Promise<Array<{savedAt: number, title: string, cellCount: number}>>}
+         */
+        listHistory: async function (id) {
+            const db = await openDb();
+            try {
+                const entries = await historyEntries(db, id);
+                return entries.map((entry) => {
+                    let title = '';
+                    let cellCount = 0;
+                    try {
+                        const nb = JSON.parse(entry.json);
+                        title = typeof nb.title === 'string' ? nb.title : '';
+                        cellCount = Array.isArray(nb.cells) ? nb.cells.length : 0;
+                    } catch (e) { /* corrupt snapshot: listed, restore will fail loudly */ }
+                    return { savedAt: entry.savedAt, title: title, cellCount: cellCount };
+                });
+            } finally {
+                db.close();
+            }
+        },
+
+        /**
+         * Fetch one history snapshot's JSON (PRD-0058).
+         * @returns {Promise<string|null>}
+         */
+        getHistorySnapshot: async function (id, savedAt) {
+            const db = await openDb();
+            try {
+                const entry = await reqToPromise(
+                    historyTx(db, 'readonly').get([id, savedAt])
+                );
+                return entry ? entry.json : null;
+            } finally {
+                db.close();
+            }
+        },
+
+        /**
+         * Force-snapshot the CURRENT stored record, bypassing the bucket —
+         * the undoable-restore half of PRD-0058: restore calls this first so
+         * the pre-restore state lands in history.
+         * @returns {Promise<void>}
+         */
+        snapshotNow: async function (id) {
+            const db = await openDb();
+            try {
+                const nb = await reqToPromise(tx(db, 'readonly').get(id));
+                if (nb) {
+                    await writeHistorySnapshot(db, nb, true);
+                }
+            } finally {
+                db.close();
+            }
         },
 
         /**
