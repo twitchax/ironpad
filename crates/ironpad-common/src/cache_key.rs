@@ -343,6 +343,22 @@ pub fn uses_coroutines(source: &str, shared_source: Option<&str>) -> bool {
     hit(source) || shared_source.is_some_and(hit)
 }
 
+/// Returns `true` if the cell (or the shared source) uses `gen` blocks —
+/// the second `yield` surface, which needs its own crate-root gate
+/// (`#![feature(gen_blocks)]`) since it carries none of the coroutine
+/// markers. This closes the documented gap in the coroutine detection.
+///
+/// A bare `gen` is ordinary English, so detection matches the block forms
+/// only: `gen {`, `gen move {`, and `async gen`. A false positive (the
+/// string in a comment) costs one harmless feature gate; a miss costs a
+/// clear rustc error naming the gate, same failure mode as before.
+#[must_use]
+pub fn uses_gen_blocks(source: &str, shared_source: Option<&str>) -> bool {
+    let hit =
+        |s: &str| s.contains("gen {") || s.contains("gen move {") || s.contains("async gen");
+    hit(source) || shared_source.is_some_and(hit)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -395,6 +411,18 @@ mod tests {
             None,
             "[dependencies]\nrayon = \"1.10\"\n"
         ));
+    }
+
+    #[test]
+    fn gen_block_detection_matches_block_forms_not_bare_gen() {
+        assert!(uses_gen_blocks("let it = gen { yield 1; };", None));
+        assert!(uses_gen_blocks("let it = gen move { yield x; };", None));
+        assert!(uses_gen_blocks("let s = async gen { yield 1; };", None));
+        // Shared source counts too.
+        assert!(uses_gen_blocks("42", Some("pub fn f() { gen { yield 1; }; }")));
+        // Bare "gen" is ordinary prose/identifier text, never an opt-in.
+        assert!(!uses_gen_blocks("// generate the gen next", None));
+        assert!(!uses_gen_blocks("let gen_count = 3;", None));
     }
 
     #[test]

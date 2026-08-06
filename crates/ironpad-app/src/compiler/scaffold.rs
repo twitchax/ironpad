@@ -14,7 +14,7 @@ use ironpad_common::cache_key::merge_dependencies;
 // cache keys from the same recipe.
 pub use ironpad_common::cache_key::{
     crate_name_from_dep_line, extract_user_dependencies, merged_deps_contain_rayon,
-    uses_coroutines, uses_std_autodiff, uses_wasm_simd,
+    uses_coroutines, uses_gen_blocks, uses_std_autodiff, uses_wasm_simd,
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -113,6 +113,13 @@ pub fn scaffold_micro_crate(
             0,
             "#![feature(coroutines, coroutine_trait, stmt_expr_attributes)]\n",
         );
+        preamble_lines += 1;
+    }
+    if uses_gen_blocks(source, shared_source) {
+        // Crate-root gate for `gen` blocks — the yield surface the
+        // coroutine detection deliberately can't see (no `#[coroutine]`
+        // marker). Same preamble bump rule as every gate above.
+        lib_rs.insert_str(0, "#![feature(gen_blocks)]\n");
         preamble_lines += 1;
     }
     std::fs::write(src_dir.join("lib.rs"), lib_rs)?;
@@ -1847,6 +1854,45 @@ impl LiveView for Dashboard {
             preamble,
             base_preamble + 1,
             "the injected feature line shifts diagnostics by exactly one"
+        );
+    }
+
+    #[test]
+    fn gen_block_gate_is_injected_and_bumps_the_preamble() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let (_, base_preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "no-gen",
+            "    1u32",
+            "[dependencies]",
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+            dir.path(),
+            Path::new("crates/ironpad-cell"),
+            "s",
+            "with-gen",
+            "    let mut it = gen { yield 1u32; };\n    0u32",
+            "[dependencies]",
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
+        assert!(lib_rs.starts_with("#![feature(gen_blocks)]\n"));
+        assert_eq!(
+            preamble,
+            base_preamble + 1,
+            "the gate adds exactly one preamble line for diagnostics mapping"
         );
     }
 
