@@ -34,3 +34,4 @@ playwright-report/
 coverage.lcov
 *.lcov
 .playwright-mcp/
+__pycache__/
