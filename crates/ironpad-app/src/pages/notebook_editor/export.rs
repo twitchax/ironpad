@@ -291,7 +291,13 @@ fn render_interactive_static(html: &mut String, kind: &str, config: &str) {
                 .get("default")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
-            let icon = if default { "☑" } else { "☐" };
+            // The export builds HTML, so the same icon_svg_markup the
+            // components use serves it directly — one wrapper, two paths.
+            let icon = crate::components::icon::icon_svg_markup(if default {
+                crate::components::icons::CHECKBOX_CHECKED
+            } else {
+                crate::components::icons::CHECKBOX
+            });
             let _ = writeln!(
                 html,
                 "<div class=\"ironpad-interactive-static\">{icon} {}</div>",

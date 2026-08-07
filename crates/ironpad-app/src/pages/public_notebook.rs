@@ -1,3 +1,5 @@
+use crate::components::icon::Icon;
+use crate::components::icons;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
@@ -84,7 +86,7 @@ pub fn PublicNotebookPage() -> impl IntoView {
                         Err(e) => view! {
                             {mark_not_found()}
                             <div class="ironpad-error-boundary">
-                                <div class="ironpad-error-boundary-icon">"△"</div>
+                                <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
                                 <p class="ironpad-error-boundary-message">
                                     {format!("Failed to load public notebook: {e}")}
                                 </p>

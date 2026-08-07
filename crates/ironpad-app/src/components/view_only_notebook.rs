@@ -4,6 +4,8 @@
 /// edit, add, delete, or reorder cells.
 use std::collections::HashMap;
 
+use crate::components::icon::{Chevron, Icon, IconLabel};
+use crate::components::icons;
 use leptos::prelude::*;
 
 #[cfg(feature = "hydrate")]
@@ -321,7 +323,7 @@ pub(crate) fn ViewOnlyNotebook(
                         class=move || if force_recompile.get() { "ironpad-theme-toggle-segment ironpad-theme-toggle-segment--active" } else { "ironpad-theme-toggle-segment" }
                         on:click=move |_| force_recompile.set(true)
                     >
-                        "↻ Fresh"
+                        <IconLabel icon=icons::RERUN label="Fresh"/>
                     </button>
                 </div>
                 <button
@@ -329,7 +331,11 @@ pub(crate) fn ViewOnlyNotebook(
                     on:click=run_all_action
                     disabled=move || running_all.get()
                 >
-                    {move || if running_all.get() { "◐ Running…" } else { "▶▶ Run All" }}
+                    {move || if running_all.get() {
+                        view! { <IconLabel icon=icons::BUSY label="Running…"/> }
+                    } else {
+                        view! { <IconLabel icon=icons::RUN_ALL label="Run All"/> }
+                    }}
                 </button>
                 {(!embed && !hide_fork).then(|| view! {
                     <button
@@ -337,7 +343,11 @@ pub(crate) fn ViewOnlyNotebook(
                         on:click=fork_action
                         disabled=move || forking.get()
                     >
-                        {move || if forking.get() { "↳ Forking…".to_string() } else { format!("↳ {fork_label_clone}") }}
+                        {move || if forking.get() {
+                            view! { <IconLabel icon=icons::FORK label="Forking…"/> }
+                        } else {
+                            view! { <IconLabel icon=icons::FORK label=fork_label_clone.clone()/> }
+                        }}
                     </button>
                 })}
                 {(!embed && embed_spec.is_some()).then(|| view! {
@@ -374,7 +384,7 @@ pub(crate) fn ViewOnlyNotebook(
                                 aria-label="Notebook menu"
                                 on:click=move |_| menu_open.update(|v| *v = !*v)
                             >
-                                "☰"
+                                <Icon icon=icons::MENU/>
                             </button>
                             // Display-toggled rather than conditionally
                             // rendered: the slot's AnyView is consumed once,
@@ -444,14 +454,16 @@ pub(crate) fn ViewOnlyNotebook(
                     <div class="view-only-shared-appendix">
                         {shared_source_appendix.map(|src| view! {
                             <SharedAppendixSection
-                                label="\u{270e} Shared Source (shared.rs)"
+                                icon=icons::EDIT
+                                label="Shared Source (shared.rs)"
                                 language="rust"
                                 content=src
                             />
                         })}
                         {shared_cargo_appendix.map(|toml| view! {
                             <SharedAppendixSection
-                                label="\u{2b21} Shared Dependencies (Cargo.toml)"
+                                icon=icons::SHARED
+                                label="Shared Dependencies (Cargo.toml)"
                                 language="toml"
                                 content=toml
                             />
@@ -461,7 +473,7 @@ pub(crate) fn ViewOnlyNotebook(
             </div>
             {embed_badge_href.map(|href| view! {
                 <a class="ironpad-embed-badge" href=href target="_blank" rel="noopener">
-                    "⚡ Powered by ironpad · Open ↗"
+                    <IconLabel icon=icons::REACTIVE label="Powered by ironpad · Open"/><Icon icon=icons::EXTERNAL/>
                 </a>
             })}
         </div>
@@ -475,12 +487,12 @@ pub(crate) fn ViewOnlyNotebook(
 /// editor mounts lazily on first expand.
 #[component]
 fn SharedAppendixSection(
+    icon: crate::components::icon::IconData,
     label: &'static str,
     language: &'static str,
     content: String,
 ) -> impl IntoView {
     let collapsed = RwSignal::new(true);
-    let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
 
     view! {
         <div class="view-only-shared-section">
@@ -488,8 +500,8 @@ fn SharedAppendixSection(
                 class="view-only-shared-header"
                 on:click=move |_| collapsed.update(|c| *c = !*c)
             >
-                <span class="ironpad-output-toggle">{toggle_icon}</span>
-                <span>{label}</span>
+                <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !collapsed.get())/></span>
+                <IconLabel icon=icon label=label/>
             </button>
             {move || (!collapsed.get()).then(|| view! {
                 <div class="view-only-shared-body">
@@ -795,7 +807,6 @@ fn ViewOnlyCodeCell(
     // transient reader affordances on top.
     let collapsed = RwSignal::new(cell.with_value(|c| c.collapsed));
     let output_collapsed = RwSignal::new(cell.with_value(|c| c.output_collapsed));
-    let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
     let body_class = Signal::derive(move || {
         if collapsed.get() {
             "ironpad-cell-body ironpad-cell-body--collapsed"
@@ -805,15 +816,6 @@ fn ViewOnlyCodeCell(
     });
 
     // Button text depends on compiling/queued state.
-    let button_text = Signal::derive(move || {
-        if compiling.get() {
-            "◐ Compiling…"
-        } else if queued.get() {
-            "◐ Queued"
-        } else {
-            "▶ Run"
-        }
-    });
 
     view! {
         <div class="view-only-cell">
@@ -822,7 +824,7 @@ fn ViewOnlyCodeCell(
                     class="ironpad-cell-collapse-btn"
                     on:click=move |_| collapsed.update(|c| *c = !*c)
                 >
-                    {collapse_icon}
+                    <Chevron expanded=Signal::derive(move || !collapsed.get())/>
                 </button>
                 <span class="view-only-cell-label">{cell.with_value(|c| c.label.clone())}</span>
                 <button
@@ -830,7 +832,13 @@ fn ViewOnlyCodeCell(
                     on:click=run_cell
                     disabled=move || compiling.get() || queued.get()
                 >
-                    {button_text}
+                    {move || if compiling.get() {
+                        view! { <IconLabel icon=icons::BUSY label="Compiling…"/> }
+                    } else if queued.get() {
+                        view! { <IconLabel icon=icons::BUSY label="Queued"/> }
+                    } else {
+                        view! { <IconLabel icon=icons::RUN label="Run"/> }
+                    }}
                 </button>
                 {move || {
                     // compile_time_ms is set even when the compile returns an empty
@@ -843,10 +851,10 @@ fn ViewOnlyCodeCell(
                     let runtime = execution_result.get().map(|r| r.execution_time_ms);
                     match (compile, runtime) {
                         (Some(c), Some(r)) => view! {
-                            <span class="view-only-timing-badge">{format!("✓ {c:.0}+{r:.0}ms")}</span>
+                            <span class="view-only-timing-badge"><Icon icon=icons::SUCCESS/>{format!(" {c:.0}+{r:.0}ms")}</span>
                         }.into_any(),
                         (Some(c), None) => view! {
-                            <span class="view-only-timing-badge">{format!("✓ {c:.0}ms")}</span>
+                            <span class="view-only-timing-badge"><Icon icon=icons::SUCCESS/>{format!(" {c:.0}ms")}</span>
                         }.into_any(),
                         _ => view! { <span /> }.into_any(),
                     }
@@ -878,7 +886,8 @@ fn ViewOnlyCodeCell(
                     });
                     view! {
                         <div class="view-only-blocked">
-                            {format!("⊘ Skipped: this cell uses the output of \"{label}\", which failed. Fix that cell or press ▶ Run to retry.")}
+                            <Icon icon=icons::BLOCKED/>
+                            {format!(" Skipped: this cell uses the output of \"{label}\", which failed. Fix that cell or press Run to retry.")}
                         </div>
                     }
                 })
@@ -898,9 +907,9 @@ fn ViewOnlyCodeCell(
                 Some(view! {
                     <div class="view-only-output view-only-output--saved">
                         <div class="view-only-saved-badge">
-                            <span class="view-only-saved-badge-icon">"◫"</span>
+                            <span class="view-only-saved-badge-icon"><Icon icon=icons::SAVED_OUTPUT/></span>
                             <span>
-                                "Saved output from the author's last run — press ▶ Run to execute live in your browser."
+                                "Saved output from the author's last run — press Run to execute live in your browser."
                             </span>
                         </div>
                         <div class="view-only-output-panels">
@@ -929,7 +938,7 @@ fn ViewOnlyCodeCell(
                             class="view-only-output-reveal"
                             on:click=move |_| output_collapsed.set(false)
                         >
-                            <span class="ironpad-output-toggle">"\u{25b8}"</span>
+                            <span class="ironpad-output-toggle"><Icon icon=icons::CHEVRON_RIGHT/></span>
                             <span>"Output"</span>
                         </button>
                     }.into_any();
@@ -950,7 +959,6 @@ fn ViewOnlyCodeCell(
 #[component]
 fn ViewOnlySharedCell(cell: IronpadCell) -> impl IntoView {
     let collapsed = RwSignal::new(cell.collapsed);
-    let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
     let body_class = Signal::derive(move || {
         if collapsed.get() {
             "ironpad-cell-body ironpad-cell-body--collapsed"
@@ -966,11 +974,11 @@ fn ViewOnlySharedCell(cell: IronpadCell) -> impl IntoView {
                     class="ironpad-cell-collapse-btn"
                     on:click=move |_| collapsed.update(|c| *c = !*c)
                 >
-                    {collapse_icon}
+                    <Chevron expanded=Signal::derive(move || !collapsed.get())/>
                 </button>
                 <span class="view-only-cell-label">{cell.label.clone()}</span>
                 <span class="ironpad-cell-type-badge ironpad-cell-type-badge--shared">
-                    "\u{2b21} shared"
+                    <IconLabel icon=icons::SHARED label="shared"/>
                 </span>
             </div>
             <div class=body_class>
@@ -1045,7 +1053,6 @@ fn ViewOnlyOutput(
     let ran_on_main_thread = result.ran_on_main_thread;
 
     let collapsed = RwSignal::new(false);
-    let toggle_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
     let outer_class = Signal::derive(move || {
         if collapsed.get() {
             "view-only-output view-only-output--collapsed"
@@ -1061,7 +1068,7 @@ fn ViewOnlyOutput(
                 style="cursor: pointer;"
                 on:click=move |_| collapsed.update(|c| *c = !*c)
             >
-                <span class="ironpad-output-toggle">{toggle_icon}</span>
+                <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !collapsed.get())/></span>
                 <span>{format!("{output_len} bytes")}</span>
                 <span>{format!("{exec_time:.1} ms")}</span>
                 {if ran_on_main_thread {
@@ -1070,7 +1077,7 @@ fn ViewOnlyOutput(
                             class="ironpad-output-fallback-badge"
                             title="This cell was re-executed on the main thread because it requires DOM access (e.g. plotters font measurement)"
                         >
-                            "⚠ main thread"
+                            <IconLabel icon=icons::WARNING label="main thread"/>
                         </span>
                     }.into_any()
                 } else {

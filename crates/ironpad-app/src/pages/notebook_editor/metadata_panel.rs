@@ -11,6 +11,8 @@
 //! the cell list, on the same reasoning: the cells are the story, and this is
 //! the colophon.
 
+use crate::components::icon::{Chevron, IconLabel};
+use crate::components::icons;
 use ironpad_common::protocol::{ClientId, Mutation, NotebookMetaPatch};
 use ironpad_common::{OG_IMAGE_MAX_PX, OG_IMAGE_MIN_PX};
 use leptos::ev;
@@ -39,7 +41,6 @@ pub(super) fn NotebookMetadataSection(
     mutable_binding: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let collapsed = RwSignal::new(true);
-    let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
 
     view! {
         <div class="view-only-shared-section">
@@ -47,8 +48,8 @@ pub(super) fn NotebookMetadataSection(
                 class="view-only-shared-header"
                 on:click=move |_| collapsed.update(|c| *c = !*c)
             >
-                <span class="ironpad-output-toggle">{toggle_icon}</span>
-                <span>"\u{1f5c2} Notebook Metadata (link previews)"</span>
+                <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !collapsed.get())/></span>
+                <IconLabel icon=icons::METADATA label="Notebook Metadata (link previews)"/>
             </button>
             {move || {
                 (!collapsed.get())

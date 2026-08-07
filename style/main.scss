@@ -1824,9 +1824,42 @@ a:focus-visible {
 
 .ironpad-output-toggle {
     font-size: 0.75rem;
-    width: 1em;
-    text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
+
+// ── Icons (PRD-0062) ────────────────────────────────────────────────────────
+//
+// Icons are inline SVG sized in `em`, so they inherit the surrounding
+// font-size and never need a per-call-site size. `currentColor` (set on the
+// svg's stroke by `icon_svg_markup`) means the theme's text colours apply
+// with no extra plumbing, including the status-badge colours below.
+
+.ironpad-icon {
+    width: 1em;
+    height: 1em;
+    // Never squash when a flex parent runs out of room.
+    flex-shrink: 0;
+    // Optically centres the icon against the text baseline.
+    vertical-align: -0.125em;
+}
+
+// The wrapper span that carries the svg, so an icon can sit inline without
+// the svg itself becoming a flex item.
+.ironpad-icon-slot {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+// Icon + text, the common affordance shape.
+.ironpad-icon-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+}
+
 
 .ironpad-output-title {
     font-weight: 600;
@@ -1911,7 +1944,10 @@ a:focus-visible {
 }
 
 .ironpad-output-svg {
-    svg {
+    // :not(.ironpad-icon) — since PRD-0062 the UI's own icons are inline
+    // <svg>, and a bare descendant selector would size and hover-style the
+    // copy button's icon as if it were the plot.
+    svg:not(.ironpad-icon) {
         max-width: 100%;
         height: auto;
 
@@ -2841,7 +2877,7 @@ code[class*="language-"] {
     overflow-y: auto;
 }
 
-.view-only-output-svg svg {
+.view-only-output-svg svg:not(.ironpad-icon) {
     @include plot-svg-hover;
 }
 

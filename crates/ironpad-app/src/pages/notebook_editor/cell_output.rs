@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::components::icon::{Chevron, IconLabel};
+use crate::components::icons;
 use ironpad_common::{CellManifest, CompileResponse, Diagnostic, ExecutionResult, Severity};
 use leptos::prelude::*;
 
@@ -53,7 +55,7 @@ pub(super) fn CompileResultPanel(
                     // Precision loss acceptable for display sizing.
                     #[allow(clippy::cast_precision_loss)]
                     let summary = format!(
-                        "✓ Compiled ({:.1} KB, {time:.0}ms compile{}{})",
+                        "Compiled ({:.1} KB, {time:.0}ms compile{}{})",
                         blob_size as f64 / 1024.0,
                         match runtime_ms {
                             Some(r) => format!(", {r:.0}ms runtime"),
@@ -152,7 +154,6 @@ pub(super) fn CellOutputPanel(
                 return view! { <div /> }.into_any();
             };
 
-            let collapse_icon = if output_collapsed.get() { "▸" } else { "▾" };
 
             let panel_class = if output_collapsed.get() {
                 "ironpad-output-panel ironpad-output-panel--collapsed"
@@ -179,7 +180,7 @@ pub(super) fn CellOutputPanel(
                         class="ironpad-output-header"
                         on:click=move |_| output_collapsed.update(|c| *c = !*c)
                     >
-                        <span class="ironpad-output-toggle">{collapse_icon}</span>
+                        <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !output_collapsed.get())/></span>
                         <span class="ironpad-output-title">"Output"</span>
                         <span class="ironpad-output-meta">
                             {format!("{byte_count} byte{} · {time_ms:.1}ms", if byte_count == 1 { "" } else { "s" })}
@@ -190,7 +191,7 @@ pub(super) fn CellOutputPanel(
                                     class="ironpad-output-fallback-badge"
                                     title="This cell was re-executed on the main thread because it requires DOM access (e.g. plotters font measurement)"
                                 >
-                                    "⚠ main thread"
+                                    <IconLabel icon=icons::WARNING label="main thread"/>
                                 </span>
                             }.into_any()
                         } else {

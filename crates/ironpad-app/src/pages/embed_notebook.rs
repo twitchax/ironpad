@@ -7,6 +7,8 @@
 //!
 //! [`AppLayout`]: crate::components::app_layout::AppLayout
 
+use crate::components::icon::Icon;
+use crate::components::icons;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
@@ -197,7 +199,7 @@ fn embed_body(
 
         Err(e) => view! {
             <div class="ironpad-error-boundary">
-                <div class="ironpad-error-boundary-icon">"△"</div>
+                <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
                 <p class="ironpad-error-boundary-message">{format!("{not_found}: {e}")}</p>
             </div>
         }

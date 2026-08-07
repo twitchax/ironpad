@@ -1,3 +1,4 @@
+use crate::components::icon::Chevron;
 /// Dedicated error panel for displaying formatted compiler diagnostics.
 ///
 /// Renders diagnostics below the editor when compilation fails, with:
@@ -45,7 +46,7 @@ pub fn ErrorPanel(
                 on:click=move |_| collapsed.update(|c| *c = !*c)
             >
                 <span class="ironpad-error-panel-toggle">
-                    {move || if collapsed.get() { "▸" } else { "▾" }}
+                    <Chevron expanded=Signal::derive(move || !collapsed.get())/>
                 </span>
                 <span class="ironpad-error-panel-title">"Diagnostics"</span>
                 <span class="ironpad-error-panel-summary">{summary}</span>

@@ -4,6 +4,8 @@
 // frame sequences) and `DisplayPanel::Simulation` (live tick-driven frames).
 // Both are used from `cell_output.rs` (editor) and `view_only_notebook.rs`.
 
+use crate::components::icon::Icon;
+use crate::components::icons;
 use leptos::prelude::*;
 
 /// Mirror of `ironpad_cell::SimSliderMeta` for use within the app rendering pipeline.
@@ -330,7 +332,11 @@ pub fn AnimationCanvas(
                 />
                 <div class="animation-controls">
                     <button class="animation-control-btn" on:click=toggle_play>
-                        {move || if playing.get() { "⏸" } else { "▶" }}
+                        {move || if playing.get() {
+                    view! { <Icon icon=icons::PAUSE/> }
+                } else {
+                    view! { <Icon icon=icons::RUN/> }
+                }}
                     </button>
                     <span class="animation-frame-counter">
                         {move || format!("Frame {}/{}", current_frame.get() + 1, frame_count)}
@@ -589,10 +595,14 @@ pub fn SimulationCanvas(
                 />
                 <div class="animation-controls">
                     <button class="animation-control-btn" on:click=toggle_play>
-                        {move || if playing.get() { "⏸" } else { "▶" }}
+                        {move || if playing.get() {
+                    view! { <Icon icon=icons::PAUSE/> }
+                } else {
+                    view! { <Icon icon=icons::RUN/> }
+                }}
                     </button>
                     <button class="animation-control-btn" on:click=step>
-                        "⏭"
+                        <Icon icon=icons::STEP/>
                     </button>
                     <span class="animation-frame-counter">
                         {move || format!("Frame {}", frame_number.get())}

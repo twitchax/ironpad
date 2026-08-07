@@ -4,6 +4,8 @@
 // cell.  Mirrors the `SimulationCanvas` pattern in `animation_canvas.rs` but
 // writes string content into a DOM element instead of pixel data onto a canvas.
 
+use crate::components::icon::Icon;
+use crate::components::icons;
 use leptos::prelude::*;
 
 // ── KaTeX JS interop (hydrate-only) ─────────────────────────────────────────
@@ -292,10 +294,14 @@ pub fn LiveViewPanel(
                 <div node_ref=content_ref class="live-view-content" />
                 <div class="animation-controls">
                     <button class="animation-control-btn" on:click=toggle_play>
-                        {move || if playing.get() { "⏸" } else { "▶" }}
+                        {move || if playing.get() {
+                    view! { <Icon icon=icons::PAUSE/> }
+                } else {
+                    view! { <Icon icon=icons::RUN/> }
+                }}
                     </button>
                     <button class="animation-control-btn" on:click=step>
-                        "⏭"
+                        <Icon icon=icons::STEP/>
                     </button>
                     <span class="animation-frame-counter">
                         {move || format!("Frame {}", frame_number.get())}

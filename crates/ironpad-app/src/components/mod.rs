@@ -4,6 +4,8 @@ pub mod blob_url;
 pub mod copy_button;
 pub mod error_panel;
 pub mod executor;
+pub mod icon;
+pub mod icons;
 pub mod live_view_panel;
 pub mod markdown_cell;
 pub mod monaco_editor;

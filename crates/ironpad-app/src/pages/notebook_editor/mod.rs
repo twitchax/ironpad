@@ -12,6 +12,8 @@ pub(crate) mod state;
 
 use std::collections::HashMap;
 
+use crate::components::icon::{Icon, IconLabel};
+use crate::components::icons;
 use ironpad_common::{CellType, IronpadNotebook};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_navigate, use_params_map};
@@ -447,17 +449,21 @@ fn NotebookContent() -> impl IntoView {
 
         let click_closure =
             Closure::<dyn Fn(web_sys::MouseEvent)>::new(move |e: web_sys::MouseEvent| {
-                if let Some(target) = e.target() {
-                    let el: &web_sys::Element = target.unchecked_ref();
-                    if el
-                        .closest(".ironpad-toolbar-dropdown")
-                        .ok()
-                        .flatten()
-                        .is_none()
-                    {
-                        hamburger_open.set(false);
-                        gear_open.set(false);
-                    }
+                // `composedPath()` rather than `target.closest(...)`: the path
+                // is captured at DISPATCH, so it survives the target being
+                // re-rendered out of the DOM by an earlier handler on the same
+                // click. A menu item that toggles state does exactly that now
+                // that items render reactive icon markup (PRD-0062) — the
+                // click landed on the icon's span, the toggle replaced it, and
+                // `closest()` on the detached node reported "outside", closing
+                // the menu out from under its own item.
+                let inside = e.composed_path().iter().any(|node| {
+                    node.dyn_into::<web_sys::Element>()
+                        .is_ok_and(|el| el.matches(".ironpad-toolbar-dropdown").unwrap_or(false))
+                });
+                if !inside {
+                    hamburger_open.set(false);
+                    gear_open.set(false);
                 }
             });
         web_sys::window()
@@ -634,7 +640,7 @@ fn NotebookContent() -> impl IntoView {
                         }
                     }
                 >
-                    "▶▶ Run All"
+                    <IconLabel icon=icons::RUN_ALL label="Run All"/>
                 </button>
 
                 <SessionButton />
@@ -670,7 +676,11 @@ fn NotebookContent() -> impl IntoView {
                             );
                         }
                     >
-                        {move || if state.draft_dirty.get() { "⬆ Push" } else { "Published ✓" }}
+                        {move || if state.draft_dirty.get() {
+                        view! { <IconLabel icon=icons::PUSH label="Push"/> }
+                    } else {
+                        view! { <IconLabel icon=icons::SUCCESS label="Published"/> }
+                    }}
                     </button>
                 })}
             </Show>
@@ -687,7 +697,7 @@ fn NotebookContent() -> impl IntoView {
                             hamburger_open.update(|v| *v = !*v);
                         }
                     >
-                        "☰"
+                        <Icon icon=icons::MENU/>
                     </button>
                     {move || {
                         if hamburger_open.get() {
@@ -707,7 +717,7 @@ fn NotebookContent() -> impl IntoView {
                                             );
                                         }
                                     >
-                                        "↗ Share Immutable"
+                                        <IconLabel icon=icons::SHARE label="Share Immutable"/>
                                     </button>
                                     // Share Mutable / Push Update (PRD-0049)
                                     {move || match mutable_binding.get() {
@@ -722,7 +732,7 @@ fn NotebookContent() -> impl IntoView {
                                                     );
                                                 }
                                             >
-                                                "⇅ Share Mutable"
+                                                <IconLabel icon=icons::REORDER label="Share Mutable"/>
                                             </button>
                                         }.into_any(),
                                         Some(share_id) => {
@@ -739,7 +749,7 @@ fn NotebookContent() -> impl IntoView {
                                                     rel="external"
                                                     on:click=move |_| hamburger_open.set(false)
                                                 >
-                                                    "◎ View as Reader"
+                                                    <IconLabel icon=icons::VIEW label="View as Reader"/>
                                                 </a>
                                                 <button
                                                     class="ironpad-toolbar-dropdown-item"
@@ -753,7 +763,7 @@ fn NotebookContent() -> impl IntoView {
                                                         );
                                                     }
                                                 >
-                                                    "⎌ Discard Draft"
+                                                    <IconLabel icon=icons::RESTORE label="Discard Draft"/>
                                                 </button>
                                             }.into_any()
                                         },
@@ -795,7 +805,7 @@ fn NotebookContent() -> impl IntoView {
                                             }
                                         }
                                     >
-                                        "⊞ Export HTML"
+                                        <IconLabel icon=icons::EXPORT label="Export HTML"/>
                                     </button>
                                     // Download .ironpad
                                     <button
@@ -809,7 +819,7 @@ fn NotebookContent() -> impl IntoView {
                                             );
                                         }
                                     >
-                                        "↓ Download .ironpad"
+                                        <IconLabel icon=icons::DOWNLOAD label="Download .ironpad"/>
                                     </button>
                                     // Version history (PRD-0058) — private
                                     // notebooks only; published ones have
@@ -822,7 +832,7 @@ fn NotebookContent() -> impl IntoView {
                                                 history_open.set(true);
                                             }
                                         >
-                                            "🕘 History"
+                                            <IconLabel icon=icons::HISTORY label="History"/>
                                         </button>
                                     })}
                                     // Delete (private) / Unpublish (mutable, PRD-0049)
@@ -840,7 +850,7 @@ fn NotebookContent() -> impl IntoView {
                                                     );
                                                 }
                                             >
-                                                "⊗ Unpublish"
+                                                <IconLabel icon=icons::REMOVE label="Unpublish"/>
                                             </button>
                                         }.into_any(),
                                         None => view! {
@@ -893,7 +903,7 @@ fn NotebookContent() -> impl IntoView {
                             gear_open.update(|v| *v = !*v);
                         }
                     >
-                        "⚙"
+                        <Icon icon=icons::SETTINGS/>
                     </button>
                     {move || {
                         if gear_open.get() {
@@ -907,9 +917,9 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         {move || {
                                             if state.force_recompile.get() {
-                                                "↻ Force Recompile ✓"
+                                                view! { <IconLabel icon=icons::RERUN label="Force Recompile"/><Icon icon=icons::SUCCESS/> }.into_any()
                                             } else {
-                                                "↻ Force Recompile"
+                                                view! { <IconLabel icon=icons::RERUN label="Force Recompile"/> }.into_any()
                                             }
                                         }}
                                     </button>
@@ -938,9 +948,9 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         {move || {
                                             if state.reactive_mode.get() {
-                                                "⚡ Reactive Mode ✓"
+                                                view! { <IconLabel icon=icons::REACTIVE label="Reactive Mode"/><Icon icon=icons::SUCCESS/> }.into_any()
                                             } else {
-                                                "⚡ Reactive Mode"
+                                                view! { <IconLabel icon=icons::REACTIVE label="Reactive Mode"/> }.into_any()
                                             }
                                         }}
                                     </button>
@@ -962,7 +972,7 @@ fn NotebookContent() -> impl IntoView {
                         navigate.get_value()("/", NavigateOptions::default());
                     }
                 >
-                    "✕"
+                    <Icon icon=icons::CLOSE/>
                 </button>
             </div>
         </div>
@@ -1037,7 +1047,7 @@ fn NotebookContent() -> impl IntoView {
                 title="Edit mode"
                 on:click=move |_| state.is_view_mode.set(false)
             >
-                "✎"
+                <Icon icon=icons::EDIT/>
             </button>
             <button
                 class=move || if state.is_view_mode.get() { "ironpad-mode-toggle-segment ironpad-mode-toggle-segment--active" } else { "ironpad-mode-toggle-segment" }
@@ -1064,7 +1074,7 @@ fn NotebookContent() -> impl IntoView {
                     state.is_view_mode.set(true);
                 }
             >
-                "◉"
+                <Icon icon=icons::VIEW/>
             </button>
         </div>
     }

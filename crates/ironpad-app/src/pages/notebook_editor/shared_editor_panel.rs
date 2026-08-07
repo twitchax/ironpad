@@ -1,3 +1,5 @@
+use crate::components::icon::{Chevron, IconLabel};
+use crate::components::icons;
 use leptos::prelude::*;
 
 use crate::components::monaco_editor::MonacoEditor;
@@ -30,13 +32,12 @@ pub(super) enum SharedEditorKind {
 /// pages' read-only appendix via `ViewOnlyNotebook`.
 #[component]
 pub(super) fn SharedEditorSection(kind: SharedEditorKind) -> impl IntoView {
-    let label = match kind {
-        SharedEditorKind::Dependencies => "\u{2b21} Shared Dependencies (Cargo.toml)",
-        SharedEditorKind::Source => "\u{270e} Shared Source (shared.rs)",
+    let (icon, label) = match kind {
+        SharedEditorKind::Dependencies => (icons::SHARED, "Shared Dependencies (Cargo.toml)"),
+        SharedEditorKind::Source => (icons::EDIT, "Shared Source (shared.rs)"),
     };
 
     let collapsed = RwSignal::new(true);
-    let toggle_icon = move || if collapsed.get() { "▸" } else { "▾" };
 
     view! {
         <div class="view-only-shared-section">
@@ -44,8 +45,8 @@ pub(super) fn SharedEditorSection(kind: SharedEditorKind) -> impl IntoView {
                 class="view-only-shared-header"
                 on:click=move |_| collapsed.update(|c| *c = !*c)
             >
-                <span class="ironpad-output-toggle">{toggle_icon}</span>
-                <span>{label}</span>
+                <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !collapsed.get())/></span>
+                <IconLabel icon=icon label=label/>
             </button>
             {move || {
                 (!collapsed.get())

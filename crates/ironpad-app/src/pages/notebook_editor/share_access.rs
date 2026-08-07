@@ -7,6 +7,8 @@
 //! metadata seam — and it will grow (`rbac_grant` is shaped for an EDIT role
 //! later). The metadata panel composes it under the published-URL row.
 
+use crate::components::icon::Icon;
+use crate::components::icons;
 use leptos::prelude::*;
 
 use crate::components::toaster::{ToastIntent, Toaster};
@@ -178,7 +180,7 @@ pub(super) fn ShareAccessSection(share_id: String) -> impl IntoView {
                                                 title="Revoke access"
                                                 on:click=move |_| on_revoke(gid.clone())
                                             >
-                                                "\u{2715}"
+                                                <Icon icon=icons::CLOSE/>
                                             </button>
                                         </span>
                                     }

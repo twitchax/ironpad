@@ -118,6 +118,30 @@ test.describe("Editor UX (PRD-0032)", () => {
     });
   });
 
+  // A dropdown item that toggles state must not close the menu under itself.
+  // Regression (PRD-0062): menu items render icon markup now, so the click
+  // target is a span the toggle's re-render detaches mid-dispatch. The
+  // outside-click handler read `target.closest(...)` on that detached node,
+  // saw no ancestor, and closed the menu — which silently inverted the
+  // open/closed parity for every subsequent toggle.
+  test("toggling a gear-menu item keeps the menu open", async ({ page }) => {
+    await newNotebook(page);
+    const gear = page.locator('button[title="Notebook settings"]');
+    const item = page.locator(".ironpad-toolbar-dropdown-item", {
+      hasText: "Force Recompile",
+    });
+    const menu = page.locator(".ironpad-toolbar-dropdown-menu");
+
+    await gear.click();
+    await expect(menu).toBeVisible();
+    await item.first().click();
+    await expect(menu).toBeVisible();
+
+    // ...and a genuine click outside still closes it.
+    await page.locator(".ironpad-editor").click({ position: { x: 5, y: 5 } });
+    await expect(menu).toHaveCount(0);
+  });
+
   // Rendered markdown fenced code blocks are syntax-highlighted by Prism
   // (public/prism/highlight-code.js), not just Monaco-highlighted while editing.
   test("rendered code block is syntax-highlighted by Prism", async ({
@@ -323,10 +347,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
 
     // Open the hamburger menu and click Share.
-    await page.locator("button", { hasText: "☰" }).click();
-    await page
-      .locator(".ironpad-toolbar-dropdown-item", { hasText: "Share Immutable" })
-      .click();
+    await menuClick(page, "Share Immutable");
 
     // A success toast containing the shared URL should appear.
     await expect(page.getByText(/\/shared\//).first()).toBeVisible({

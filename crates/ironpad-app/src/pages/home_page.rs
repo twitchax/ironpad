@@ -1,3 +1,5 @@
+use crate::components::icon::{Icon, IconLabel};
+use crate::components::icons;
 #[cfg(feature = "hydrate")]
 use crate::components::toaster::Toaster;
 use ironpad_common::{IronpadNotebook, PublicNotebookSummary};
@@ -205,7 +207,7 @@ pub fn HomePage() -> impl IntoView {
                         class="ironpad-btn ironpad-btn--subtle"
                         on:click=on_import
                     >
-                        "↑ Import Notebook"
+                        <IconLabel icon=icons::IMPORT label="Import Notebook"/>
                     </button>
                 </div>
             </div>
@@ -225,15 +227,15 @@ pub fn HomePage() -> impl IntoView {
                     <button
                         class=move || if filter_mode.get() == FilterMode::Private { "ironpad-chip active" } else { "ironpad-chip" }
                         on:click=move |_| filter_mode.set(FilterMode::Private)
-                    >"◆ Private"</button>
+                    ><IconLabel icon=icons::PRIVATE label="Private"/></button>
                     <button
                         class=move || if filter_mode.get() == FilterMode::Mutable { "ironpad-chip active" } else { "ironpad-chip" }
                         on:click=move |_| filter_mode.set(FilterMode::Mutable)
-                    >"⟳ Published"</button>
+                    ><IconLabel icon=icons::PUBLISHED label="Published"/></button>
                     <button
                         class=move || if filter_mode.get() == FilterMode::Public { "ironpad-chip active" } else { "ironpad-chip" }
                         on:click=move |_| filter_mode.set(FilterMode::Public)
-                    >"◇ Public"</button>
+                    ><IconLabel icon=icons::PUBLIC label="Public"/></button>
                 </div>
             </div>
 
@@ -403,7 +405,7 @@ fn NotebookCard(
                     <a href=href class="ironpad-notebook-card-link">
                         <div class="ironpad-notebook-card">
                             <div class="ironpad-notebook-card-header">
-                                <span class="ironpad-notebook-badge private">"◆"</span>
+                                <span class="ironpad-notebook-badge private"><Icon icon=icons::PRIVATE/></span>
                                 <span class="ironpad-notebook-card-title">{title}</span>
                             </div>
                             <div class="ironpad-notebook-card-body">
@@ -437,7 +439,7 @@ fn NotebookCard(
                     <a href=href class="ironpad-notebook-card-link">
                         <div class="ironpad-notebook-card">
                             <div class="ironpad-notebook-card-header">
-                                <span class="ironpad-notebook-badge mutable">"⟳"</span>
+                                <span class="ironpad-notebook-badge mutable"><Icon icon=icons::PUBLISHED/></span>
                                 <span class="ironpad-notebook-card-title">{title}</span>
                             </div>
                             <div class="ironpad-notebook-card-body">
@@ -471,7 +473,7 @@ fn NotebookCard(
                     <a href=href class="ironpad-notebook-card-link">
                         <div class="ironpad-notebook-card">
                             <div class="ironpad-notebook-card-header">
-                                <span class="ironpad-notebook-badge public">"◇"</span>
+                                <span class="ironpad-notebook-badge public"><Icon icon=icons::PUBLIC/></span>
                                 <span class="ironpad-notebook-card-title">{title}</span>
                             </div>
                             <div class="ironpad-notebook-card-body">

@@ -184,4 +184,5 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for the full development guide, architectur
 
 ## License
 
-MIT
+MIT. Third-party notices for bundled assets (Lucide icons, Monaco, KaTeX,
+SortableJS, embedded fonts) are in [THIRD-PARTY.md](THIRD-PARTY.md).

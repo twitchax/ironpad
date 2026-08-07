@@ -935,7 +935,7 @@ fn render_button(
     sink: Option<WidgetSink>,
 ) -> impl IntoView {
     let button_label = if label.is_empty() {
-        "Run ▶".to_owned()
+        "Run".to_owned()
     } else {
         label.to_owned()
     };

@@ -11,6 +11,9 @@ leptos_axum = { workspace = true, optional = true }
 
 ironpad-common = { workspace = true }
 
+icondata_lu.workspace = true
+icondata_core.workspace = true
+
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 wasm-bindgen = { workspace = true, optional = true }

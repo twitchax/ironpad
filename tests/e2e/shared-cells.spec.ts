@@ -37,7 +37,7 @@ test.describe("Shared cells (PRD-0044)", () => {
     // Source edits reach the model on a 1s debounce, and shared.rs is
     // assembled FROM THE MODEL at compile time — wait for the save indicator
     // (the tab's dirty dot) to clear before anything compiles against it.
-    await expect(sharedCell.getByText("Code \u25cf")).toHaveCount(0, {
+    await expect(sharedCell.locator(".ironpad-tab-dirty")).toHaveCount(0, {
       timeout: 10_000,
     });
 

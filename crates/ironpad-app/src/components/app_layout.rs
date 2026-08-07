@@ -1,3 +1,5 @@
+use crate::components::icon::Icon;
+use crate::components::icons;
 use leptos::prelude::*;
 #[cfg(feature = "hydrate")]
 use leptos::web_sys;
@@ -283,7 +285,7 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                         }
                     }
                 >
-                    "☾"
+                    <Icon icon=icons::THEME_DARK/>
                 </button>
                 <button
                     class=move || if is_light_theme.get() { "ironpad-theme-toggle-segment ironpad-theme-toggle-segment--active" } else { "ironpad-theme-toggle-segment" }
@@ -296,7 +298,7 @@ fn HeaderContent(ctx: LayoutContext) -> impl IntoView {
                         }
                     }
                 >
-                    "☼"
+                    <Icon icon=icons::THEME_LIGHT/>
                 </button>
             </div>
             <AuthStatus ctx />

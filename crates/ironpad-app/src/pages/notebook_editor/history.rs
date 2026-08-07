@@ -8,6 +8,8 @@
 //! one reliable way to rebuild editor state" precedent Discard Draft uses.
 //! `Local` mode only; published notebooks have draft/push semantics instead.
 
+use crate::components::icon::Icon;
+use crate::components::icons;
 use leptos::prelude::*;
 
 use crate::components::toaster::{ToastIntent, Toaster};
@@ -70,7 +72,7 @@ pub(super) fn HistoryPanel(open: RwSignal<bool>) -> impl IntoView {
                                 class="ironpad-history-close"
                                 on:click=move |_| open.set(false)
                             >
-                                "✕"
+                                <Icon icon=icons::CLOSE/>
                             </button>
                         </div>
                         <p class="ironpad-history-hint">

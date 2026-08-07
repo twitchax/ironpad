@@ -142,7 +142,9 @@ test.describe("Cell execution and output", () => {
     });
 
     // The SVG chart must render...
-    const svg = cell.locator(".ironpad-output-svg svg");
+    // :not(.ironpad-icon) — the copy button inside the panel is an inline
+    // SVG icon too, so a bare `svg` matches two elements (PRD-0062).
+    const svg = cell.locator(".ironpad-output-svg svg:not(.ironpad-icon)");
     await expect(svg).toBeVisible({ timeout: 5_000 });
 
     // ...from the WORKER: no "⚠ main thread" fallback badge. This is the

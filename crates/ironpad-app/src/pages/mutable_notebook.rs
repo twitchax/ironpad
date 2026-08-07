@@ -1,3 +1,5 @@
+use crate::components::icon::{Icon, IconLabel};
+use crate::components::icons;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
@@ -142,7 +144,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                     // one sign-in (PRD-0061).
                                     {mark_not_found()}
                                     <div class="ironpad-error-boundary">
-                                        <div class="ironpad-error-boundary-icon">"🔒"</div>
+                                        <div class="ironpad-error-boundary-icon"><Icon icon=icons::LOCKED/></div>
                                         <p class="ironpad-error-boundary-message">
                                             "This notebook is private."
                                         </p>
@@ -166,7 +168,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                 Ok((MutableNotebookAccess::NotFound, _)) => view! {
                                     {mark_not_found()}
                                     <div class="ironpad-error-boundary">
-                                        <div class="ironpad-error-boundary-icon">"△"</div>
+                                        <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
                                         <p class="ironpad-error-boundary-message">
                                             "This mutable notebook was not found."
                                         </p>
@@ -177,7 +179,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                 }.into_any(),
                                 Err(e) => view! {
                                     <div class="ironpad-error-boundary">
-                                        <div class="ironpad-error-boundary-icon">"△"</div>
+                                        <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
                                         <p class="ironpad-error-boundary-message">
                                             {format!("Could not load notebook: {e}")}
                                         </p>
@@ -231,7 +233,7 @@ fn MutableReader(
     let edit_back = (is_owner && force_reader).then(|| {
         view! {
             <a class="view-only-edit-button" href=format!("/mutable/{id}") rel="external">
-                "✎ Edit"
+                <IconLabel icon=icons::EDIT label="Edit"/>
             </a>
         }
         .into_any()

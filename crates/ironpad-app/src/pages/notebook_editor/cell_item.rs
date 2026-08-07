@@ -1,3 +1,5 @@
+use crate::components::icon::{Chevron, Icon, IconLabel};
+use crate::components::icons;
 use ironpad_common::{CellManifest, CellType, CompileResponse, Diagnostic, ExecutionResult};
 use leptos::prelude::*;
 
@@ -1032,8 +1034,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         class
     };
 
-    let collapse_icon = Signal::derive(move || if collapsed.get() { "▸" } else { "▾" });
-
     let body_class = Signal::derive(move || {
         // `collapsed` is the single source of truth: it loads from the cell's
         // saved default, the header toggle snaps it when the default changes,
@@ -1110,7 +1110,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             collapsed.update(|c| *c = !*c);
                         }
                     >
-                        {collapse_icon}
+                        <Chevron expanded=Signal::derive(move || !collapsed.get())/>
                     </button>
 
                     <span class="ironpad-cell-order">
@@ -1140,9 +1140,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             .copied()
                             .unwrap_or(false);
                         if is_stale && state.reactive_mode.get() {
-                            view! { <span class="ironpad-stale-indicator ironpad-stale-indicator--pending" title="Pending re-execution (reactive mode)">"⏳"</span> }.into_any()
+                            view! { <span class="ironpad-stale-indicator ironpad-stale-indicator--pending" title="Pending re-execution (reactive mode)"><Icon icon=icons::PENDING/></span> }.into_any()
                         } else if is_stale {
-                            view! { <span class="ironpad-stale-indicator" title="Cell output is stale">"⟳"</span> }.into_any()
+                            view! { <span class="ironpad-stale-indicator" title="Cell output is stale"><Icon icon=icons::RERUN/></span> }.into_any()
                         } else {
                             view! { <span /> }.into_any()
                         }
@@ -1159,7 +1159,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             {move || if is_shared.get() {
                                 view! {
                                     <span class="ironpad-tag ironpad-cell-type-badge ironpad-cell-type-badge--shared">
-                                        "⬡ shared"
+                                        <IconLabel icon=icons::SHARED label="shared"/>
                                     </span>
                                 }.into_any()
                             } else {
@@ -1187,22 +1187,27 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                 }
                             >
                                 {move || {
-                                    match cell_status.try_get().unwrap_or(CellStatus::Idle) {
-                                        CellStatus::Idle => "● idle".to_string(),
-                                        CellStatus::Queued => "◎ queued".to_string(),
-                                        CellStatus::Compiling => "◐ compiling…".to_string(),
-                                        CellStatus::Running => "◐ running…".to_string(),
-                                        CellStatus::Success => {
-                                            // Show compile time only; runtime is shown in the
+                                    // (icon, text) rather than a formatted String: the
+                                    // badge renders an SVG now, and the arms stay a flat
+                                    // match instead of seven duplicated view! blocks.
+                                    let (icon, text) = match cell_status.try_get().unwrap_or(CellStatus::Idle) {
+                                        CellStatus::Idle => (icons::IDLE, "idle".to_string()),
+                                        CellStatus::Queued => (icons::QUEUED, "queued".to_string()),
+                                        CellStatus::Compiling => (icons::BUSY, "compiling…".to_string()),
+                                        CellStatus::Running => (icons::BUSY, "running…".to_string()),
+                                        CellStatus::Success => (
+                                            icons::SUCCESS,
+                                            // Compile time only; runtime is shown in the
                                             // Output panel meta (the "c+r" form read as one number).
                                             match compile_time_ms.try_get().flatten() {
-                                                Some(c) => format!("✓ {c:.0} ms"),
-                                                None => "✓ done".to_string(),
-                                            }
-                                        }
-                                        CellStatus::Error => "✕ error".to_string(),
-                                        CellStatus::Blocked => "⛔ blocked".to_string(),
-                                    }
+                                                Some(c) => format!("{c:.0} ms"),
+                                                None => "done".to_string(),
+                                            },
+                                        ),
+                                        CellStatus::Error => (icons::ERROR, "error".to_string()),
+                                        CellStatus::Blocked => (icons::BLOCKED, "blocked".to_string()),
+                                    };
+                                    view! { <IconLabel icon=icon label=text/> }
                                 }}
                             </span>
                         }.into_any()
@@ -1220,7 +1225,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                     title=move || if default_collapsed.get() { "Code loads collapsed. Click to load it open." } else { "Code loads open. Click to load it collapsed." }
                                     on:click=on_toggle_default_collapsed
                                 >
-                                    "▤"
+                                    <Icon icon=icons::CODE_PANEL/>
                                 </button>
                                 <Show when=move || !is_shared.get()>
                                     <button
@@ -1228,7 +1233,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         title=move || if default_output_collapsed.get() { "Output loads collapsed. Click to load it open." } else { "Output loads open. Click to load it collapsed." }
                                         on:click=on_toggle_default_output_collapsed
                                     >
-                                        "⊡"
+                                        <Icon icon=icons::OUTPUT_PANEL/>
                                     </button>
                                 </Show>
                         </div>
@@ -1256,13 +1261,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                 class=move || if selected_tab.get() == "code" { "ironpad-cell-tab ironpad-cell-tab--selected" } else { "ironpad-cell-tab" }
                                 on:click=move |_| selected_tab.set("code".to_string())
                             >
-                                {move || if source_dirty.get() { "Code ●" } else { "Code" }}
+                                "Code"<Show when=move || source_dirty.get()><span class="ironpad-tab-dirty" title="Unsaved changes"><Icon icon=icons::IDLE/></span></Show>
                             </button>
                             <button
                                 class=move || if selected_tab.get() == "cargo-toml" { "ironpad-cell-tab ironpad-cell-tab--selected" } else { "ironpad-cell-tab" }
                                 on:click=move |_| selected_tab.set("cargo-toml".to_string())
                             >
-                                {move || if cargo_toml_dirty.get() { "Cargo.toml ●" } else { "Cargo.toml" }}
+                                "Cargo.toml"<Show when=move || cargo_toml_dirty.get()><span class="ironpad-tab-dirty" title="Unsaved changes"><Icon icon=icons::IDLE/></span></Show>
                             </button>
                         </div>
 
@@ -1320,7 +1325,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         <div class="ironpad-cell-side-actions">
             {(!is_markdown).then(|| view! {
                 <div class="ironpad-drag-handle" title="Drag to reorder">
-                    "⠿"
+                    <Icon icon=icons::DRAG/>
                 </div>
             })}
             {move || if is_markdown || is_shared.get() {
@@ -1363,9 +1368,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     >
                         {move || {
                             if matches!(cell_status.get(), CellStatus::Compiling | CellStatus::Running) {
-                                "⏹"
+                                view! { <Icon icon=icons::STOP/> }
                             } else {
-                                "▶"
+                                view! { <Icon icon=icons::RUN/> }
                             }
                         }}
                     </button>
@@ -1383,7 +1388,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             });
                         }
                     >
-                        "⚙"
+                        <Icon icon=icons::SETTINGS/>
                     </button>
                 }.into_any()
             }}
@@ -1397,7 +1402,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         menu_open.update(|v| *v = !*v);
                     }
                 >
-                    "⋯"
+                    <Icon icon=icons::MORE/>
                 </button>
 
                 {move || {
@@ -1419,20 +1424,20 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                 disabled=first
                                 on:click=on_move_up
                             >
-                                "↑ Move Up"
+                                <IconLabel icon=icons::SORT_UP label="Move Up"/>
                             </button>
                             <button
                                 class="ironpad-cell-menu-item"
                                 disabled=last
                                 on:click=on_move_down
                             >
-                                "↓ Move Down"
+                                <IconLabel icon=icons::SORT_DOWN label="Move Down"/>
                             </button>
                             <button
                                 class="ironpad-cell-menu-item"
                                 on:click=on_duplicate
                             >
-                                "⧉ Duplicate"
+                                <IconLabel icon=icons::COPY label="Duplicate"/>
                             </button>
                             {if is_markdown {
                                 view! { <span /> }.into_any()
@@ -1446,7 +1451,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                                 class="ironpad-cell-menu-item"
                                                 on:click=on_run_all_below
                                             >
-                                                "▶▶ Run All Below"
+                                                <IconLabel icon=icons::RUN_ALL label="Run All Below"/>
                                             </button>
                                         }.into_any()
                                     }}
@@ -1455,9 +1460,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         on:click=on_toggle_shared
                                     >
                                         {move || if is_shared.get() {
-                                            "⬡ Unmark Shared"
+                                            view! { <IconLabel icon=icons::SHARED label="Unmark Shared"/> }
                                         } else {
-                                            "⬡ Mark as Shared"
+                                            view! { <IconLabel icon=icons::SHARED label="Mark as Shared"/> }
                                         }}
                                     </button>
                                 }.into_any()

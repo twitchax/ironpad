@@ -60,7 +60,7 @@ test.describe("Shared-cell live check (PRD-0046)", () => {
     await setCellSource(page, cell, FIXED);
     // Wait out the save debounce (dirty dot clears) before toggling shared,
     // so the model holds the source the assembly will use.
-    await expect(cell.getByText("Code ●")).toHaveCount(0, {
+    await expect(cell.locator(".ironpad-tab-dirty")).toHaveCount(0, {
       timeout: 15_000,
     });
 
