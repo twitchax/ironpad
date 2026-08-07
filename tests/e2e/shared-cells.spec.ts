@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
-import { createNotebook } from "./helpers/session";
+import { createNotebook, ADD_CODE } from "./helpers/session";
 
 /**
  * E2E coverage for PRD-0044 shared cells: a cell marked shared folds into
@@ -19,9 +19,9 @@ test.describe("Shared cells (PRD-0044)", () => {
     await createNotebook(page);
 
     // ── Cell 0: will become the shared cell ─────────────────────────────
-    // "+ Markdown" also carries the base class — select "+ Code" explicitly.
+    // "Markdown" also carries the base class — select "Code" explicitly.
     await page
-      .locator(".ironpad-add-cell-btn", { hasText: "+ Code" })
+      .locator(ADD_CODE)
       .first()
       .click();
     const sharedCell = page.locator(".ironpad-cell-card").first();
@@ -58,7 +58,7 @@ test.describe("Shared cells (PRD-0044)", () => {
 
     // ── Cell 1: consumes shared::double ─────────────────────────────────
     await page
-      .locator(".ironpad-add-cell-btn", { hasText: "+ Code" })
+      .locator(ADD_CODE)
       .last()
       .click();
     const consumer = page.locator(".ironpad-cell-card").nth(1);

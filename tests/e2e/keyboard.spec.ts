@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { trackJsErrors } from "./helpers/errors";
+import { ADD_CODE } from "./helpers/session";
 
 test.describe("Keyboard shortcuts", () => {
   test("Ctrl+Enter in cell editor starts compilation", async ({ page }) => {
@@ -12,7 +13,7 @@ test.describe("Keyboard shortcuts", () => {
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
-    await page.locator("button", { hasText: "+ New Notebook" }).click();
+    await page.locator("button", { hasText: "New Notebook" }).click();
     await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
@@ -62,12 +63,12 @@ test.describe("Keyboard shortcuts", () => {
     await page.goto("/");
     await expect(page.locator(".ironpad-home")).toBeVisible();
     await page.waitForTimeout(3_000); // hydration (suite convention)
-    await page.locator("button", { hasText: "+ New Notebook" }).click();
+    await page.locator("button", { hasText: "New Notebook" }).click();
     await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
     await expect(page.locator(".ironpad-editor")).toBeVisible();
 
-    // Add two code cells (use text filter to avoid clicking "+ Markdown").
-    const addCodeBtn = page.locator("button.ironpad-add-cell-btn", { hasText: "+ Code" });
+    // Add two code cells (use text filter to avoid clicking "Markdown").
+    const addCodeBtn = page.locator(ADD_CODE);
     await addCodeBtn.first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
     await addCodeBtn.last().click();

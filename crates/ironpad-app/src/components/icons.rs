@@ -64,7 +64,11 @@ pub const OUTPUT_PANEL: IconData = icondata_lu::LuTerminal;
 pub const DRAG: IconData = icondata_lu::LuGripVertical;
 /// Duplicate a cell, and the copy-to-clipboard button. Replaces `⧉`.
 pub const COPY: IconData = icondata_lu::LuCopy;
-/// Add. Replaces `⊞`.
+/// Add a cell or a notebook. Replaces the ASCII `+` in "+ Code",
+/// "+ Markdown", and "+ New Notebook" — a character doing an icon's job,
+/// which the first sweep never looked for because it scanned for SYMBOLS
+/// rather than for affordances. (The `⊞` this role originally claimed to
+/// replace was "⊞ Export HTML"; that one is [`EXPORT`].)
 pub const ADD: IconData = icondata_lu::LuSquarePlus;
 /// Remove / delete. Replaces `⊗`.
 pub const REMOVE: IconData = icondata_lu::LuCircleX;
@@ -126,9 +130,6 @@ pub const HISTORY: IconData = icondata_lu::LuHistory;
 pub const RESTORE: IconData = icondata_lu::LuUndo2;
 /// Serialized (saved) output badge. Replaces `◫`.
 pub const SAVED_OUTPUT: IconData = icondata_lu::LuSave;
-/// Refresh / reload a listing. Replaces `⟳`.
-pub const REFRESH: IconData = icondata_lu::LuRefreshCw;
-
 /// Notebook metadata / link-preview section. Replaces the `🗂` emoji that
 /// hid in escape form (`\u{1f5c2}`) and so survived the first sweep.
 pub const METADATA: IconData = icondata_lu::LuTags;
@@ -198,7 +199,6 @@ pub(crate) const ALL: &[(&str, IconData)] = &[
     ("HISTORY", HISTORY),
     ("RESTORE", RESTORE),
     ("SAVED_OUTPUT", SAVED_OUTPUT),
-    ("REFRESH", REFRESH),
     ("METADATA", METADATA),
     ("WARNING", WARNING),
     ("CHECKBOX_CHECKED", CHECKBOX_CHECKED),

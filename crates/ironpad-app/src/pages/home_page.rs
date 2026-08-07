@@ -201,7 +201,7 @@ pub fn HomePage() -> impl IntoView {
                         class="ironpad-btn ironpad-btn--primary"
                         on:click=on_create
                     >
-                        "+ New Notebook"
+                        <IconLabel icon=icons::ADD label="New Notebook"/>
                     </button>
                     <button
                         class="ironpad-btn ironpad-btn--subtle"

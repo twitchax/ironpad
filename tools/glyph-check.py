@@ -69,6 +69,37 @@ def is_ui_symbol(cp: int) -> bool:
     return cp >= 0x2000 and unicodedata.category(chr(cp)).startswith("S")
 
 
+# An ASCII character can do an icon's job just as well as an emoji can, and
+# this guard's U+2000 floor could not see it: `"+ Code"`, `"+ Markdown"`,
+# `"+ New Notebook"`, and `"</> Embed"` all shipped through a sweep that
+# scanned for SYMBOLS rather than for affordances. Match a rendered string
+# literal that OPENS with ASCII punctuation, which is what a text-node icon
+# looks like in a `view!` block.
+ASCII_AFFORDANCE_RE = re.compile(r"""^"([+\-*/<>=#@~^&|]{1,3})[ \t]+[A-Za-z][^"]*"$""")
+
+# Generated Rust and HTML are also bare string literals opening on punctuation
+# (`"#[allow(dead_code)] …"`, `"<div class=…>"`). A LABEL has whitespace and
+# then a word, and carries no code punctuation; requiring both separates the
+# two without an allow-list.
+CODE_ISH = ("\\n", "{", "=", ";", "\\\"")
+
+
+def ascii_affordance(line: str) -> str | None:
+    """The leading punctuation of a bare string-literal line, if any.
+
+    Deliberately narrow: the whole line must be one string literal, so
+    `format!("+ {n}")` and arithmetic never match. Prose that opens on a dash
+    is the plausible false positive, and `glyph-check: allow` covers it.
+    """
+    stripped = strip_trailing_comment(line).strip()
+    if not (stripped.startswith('"') and stripped.endswith('"')):
+        return None
+    if any(c in stripped for c in CODE_ISH):
+        return None
+    m = ASCII_AFFORDANCE_RE.match(stripped)
+    return m.group(1) if m else None
+
+
 def offending(line: str) -> list[str]:
     code = strip_trailing_comment(line)
     found = [chr(cp) for cp in map(ord, code) if is_ui_symbol(cp)]
@@ -95,6 +126,8 @@ def scan(path: pathlib.Path) -> list[tuple[int, str, str]]:
         found = offending(line)
         if found:
             hits.append((num, "".join(dict.fromkeys(found)), stripped[:90]))
+        elif (ascii_icon := ascii_affordance(line)) is not None:
+            hits.append((num, ascii_icon, stripped[:90]))
     return hits
 
 

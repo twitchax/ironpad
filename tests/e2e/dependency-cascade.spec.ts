@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
+import { ADD_CODE } from "./helpers/session";
 
 /**
  * PRD-0060: dependency-aware run cascade + continue-past-failures.
@@ -17,7 +18,7 @@ async function newNotebookWithCells(
   await page.goto("/");
   await expect(page.locator(".ironpad-home")).toBeVisible();
   await page.waitForTimeout(3_000); // hydration (suite convention)
-  await page.locator("button", { hasText: "+ New Notebook" }).click();
+  await page.locator("button", { hasText: "New Notebook" }).click();
   await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
   await expect(page.locator(".ironpad-editor")).toBeVisible();
 
@@ -25,7 +26,7 @@ async function newNotebookWithCells(
     // Each click appends a fresh Code cell at the end (the markdown variant
     // shares the base class, so select the code button explicitly).
     await page
-      .locator(".ironpad-add-cell-btn:not(.ironpad-add-cell-btn--markdown)")
+      .locator(ADD_CODE)
       .last()
       .click();
     const cell = page.locator(".ironpad-cell-card").nth(i);

@@ -1,7 +1,7 @@
 import { test, expect, Page, Locator } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
-import { createNotebook } from "./helpers/session";
+import { createNotebook, ADD_CODE } from "./helpers/session";
 
 /**
  * E2E coverage for PRD-0046 shared-cell live check: typing an error into a
@@ -48,7 +48,7 @@ test.describe("Shared-cell live check (PRD-0046)", () => {
 
     await createNotebook(page);
     await page
-      .locator(".ironpad-add-cell-btn", { hasText: "+ Code" })
+      .locator(ADD_CODE)
       .first()
       .click();
     const cell = page.locator(".ironpad-cell-card").first();

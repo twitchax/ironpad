@@ -849,6 +849,14 @@ a:focus-visible {
     font-size: 0.9rem;
 }
 
+// Private notebooks read as a FILLED diamond, public as an outline, which is
+// how the home page tells its storage classes apart at a glance. Both roles
+// point at the same Lucide diamond, so without this rule the two badges are
+// byte-identical and the distinction that existed as `◆` vs `◇` is gone.
+.ironpad-notebook-badge.private svg {
+    fill: currentColor;
+}
+
 .ironpad-notebook-card-title {
     font-size: 1rem;
     font-weight: 600;

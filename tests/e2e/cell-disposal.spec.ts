@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
-import { createNotebook } from "./helpers/session";
+import { createNotebook, ADD_CODE } from "./helpers/session";
 
 /**
  * Regression for the disposed-reactive-value panic when a cell is removed while
@@ -34,7 +34,7 @@ test.describe("Cell disposal during in-flight async", () => {
 
     await createNotebook(page);
     await page
-      .locator(".ironpad-add-cell-btn", { hasText: "+ Code" })
+      .locator(ADD_CODE)
       .first()
       .click();
     // The card holds the editor + squiggles; the side-action rail (with the

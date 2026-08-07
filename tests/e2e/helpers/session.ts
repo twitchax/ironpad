@@ -4,6 +4,19 @@
 import { Page, expect } from "@playwright/test";
 
 /**
+ * The add-cell buttons, selected by CLASS rather than by label text.
+ *
+ * They used to read "+ Code" and "+ Markdown"; when the `+` became an icon,
+ * every spec that filtered on that prose broke at once (52 of them, through
+ * `createNotebook` alone). Text is presentation and it will keep changing;
+ * the class is the contract. `hasText: "Code"` is doubly wrong now, since the
+ * cell's own Code/Cargo.toml tab would also match it.
+ */
+export const ADD_CODE =
+  "button.ironpad-add-cell-btn:not(.ironpad-add-cell-btn--markdown)";
+export const ADD_MARKDOWN = "button.ironpad-add-cell-btn--markdown";
+
+/**
  * Navigate home and create a fresh notebook, robustly under full-suite load:
  * wait for the home page AND hydration before clicking (a pre-hydration click
  * hits no handler and strands the test on the home page), and give the editor
@@ -13,7 +26,7 @@ export async function createNotebook(page: Page): Promise<void> {
   await page.goto("/");
   await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
   await page.waitForTimeout(3_000); // hydration (suite convention)
-  await page.locator("button", { hasText: "+ New Notebook" }).click();
+  await page.locator("button", { hasText: "New Notebook" }).click();
   await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 15_000 });
   await expect(page.locator(".ironpad-editor")).toBeVisible({
     timeout: 15_000,

@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { MENU, menuClick } from "./helpers/menu";
 import { setCellSource } from "./helpers/monaco";
-import { createNotebook as newNotebook } from "./helpers/session";
+import { createNotebook as newNotebook, ADD_CODE, ADD_MARKDOWN } from "./helpers/session";
 
 /**
  * End-to-end coverage for the PRD-0032 editor UX fixes.
@@ -14,7 +14,7 @@ import { createNotebook as newNotebook } from "./helpers/session";
  *
  * Notebook creation goes through the hardened shared helper: a local copy
  * without the hydration wait raced the WASM click wiring under full-suite
- * parallel load (the "+ New Notebook" click landed on a dead button).
+ * parallel load (the "New Notebook" click landed on a dead button).
  */
 
 test.describe("Editor UX (PRD-0032)", () => {
@@ -75,7 +75,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     await newNotebook(page);
 
     // Add a markdown cell and enter edit mode by double-clicking the preview.
-    await page.locator("button", { hasText: "+ Markdown" }).first().click();
+    await page.locator(ADD_MARKDOWN).first().click();
     const cell = page.locator(".ironpad-cell-card").first();
     await expect(cell).toBeVisible();
     await cell.locator(".ironpad-markdown-cell-preview").dblclick();
@@ -150,7 +150,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     await newNotebook(page);
 
     // Add a markdown cell, edit it, and give it a fenced Rust block.
-    await page.locator("button", { hasText: "+ Markdown" }).first().click();
+    await page.locator(ADD_MARKDOWN).first().click();
     const cell = page.locator(".ironpad-cell-card").first();
     await expect(cell).toBeVisible();
     await cell.locator(".ironpad-markdown-cell-preview").dblclick();
@@ -186,7 +186,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     const url = page.url();
 
     // Add a code cell — open by default.
-    await page.locator("button", { hasText: "+ Code" }).first().click();
+    await page.locator(ADD_CODE).first().click();
     const cell = page.locator(".ironpad-cell-card").first();
     await expect(cell.locator(".monaco-editor").first()).toBeVisible({
       timeout: 15_000,
@@ -271,7 +271,7 @@ test.describe("Editor UX (PRD-0032)", () => {
 
     // Run a trivial cell so the output panel exists ("42" is warm from the
     // other specs' compiles).
-    await page.locator("button", { hasText: "+ Code" }).first().click();
+    await page.locator(ADD_CODE).first().click();
     const cell = page.locator(".ironpad-cell-card").first();
     await expect(cell.locator(".monaco-editor").first()).toBeVisible({
       timeout: 15_000,
@@ -313,7 +313,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     await newNotebook(page);
 
     // Add a code cell, set trivial source, run it.
-    await page.locator("button", { hasText: "+ Code" }).first().click();
+    await page.locator(ADD_CODE).first().click();
     const cells = page.locator(".ironpad-cell-card");
     await expect(cells).toHaveCount(1);
     await expect(cells.first().locator(".monaco-editor").first()).toBeVisible({
@@ -330,7 +330,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     await expect(firstOutput).toContainText("42");
 
     // Add a second cell — the first cell's output must NOT be wiped (the E1 bug).
-    await page.locator("button", { hasText: "+ Code" }).last().click();
+    await page.locator(ADD_CODE).last().click();
     await expect(cells).toHaveCount(2);
     await expect(cells.first().locator(".ironpad-cell-status--success")).toBeVisible();
     await expect(cells.first().locator(".ironpad-output-display-text")).toContainText(
@@ -343,7 +343,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     // Grant clipboard so the Share handler's clipboard write doesn't reject.
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await newNotebook(page);
-    await page.locator("button", { hasText: "+ Code" }).first().click();
+    await page.locator(ADD_CODE).first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
 
     // Open the hamburger menu and click Share.

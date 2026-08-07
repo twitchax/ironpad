@@ -1,6 +1,9 @@
 use ironpad_common::CellType;
 use leptos::prelude::*;
 
+use crate::components::icon::IconLabel;
+use crate::components::icons;
+
 // ── Add cell button ─────────────────────────────────────────────────────────
 
 /// "Add Cell" buttons (Code / Markdown), rendered between cells and at the end
@@ -23,10 +26,10 @@ pub(super) fn AddCellButton(
     view! {
         <div class="ironpad-add-cell-row">
             <button class="ironpad-add-cell-btn" on:click=on_add_code>
-                "+ Code"
+                <IconLabel icon=icons::ADD label="Code"/>
             </button>
             <button class="ironpad-add-cell-btn ironpad-add-cell-btn--markdown" on:click=on_add_markdown>
-                "+ Markdown"
+                <IconLabel icon=icons::ADD label="Markdown"/>
             </button>
         </div>
     }
