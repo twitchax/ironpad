@@ -34,11 +34,11 @@ acceptance_tests:
 - id: uat-002
   name: "Icons render identically under SSR and after hydration, inherit currentColor in both themes, and Export HTML remains a self-contained file with inline SVG (no font or network dependency)"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Playwright is green with no selector matching on glyph text; icon-only controls expose their name via the button, and icon+label controls expose the label once (not doubled by the svg)"
   command: cargo make playwright
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
@@ -160,6 +160,18 @@ Sizing is `1em` square with `currentColor`, so an icon in a menu item, a status 
 - An icon for the `⠿` drag handle, which is a deliberate braille-pattern texture rather than a pictogram — evaluate during T-004 and keep it if the Lucide equivalent reads worse.
 
 # History
+
+- **2026-08-07** — Gate: 843 unit tests, 117 Playwright specs, clippy clean on
+  both targets. `export_inlines_icons_and_stays_self_contained` was added for
+  uat-002 rather than asserting self-containment by inspection (its first draft
+  failed on the SVG xmlns, which is an `http://` namespace identifier and not a
+  fetch — corrected to strip it). Playwright surfaced two real defects the unit
+  tests structurally could not see, both from glyphs becoming elements: a
+  gear-menu item closed the menu under itself because `target.closest()` ran on
+  a node the item's own re-render had detached mid-dispatch (fixed with
+  `composedPath()`, regression test added), and `.ironpad-output-svg svg`
+  started sizing the copy button's icon (both plot rules now say
+  `svg:not(.ironpad-icon)`).
 
 - **2026-08-07** — Implemented and closed. 95 call sites across 19 files migrated;
   `tools/glyph-check.py` (wired into `ci`) reports zero bare glyphs in rendered

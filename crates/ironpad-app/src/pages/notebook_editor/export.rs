@@ -425,6 +425,37 @@ mod tests {
         }
     }
 
+    /// The export must stay a single self-contained file: icons inline as
+    /// SVG markup rather than referencing a font or a sprite sheet, so
+    /// opening the download offline still shows them (PRD-0062 uat-002).
+    #[test]
+    fn export_inlines_icons_and_stays_self_contained() {
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells = vec![code_cell("a")];
+        let mut dt = HashMap::new();
+        // An interactive checkbox widget: the arm that renders an icon.
+        dt.insert(
+            "a".to_string(),
+            r#"[{"Interactive":{"kind":"checkbox","config":"{\"label\":\"on\",\"default\":true}"}}]"#
+                .to_string(),
+        );
+        let html = build_export_html(&nb, &dt);
+
+        // The icon is inline geometry, painted by currentColor.
+        assert!(html.contains("<svg"), "no inline svg in export");
+        assert!(html.contains("stroke=\"currentColor\""), "icon not themed");
+        // ...and nothing is fetched at open time.
+        assert!(!html.contains("<link"), "export pulled in a stylesheet");
+        assert!(!html.contains("@font-face"), "export pulled in a font");
+        // The SVG xmlns is an http:// URI but is a namespace identifier, not
+        // a fetch — strip it before asserting nothing is loaded remotely.
+        let without_ns = html.replace("http://www.w3.org/2000/svg", "");
+        assert!(
+            !without_ns.contains("http://") && !without_ns.contains("https://"),
+            "export references a remote asset"
+        );
+    }
+
     /// Cell-emitted panel fields are untrusted; the export arms that splice
     /// them must escape, or a crafted `mime_type` / `kind` is XSS in the file.
     #[test]
