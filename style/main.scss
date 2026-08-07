@@ -234,6 +234,10 @@ a:focus-visible {
     justify-content: center;
     width: $size;
     height: $size;
+    // A fixed square must not inherit a min-height from a pill rule it is
+    // overriding: `min-height` beats `height`, so the compact header theme
+    // toggle silently stayed 34px until it was measured.
+    min-height: 0;
     padding: 0;
     border-radius: $radius;
     font-size: $font;
@@ -378,6 +382,10 @@ a:focus-visible {
 
 // Segments carry the pill geometry so a segmented control is exactly as tall
 // as the buttons beside it; the wrapper's radius + overflow does the corners.
+.ironpad-theme-toggle--compact .ironpad-theme-toggle-segment {
+    @include ip-icon-button-shape($size: 24px, $font: 0.85rem, $radius: 0);
+}
+
 .ironpad-theme-toggle-segment {
     @include ip-button-shape;
 
@@ -950,28 +958,11 @@ a:focus-visible {
 
 /* ── Notebook toolbar ────────────────────────────────────────────────── */
 
-// Two rows: notebook actions (Run All, Push, menu) on top, collaboration
-// below. The session button's label swings from "Start Agent Session" to
-// "2 agents" as guests connect, and inline it dragged Push sideways.
 .ironpad-notebook-toolbar {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-    padding: 8px 0;
-}
-
-.ironpad-notebook-toolbar-row {
     display: flex;
     align-items: center;
     gap: 8px;
-}
-
-.ironpad-notebook-toolbar-row--secondary {
-    // Empty in view mode; no phantom gap when it has nothing to show.
-    &:empty {
-        display: none;
-    }
+    padding: 8px 0;
 }
 
 /* ── Run All button ──────────────────────────────────────────────────── */
@@ -3383,10 +3374,11 @@ code[class*="language-"] {
 }
 
 .ironpad-session-button {
-    @include ip-button-shape;
+    @include ip-icon-button-shape;
 
+    position: relative;
     background: transparent;
-    border: 1px solid var(--ip-border);
+    border: 1px solid transparent;
     color: var(--ip-neutral-dim);
 
     &:hover {
@@ -3403,6 +3395,37 @@ code[class*="language-"] {
             background: rgba(var(--ip-error-rgb), 0.1);
         }
     }
+}
+
+// Live-session badge: a guest count, or a bare dot before anyone connects.
+// Absolutely positioned on purpose — the whole reason this control became an
+// icon was that its width moved every time the agent count did.
+.ironpad-session-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background: var(--ip-accent);
+    color: var(--ip-text-on-accent);
+    font-family: var(--ip-font-sans);
+    font-size: 0.6rem;
+    font-weight: 700;
+    line-height: 1;
+    pointer-events: none;
+}
+
+.ironpad-session-badge--dot {
+    min-width: 8px;
+    width: 8px;
+    height: 8px;
+    padding: 0;
+    border-radius: 50%;
 }
 
 .ironpad-session-panel {

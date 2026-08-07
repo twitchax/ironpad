@@ -622,12 +622,7 @@ fn NotebookContent() -> impl IntoView {
         // view mode's own header already carries Run All and the
         // cache/fresh toggle, and Reactive Mode is an edit-time setting.
         //
-        // Two rows: the notebook's own actions (Run All, Push) on top, and
-        // collaboration below. The session button used to sit between Run All
-        // and Push, where its label swings between "Start Agent Session" and
-        // "2 agents" and shoved Push sideways on every connect.
         <div class="ironpad-notebook-toolbar">
-            <div class="ironpad-notebook-toolbar-row">
             <Show when=move || !state.is_view_mode.get()>
                 // ── Run All button ──────────────────────────────────────
                 <button
@@ -695,6 +690,15 @@ fn NotebookContent() -> impl IntoView {
             </Show>
 
             <div class="ironpad-toolbar-right">
+                // ── Agent session ───────────────────────────────────────
+                // Icon-only, with the notebook-level chrome: as a labelled
+                // button its text swung from "Start Agent Session" to
+                // "2 agents" on every connect and dragged its neighbours
+                // sideways. A fixed square with a count badge cannot.
+                <Show when=move || !state.is_view_mode.get()>
+                    <SessionButton />
+                </Show>
+
                 // ── Hamburger dropdown (☰) ──────────────────────────────
                 <div class="ironpad-toolbar-dropdown">
                     <button
@@ -997,14 +1001,6 @@ fn NotebookContent() -> impl IntoView {
                     <Icon icon=icons::CLOSE/>
                 </button>
             </div>
-            </div>
-
-            // ── Collaboration row ───────────────────────────────────────
-            <Show when=move || !state.is_view_mode.get()>
-                <div class="ironpad-notebook-toolbar-row ironpad-notebook-toolbar-row--secondary">
-                    <SessionButton />
-                </div>
-            </Show>
         </div>
 
         <Show when=move || !state.is_view_mode.get()>

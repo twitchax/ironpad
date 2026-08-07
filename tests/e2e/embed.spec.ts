@@ -156,6 +156,25 @@ test.describe("Notebook embedding", () => {
       1
     );
     expect(heights[0]).toBeGreaterThanOrEqual(34);
+
+    // The Cached/Fresh toggle sits in the same row and must match them. It
+    // shares a class with the HEADER theme toggle, which is deliberately
+    // shorter, so this is the half of that split that must not shrink.
+    const cache = await page
+      .locator(".view-only-toolbar .ironpad-theme-toggle-segment")
+      .first()
+      .evaluate((el) => Math.round(el.getBoundingClientRect().height));
+    expect(cache).toBe(heights[0]);
+
+    // ...and the header's copy of that class IS shorter, because a 48px
+    // header does not want a full-height control in it. Asserted by
+    // measurement: the rule that shrinks it sets `height`, which a stray
+    // `min-height` on the shared class silently beat once.
+    const header = await page
+      .locator(".ironpad-header .ironpad-theme-toggle-segment")
+      .first()
+      .evaluate((el) => Math.round(el.getBoundingClientRect().height));
+    expect(header).toBeLessThan(heights[0]);
   });
 
   test("view page snippet popover copies both embed snippets", async ({

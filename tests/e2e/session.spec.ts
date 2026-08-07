@@ -28,14 +28,17 @@ test.describe.serial("Agent Session", () => {
     // Create a new notebook.
     await createNotebook(page);
 
-    // The session button lives on its own row BELOW Run All. Its label swings
-    // from "Start Agent Session" to "2 agents" as guests connect, and inline
-    // that reflow shoved the Push button sideways mid-session.
-    const rows = page.locator(".ironpad-notebook-toolbar-row");
-    await expect(rows.first().locator(".ironpad-run-all-button")).toBeVisible();
-    await expect(
-      rows.nth(1).locator(".ironpad-session-button")
-    ).toBeVisible();
+    // The session control is an icon-only square in the toolbar's right-hand
+    // group, beside menu/gear/close. It carries no visible label BY DESIGN:
+    // as text it swung from "Start Agent Session" to "2 agents" on every
+    // connect and dragged its neighbours sideways. The wording lives in the
+    // tooltip, and the width must not move when a guest joins.
+    const sessionBtn = page.locator(
+      ".ironpad-toolbar-right .ironpad-session-button"
+    );
+    await expect(sessionBtn).toBeVisible({ timeout: 15_000 });
+    await expect(sessionBtn).toHaveAttribute("title", /Start Agent Session/);
+    const widthBefore = (await sessionBtn.boundingBox())!.width;
 
     // Start session and get token.
     const token = await startSession(page);
@@ -49,10 +52,14 @@ test.describe.serial("Agent Session", () => {
     expect(status.connected).toBe(true);
     expect(status.cached).toBe(true);
 
-    // Verify browser shows agent connected.
-    await expect(
-      page.locator(".ironpad-session-button")
-    ).toContainText(/agent/, { timeout: 5_000 });
+    // Verify browser shows agent connected: the badge carries the count and
+    // the tooltip the wording. The button's WIDTH must be unchanged — that
+    // invariant is the whole reason this control is an icon.
+    await expect(page.locator(".ironpad-session-badge")).toHaveText("1", {
+      timeout: 5_000,
+    });
+    await expect(sessionBtn).toHaveAttribute("title", /1 agent connected/);
+    expect((await sessionBtn.boundingBox())!.width).toBe(widthBefore);
 
     // End session from browser.
     await endSession(page);

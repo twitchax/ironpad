@@ -2,7 +2,7 @@
 
 use leptos::prelude::*;
 
-use crate::components::icon::{Icon, IconLabel};
+use crate::components::icon::Icon;
 use crate::components::icons;
 use crate::session::{ConnectionStatus, SessionState};
 
@@ -14,6 +14,10 @@ pub fn SessionButton() -> impl IntoView {
     let session = expect_context::<SessionState>();
     let panel_open = RwSignal::new(false);
 
+    // The button is icon-only, so this wording reaches the user as the
+    // tooltip and the accessible name rather than as visible text. That is
+    // the point: as a label it swung from "Start Agent Session" to "2 agents"
+    // and dragged every neighbouring control sideways on each connect.
     let button_label = Signal::derive(move || {
         if !session.active.get() {
             return "Start Agent Session".to_string();
@@ -22,15 +26,35 @@ pub fn SessionButton() -> impl IntoView {
         match session.connection_status.get() {
             ConnectionStatus::Connected => {
                 if count > 0 {
-                    format!("{count} agent{}", if count == 1 { "" } else { "s" })
+                    format!(
+                        "Agent session: {count} agent{} connected",
+                        if count == 1 { "" } else { "s" }
+                    )
                 } else {
-                    "Session active".to_string()
+                    "Agent session active; no agents connected yet".to_string()
                 }
             }
-            ConnectionStatus::Connecting => "Connecting...".to_string(),
-            ConnectionStatus::Disconnected => "Disconnected".to_string(),
+            ConnectionStatus::Connecting => "Agent session: connecting…".to_string(),
+            ConnectionStatus::Disconnected => "Agent session: disconnected".to_string(),
         }
     });
+
+    // A live session shows a count; a live session with nobody connected yet
+    // shows a bare dot. Both are fixed-width, so the button never reflows.
+    let badge = move || {
+        if !session.active.get() {
+            return None;
+        }
+        let count = session.connected_guests.get().len();
+        Some(if count > 0 {
+            view! {
+                <span class="ironpad-session-badge">{count.to_string()}</span>
+            }
+            .into_any()
+        } else {
+            view! { <span class="ironpad-session-badge ironpad-session-badge--dot" /> }.into_any()
+        })
+    };
 
     let button_class = Signal::derive(move || {
         let mut class = "ironpad-session-button".to_string();
@@ -44,6 +68,8 @@ pub fn SessionButton() -> impl IntoView {
         <div class="ironpad-session-wrapper">
             <button
                 class=button_class
+                title=move || button_label.get()
+                aria-label=move || button_label.get()
                 on:click=move |_| {
                     if session.active.get() {
                         panel_open.update(|v| *v = !*v);
@@ -53,7 +79,8 @@ pub fn SessionButton() -> impl IntoView {
                     }
                 }
             >
-                {move || view! { <IconLabel icon=icons::SESSION label=button_label.get()/> }}
+                <Icon icon=icons::SESSION/>
+                {badge}
             </button>
 
             {move || {
