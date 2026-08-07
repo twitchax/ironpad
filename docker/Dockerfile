@@ -154,6 +154,27 @@ RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs
 
 WORKDIR /app
 
+# Bake the toolchain's identity now, while it is being decided.
+#
+# The server needs `rustc --version` + `wasm-bindgen --version` for the compile
+# cache key and the scaffold's pinned wasm-bindgen dependency. Asking rustc at
+# runtime costs a cold exec that demand-pages ~350 MB of libLLVM +
+# librustc_driver: measured at 5.9s of a 7.2s Fly cold start, to print a string
+# that cannot change after this line. The file holds the RAW output of both
+# commands and the server reads it back through the same parsers it uses on live
+# output, so the derived fingerprint is byte-identical and cached cell blobs
+# survive. A missing or malformed file falls back to probing, which is how dev
+# boxes and CI (which never set this env var) already work.
+# Fails the image build LOUDLY, like the warmups above: a silently truncated
+# file degrades to probing, which is exactly the slow boot this removes, and
+# nothing downstream would ever say so.
+RUN set -e; \
+    rustc +nightly-2026-07-14 --version > /app/toolchain-versions; \
+    wasm-bindgen --version >> /app/toolchain-versions; \
+    test "$(wc -l < /app/toolchain-versions)" = "2"; \
+    cat /app/toolchain-versions
+ENV IRONPAD_TOOLCHAIN_VERSIONS_FILE=/app/toolchain-versions
+
 # Copy the compiled binaries.
 COPY --from=builder /build/target/release/ironpad-server /app/ironpad-server
 COPY --from=builder /build/target/release/ironpad-cli /app/ironpad-cli

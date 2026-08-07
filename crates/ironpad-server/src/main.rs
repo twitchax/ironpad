@@ -171,9 +171,18 @@ async fn main() {
     // Pre-warm the toolchain fingerprint / wasm-bindgen CLI version caches on a
     // blocking thread so the first cell compile doesn't block a tokio worker
     // thread on `wasm-bindgen --version` / `rustc --version` shell-outs.
-    tokio::task::spawn_blocking(ironpad_app::compiler::toolchain::prewarm)
-        .await
-        .ok();
+    //
+    // Deliberately NOT awaited: this is warm-up, not a prerequisite. Awaiting it
+    // put a cold `rustc --version` on the critical path to `bind`, and that call
+    // demand-pages ~350 MB of libLLVM + librustc_driver — measured at 5.9s of a
+    // 7.2s Fly cold start, paid by every visitor who woke the machine, on pages
+    // that never compile. Detached, it overlaps the rest of boot instead. The
+    // statics behind it are `LazyLock`, so a request that beats it to the punch
+    // simply blocks on the lock exactly as it would have without any prewarm.
+    // (On the deploy image `BAKED_VERSIONS_ENV` makes it near-instant anyway.)
+    drop(tokio::task::spawn_blocking(
+        ironpad_app::compiler::toolchain::prewarm,
+    ));
 
     let routes = generate_route_list(App);
 
