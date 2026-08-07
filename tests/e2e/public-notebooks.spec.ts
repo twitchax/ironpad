@@ -38,10 +38,12 @@ test.describe("Public notebooks", () => {
     const count = await cells.count();
     expect(count).toBeGreaterThanOrEqual(1);
 
-    // Verify the "Fork to Private" button is present.
+    // Verify the Fork button is present. One label everywhere: "Fork to
+    // Private" said the same thing as the destination toast and made the
+    // control read differently on three pages that do the same thing.
     const forkButton = page.locator(".fork-button");
     await expect(forkButton).toBeVisible();
-    await expect(forkButton).toContainText("Fork to Private");
+    await expect(forkButton).toContainText("Fork");
 
     // Verify no JS errors occurred.
     expect(jsErrors).toEqual([]);

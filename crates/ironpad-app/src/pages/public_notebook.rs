@@ -74,7 +74,6 @@ pub fn PublicNotebookPage() -> impl IntoView {
                             />
                             <ViewOnlyNotebook
                                 notebook
-                                fork_label="Fork to Private".to_string()
                                 embed_spec=embed_spec.unwrap_or_default()
                                 // First-party showcase content auto-runs
                                 // (PRD-0040); shared notebooks never do.

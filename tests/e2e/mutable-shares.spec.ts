@@ -229,9 +229,9 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     );
     await expect(page.locator(".ironpad-push-button")).toBeDisabled();
 
-    // View as Reader pins the published reader for the owner, with a way
+    // View Published pins the published reader for the owner, with a way
     // back into the editor.
-    await menuClick(page, "View as Reader");
+    await menuClick(page, "View Published");
     await expect(page).toHaveURL(/view=reader/, { timeout: 15_000 });
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,
@@ -257,6 +257,11 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
 
     page.on("dialog", (d) => d.accept());
     await menuClick(page, "Unpublish");
+    // Progress ack while it works: the flush, the local save, and the server
+    // delete are several seconds of visible nothing before the navigation.
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Unpublishing" }),
+    ).toBeVisible({ timeout: 10_000 });
     // Hard navigation back to /local/{uuid}; toast rides sessionStorage.
     await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 30_000 });
     await expect(
@@ -339,6 +344,17 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
       /Draft not saved/,
       { timeout: 15_000 },
     );
+
+    // The indicator sits AFTER Push. Its text appears and disappears on every
+    // autosave, and ahead of the button that reflow slid Push out from under
+    // a cursor already on its way down.
+    const pushLeft = await push.evaluate(
+      (el) => el.getBoundingClientRect().left,
+    );
+    const indicatorLeft = await page
+      .locator(".ironpad-draft-indicator")
+      .evaluate((el) => el.getBoundingClientRect().left);
+    expect(indicatorLeft).toBeGreaterThan(pushLeft);
 
     await push.click();
     await expect(

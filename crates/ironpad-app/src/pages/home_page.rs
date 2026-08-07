@@ -415,7 +415,7 @@ fn NotebookCard(
                         </div>
                     </a>
                     <button class="ironpad-delete-btn" on:click=on_delete title="Delete notebook">
-                        "╳"
+                        <Icon icon=icons::DELETE/>
                     </button>
                 </div>
             }

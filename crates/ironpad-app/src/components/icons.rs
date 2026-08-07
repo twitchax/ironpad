@@ -44,6 +44,9 @@ pub const PENDING: IconData = icondata_lu::LuHourglass;
 pub const RERUN: IconData = icondata_lu::LuRotateCw;
 /// Reactive mode. Replaces `⚡`.
 pub const REACTIVE: IconData = icondata_lu::LuZap;
+/// Agent collaboration session. The session button was the one toolbar
+/// control still carrying a bare text label.
+pub const SESSION: IconData = icondata_lu::LuUsers;
 
 // ── Cell authoring ──────────────────────────────────────────────────────────
 
@@ -67,6 +70,10 @@ pub const ADD: IconData = icondata_lu::LuSquarePlus;
 pub const REMOVE: IconData = icondata_lu::LuCircleX;
 /// Reorder. Replaces `⇅`.
 pub const REORDER: IconData = icondata_lu::LuArrowUpDown;
+/// Permanently delete a notebook or cell. Replaces `╳`, which is a
+/// box-drawing character and so slipped past the first `glyph-check` sweep.
+/// Distinct from [`REMOVE`]: this one destroys the thing.
+pub const DELETE: IconData = icondata_lu::LuTrash2;
 
 // ── Disclosure + navigation ─────────────────────────────────────────────────
 
@@ -162,6 +169,7 @@ pub(crate) const ALL: &[(&str, IconData)] = &[
     ("PENDING", PENDING),
     ("RERUN", RERUN),
     ("REACTIVE", REACTIVE),
+    ("SESSION", SESSION),
     ("MORE", MORE),
     ("SETTINGS", SETTINGS),
     ("SHARED", SHARED),
@@ -172,6 +180,7 @@ pub(crate) const ALL: &[(&str, IconData)] = &[
     ("ADD", ADD),
     ("REMOVE", REMOVE),
     ("REORDER", REORDER),
+    ("DELETE", DELETE),
     ("CHEVRON_RIGHT", CHEVRON_RIGHT),
     ("CHEVRON_DOWN", CHEVRON_DOWN),
     ("MENU", MENU),

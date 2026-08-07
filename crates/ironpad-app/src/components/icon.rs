@@ -68,13 +68,6 @@ pub fn Icon(icon: IconData) -> impl IntoView {
     view! { <span class="ironpad-icon-slot" inner_html=icon_svg_markup(icon) /> }
 }
 
-/// An icon followed by its label — the common affordance shape (menu items,
-/// status badges, buttons with visible text).
-///
-/// `label` is a plain `String`, not a signal, on purpose: every reactive
-/// call site already sits inside a `move ||` closure in a `view!`, so the
-/// closure rebuilds this component and a signal prop would add ceremony
-/// without adding reactivity.
 /// A disclosure chevron: right when collapsed, down when expanded.
 ///
 /// Its own component because the `▸`/`▾` pair appeared at eight sites as a
@@ -94,6 +87,13 @@ pub fn Chevron(#[prop(into)] expanded: Signal<bool>) -> impl IntoView {
     }
 }
 
+/// An icon followed by its label — the common affordance shape (menu items,
+/// status badges, buttons with visible text).
+///
+/// `label` is a plain `String`, not a signal, on purpose: every reactive call
+/// site already sits inside a `move ||` closure in a `view!`, so the closure
+/// rebuilds this component and a signal prop would add ceremony without
+/// adding reactivity.
 #[component]
 pub fn IconLabel(icon: IconData, #[prop(into)] label: String) -> impl IntoView {
     view! {

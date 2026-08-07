@@ -314,6 +314,15 @@ pub(super) fn unpublish_current_notebook(
     if !confirmed {
         return;
     }
+    // Immediate ack, same as Share: the menu closes on click and the flush +
+    // local save + server delete is several seconds of visible nothing before
+    // the navigation lands.
+    toaster.toast(
+        ToastIntent::Info,
+        "Unpublishing…",
+        "Saving this notebook back to your private list.",
+        3,
+    );
     let state = *state;
     leptos::task::spawn_local(async move {
         let Some(nb) = flush_and_read_notebook(&state).await else {

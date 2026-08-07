@@ -621,7 +621,13 @@ fn NotebookContent() -> impl IntoView {
         // chrome (Run All, session, gear) stays behind the edit-mode Show —
         // view mode's own header already carries Run All and the
         // cache/fresh toggle, and Reactive Mode is an edit-time setting.
+        //
+        // Two rows: the notebook's own actions (Run All, Push) on top, and
+        // collaboration below. The session button used to sit between Run All
+        // and Push, where its label swings between "Start Agent Session" and
+        // "2 agents" and shoved Push sideways on every connect.
         <div class="ironpad-notebook-toolbar">
+            <div class="ironpad-notebook-toolbar-row">
             <Show when=move || !state.is_view_mode.get()>
                 // ── Run All button ──────────────────────────────────────
                 <button
@@ -643,20 +649,16 @@ fn NotebookContent() -> impl IntoView {
                     <IconLabel icon=icons::RUN_ALL label="Run All"/>
                 </button>
 
-                <SessionButton />
-
                 // ── Push button + draft indicator (PRD-0054) ────────────
                 // `ServerDraft` mode only: the one editorial control. Grayed
                 // "Published" when the draft matches; an active "Push" the
                 // moment an edit lands.
+                //
+                // The indicator trails the button rather than leading it: its
+                // text appears and disappears on every autosave, and ahead of
+                // Push that reflow nudged the button out from under the
+                // cursor mid-click.
                 {move || state.server_draft_share.get().map(|share_id| view! {
-                    <span class="ironpad-draft-indicator">
-                        {move || match state.draft_save_state.get() {
-                            DraftSaveState::Saving => "Saving draft…",
-                            DraftSaveState::Failed => "Draft not saved; retrying",
-                            DraftSaveState::Synced => "",
-                        }}
-                    </span>
                     <button
                         class="ironpad-push-button"
                         disabled=move || !state.draft_dirty.get()
@@ -682,6 +684,13 @@ fn NotebookContent() -> impl IntoView {
                         view! { <IconLabel icon=icons::SUCCESS label="Published"/> }
                     }}
                     </button>
+                    <span class="ironpad-draft-indicator">
+                        {move || match state.draft_save_state.get() {
+                            DraftSaveState::Saving => "Saving draft…",
+                            DraftSaveState::Failed => "Draft not saved; retrying",
+                            DraftSaveState::Synced => "",
+                        }}
+                    </span>
                 })}
             </Show>
 
@@ -743,13 +752,25 @@ fn NotebookContent() -> impl IntoView {
                                                 format!("/mutable/{share_id}?view=reader");
                                             let discard_share_id = share_id.clone();
                                             view! {
+                                                // "View Published", not "View
+                                                // as Reader": the reader page
+                                                // serves the PUBLISHED copy,
+                                                // which is the distinction
+                                                // that matters here. The
+                                                // bottom-left toggle already
+                                                // previews the draft in the
+                                                // reader's layout, and the two
+                                                // read as duplicates until
+                                                // their labels name the thing
+                                                // each one shows.
                                                 <a
                                                     class="ironpad-toolbar-dropdown-item"
                                                     href=reader_href
                                                     rel="external"
+                                                    title="Open the published copy readers currently see"
                                                     on:click=move |_| hamburger_open.set(false)
                                                 >
-                                                    <IconLabel icon=icons::VIEW label="View as Reader"/>
+                                                    <IconLabel icon=icons::PUBLISHED label="View Published"/>
                                                 </a>
                                                 <button
                                                     class="ironpad-toolbar-dropdown-item"
@@ -878,7 +899,7 @@ fn NotebookContent() -> impl IntoView {
                                                     }
                                                 }
                                             >
-                                                "╳ Delete"
+                                                <IconLabel icon=icons::DELETE label="Delete"/>
                                             </button>
                                         }.into_any(),
                                     }}
@@ -968,6 +989,7 @@ fn NotebookContent() -> impl IntoView {
                 <button
                     class="ironpad-toolbar-close"
                     title="Back to notebook list"
+                    aria-label="Back to notebook list"
                     on:click=move |_| {
                         navigate.get_value()("/", NavigateOptions::default());
                     }
@@ -975,6 +997,14 @@ fn NotebookContent() -> impl IntoView {
                     <Icon icon=icons::CLOSE/>
                 </button>
             </div>
+            </div>
+
+            // ── Collaboration row ───────────────────────────────────────
+            <Show when=move || !state.is_view_mode.get()>
+                <div class="ironpad-notebook-toolbar-row ironpad-notebook-toolbar-row--secondary">
+                    <SessionButton />
+                </div>
+            </Show>
         </div>
 
         <Show when=move || !state.is_view_mode.get()>
@@ -1040,18 +1070,26 @@ fn NotebookContent() -> impl IntoView {
         // ── Version-history overlay (PRD-0058) ─────────────────────────
         <HistoryPanel open=history_open />
 
-        // ── Edit / View mode toggle (fixed bottom-left) ────────────────
+        // ── Edit / Preview mode toggle (fixed bottom-left) ─────────────
+        //
+        // A LOCAL preview of the notebook you are editing, rendered by the
+        // public renderer. On a published notebook that is the draft, which
+        // is what makes it different from the menu's "View Published" — the
+        // tooltips say so, because "View mode" next to "View as Reader" read
+        // as two names for one thing.
         <div class="ironpad-mode-toggle">
             <button
                 class=move || if state.is_view_mode.get() { "ironpad-mode-toggle-segment" } else { "ironpad-mode-toggle-segment ironpad-mode-toggle-segment--active" }
-                title="Edit mode"
+                title="Edit"
+                aria-label="Edit"
                 on:click=move |_| state.is_view_mode.set(false)
             >
                 <Icon icon=icons::EDIT/>
             </button>
             <button
                 class=move || if state.is_view_mode.get() { "ironpad-mode-toggle-segment ironpad-mode-toggle-segment--active" } else { "ironpad-mode-toggle-segment" }
-                title="View mode"
+                title="Preview: how this notebook looks to a reader, using your current content"
+                aria-label="Preview"
                 on:click=move |_| {
                     // Flush in-progress editor content into the model before
                     // the view branch snapshots it (PRD-0032 T-007

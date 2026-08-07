@@ -83,7 +83,7 @@ test.describe("Editor UX (PRD-0032)", () => {
 
     // Switch to view mode — the public renderer takes over: the in-edit
     // markdown commits and renders as a view-only cell, no Monaco editor.
-    await page.locator('button[title="View mode"]').click();
+    await page.locator('button[aria-label="Preview"]').click();
     await expect(page.locator(".view-only-markdown")).toBeVisible({
       timeout: 10_000,
     });
@@ -96,7 +96,7 @@ test.describe("Editor UX (PRD-0032)", () => {
   test("notebook menu chrome is available in view mode", async ({ page }) => {
     await newNotebook(page);
 
-    await page.locator('button[title="View mode"]').click();
+    await page.locator('button[aria-label="Preview"]').click();
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 10_000,
     });
@@ -161,7 +161,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     await setCellSource(page, cell, "```rust\nlet x: u32 = 42;\n```");
 
     // Render it (view mode commits + renders via the public renderer).
-    await page.locator('button[title="View mode"]').click();
+    await page.locator('button[aria-label="Preview"]').click();
 
     // The fence keeps its language class...
     const code = page.locator(".view-only-markdown code.language-rust");
@@ -222,7 +222,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     // View mode swaps in the public renderer and loads the cell collapsed
     // there too; the chevron still opens it transiently, and its editor is
     // read-only (all view-only editors are).
-    await page.locator('button[title="View mode"]').click();
+    await page.locator('button[aria-label="Preview"]').click();
     const viewCell = page.locator(".view-only-cell").first();
     await expect(viewCell).toBeVisible({ timeout: 10_000 });
     const viewBody = viewCell.locator(".ironpad-cell-body");
@@ -250,7 +250,7 @@ test.describe("Editor UX (PRD-0032)", () => {
     // manifests, so the header toggle must still show collapsed-by-default
     // (regression: collapse-only updates once skipped the manifest sync,
     // so the round trip silently reset the toggle).
-    await page.locator('button[title="Edit mode"]').click();
+    await page.locator('button[aria-label="Edit"]').click();
     const editCell = page.locator(".ironpad-cell-card").first();
     await expect(editCell).toBeVisible({ timeout: 10_000 });
     await expect(

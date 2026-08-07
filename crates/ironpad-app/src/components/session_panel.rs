@@ -2,6 +2,8 @@
 
 use leptos::prelude::*;
 
+use crate::components::icon::{Icon, IconLabel};
+use crate::components::icons;
 use crate::session::{ConnectionStatus, SessionState};
 
 // ── Session toolbar button ──────────────────────────────────────────────────
@@ -51,7 +53,7 @@ pub fn SessionButton() -> impl IntoView {
                     }
                 }
             >
-                {button_label}
+                {move || view! { <IconLabel icon=icons::SESSION label=button_label.get()/> }}
             </button>
 
             {move || {
@@ -90,8 +92,11 @@ fn SessionPanel(on_close: impl Fn() + 'static + Clone) -> impl IntoView {
                 <span class="ironpad-session-panel-title">"Agent Session"</span>
                 <button
                     class="ironpad-session-panel-close"
+                    title="Close"
                     on:click=move |_| on_close_clone()
-                >"x"</button>
+                >
+                    <Icon icon=icons::CLOSE/>
+                </button>
             </div>
 
             // ── Token section ────────────────────────────────────────────

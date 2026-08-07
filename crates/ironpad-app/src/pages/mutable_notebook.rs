@@ -244,7 +244,6 @@ fn MutableReader(
         {attribution}
         <ViewOnlyNotebook
             notebook
-            fork_label="Fork to Private".to_string()
             embed_spec=embed_spec
             share_manifest=manifest
             controls=edit_back

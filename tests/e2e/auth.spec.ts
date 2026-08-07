@@ -25,9 +25,29 @@ test.describe("Accounts (PRD-0053)", () => {
     // The auth surface lives in the header, so it must be visible on the
     // home page itself — this shipped as a footer widget in 0.15.0 and was
     // invisible exactly where a visitor looks for login.
-    await expect(page.locator(".ironpad-auth-login")).toHaveText("@carol", {
-      timeout: 15_000,
+    //
+    // Signed in is the same portrait-over-label stack as signed out, with
+    // "Sign out" UNDER the avatar; the handle rides the tooltip, since a
+    // third row does not fit a 48px header.
+    const auth = page.locator(".ironpad-auth");
+    await expect(auth).toHaveAttribute("title", "@carol", { timeout: 15_000 });
+    await expect(auth.locator(".ironpad-auth-action")).toHaveText("Sign out");
+    // Stacked, not inline: the action's box starts below the portrait's. The
+    // test user has no GitHub picture, which is exactly the case that must
+    // still render a portrait — the silhouette — rather than leaving "Sign
+    // out" floating alone in the header.
+    const stacked = await auth.evaluate((el) => {
+      const portrait = el.querySelector(
+        ".ironpad-auth-avatar, .ironpad-auth-signin-avatar",
+      );
+      const action = el.querySelector(".ironpad-auth-action");
+      if (!portrait || !action) return null;
+      return (
+        action.getBoundingClientRect().top >=
+        portrait.getBoundingClientRect().bottom
+      );
     });
+    expect(stacked, "no portrait rendered above Sign out").toBe(true);
 
     // Sign out from the header link: session gone, and the compact
     // empty-portrait sign-in control is back.

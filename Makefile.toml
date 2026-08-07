@@ -133,6 +133,11 @@ description = "Fail if a bare Unicode symbol glyph is rendered instead of an ico
 command = "python3"
 args = ["tools/glyph-check.py"]
 
+[tasks.css-vars-check]
+description = "Fail if the stylesheet reads a CSS custom property nobody defines"
+command = "python3"
+args = ["tools/css-vars-check.py"]
+
 [tasks.capture-outputs-check]
 description = "Fail if a public notebook's code changed without an output recapture"
 command = "python3"
@@ -163,12 +168,13 @@ args = ["nextest", "run", "--run-ignored=ignored-only", "--no-tests=pass"]
 # ── CI (fmt-check + clippy + test) ───────────────────────────────────────────
 
 [tasks.ci]
-description = "Full CI check: fmt-check → gen-completions-check → capture-outputs-check → glyph-check → clippy → test"
+description = "Full CI check: fmt-check → gen-completions-check → capture-outputs-check → glyph-check → css-vars-check → clippy → test"
 dependencies = [
     "fmt-check",
     "gen-completions-check",
     "capture-outputs-check",
     "glyph-check",
+    "css-vars-check",
     "clippy",
     "test",
 ]

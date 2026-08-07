@@ -31,8 +31,12 @@ import unicodedata
 ALLOW_MARKER = "glyph-check: allow"
 COMMENT_PREFIXES = ("///", "//!", "//", "*", "/*", "#")
 
-# Box-drawing characters rule off comment sections throughout the codebase.
-BOX_DRAWING = range(0x2500, 0x2580)
+# NOTE: box-drawing characters (U+2500\u2013U+257F) are NOT exempt. They rule off
+# comment sections everywhere in this codebase, but comment lines are already
+# skipped below, so the exemption bought nothing and cost three real hits:
+# `\u2573 Delete` (U+2573) shipped on two menu items and a card while the rest of
+# the UI had moved to icons. An exemption that only ever fires on false
+# negatives is not an exemption, it is a hole.
 
 # Rust `\u{1f5c2}` and JS `\u25cf`. Checking only literal characters missed a
 # colour emoji and seven other affordances hiding in escape form during the
@@ -62,11 +66,7 @@ def strip_trailing_comment(line: str) -> str:
 
 
 def is_ui_symbol(cp: int) -> bool:
-    return (
-        cp >= 0x2000
-        and cp not in BOX_DRAWING
-        and unicodedata.category(chr(cp)).startswith("S")
-    )
+    return cp >= 0x2000 and unicodedata.category(chr(cp)).startswith("S")
 
 
 def offending(line: str) -> list[str]:

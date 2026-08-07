@@ -79,7 +79,6 @@ pub fn SharedNotebookPage() -> impl IntoView {
                             />
                             <ViewOnlyNotebook
                                 notebook
-                                fork_label="Fork to Private".to_string()
                                 embed_spec=embed_spec.unwrap_or_default()
                                 share_manifest=share_manifest
                             />

@@ -56,6 +56,14 @@ test.describe("Local version history (PRD-0058)", () => {
       panel.locator(".ironpad-history-entry").first(),
     ).toBeVisible({ timeout: 10_000 });
 
+    // The panel must be OPAQUE. It shipped reading `var(--ip-bg)`, a name the
+    // palette never declared, so the whole background declaration was dropped
+    // and the notebook showed straight through the snapshot list.
+    await expect(panel).not.toHaveCSS(
+      "background-color",
+      "rgba(0, 0, 0, 0)",
+    );
+
     // Restore version A (accept the confirm). Ends in a reload.
     page.on("dialog", (d) => d.accept());
     await panel.locator(".ironpad-history-restore").first().click();

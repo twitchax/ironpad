@@ -189,21 +189,67 @@ a:focus-visible {
 
 /* ── Native UI primitives ───────────────────────────────────────────────── */
 
-// Buttons: `.ironpad-btn` base plus an appearance modifier.
+// Button geometry lives in exactly two mixins. Appearance (colour, border,
+// weight) stays with each class, because that IS the per-button decision;
+// size is not. Nine buttons authored at nine different times had drifted to
+// five paddings (4/6/8px vertical), five font sizes (0.75rem to 1rem), and
+// three heights, which reads as sloppiness the moment two sit side by side.
+//
+// `box-sizing: border-box` is global, so `min-height` counts the border and
+// a bordered button lines up with a borderless one.
 
-.ironpad-btn {
+// Two tiers, expressed as defaults rather than as separate mixins: the
+// primary 34px controls, and a compact tier for chips inside panels and
+// cards, where a full-height button would dominate its row.
+@mixin ip-button-shape(
+    $height: 34px,
+    $pad: 6px 14px,
+    $font: 0.875rem,
+    $radius: var(--ip-radius-md)
+) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 6px 14px;
-    border: 1px solid transparent;
-    border-radius: var(--ip-radius-md);
+    gap: 6px;
+    min-height: $height;
+    padding: $pad;
+    border-radius: $radius;
     font-family: var(--ip-font-sans);
-    font-size: 0.875rem;
+    font-size: $font;
     font-weight: 600;
     line-height: 1.4;
+    white-space: nowrap;
     cursor: pointer;
-    transition: all var(--ip-transition-fast);
+    transition: background var(--ip-transition-fast),
+        border-color var(--ip-transition-fast),
+        color var(--ip-transition-fast),
+        box-shadow var(--ip-transition-fast);
+}
+
+// Square icon-only controls (toolbar menu, gear, close). Same 34px box as the
+// pills above so a toolbar row lines up along both edges.
+@mixin ip-icon-button-shape($size: 34px, $font: 1.05rem, $radius: var(--ip-radius-md)) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: $size;
+    height: $size;
+    padding: 0;
+    border-radius: $radius;
+    font-size: $font;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--ip-transition-fast),
+        border-color var(--ip-transition-fast),
+        color var(--ip-transition-fast);
+}
+
+// Buttons: `.ironpad-btn` base plus an appearance modifier.
+
+.ironpad-btn {
+    @include ip-button-shape;
+
+    border: 1px solid transparent;
 }
 
 .ironpad-btn:focus-visible {
@@ -330,17 +376,16 @@ a:focus-visible {
     overflow: hidden;
 }
 
+// Segments carry the pill geometry so a segmented control is exactly as tall
+// as the buttons beside it; the wrapper's radius + overflow does the corners.
 .ironpad-theme-toggle-segment {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 4px 10px;
+    @include ip-button-shape;
+
     border: none;
+    border-radius: 0;
     background: transparent;
     color: var(--ip-neutral-dimmer);
-    font-size: 0.85rem;
-    cursor: pointer;
-    transition: background 0.2s, color 0.2s;
+    font-weight: 500;
 
     &:hover:not(.ironpad-theme-toggle-segment--active) {
         background: var(--ip-bg-elevated);
@@ -458,10 +503,14 @@ a:focus-visible {
 
 // Header sign-in surface. In the header (not the status bar) because the
 // status bar is hidden on home, where visitors actually look for login.
+// Signed IN: the same portrait-over-label stack as the signed-out control
+// below, so the header corner keeps one shape across both states. The handle
+// is the element's tooltip; a third row does not fit a 48px header.
 .ironpad-auth {
     display: inline-flex;
+    flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 2px;
 }
 
 .ironpad-auth-avatar {
@@ -471,20 +520,17 @@ a:focus-visible {
     display: block;
 }
 
-.ironpad-auth-login {
-    color: var(--ip-text-secondary);
-    font-size: 0.85rem;
-}
-
 .ironpad-auth-action {
-    color: var(--ip-accent);
+    color: var(--ip-text-secondary);
     text-decoration: none;
     cursor: pointer;
-    font-size: 0.85rem;
+    font-size: 0.6rem;
+    line-height: 1;
+    letter-spacing: 0.02em;
     white-space: nowrap;
 
     &:hover {
-        text-decoration: underline;
+        color: var(--ip-accent);
     }
 }
 
@@ -564,14 +610,11 @@ a:focus-visible {
 // Push button (PRD-0054): the one editorial control. Amber like the rest of
 // the mutable chrome when armed; muted when the draft matches published.
 .ironpad-push-button {
+    @include ip-button-shape;
+
     background: none;
     border: 1px solid var(--ip-shared);
     color: var(--ip-shared);
-    border-radius: var(--ip-radius-md, 6px);
-    padding: 6px 14px;
-    cursor: pointer;
-    font-size: 0.9rem;
-    white-space: nowrap;
 
     &:hover:not(:disabled) {
         background: var(--ip-shared-tint);
@@ -633,16 +676,12 @@ a:focus-visible {
 // "✎ Edit" — the authoring device's shortcut from the published page back
 // into the editor. Amber like the rest of the mutable chrome.
 .view-only-edit-button {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.5rem 1.5rem;
+    @include ip-button-shape;
+
     background: none;
     border: 1px solid var(--ip-shared);
     color: var(--ip-shared);
-    border-radius: var(--ip-radius-md);
-    font-size: 1rem;
     text-decoration: none;
-    cursor: pointer;
 
     &:hover {
         background: var(--ip-shared-tint);
@@ -866,18 +905,15 @@ a:focus-visible {
 }
 
 .ironpad-delete-btn {
+    @include ip-icon-button-shape($size: 26px, $font: 0.95rem, $radius: var(--ip-radius-sm));
+
     position: absolute;
     top: 8px;
     right: 8px;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: var(--ip-radius-sm);
     color: var(--ip-text-muted);
-    font-size: 0.85rem;
-    cursor: pointer;
-    padding: 4px 8px;
     opacity: 0;
-    transition: all var(--ip-transition-fast);
     z-index: 1;
 }
 
@@ -906,30 +942,39 @@ a:focus-visible {
 
 /* ── Notebook toolbar ────────────────────────────────────────────────── */
 
+// Two rows: notebook actions (Run All, Push, menu) on top, collaboration
+// below. The session button's label swings from "Start Agent Session" to
+// "2 agents" as guests connect, and inline it dragged Push sideways.
 .ironpad-notebook-toolbar {
     display: flex;
-    justify-content: flex-end;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
     padding: 8px 0;
-    gap: 8px;
+}
+
+.ironpad-notebook-toolbar-row {
+    display: flex;
     align-items: center;
+    gap: 8px;
+}
+
+.ironpad-notebook-toolbar-row--secondary {
+    // Empty in view mode; no phantom gap when it has nothing to show.
+    &:empty {
+        display: none;
+    }
 }
 
 /* ── Run All button ──────────────────────────────────────────────────── */
 
 .ironpad-run-all-button,
 .run-all-button {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 16px;
+    @include ip-button-shape;
+
     background: linear-gradient(135deg, var(--ip-accent), var(--ip-accent-hover));
     color: var(--ip-text-on-accent);
-    font-weight: 700;
-    font-size: 0.85rem;
-    font-family: var(--ip-font-sans);
     border: none;
-    border-radius: var(--ip-radius-md);
-    cursor: pointer;
     transition: background var(--ip-transition-fast), box-shadow var(--ip-transition-fast), transform var(--ip-transition-fast);
 
     &:hover:not(:disabled) {
@@ -2562,13 +2607,11 @@ code[class*="language-"] {
 }
 
 .fork-button {
-    padding: 0.5rem 1.5rem;
+    @include ip-button-shape;
+
     background: var(--ip-accent);
     color: var(--ip-text-on-accent);
     border: none;
-    border-radius: var(--ip-radius-md);
-    cursor: pointer;
-    font-size: 1rem;
 
     &:hover {
         background: var(--ip-accent-hover);
@@ -2724,8 +2767,12 @@ code[class*="language-"] {
     z-index: 1000;
 }
 
+// `--ip-bg` and `--ip-bg-secondary` were never defined: an undefined custom
+// property with no fallback resolves to nothing, so this panel rendered
+// transparent over the notebook behind it and the text was unreadable.
+// `tools/css-vars-check.py` (in `ci`) now fails on a name that does not exist.
 .ironpad-history-panel {
-    background: var(--ip-bg);
+    background: var(--ip-bg-surface);
     border: 1px solid var(--ip-border);
     border-radius: 6px;
     width: min(30rem, 92vw);
@@ -2747,11 +2794,17 @@ code[class*="language-"] {
 }
 
 .ironpad-history-close {
+    @include ip-icon-button-shape;
+
     background: none;
-    border: none;
+    border: 1px solid transparent;
     color: var(--ip-text-muted);
-    cursor: pointer;
-    font-size: 0.95rem;
+
+    &:hover {
+        background: var(--ip-hover-overlay);
+        border-color: var(--ip-border);
+        color: var(--ip-text-primary);
+    }
 }
 
 .ironpad-history-hint {
@@ -2793,13 +2846,11 @@ code[class*="language-"] {
 }
 
 .ironpad-history-restore {
-    background: var(--ip-bg-secondary);
+    @include ip-button-shape;
+
+    background: var(--ip-bg-elevated);
     border: 1px solid var(--ip-border);
-    border-radius: 4px;
-    color: var(--ip-text);
-    cursor: pointer;
-    font-size: 0.75rem;
-    padding: 0.25rem 0.6rem;
+    color: var(--ip-text-primary);
     flex-shrink: 0;
 
     &:hover {
@@ -2821,7 +2872,7 @@ code[class*="language-"] {
     padding: 0.35rem 0.6rem;
     font-size: 0.75rem;
     color: var(--ip-text-muted);
-    background: var(--ip-bg-secondary);
+    background: var(--ip-bg-elevated);
     border-bottom: 1px dashed var(--ip-border);
 }
 
@@ -2945,16 +2996,12 @@ code[class*="language-"] {
 }
 
 .ironpad-mode-toggle-segment {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 14px;
+    @include ip-icon-button-shape;
+
     border: none;
+    border-radius: 0;
     background: transparent;
     color: var(--ip-neutral-dimmer);
-    font-size: 1rem;
-    cursor: pointer;
-    transition: background 0.2s, color 0.2s;
 
     &:hover:not(.ironpad-mode-toggle-segment--active) {
         background: var(--ip-bg-elevated);
@@ -2983,18 +3030,11 @@ code[class*="language-"] {
 }
 
 .ironpad-toolbar-dropdown-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
+    @include ip-icon-button-shape;
+
     border: 1px solid transparent;
-    border-radius: var(--ip-radius-md);
     background: transparent;
     color: var(--ip-neutral-dim);
-    font-size: 1.2rem;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
 
     &:hover {
         background: var(--ip-hover-overlay);
@@ -3051,18 +3091,11 @@ code[class*="language-"] {
 /* ── Toolbar close button ───────────────────────────────────────────── */
 
 .ironpad-toolbar-close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
+    @include ip-icon-button-shape;
+
     border: 1px solid transparent;
-    border-radius: var(--ip-radius-md);
     background: transparent;
     color: var(--ip-neutral-dim);
-    font-size: 1.3rem;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
 
     &:hover {
         background: rgba(var(--ip-error-rgb), 0.12);
@@ -3342,15 +3375,11 @@ code[class*="language-"] {
 }
 
 .ironpad-session-button {
+    @include ip-button-shape;
+
     background: transparent;
     border: 1px solid var(--ip-border);
     color: var(--ip-neutral-dim);
-    padding: 4px 12px;
-    border-radius: var(--ip-radius-md);
-    cursor: pointer;
-    font-size: 0.8rem;
-    white-space: nowrap;
-    transition: background var(--ip-transition-fast), border-color var(--ip-transition-fast), color var(--ip-transition-fast);
 
     &:hover {
         background: var(--ip-hover-overlay);
@@ -3395,16 +3424,15 @@ code[class*="language-"] {
 }
 
 .ironpad-session-panel-close {
+    @include ip-icon-button-shape($size: 26px, $font: 0.95rem, $radius: var(--ip-radius-sm));
+
     background: transparent;
-    border: none;
+    border: 1px solid transparent;
     color: var(--ip-text-tertiary);
-    cursor: pointer;
-    font-size: 1rem;
-    padding: 2px 6px;
-    transition: color var(--ip-transition-fast);
 
     &:hover {
         color: var(--ip-text-primary);
+        border-color: var(--ip-border);
     }
 }
 
@@ -3444,14 +3472,11 @@ code[class*="language-"] {
 
 .ironpad-session-token-toggle,
 .ironpad-session-token-copy {
+    @include ip-button-shape($height: 24px, $pad: 2px 8px, $font: 0.75rem, $radius: var(--ip-radius-sm));
+
     background: transparent;
     border: 1px solid var(--ip-border);
     color: var(--ip-text-secondary);
-    padding: 2px 8px;
-    border-radius: var(--ip-radius-sm);
-    cursor: pointer;
-    font-size: 0.75rem;
-    transition: background var(--ip-transition-fast), border-color var(--ip-transition-fast), color var(--ip-transition-fast);
 
     &:hover {
         background: var(--ip-hover-overlay);
@@ -3595,14 +3620,11 @@ code[class*="language-"] {
 }
 
 .embed-button {
-    padding: 0.5rem 1rem;
+    @include ip-button-shape;
+
     background: transparent;
     color: var(--ip-text-secondary);
     border: 1px solid var(--ip-border);
-    border-radius: var(--ip-radius-md);
-    cursor: pointer;
-    font-size: 0.9rem;
-    font-family: var(--ip-font-mono);
 
     &:hover {
         color: var(--ip-text-primary);

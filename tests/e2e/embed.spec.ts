@@ -119,10 +119,12 @@ test.describe("Notebook embedding", () => {
     expect(new Set(ids).size).toBe(2);
   });
 
-  test("toolbar action buttons share one corner radius", async ({ page }) => {
+  test("toolbar action buttons share one shape", async ({ page }) => {
     // Run All, Fork, and Embed sit together in the view-only toolbar and must
-    // round identically. Fork/Embed once hardcoded 4px while Run All used the
-    // --ip-radius-md token (6px), so they read as subtly mismatched pills.
+    // round AND size identically. Fork/Embed once hardcoded 4px while Run All
+    // used the --ip-radius-md token (6px); separately the three carried three
+    // different paddings and font sizes, which reads as sloppiness the moment
+    // they sit side by side. Both now come from the ip-button-shape mixin.
     await page.goto("/public/welcome");
     await expect(page.locator(".view-only-notebook")).toBeVisible({
       timeout: 30_000,
@@ -142,6 +144,18 @@ test.describe("Notebook embedding", () => {
     expect(radius).toBe("6px");
     await expect(fork).toHaveCSS("border-radius", radius);
     await expect(embed).toHaveCSS("border-radius", radius);
+
+    // ...and one height. Measured, not asserted from CSS: padding, font-size,
+    // and line-height all feed it, and only the box tells you they agree.
+    const heights = await Promise.all(
+      [runAll, fork, embed].map((b) =>
+        b.evaluate((el) => Math.round(el.getBoundingClientRect().height))
+      )
+    );
+    expect(new Set(heights).size, `heights differ: ${heights.join(", ")}`).toBe(
+      1
+    );
+    expect(heights[0]).toBeGreaterThanOrEqual(34);
   });
 
   test("view page snippet popover copies both embed snippets", async ({

@@ -1472,7 +1472,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                 class="ironpad-cell-menu-item ironpad-cell-menu-item--danger"
                                 on:click=on_delete_confirmed
                             >
-                                "╳ Delete"
+                                <IconLabel icon=icons::DELETE label="Delete"/>
                             </button>
                         </div>
                     }.into_any()

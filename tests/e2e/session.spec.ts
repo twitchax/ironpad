@@ -28,6 +28,15 @@ test.describe.serial("Agent Session", () => {
     // Create a new notebook.
     await createNotebook(page);
 
+    // The session button lives on its own row BELOW Run All. Its label swings
+    // from "Start Agent Session" to "2 agents" as guests connect, and inline
+    // that reflow shoved the Push button sideways mid-session.
+    const rows = page.locator(".ironpad-notebook-toolbar-row");
+    await expect(rows.first().locator(".ironpad-run-all-button")).toBeVisible();
+    await expect(
+      rows.nth(1).locator(".ironpad-session-button")
+    ).toBeVisible();
+
     // Start session and get token.
     const token = await startSession(page);
     expect(token).toHaveLength(64);

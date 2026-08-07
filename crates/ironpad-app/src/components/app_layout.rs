@@ -336,9 +336,11 @@ fn format_relative_time(epoch_ms: f64, now_ms: f64) -> String {
     }
 }
 
-/// Sign-in element for the HEADER (PRD-0053): a GitHub sign-in link when
-/// signed out, avatar + handle + sign-out when signed in, and nothing at all
-/// while loading or on an instance with no OAuth configured.
+/// Sign-in element for the HEADER (PRD-0053): a silhouette over "Sign in"
+/// when signed out, the GitHub avatar over "Sign out" when signed in, and
+/// nothing at all while loading or on an instance with no OAuth configured.
+/// Both states are the same portrait-over-label stack; the signed-in handle
+/// lives in the tooltip, because a third row does not fit a 48px header.
 ///
 /// Header, not the status bar: the status bar is hidden on the home page,
 /// which is exactly where a visitor looks for a way to log in (this shipped
@@ -346,6 +348,19 @@ fn format_relative_time(epoch_ms: f64, now_ms: f64) -> String {
 ///
 /// Plain anchors, not buttons: the OAuth dance and logout are full-page
 /// navigations by nature (the session cookie changes hands).
+/// The anonymous portrait, shared by both auth states so they cannot drift.
+/// Hand-drawn rather than an `icons::` role: it is a portrait frame the
+/// avatar `<img>` swaps into, sized and clipped by the same rule.
+#[component]
+fn AuthSilhouette() -> impl IntoView {
+    view! {
+        <svg class="ironpad-auth-signin-avatar" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="9" r="4" fill="currentColor" />
+            <path d="M4 22c0-4.4 3.6-8 8-8s8 3.6 8 8z" fill="currentColor" />
+        </svg>
+    }
+}
+
 #[component]
 fn AuthStatus(ctx: LayoutContext) -> impl IntoView {
     let location = leptos_router::hooks::use_location();
@@ -376,30 +391,43 @@ fn AuthStatus(ctx: LayoutContext) -> impl IntoView {
                             title="Sign in with GitHub"
                             aria-label="Sign in with GitHub"
                         >
-                            <svg
-                                class="ironpad-auth-signin-avatar"
-                                viewBox="0 0 24 24"
-                                aria-hidden="true"
-                            >
-                                <circle cx="12" cy="9" r="4" fill="currentColor" />
-                                <path
-                                    d="M4 22c0-4.4 3.6-8 8-8s8 3.6 8 8z"
-                                    fill="currentColor"
-                                />
-                            </svg>
+                            <AuthSilhouette />
                             <span class="ironpad-auth-signin-label">"Sign in"</span>
                         </a>
                     }.into_any()
                 },
                 |user| {
-                    let avatar = (!user.avatar_url.is_empty()).then(|| view! {
-                        <img class="ironpad-auth-avatar" src=user.avatar_url.clone() alt="" />
-                    });
+                    // Same portrait-over-label stack as the signed-out
+                    // control: portrait on top, action beneath. The handle
+                    // rides the tooltip rather than a third row — the header
+                    // is one line tall, and an inline handle made the two
+                    // states different shapes in the same corner.
+                    //
+                    // No avatar URL falls back to the same silhouette rather
+                    // than to nothing: without it the control collapses to a
+                    // bare "Sign out" link floating in the header, which is
+                    // what an account with no GitHub picture actually gets.
+                    let handle = format!("@{}", user.login);
+                    let portrait = if user.avatar_url.is_empty() {
+                        view! { <AuthSilhouette /> }.into_any()
+                    } else {
+                        view! {
+                            <img
+                                class="ironpad-auth-avatar"
+                                src=user.avatar_url.clone()
+                                alt=handle.clone()
+                            />
+                        }.into_any()
+                    };
                     view! {
-                        <span class="ironpad-auth">
-                            {avatar}
-                            <span class="ironpad-auth-login">{format!("@{}", user.login)}</span>
-                            <a class="ironpad-auth-action" href="/auth/logout" rel="external">
+                        <span class="ironpad-auth" title=handle.clone()>
+                            {portrait}
+                            <a
+                                class="ironpad-auth-action"
+                                href="/auth/logout"
+                                rel="external"
+                                aria-label=format!("Sign out of {handle}")
+                            >
                                 "Sign out"
                             </a>
                         </span>

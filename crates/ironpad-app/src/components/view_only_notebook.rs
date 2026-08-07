@@ -46,9 +46,6 @@ fn canonical_path(spec: &str) -> Option<String> {
 #[component]
 pub(crate) fn ViewOnlyNotebook(
     notebook: IronpadNotebook,
-    /// Label shown on the fork button (e.g., "Fork" for public, "Fork to Private" for shared).
-    #[prop(default = "Fork".to_string())]
-    fork_label: String,
     /// Render for iframe embedding (PRD-0039): hides Fork (IndexedDB is
     /// partitioned inside cross-origin iframes), adds the "Open in ironpad"
     /// badge, and surfaces the threaded-cell limitation.
@@ -197,7 +194,6 @@ pub(crate) fn ViewOnlyNotebook(
     };
 
     // Fork handler — clones the notebook with a new ID and navigates to it.
-    let fork_label_clone = fork_label.clone();
     let navigate = leptos_router::hooks::use_navigate();
     let forking = RwSignal::new(false);
     // Resolved under this component's owner; Copy, app-root-owned, so the
@@ -346,14 +342,14 @@ pub(crate) fn ViewOnlyNotebook(
                         {move || if forking.get() {
                             view! { <IconLabel icon=icons::FORK label="Forking…"/> }
                         } else {
-                            view! { <IconLabel icon=icons::FORK label=fork_label_clone.clone()/> }
+                            view! { <IconLabel icon=icons::FORK label="Fork"/> }
                         }}
                     </button>
                 })}
                 {(!embed && embed_spec.is_some()).then(|| view! {
                     <div class="view-only-embed">
                         <button class="embed-button" on:click=toggle_embed_popover>
-                            "</> Embed"
+                            <IconLabel icon=icons::CODE_PANEL label="Embed"/>
                         </button>
                         {move || embed_popover_open.get().then(|| view! {
                             <div class="view-only-embed-popover">

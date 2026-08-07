@@ -108,7 +108,7 @@ test.describe("Shared appendix (editor)", () => {
     // A fresh notebook has no shared source but does carry the default
     // shared Cargo.toml, so view mode (the public renderer, exactly) shows
     // one deps section in ITS appendix — the content-bearing rule.
-    await page.locator('button[title="View mode"]').click();
+    await page.locator('button[aria-label="Preview"]').click();
     const appendix = page.locator(".view-only-shared-appendix");
     await expect(appendix).toBeVisible({ timeout: 10_000 });
     const headers = appendix.locator(".view-only-shared-header");
