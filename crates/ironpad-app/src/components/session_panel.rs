@@ -2,6 +2,7 @@
 
 use leptos::prelude::*;
 
+use crate::components::dismiss::{clear_if_open, dismiss_on_outside_click};
 use crate::components::icon::Icon;
 use crate::components::icons;
 use crate::session::{ConnectionStatus, SessionState};
@@ -13,6 +14,14 @@ use crate::session::{ConnectionStatus, SessionState};
 pub fn SessionButton() -> impl IntoView {
     let session = expect_context::<SessionState>();
     let panel_open = RwSignal::new(false);
+
+    // The panel holds a session token and a copy-paste CLI command, so it is
+    // the kind of thing a user opens, reads, and clicks away from. The wrapper
+    // (not the panel) is what counts as inside, so clicking the button still
+    // reaches its own toggle rather than being read as a dismissal.
+    dismiss_on_outside_click(".ironpad-session-wrapper", move || {
+        clear_if_open(panel_open);
+    });
 
     // The button is icon-only, so this wording reaches the user as the
     // tooltip and the accessible name rather than as visible text. That is

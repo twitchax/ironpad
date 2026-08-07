@@ -74,6 +74,38 @@ test.describe.serial("Agent Session", () => {
     expect(jsErrors).toEqual([]);
   });
 
+  // The panel shows a token and a copy-paste CLI command: something you open,
+  // read, and click away from. Dismissal must key off the WRAPPER, not the
+  // document, or revealing the token would close the thing showing it.
+  test("session panel dismisses on an outside click, not an inside one", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+
+    await createNotebook(page);
+    await startSession(page);
+
+    const panel = page.locator(".ironpad-session-panel");
+    await expect(panel).toBeVisible();
+
+    // Inside: the Show/Hide toggle re-renders the panel's own content, which
+    // is exactly the case a naive `target.closest()` check gets wrong.
+    await page.locator(".ironpad-session-token-toggle").click();
+    await expect(panel).toBeVisible();
+
+    // Outside: anywhere in the editor body.
+    await page.locator(".ironpad-editor").click({ position: { x: 5, y: 5 } });
+    await expect(panel).toHaveCount(0);
+
+    // Dismissing is not ending: the session is still live and the button
+    // reopens the same panel.
+    await expect(page.locator(".ironpad-session-button--active")).toBeVisible();
+    await page.locator(".ironpad-session-button").click();
+    await expect(panel).toBeVisible();
+
+    await endSession(page);
+  });
+
   test("agent reads notebook cells", async ({ page }) => {
     test.setTimeout(60_000);
 

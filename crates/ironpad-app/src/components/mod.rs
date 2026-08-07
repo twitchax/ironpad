@@ -2,6 +2,7 @@ pub mod animation_canvas;
 pub mod app_layout;
 pub mod blob_url;
 pub mod copy_button;
+pub(crate) mod dismiss;
 pub mod error_panel;
 pub mod executor;
 pub mod icon;

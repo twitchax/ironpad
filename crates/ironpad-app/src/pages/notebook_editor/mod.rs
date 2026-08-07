@@ -443,49 +443,10 @@ fn NotebookContent() -> impl IntoView {
 
     // ── Outside-click handler to close dropdowns ────────────────────────
 
-    #[cfg(feature = "hydrate")]
-    {
-        use wasm_bindgen::prelude::*;
-
-        let click_closure =
-            Closure::<dyn Fn(web_sys::MouseEvent)>::new(move |e: web_sys::MouseEvent| {
-                // `composedPath()` rather than `target.closest(...)`: the path
-                // is captured at DISPATCH, so it survives the target being
-                // re-rendered out of the DOM by an earlier handler on the same
-                // click. A menu item that toggles state does exactly that now
-                // that items render reactive icon markup (PRD-0062) — the
-                // click landed on the icon's span, the toggle replaced it, and
-                // `closest()` on the detached node reported "outside", closing
-                // the menu out from under its own item.
-                let inside = e.composed_path().iter().any(|node| {
-                    node.dyn_into::<web_sys::Element>()
-                        .is_ok_and(|el| el.matches(".ironpad-toolbar-dropdown").unwrap_or(false))
-                });
-                if !inside {
-                    hamburger_open.set(false);
-                    gear_open.set(false);
-                }
-            });
-        web_sys::window()
-            .unwrap()
-            .document()
-            .unwrap()
-            .add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())
-            .unwrap();
-        // Store the closure so it's dropped on dispose, and remove the listener
-        // on unmount so remounts don't stack stale outside-click handlers.
-        let stored = StoredValue::new_local(click_closure);
-        on_cleanup(move || {
-            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                stored.try_with_value(|closure| {
-                    let _ = doc.remove_event_listener_with_callback(
-                        "click",
-                        closure.as_ref().unchecked_ref(),
-                    );
-                });
-            }
-        });
-    }
+    crate::components::dismiss::dismiss_on_outside_click(".ironpad-toolbar-dropdown", move || {
+        crate::components::dismiss::clear_if_open(hamburger_open);
+        crate::components::dismiss::clear_if_open(gear_open);
+    });
 
     // ── SortableJS initialization ───────────────────────────────────────
 
