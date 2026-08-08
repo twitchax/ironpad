@@ -49,7 +49,7 @@
       "order": 4,
       "label": "How It Works",
       "cell_type": "Markdown",
-      "source": "## How Reactive Mode Works\n\n1. **Edit** the Parameters cell above — change `count` or `multiplier`\n2. **Debounce** — ironpad waits 500 ms for you to stop typing\n3. **Cascade** — Sequence Generator and Summary Display re-execute in order\n4. **Error halt** — if any cell errors, downstream cells stop and show a blocked state\n\nReactive mode is opt-in per notebook. Toggle it with the ⚡ button in the toolbar."
+      "source": "## How Reactive Mode Works\n\n1. **Edit** the Parameters cell above: change `count` or `multiplier`\n2. **Debounce**: ironpad waits 500 ms for you to stop typing\n3. **Cascade**: Sequence Generator and Summary Display re-execute in order\n4. **Error halt**: if any cell errors, downstream cells stop and show a blocked state\n\nReactive mode is opt-in per notebook. Toggle it with the ⚡ button in the toolbar."
     }
   ],
   "description": "Demonstrates reactive dataflow: editing an upstream cell auto-executes all downstream cells.",

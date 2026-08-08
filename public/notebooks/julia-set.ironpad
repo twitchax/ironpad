@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Julia Sets *\n\n**Julia sets** are close relatives of the Mandelbrot set. While the Mandelbrot iterates $z \\mapsto z^2 + c$ with $z_0 = 0$ and *varies* $c$ across the image, a Julia set *fixes* $c$ and varies the starting point $z_0$.\n\nEach point $c$ in the complex plane defines a unique Julia set. Points inside the Mandelbrot set produce *connected* Julia sets; points outside produce disconnected \"Fatou dust.\"\n\n## The Connection\n\nThe Mandelbrot set is essentially a *map* of all Julia sets — each pixel of the Mandelbrot tells you what the Julia set at that $c$ value looks like:\n- **Inside the Mandelbrot** → connected Julia set\n- **On the boundary** → maximally intricate Julia set\n- **Outside the Mandelbrot** → disconnected dust",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Julia Sets *\n\n**Julia sets** are close relatives of the Mandelbrot set. While the Mandelbrot iterates $z \\mapsto z^2 + c$ with $z_0 = 0$ and *varies* $c$ across the image, a Julia set *fixes* $c$ and varies the starting point $z_0$.\n\nEach point $c$ in the complex plane defines a unique Julia set. Points inside the Mandelbrot set produce *connected* Julia sets; points outside produce disconnected \"Fatou dust.\"\n\n## The Connection\n\nThe Mandelbrot set is essentially a *map* of all Julia sets: each pixel of the Mandelbrot tells you what the Julia set at that $c$ value looks like:\n- **Inside the Mandelbrot** → connected Julia set\n- **On the boundary** → maximally intricate Julia set\n- **Outside the Mandelbrot** → disconnected dust",
       "cargo_toml": null
     },
     {
@@ -39,7 +39,7 @@
       "order": 3,
       "label": "How c Changes the Shape",
       "cell_type": "Markdown",
-      "source": "## * How $c$ Changes the Shape\n\nThe parameter $c$ completely determines the Julia set's geometry:\n\n| $c$ value | Character |\n|---------|-----------|\n| $c = 0$ | Perfect circle (unit disk) |\n| $c = -1$ | \"Basilica\" — two tangent circles |\n| $c = -0.123 + 0.745i$ | \"Douady's rabbit\" — three lobes |\n| $c = i$ | Dendrite — tree-like, no interior |\n| $c = -2$ | Line segment $[-2, 2]$ |\n\nThe boundary between connected and disconnected Julia sets traces out exactly the Mandelbrot set! Try picking a $c$ value from the Mandelbrot notebook and rendering its Julia set here.",
+      "source": "## * How $c$ Changes the Shape\n\nThe parameter $c$ completely determines the Julia set's geometry:\n\n| $c$ value | Character |\n|---------|-----------|\n| $c = 0$ | Perfect circle (unit disk) |\n| $c = -1$ | \"Basilica\", two tangent circles |\n| $c = -0.123 + 0.745i$ | \"Douady's rabbit\", three lobes |\n| $c = i$ | Dendrite, tree-like with no interior |\n| $c = -2$ | Line segment $[-2, 2]$ |\n\nThe boundary between connected and disconnected Julia sets traces out exactly the Mandelbrot set! Try picking a $c$ value from the Mandelbrot notebook and rendering its Julia set here.",
       "cargo_toml": null
     }
   ],

@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Charts with `Plot` 📊\n\nironpad includes a built-in `Plot` helper that makes it easy to create charts. Under the hood it uses the **plotters** crate, but you don't need to set up backends or boilerplate — just call `Plot::line`, `Plot::bar`, or `Plot::scatter`.\n\nAll charts render as SVG with a dark theme that matches ironpad's UI.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Charts with `Plot` 📊\n\nironpad includes a built-in `Plot` helper that makes it easy to create charts. Under the hood it uses the **plotters** crate, but you don't need to set up backends or boilerplate: just call `Plot::line`, `Plot::bar`, or `Plot::scatter`.\n\nAll charts render as SVG with a dark theme that matches ironpad's UI.",
       "cargo_toml": null
     },
     {
@@ -83,7 +83,7 @@
       "order": 8,
       "label": "Tooltips & Labels",
       "cell_type": "Markdown",
-      "source": "## Tooltips & Point Labels\n\nPlot supports two opt-in features for richer charts:\n\n- **`.tooltips(true)`** — adds hover tooltips to each data point (rendered as SVG `<title>` elements).\n- **`.point_labels(true)`** — draws the numeric value directly on each point or bar.\n\nBoth are off by default. Try hovering over the scatter points below, or reading the values on the bar chart!",
+      "source": "## Tooltips & Point Labels\n\nPlot supports two opt-in features for richer charts:\n\n- **`.tooltips(true)`**: adds hover tooltips to each data point (rendered as SVG `<title>` elements).\n- **`.point_labels(true)`**: draws the numeric value directly on each point or bar.\n\nBoth are off by default. Try hovering over the scatter points below, or reading the values on the bar chart!",
       "cargo_toml": null
     },
     {

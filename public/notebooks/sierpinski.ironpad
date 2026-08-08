@@ -11,7 +11,7 @@
       "order": 0,
       "label": "Introduction",
       "cell_type": "Markdown",
-      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Sierpinski Triangle ▲\n\nThe **Sierpinski triangle** is a fractal that emerges from a surprisingly simple random process called the **chaos game**.\n\n## The Chaos Game\n\n1. Pick three vertices of an equilateral triangle\n2. Start at any point in the plane\n3. Repeat:\n   - Randomly choose one of the three vertices\n   - Move **halfway** toward that vertex\n   - Plot your new position\n\nDespite the randomness, the plotted points converge to a self-similar fractal — the Sierpinski triangle — with Hausdorff dimension $\\log 3 / \\log 2 \\approx 1.585$.",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n# Sierpinski Triangle ▲\n\nThe **Sierpinski triangle** is a fractal that emerges from a surprisingly simple random process called the **chaos game**.\n\n## The Chaos Game\n\n1. Pick three vertices of an equilateral triangle\n2. Start at any point in the plane\n3. Repeat:\n   - Randomly choose one of the three vertices\n   - Move **halfway** toward that vertex\n   - Plot your new position\n\nDespite the randomness, the plotted points converge to a self-similar fractal, the Sierpinski triangle, with Hausdorff dimension $\\log 3 / \\log 2 \\approx 1.585$.",
       "cargo_toml": null
     },
     {
@@ -39,7 +39,7 @@
       "order": 3,
       "label": "Why Chaos Produces Order",
       "cell_type": "Markdown",
-      "source": "## Why Does Chaos Produce Order?\n\nThe chaos game works because of **iterated function systems** (IFS). Each \"move halfway to a vertex\" is a contraction mapping that shrinks the plane by a factor of $\\tfrac{1}{2}$. The Sierpinski triangle is the unique *attractor* of these three contractions — regardless of the starting point, the orbit converges to the same fractal.\n\n### Variations to Try\n\n- **Different ratios**: Move $\\tfrac{1}{3}$ of the way instead of $\\tfrac{1}{2}$ — what happens?\n- **More vertices**: Use 4 vertices (square) with the constraint that you can't pick the same vertex twice in a row\n- **Weighted randomness**: Make one vertex more likely than the others — the triangle becomes asymmetric\n\nThe chaos game reveals a deep connection between randomness and deterministic geometry: the fractal is encoded in the *rules*, not the *randomness*.",
+      "source": "## Why Does Chaos Produce Order?\n\nThe chaos game works because of **iterated function systems** (IFS). Each \"move halfway to a vertex\" is a contraction mapping that shrinks the plane by a factor of $\\tfrac{1}{2}$. The Sierpinski triangle is the unique *attractor* of these three contractions: regardless of the starting point, the orbit converges to the same fractal.\n\n### Variations to Try\n\n- **Different ratios**: Move $\\tfrac{1}{3}$ of the way instead of $\\tfrac{1}{2}$. What happens?\n- **More vertices**: Use 4 vertices (square) with the constraint that you can't pick the same vertex twice in a row\n- **Weighted randomness**: Make one vertex more likely than the others, and the triangle becomes asymmetric\n\nThe chaos game reveals a deep connection between randomness and deterministic geometry: the fractal is encoded in the *rules*, not the *randomness*.",
       "cargo_toml": null
     }
   ],
