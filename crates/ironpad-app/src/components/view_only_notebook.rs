@@ -905,7 +905,7 @@ fn ViewOnlyCodeCell(
                         <div class="view-only-saved-badge">
                             <span class="view-only-saved-badge-icon"><Icon icon=icons::SAVED_OUTPUT/></span>
                             <span>
-                                "Saved output from the author's last run — press Run to execute live in your browser."
+                                "Saved output from the author's last run. Press Run to execute live in your browser."
                             </span>
                         </div>
                         <div class="view-only-output-panels">

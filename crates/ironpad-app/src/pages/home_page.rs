@@ -194,7 +194,7 @@ pub fn HomePage() -> impl IntoView {
             <div class="ironpad-home-header">
                 <div class="ironpad-home-header-text">
                     <h1>"Notebooks"</h1>
-                    <p class="ironpad-home-tagline">"Interactive Rust notebooks — compile to WebAssembly, run in the browser."</p>
+                    <p class="ironpad-home-tagline">"Interactive Rust notebooks: compile to WebAssembly, run in the browser."</p>
                 </div>
                 <div class="ironpad-home-actions">
                     <button

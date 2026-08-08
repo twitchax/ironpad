@@ -1656,7 +1656,7 @@ pub async fn grant_mutable_read(
         .map_err(|e| ServerFnError::new(e.to_string()))?
     else {
         return Err(ServerFnError::new(format!(
-            "no ironpad user named \"{login}\" — they need to sign in to ironpad once before you can grant them access"
+            "no ironpad user named \"{login}\": they need to sign in once before you can grant them access"
         )));
     };
     if target.github_id == owner.github_id {

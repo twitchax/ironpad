@@ -57,11 +57,11 @@ impl std::fmt::Display for AdmissionDenied {
         match self {
             Self::RateLimited => write!(
                 f,
-                "rate limited: too many builds started from this client — cached runs are unaffected; wait a minute and retry"
+                "rate limited: too many builds started from this client. Cached runs are unaffected; wait a minute and retry"
             ),
             Self::AtCapacity => write!(
                 f,
-                "the server is at build capacity right now — cached runs are unaffected; retry shortly"
+                "the server is at build capacity right now. Cached runs are unaffected; retry shortly"
             ),
         }
     }

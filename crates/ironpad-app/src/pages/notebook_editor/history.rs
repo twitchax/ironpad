@@ -90,7 +90,7 @@ pub(super) fn HistoryPanel(open: RwSignal<bool>) -> impl IntoView {
                             if list.is_empty() {
                                 return view! {
                                     <p class="ironpad-history-empty">
-                                        "No snapshots yet — they appear as you edit."
+                                        "No snapshots yet. They appear as you edit."
                                     </p>
                                 }.into_any();
                             }
