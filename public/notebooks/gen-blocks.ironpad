@@ -118,6 +118,23 @@
     {
       "id": "cell_12",
       "order": 12,
+      "label": "Resume arguments",
+      "cell_type": "Markdown",
+      "source": "## Resume arguments\n\n`Iterator::next` takes no arguments, so a `gen` block is a one-way pipe: values come out and nothing goes back in. `Coroutine::resume` takes one, and `yield` is an expression whose value is whatever the next `resume` hands it.\n\nThe closure parameter binds the first resume argument, and every later `yield` evaluates to the argument of the call that woke it. That makes the tally below a fold with its accumulator parked across suspension points, stepped one deposit at a time from the caller's side.\n",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_13",
+      "order": 13,
+      "label": "Cell 13",
+      "cell_type": "Code",
+      "source": "use std::ops::{Coroutine, CoroutineState};\nuse std::pin::Pin;\n\n// No borrow crosses the `yield`, so this coroutine is movable and `Unpin`:\n// `Pin::new` is enough, with none of cell 9's `pin!` ceremony.\nlet mut tally = #[coroutine]\n|mut total: i32| {\n    loop {\n        // `yield` hands `total` out, then evaluates to the next resume argument.\n        let deposit: i32 = yield total;\n        total += deposit;\n    }\n};\n\nlet mut running = Vec::new();\nfor arg in [100, 5, -20, 7] {\n    match Pin::new(&mut tally).resume(arg) {\n        CoroutineState::Yielded(n) => running.push(n),\n        // The `loop` never breaks, so the coroutine never completes; the arm\n        // is here because `resume` returns a two-variant enum, not because\n        // this one is reachable.\n        CoroutineState::Complete(_) => break,\n    }\n}\n\n// 100 seeds the accumulator, then each resume argument is added to it.\nformat!(\"{running:?}\")\n",
+      "cargo_toml": null,
+      "saved_output": "[{\"Text\":\"[100, 105, 85, 92]\"}]"
+    },
+    {
+      "id": "cell_14",
+      "order": 14,
       "label": "Limits",
       "cell_type": "Markdown",
       "source": "## Limits\n\nWhat `gen` blocks do not give you today: resume arguments, a meaningful completion value (the block finishes with `()`), or recursion without boxing. `async gen` blocks exist behind the same feature for yielding from async code. All of it is nightly; the keyword is reserved, and the iterator you get back is ordinary.\n\nA `gen` block is the movable, `Unpin`, plain-`Iterator` coroutine, and it keeps those properties by banning borrows across `yield`. E0626 is the compiler telling you your state machine just became self-referential. Either restructure (own the data, or shorten the borrow) or step up to a `static` coroutine and let `Pin` carry the proof.\n",

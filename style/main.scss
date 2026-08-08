@@ -198,6 +198,26 @@ a:focus-visible {
 // `box-sizing: border-box` is global, so `min-height` counts the border and
 // a bordered button lines up with a borderless one.
 
+// Grow a control to the WCAG 2.5.5 minimum target on touch. A coarse pointer
+// has roughly a 9mm contact patch and no hover to preview what it is about to
+// hit, so the 24px header toggle and the 28px cell-gutter buttons are a real
+// miss risk on a phone while being perfectly comfortable under a mouse.
+//
+// This grows the REAL box rather than laying an invisible 44px `::after` over a
+// small one: overlapping hit areas mis-tap worse than undersized ones do, and
+// the toolbars measured at 390px have the room. `min-*` is load-bearing for the
+// same reason `ip-icon-button-shape` zeroes it — min beats a fixed
+// `width`/`height`, which is exactly what is wanted here.
+//
+// Both shape mixins below include this, so every control built from either one
+// meets the target on touch without its own call site having to remember.
+@mixin ip-touch-target($size: 44px) {
+    @media (pointer: coarse) {
+        min-width: $size;
+        min-height: $size;
+    }
+}
+
 // Two tiers, expressed as defaults rather than as separate mixins: the
 // primary 34px controls, and a compact tier for chips inside panels and
 // cards, where a full-height button would dominate its row.
@@ -224,6 +244,8 @@ a:focus-visible {
         border-color var(--ip-transition-fast),
         color var(--ip-transition-fast),
         box-shadow var(--ip-transition-fast);
+
+    @include ip-touch-target;
 }
 
 // Square icon-only controls (toolbar menu, gear, close). Same 34px box as the
@@ -246,6 +268,8 @@ a:focus-visible {
     transition: background var(--ip-transition-fast),
         border-color var(--ip-transition-fast),
         color var(--ip-transition-fast);
+
+    @include ip-touch-target;
 }
 
 // Buttons: `.ironpad-btn` base plus an appearance modifier.
@@ -414,6 +438,8 @@ a:focus-visible {
     text-decoration: none;
     transition: color 0.2s;
 
+    @include ip-touch-target;
+
     &:hover {
         color: var(--ip-neutral-dim);
     }
@@ -425,6 +451,15 @@ a:focus-visible {
     color: var(--ip-accent);
     text-decoration: none;
     letter-spacing: 0.5px;
+
+    // The wordmark is the way home from every page, and a standalone link
+    // rather than one inline in prose, so the target guideline applies to it.
+    // 44px matches the header's own height on narrow screens, so this grows the
+    // hit area without moving anything.
+    display: inline-flex;
+    align-items: center;
+
+    @include ip-touch-target;
 }
 
 .ironpad-brand:hover {
@@ -519,6 +554,14 @@ a:focus-visible {
     flex-direction: column;
     align-items: center;
     gap: 2px;
+    color: var(--ip-text-secondary);
+    text-decoration: none;
+
+    @include ip-touch-target;
+
+    &:hover .ironpad-auth-action {
+        color: var(--ip-accent);
+    }
 }
 
 .ironpad-auth-avatar {
@@ -528,6 +571,7 @@ a:focus-visible {
     display: block;
 }
 
+// The label inside the link above, not a link itself.
 .ironpad-auth-action {
     color: var(--ip-text-secondary);
     text-decoration: none;
@@ -536,10 +580,6 @@ a:focus-visible {
     line-height: 1;
     letter-spacing: 0.02em;
     white-space: nowrap;
-
-    &:hover {
-        color: var(--ip-accent);
-    }
 }
 
 // Signed-out control: the empty-portrait convention — an anonymous
@@ -551,6 +591,11 @@ a:focus-visible {
     gap: 2px;
     color: var(--ip-text-secondary);
     text-decoration: none;
+
+    // Only rendered when GitHub OAuth is configured, which is why this one hid
+    // from the first sweep: the anonymous-only instance the earlier runs used
+    // does not draw a sign-in surface at all.
+    @include ip-touch-target;
 
     &:hover {
         color: var(--ip-accent);
@@ -1353,6 +1398,10 @@ a:focus-visible {
     line-height: 1;
     border-radius: var(--ip-radius-sm);
     transition: color 0.2s, background 0.2s;
+
+    // 22x20, and it is how a reader opens a collapsed cell on a public
+    // notebook: the smallest control on the page guarding the most content.
+    @include ip-touch-target;
 }
 
 .ironpad-cell-collapse-btn:hover {
@@ -1584,6 +1633,8 @@ a:focus-visible {
     font-size: 0.85rem;
     padding: 0;
     transition: color 0.15s, background 0.15s, border-color 0.15s;
+
+    @include ip-touch-target;
 }
 
 .ironpad-side-btn:hover {
@@ -1963,9 +2014,20 @@ a:focus-visible {
     overflow-y: auto;
 }
 
-// Plot interactivity shared by the editor and view-only output SVGs:
-// hover effects on data marks plus the tooltip overlay circles.
-@mixin plot-svg-hover {
+// Plot presentation shared by the editor and view-only output SVGs: fit the
+// container, plus hover effects on data marks and the tooltip overlay circles.
+//
+// The SIZING lives in the mixin rather than at the call sites because it did
+// not, and that cost us: the view-only rule copied the hover half and dropped
+// `max-width`/`height`, so `Plot` output was clipped on /public, /shared,
+// /mutable and every /embed route while the editor scaled it correctly. The
+// SVG ships `width="800"` with a matching `viewBox`, so scaling is lossless
+// and the only thing standing between a phone and a readable chart was these
+// two declarations.
+@mixin plot-svg {
+    max-width: 100%;
+    height: auto;
+
     circle,
     rect:not(:first-child) {
         transition: opacity 0.15s ease, filter 0.15s ease;
@@ -1992,10 +2054,7 @@ a:focus-visible {
     // <svg>, and a bare descendant selector would size and hover-style the
     // copy button's icon as if it were the plot.
     svg:not(.ironpad-icon) {
-        max-width: 100%;
-        height: auto;
-
-        @include plot-svg-hover;
+        @include plot-svg;
     }
 }
 
@@ -2651,6 +2710,11 @@ code[class*="language-"] {
     cursor: pointer;
     font-size: 0.85rem;
 
+    // Hand-rolled rather than built from `ip-button-shape`, so it needs its own
+    // touch bump. It is also the single most important control on a shared
+    // notebook, and it measured 25px tall on a phone.
+    @include ip-touch-target;
+
     &:hover {
         background: var(--ip-accent-hover);
     }
@@ -2928,7 +2992,7 @@ code[class*="language-"] {
 }
 
 .view-only-output-svg svg:not(.ironpad-icon) {
-    @include plot-svg-hover;
+    @include plot-svg;
 }
 
 /* ── Copy-to-clipboard button ────────────────────────────────────────────── */
@@ -2951,6 +3015,11 @@ code[class*="language-"] {
     line-height: 1;
     opacity: 0.4;
     transition: opacity 0.15s ease, background 0.15s ease;
+
+    // 30x20 under a mouse, which is fine when you can see the cursor land on
+    // it. On touch it sits in the corner of an output panel that is itself
+    // scrollable, so it gets the full target.
+    @include ip-touch-target;
 
     &:hover {
         opacity: 1;
@@ -3218,8 +3287,14 @@ code[class*="language-"] {
     color: var(--ip-text-secondary);
     white-space: nowrap;
     font-weight: 500;
+    // 200px is the PREFERRED width, not a floor: it lines every slider in a
+    // panel up on one left edge when there is room. `min-width: 200px` made it
+    // a floor, which put the row's minimum at 395px and clipped both ends of a
+    // widget at once on a phone — the label lost its first word off the left
+    // while the value readout sat past the right border. Shrinking below the
+    // basis is what the ellipsis below was always for.
     width: 200px;
-    min-width: 200px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -3230,6 +3305,9 @@ code[class*="language-"] {
     color: var(--ip-accent);
     min-width: 3ch;
     text-align: right;
+    // The readout is the whole point of moving the slider; it gives up width
+    // last, after the label has ellipsized and the track has shrunk.
+    flex-shrink: 0;
 }
 
 .ironpad-widget-checkbox-label {
@@ -3322,6 +3400,10 @@ code[class*="language-"] {
     // matched and left the handle permanently invisible).
     transition: color var(--ip-transition-fast);
     user-select: none;
+
+    // SortableJS handles touch, so this is a working affordance on a phone and
+    // worth the full target rather than a 24px one.
+    @include ip-touch-target;
 
     &:active {
         cursor: grabbing;
@@ -3777,6 +3859,9 @@ code[class*="language-"] {
     font-size: 0.85rem;
     text-align: left;
 
+    // Full-bleed already, so only the 31px height was short of target.
+    @include ip-touch-target;
+
     &:hover {
         color: var(--ip-text-primary);
     }
@@ -3784,4 +3869,51 @@ code[class*="language-"] {
 
 .view-only-shared-body {
     border-top: 1px solid var(--ip-border);
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────── */
+
+// Last in the file on purpose. These rules carry no extra specificity over the
+// ones they undo (a media query adds none), so source order is the only thing
+// deciding the winner, and an earlier placement would have lost to every
+// declaration below it while looking exactly this correct.
+//
+// Scoped to the CHROME, with no blanket `*` reset. Cell output is the product:
+// a Simulation panel that stopped simulating, or an Animation that stopped
+// animating, is a broken notebook rather than a courtesy, and a reader who set
+// this preference still came here to watch a double pendulum. The usual
+// `*, *::before, *::after { animation-duration: 0.01ms }` recipe reaches
+// straight into author-supplied LiveView markup and does precisely that, so
+// ironpad names its own five animations instead. Motion arriving from a cell is
+// the cell's business.
+//
+// The 150ms colour and border transitions elsewhere stay: this preference is
+// about vestibular motion, not about paint.
+@media (prefers-reduced-motion: reduce) {
+
+    // The infinite loops: one travelling gradient, four opacity pulses.
+    .ironpad-skeleton-item,
+    .ironpad-cell-status--queued,
+    .ironpad-cell-status--compiling,
+    .ironpad-cell-status--running,
+    .ironpad-stale-indicator--pending {
+        animation: none;
+    }
+
+    // The toast still fades in; it just stops sliding 8px while it does.
+    .ironpad-toast {
+        animation: none;
+        transition: opacity var(--ip-transition-normal);
+    }
+
+    // The two decorative displacements in the chrome: a card lifting 2px under
+    // the cursor and Run All pressing 1px down. The toggle-switch knob's
+    // `translateX(16px)` is deliberately absent, because that one encodes
+    // on-versus-off state and removing it would remove the answer, not the
+    // movement.
+    .ironpad-notebook-card-link:hover .ironpad-notebook-card,
+    .ironpad-run-all-button:active:not(:disabled),
+    .run-all-button:active:not(:disabled) {
+        transform: none;
+    }
 }

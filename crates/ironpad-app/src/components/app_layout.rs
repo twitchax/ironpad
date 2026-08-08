@@ -421,18 +421,24 @@ fn AuthStatus(ctx: LayoutContext) -> impl IntoView {
                             />
                         }.into_any()
                     };
+                    // The whole stack is the link, mirroring the signed-out
+                    // control above. It used to be a <span> wrapping a <a> on
+                    // the label alone, which made the portrait dead to the
+                    // pointer and left the only real target a 0.6rem line of
+                    // text — untappable on a phone, and unfixable by sizing,
+                    // since a 44px label inside a 48px header would have shoved
+                    // the portrait out of it.
                     view! {
-                        <span class="ironpad-auth" title=handle.clone()>
+                        <a
+                            class="ironpad-auth"
+                            href="/auth/logout"
+                            rel="external"
+                            title=handle.clone()
+                            aria-label=format!("Sign out of {handle}")
+                        >
                             {portrait}
-                            <a
-                                class="ironpad-auth-action"
-                                href="/auth/logout"
-                                rel="external"
-                                aria-label=format!("Sign out of {handle}")
-                            >
-                                "Sign out"
-                            </a>
-                        </span>
+                            <span class="ironpad-auth-action">"Sign out"</span>
+                        </a>
                     }.into_any()
                 },
             ))
