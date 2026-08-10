@@ -79,6 +79,18 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                     "(function(){var t=localStorage.getItem('ironpad-theme');if(t==='light'){document.documentElement.setAttribute('data-theme','light');}}());"
                 </script>
 
+                // Captures DOMContentLoaded for `hydrate_body_when_shell_ready`.
+                // It has to be recorded here, inline and early, because the
+                // event is not queryable after the fact: `readyState` turns
+                // "interactive" BEFORE deferred scripts run and stays that way
+                // after DOMContentLoaded fires, so it cannot tell "shell
+                // pending" from "shell ready". A promise settled by the event
+                // itself is unambiguous whenever hydration gets around to
+                // awaiting it.
+                <script>
+                    "window.__ironpadShellReady=new Promise(function(r){document.addEventListener('DOMContentLoaded',function(){r();},{once:true});});"
+                </script>
+
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
@@ -90,38 +102,97 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <HydrationScripts options/>
                 <MetaTags/>
 
-                // KaTeX math rendering — loaded before Monaco (no defer) to avoid AMD `define` conflict.
-                <script src=versioned("/katex/katex.min.js")></script>
-                <script src=versioned("/katex/render-math.js")></script>
+                // Every script below is `defer`red. Without it the parser stops
+                // at each one, and measured against production that cost 223ms
+                // of a 378ms first contentful paint — 164KB of libraries the
+                // home page never touches, fetched before anything is drawn.
+                //
+                // `defer` is the only correct attribute here: deferred classic
+                // scripts still execute in DOCUMENT ORDER, which the two
+                // orderings below depend on. `async` would not, and would let
+                // Monaco's AMD loader win the race described next.
+                //
+                // The pairing invariant is in `hydrate_body_when_shell_ready`:
+                // deferred scripts are guaranteed to run before
+                // DOMContentLoaded, so hydration waits for that event rather
+                // than reaching for a global whose script has not run.
+
+                // KaTeX math rendering — before Monaco, whose AMD `define`
+                // would otherwise capture this UMD bundle as a module and leave
+                // `window.IronpadKaTeX` undefined.
+                <script defer src=versioned("/katex/katex.min.js")></script>
+                <script defer src=versioned("/katex/render-math.js")></script>
 
                 // Prism syntax highlighting for rendered markdown code blocks —
                 // also before Monaco's loader, for the same AMD `define` reason.
-                <script src=versioned("/prism/prism.js")></script>
-                <script src=versioned("/prism/highlight-code.js")></script>
+                <script defer src=versioned("/prism/prism.js")></script>
+                <script defer src=versioned("/prism/highlight-code.js")></script>
 
                 // Monaco editor: AMD loader + worker configuration + languages + Rust bridge.
-                <script src=versioned("/monaco/vs/loader.js")></script>
-                <script src=versioned("/monaco/init.js")></script>
-                <script src=versioned("/monaco/languages.js")></script>
-                <script src=versioned("/monaco/bridge.js")></script>
+                <script defer src=versioned("/monaco/vs/loader.js")></script>
+                <script defer src=versioned("/monaco/init.js")></script>
+                <script defer src=versioned("/monaco/languages.js")></script>
+                <script defer src=versioned("/monaco/bridge.js")></script>
 
                 // WASM cell executor (Web Worker bridge — delegates to executor-worker.js).
-                <script src=versioned("/executor-bridge.js")></script>
+                <script defer src=versioned("/executor-bridge.js")></script>
 
                 // IndexedDB notebook storage.
-                <script src=versioned("/storage.js")></script>
+                <script defer src=versioned("/storage.js")></script>
 
                 // Embed height reporter (no-op unless framed with ?embed_id=).
-                <script src=versioned("/embed-frame.js")></script>
+                <script defer src=versioned("/embed-frame.js")></script>
 
                 // Drag-and-drop sortable library.
-                <script src=versioned("/sortable.min.js")></script>
+                <script defer src=versioned("/sortable.min.js")></script>
             </head>
             <body>
                 <App/>
             </body>
         </html>
     }
+}
+
+/// Hydrates [`App`], but not before the shell's deferred scripts have run.
+///
+/// Deferring those scripts (see [`shell`]) is what keeps 164KB of libraries out
+/// of the critical path, and it makes their execution concurrent with this
+/// module rather than strictly before it. The orders can genuinely invert:
+/// `/pkg/` is served `immutable` while the shell scripts are served
+/// `no-cache`, so on a repeat visit the wasm is ready from cache with no
+/// network at all while `storage.js` is still revalidating.
+///
+/// Two things then combine badly. `leptos::mount::hydrate_body` mounts
+/// synchronously with no readiness handling of its own, and wasm-bindgen's
+/// generated glue resolves a `js_namespace` at CALL time (`IronpadStorage.foo()`
+/// as a bare global reference). So hydrating early does not fail at load, it
+/// fails later and less legibly, the first time an effect reaches for a global
+/// whose script has not run.
+///
+/// Deferred scripts are guaranteed to execute before `DOMContentLoaded`, which
+/// makes that event exactly the signal needed. If the shell's capturing promise
+/// is missing, this mounts immediately rather than never.
+#[cfg(feature = "hydrate")]
+pub fn hydrate_body_when_shell_ready() {
+    use wasm_bindgen::JsCast;
+
+    let ready = web_sys::window()
+        .and_then(|w| {
+            js_sys::Reflect::get(&w, &wasm_bindgen::JsValue::from_str("__ironpadShellReady")).ok()
+        })
+        .and_then(|v| v.dyn_into::<js_sys::Promise>().ok());
+
+    let Some(ready) = ready else {
+        leptos::mount::hydrate_body(App);
+        return;
+    };
+
+    wasm_bindgen_futures::spawn_local(async move {
+        // A rejected promise is not a reason to leave the page dead; the
+        // shell only ever resolves this one.
+        let _ = wasm_bindgen_futures::JsFuture::from(ready).await;
+        leptos::mount::hydrate_body(App);
+    });
 }
 
 /// Root application component.

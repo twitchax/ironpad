@@ -7,5 +7,7 @@
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {
     console_error_panic_hook::set_once();
-    leptos::mount::hydrate_body(ironpad_app::App);
+    // Not `hydrate_body` directly: the shell's scripts are deferred, so mounting
+    // has to wait for them. See `ironpad_app::hydrate_body_when_shell_ready`.
+    ironpad_app::hydrate_body_when_shell_ready();
 }
