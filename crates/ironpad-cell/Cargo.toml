@@ -1,6 +1,6 @@
 [package]
 name = "ironpad-cell"
-version = "0.19.4"
+version = "0.19.5"
 edition = "2021"
 
 # NOTE: ironpad-cell is injected as a path dependency into standalone
