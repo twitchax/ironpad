@@ -1,7 +1,7 @@
 ---
 id: PRD-0063
 title: "Single-admin operations panel: instance state, user list, and cache tiers"
-status: draft
+status: active
 owner: "Aaron Roney"
 created: 2026-08-11
 updated: 2026-08-11
@@ -62,17 +62,17 @@ tasks:
 - id: T-001
   title: "Config + the one gate"
   priority: 1
-  status: todo
+  status: done
   notes: "AppConfig.admin_login: Option<String> (IRONPAD_ADMIN_LOGIN). admin_user(db, config) -> Option<AuthUser> in auth.rs: requires current_user AND a case-insensitive login match (GitHub logins are case-insensitive). Startup refuses when test_auth && admin_login.is_some(). Unit tests for the predicate: unset, match, mismatch, anonymous, case difference."
 - id: T-002
   title: "Pin the admin github_id on first match"
   priority: 1
-  status: todo
+  status: done
   notes: "Store the resolved github_id in the `meta` table on first successful match; thereafter require BOTH login and pinned id. A renamed-away login stops matching (fail closed) rather than transferring admin to whoever claims the handle. Boot log records the pinned id so a change is visible. Test: same login + different github_id is denied once pinned."
 - id: T-003
   title: "Move cache tier logic out of the server binary"
   priority: 2
-  status: todo
+  status: done
   notes: "cache_valve.rs is pub(crate) in the bin, but server fns live in ironpad-app. Move tier names, fs_usage, and clear_cache_tier into a shared ssr-gated module so the valve and the panel cannot disagree about what a tier is. Keep the existing valve tests passing unchanged."
 - id: T-004
   title: "/admin route + read-only overview"
@@ -180,6 +180,16 @@ manual panel read the same tier definitions.
 
 # History
 
+- 2026-08-11: T-001, T-002, T-003 done. The `meta` table had to be created
+  as part of T-002: this PRD referenced it because a reverted WAL change had
+  introduced it, so the PRD was written against code that no longer existed.
+  T-003 landed as a `CacheTier` ENUM rather than the tier names the task
+  described. A server fn taking a `&str` and joining it onto the cache path is
+  a directory traversal, and an enum makes that unrepresentable; a test asserts
+  no tier path escapes the cache root. `Blobs` carries `valve_may_clear()
+  == false` plus a `debug_assert` in the valve, so unattended boot-time
+  clearing can never take compiled output while a deliberate admin action
+  still can. All six pre-existing valve tests pass unchanged.
 - 2026-08-11: Drafted. Scope set to instance state, read-only users plus
   session revoke, and cache tier operations; content moderation, role editing,
   and user deletion excluded. Auth model chosen as a GitHub login allowlist

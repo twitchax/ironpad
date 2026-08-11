@@ -115,6 +115,9 @@ impl Db {
         self.inner
             .query(
                 "
+                DEFINE TABLE IF NOT EXISTS meta SCHEMAFULL;
+                DEFINE FIELD IF NOT EXISTS value ON meta TYPE string;
+
                 DEFINE TABLE IF NOT EXISTS user SCHEMAFULL;
                 DEFINE FIELD IF NOT EXISTS login ON user TYPE string;
                 DEFINE FIELD IF NOT EXISTS avatar_url ON user TYPE string;
@@ -188,6 +191,41 @@ impl Db {
             .check()
             .context("user upsert returned an error")?;
         Ok(())
+    }
+
+    /// The `github_id` pinned as this instance's administrator, if one has
+    /// been recorded (PRD-0063 T-002).
+    pub async fn admin_pin(&self) -> Result<Option<String>> {
+        let mut res = self
+            .inner
+            .query("SELECT VALUE value FROM meta:admin_github_id")
+            .await
+            .context("admin pin read failed")?;
+        res.take(0).context("admin pin read returned an error")
+    }
+
+    /// Record `github_id` as the pinned administrator, if nothing is pinned.
+    ///
+    /// Trust on first use: the configured value is a readable GitHub login,
+    /// but a login is not a stable identity. GitHub frees a renamed handle for
+    /// anyone to claim, so matching the login alone would transfer admin to
+    /// whoever claimed it. Pinning the numeric id on the first successful
+    /// match means a rename fails closed instead.
+    ///
+    /// Returns the pin in force after the call, which is the existing one when
+    /// there already was one.
+    pub async fn pin_admin(&self, github_id: &str) -> Result<String> {
+        if let Some(existing) = self.admin_pin().await? {
+            return Ok(existing);
+        }
+        self.inner
+            .query("UPSERT meta:admin_github_id SET value = $id")
+            .bind(("id", github_id.to_string()))
+            .await
+            .context("admin pin write failed")?
+            .check()
+            .context("admin pin write returned an error")?;
+        Ok(github_id.to_string())
     }
 
     // ── Sessions ────────────────────────────────────────────────────────
@@ -841,6 +879,25 @@ mod tests {
         let (_dir, db) = test_db().await;
         db.define_schema().await.unwrap();
         db.define_schema().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn admin_pin_is_trust_on_first_use() {
+        let (_dir, db) = test_db().await;
+        assert_eq!(db.admin_pin().await.unwrap(), None, "nothing pinned yet");
+
+        assert_eq!(db.pin_admin("42").await.unwrap(), "42");
+        assert_eq!(db.admin_pin().await.unwrap().as_deref(), Some("42"));
+
+        // A second identity does NOT take over. This is the whole point: a
+        // GitHub login can be renamed and the freed handle claimed by someone
+        // else, who would then match a login allowlist under a different id.
+        assert_eq!(
+            db.pin_admin("99").await.unwrap(),
+            "42",
+            "an existing pin must win"
+        );
+        assert_eq!(db.admin_pin().await.unwrap().as_deref(), Some("42"));
     }
 
     #[tokio::test]

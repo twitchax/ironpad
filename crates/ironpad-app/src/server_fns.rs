@@ -1812,6 +1812,7 @@ mod tests {
             ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
+            admin_login: None,
         };
         let request = CompileRequest {
             notebook_id: "nb".to_string(),
@@ -1912,6 +1913,7 @@ mod tests {
             ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
+            admin_login: None,
         };
         let request = CompileRequest {
             notebook_id: "nb".to_string(),
@@ -1977,6 +1979,7 @@ mod tests {
             ironpad_cell_path: dir.path().join("nonexistent-ironpad-cell"),
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
+            admin_login: None,
         };
         let admission = crate::compiler::admission::BuildAdmission::new(
             1,
@@ -2017,6 +2020,7 @@ mod tests {
             ironpad_cell_path: dir.path().join("nonexistent-ironpad-cell"),
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
+            admin_login: None,
         };
         let admission = crate::compiler::admission::BuildAdmission::new(
             1,

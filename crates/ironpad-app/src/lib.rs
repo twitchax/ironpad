@@ -7,6 +7,8 @@
 #[cfg(feature = "ssr")]
 pub mod auth;
 #[cfg(feature = "ssr")]
+pub mod cache_tiers;
+#[cfg(feature = "ssr")]
 pub mod compiler;
 #[cfg(feature = "ssr")]
 pub mod db;

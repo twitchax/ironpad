@@ -618,6 +618,7 @@ mod tests {
                 ironpad_cell_path: PathBuf::from("/tmp"),
                 compilation_proxy: None,
                 public_url: "http://localhost".to_string(),
+                admin_login: None,
             },
             ws: WsState::default(),
         }

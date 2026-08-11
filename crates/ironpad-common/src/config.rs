@@ -26,6 +26,15 @@ pub struct AppConfig {
     /// the same requirement. Nothing else in the app needs it, which is why
     /// this is the only piece of deployment identity the server knows about.
     pub public_url: String,
+    /// GitHub login of this instance's single administrator (PRD-0063), from
+    /// `IRONPAD_ADMIN_LOGIN`.
+    ///
+    /// Names WHO is privileged, never HOW to authenticate: the admin surface
+    /// still requires an ordinary signed-in session, and this is only compared
+    /// against the identity that session already proved. `None` means the
+    /// admin surface does not exist on this instance, which is the default and
+    /// what every contributor and CI run gets.
+    pub admin_login: Option<String>,
 }
 
 impl AppConfig {
@@ -64,6 +73,7 @@ mod tests {
             ironpad_cell_path: PathBuf::from("/cell"),
             compilation_proxy: None,
             public_url: public_url.to_string(),
+            admin_login: None,
         }
     }
 

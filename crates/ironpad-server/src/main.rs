@@ -101,8 +101,18 @@ async fn main() {
             None
         }
     };
+    // Refuses combinations that are individually valid but unsafe together.
+    // Fail at startup rather than serve a compromised instance.
+    if let Err(e) = args.validate() {
+        tracing::error!("{e}");
+        std::process::exit(1);
+    }
     let test_auth = args.test_auth;
     let config: AppConfig = args.into();
+
+    if let Some(login) = config.admin_login.as_deref() {
+        tracing::info!(admin_login = %login, "admin surface enabled");
+    }
 
     tracing::info!(data_dir = %config.data_dir.display(), "data directory");
     tracing::info!(cache_dir = %config.cache_dir.display(), "cache directory");

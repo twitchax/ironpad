@@ -1,7 +1,11 @@
 //! Boot-time cache pressure valve: probe the cache filesystem and clear
 //! cache tiers coarsest-first when usage crosses the high-water mark.
 //!
-//! Split out of `main.rs` (PRD-0055 T-003); behavior unchanged.
+//! Split out of `main.rs` (PRD-0055 T-003); behavior unchanged. The tier
+//! definitions moved to `ironpad_app::cache_tiers` (PRD-0063 T-003) so the
+//! admin panel and this valve share one answer to "what is a tier".
+
+use ironpad_app::cache_tiers::CacheTier;
 
 /// Maximum percentage of the cache filesystem that may be in use before the
 /// startup pressure valve clears the rebuildable caches. The compile cache
@@ -99,7 +103,7 @@ pub(crate) fn cache_pressure_valve(
         available_bytes = usage.available_bytes,
         "cache volume under disk pressure — clearing rebuildable caches"
     );
-    clear_cache_tier(cache_dir, &["targets", "workspaces"]);
+    clear_cache_tiers(cache_dir, &[CacheTier::Targets, CacheTier::Workspaces]);
 
     // Re-measure: only escalate to the registry cache if still under pressure.
     match usage_probe() {
@@ -108,26 +112,27 @@ pub(crate) fn cache_pressure_valve(
                 used_pct = still.used_pct,
                 "pressure persists — clearing the cargo registry cache too"
             );
-            clear_cache_tier(cache_dir, &["cargo-home"]);
+            clear_cache_tiers(cache_dir, &[CacheTier::CargoHome]);
         }
         Some(still) => tracing::info!(used_pct = still.used_pct, "pressure relieved"),
         None => {}
     }
 }
 
-/// Remove the given subdirectories of `cache_dir`, ignoring ones that don't
-/// exist and logging (but not failing on) other errors — the valve must never
-/// prevent startup.
-fn clear_cache_tier(cache_dir: &std::path::Path, subdirs: &[&str]) {
-    for sub in subdirs {
-        let dir = cache_dir.join(sub);
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => tracing::info!(dir = %dir.display(), "cleared cache tier"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(dir = %dir.display(), error = %e, "failed to clear cache tier");
-            }
-        }
+/// Clear each tier, ignoring absent ones and never failing: the valve must
+/// not be able to prevent startup.
+///
+/// The tier definitions live in `ironpad_app::cache_tiers` so this and the
+/// admin panel cannot disagree about what a tier is. Debug-asserts that the
+/// valve only ever reaches for rebuildable tiers, which is what keeps
+/// unattended boot-time clearing away from compiled blobs.
+fn clear_cache_tiers(cache_dir: &std::path::Path, tiers: &[CacheTier]) {
+    for &tier in tiers {
+        debug_assert!(
+            tier.valve_may_clear(),
+            "the unattended valve must not clear {tier:?}"
+        );
+        ironpad_app::cache_tiers::clear_tier(cache_dir, tier);
     }
 }
 
