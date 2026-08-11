@@ -45,6 +45,9 @@ pub(crate) mod sanitize;
 pub mod server_fns;
 pub mod storage;
 
+#[cfg(feature = "hydrate")]
+use wasm_bindgen::JsCast as _;
+
 use components::app_layout::AppLayout;
 use components::toaster::{ToastHost, Toaster};
 use leptos::prelude::*;
@@ -74,25 +77,41 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
         <!DOCTYPE html>
         <html lang="en">
             <head>
+                // `charset` must land inside the first 1024 bytes of the
+                // document or the browser falls back to guessing the encoding,
+                // so it leads. The inlined loader below is ~5KB and would push
+                // it out of range from any later position.
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width, initial-scale=1"/>
+
                 // Inline theme init to prevent FOUC.
                 <script>
                     "(function(){var t=localStorage.getItem('ironpad-theme');if(t==='light'){document.documentElement.setAttribute('data-theme','light');}}());"
                 </script>
 
-                // Captures DOMContentLoaded for `hydrate_body_when_shell_ready`.
-                // It has to be recorded here, inline and early, because the
-                // event is not queryable after the fact: `readyState` turns
-                // "interactive" BEFORE deferred scripts run and stays that way
-                // after DOMContentLoaded fires, so it cannot tell "shell
-                // pending" from "shell ready". A promise settled by the event
-                // itself is unambiguous whenever hydration gets around to
-                // awaiting it.
+                // Route-aware script loading (`public/script-loader.js`). The
+                // shell used to load 164KB of libraries on every route; the
+                // home page is a list of notebook cards and renders no
+                // markdown, so it skips KaTeX and Prism and drops to 58KB.
+                // Monaco, sortable and the executor still load everywhere
+                // because Rust reaches for their globals synchronously from
+                // mount effects; see the loader's ALWAYS.
+                //
+                // Inlined rather than fetched, for two reasons: it runs during
+                // head parse and can start the route's scripts before the
+                // parser continues, and an external file would not execute
+                // until after DOMContentLoaded, by which point hydration has
+                // already read the readiness promise it defines.
+                //
+                // The version is threaded through a global because the loader
+                // is plain JS and cannot read `CARGO_PKG_VERSION`. It appends
+                // the same `?v=` cache-buster `versioned` does, for the reason
+                // given there.
                 <script>
-                    "window.__ironpadShellReady=new Promise(function(r){document.addEventListener('DOMContentLoaded',function(){r();},{once:true});});"
+                    {format!("window.__ironpadVersion={:?};", env!("CARGO_PKG_VERSION"))}
                 </script>
+                <script>{include_str!("../../../public/script-loader.js")}</script>
 
-                <meta charset="utf-8"/>
-                <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
                 <link rel="stylesheet" href=versioned("/katex/katex.min.css")/>
                 // App stylesheet: content-hashed filename (cargo-leptos hash-files),
@@ -101,50 +120,6 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <AutoReload options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>
-
-                // Every script below is `defer`red. Without it the parser stops
-                // at each one, and measured against production that cost 223ms
-                // of a 378ms first contentful paint — 164KB of libraries the
-                // home page never touches, fetched before anything is drawn.
-                //
-                // `defer` is the only correct attribute here: deferred classic
-                // scripts still execute in DOCUMENT ORDER, which the two
-                // orderings below depend on. `async` would not, and would let
-                // Monaco's AMD loader win the race described next.
-                //
-                // The pairing invariant is in `hydrate_body_when_shell_ready`:
-                // deferred scripts are guaranteed to run before
-                // DOMContentLoaded, so hydration waits for that event rather
-                // than reaching for a global whose script has not run.
-
-                // KaTeX math rendering — before Monaco, whose AMD `define`
-                // would otherwise capture this UMD bundle as a module and leave
-                // `window.IronpadKaTeX` undefined.
-                <script defer src=versioned("/katex/katex.min.js")></script>
-                <script defer src=versioned("/katex/render-math.js")></script>
-
-                // Prism syntax highlighting for rendered markdown code blocks —
-                // also before Monaco's loader, for the same AMD `define` reason.
-                <script defer src=versioned("/prism/prism.js")></script>
-                <script defer src=versioned("/prism/highlight-code.js")></script>
-
-                // Monaco editor: AMD loader + worker configuration + languages + Rust bridge.
-                <script defer src=versioned("/monaco/vs/loader.js")></script>
-                <script defer src=versioned("/monaco/init.js")></script>
-                <script defer src=versioned("/monaco/languages.js")></script>
-                <script defer src=versioned("/monaco/bridge.js")></script>
-
-                // WASM cell executor (Web Worker bridge — delegates to executor-worker.js).
-                <script defer src=versioned("/executor-bridge.js")></script>
-
-                // IndexedDB notebook storage.
-                <script defer src=versioned("/storage.js")></script>
-
-                // Embed height reporter (no-op unless framed with ?embed_id=).
-                <script defer src=versioned("/embed-frame.js")></script>
-
-                // Drag-and-drop sortable library.
-                <script defer src=versioned("/sortable.min.js")></script>
             </head>
             <body>
                 <App/>
@@ -153,14 +128,13 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
     }
 }
 
-/// Hydrates [`App`], but not before the shell's deferred scripts have run.
+/// Hydrates [`App`], but not before the current route's scripts have run.
 ///
-/// Deferring those scripts (see [`shell`]) is what keeps 164KB of libraries out
-/// of the critical path, and it makes their execution concurrent with this
-/// module rather than strictly before it. The orders can genuinely invert:
-/// `/pkg/` is served `immutable` while the shell scripts are served
-/// `no-cache`, so on a repeat visit the wasm is ready from cache with no
-/// network at all while `storage.js` is still revalidating.
+/// The shell loads scripts per route (see [`shell`]), which makes their
+/// execution concurrent with this module rather than strictly before it. The
+/// orders can genuinely invert: `/pkg/` is served `immutable` while the shell
+/// scripts are served `no-cache`, so on a repeat visit the wasm is ready from
+/// cache with no network at all while `storage.js` is still being fetched.
 ///
 /// Two things then combine badly. `leptos::mount::hydrate_body` mounts
 /// synchronously with no readiness handling of its own, and wasm-bindgen's
@@ -169,9 +143,11 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 /// fails later and less legibly, the first time an effect reaches for a global
 /// whose script has not run.
 ///
-/// Deferred scripts are guaranteed to execute before `DOMContentLoaded`, which
-/// makes that event exactly the signal needed. If the shell's capturing promise
-/// is missing, this mounts immediately rather than never.
+/// The loader publishes `__ironpadShellReady` for exactly this. It was
+/// `DOMContentLoaded` when every script sat in the document as a deferred tag;
+/// scripts are inserted now rather than parsed, so that event no longer implies
+/// anything about them and the loader's own promise is the signal. If it is
+/// missing, this mounts immediately rather than never.
 #[cfg(feature = "hydrate")]
 pub fn hydrate_body_when_shell_ready() {
     use wasm_bindgen::JsCast;
@@ -195,6 +171,44 @@ pub fn hydrate_body_when_shell_ready() {
     });
 }
 
+/// Loads the scripts a route needs after a client-side navigation.
+///
+/// The shell only knows the FIRST path, and a client-side navigation never
+/// re-runs it, so a route reached without a page load has to pull its own
+/// scripts. Only KaTeX and Prism are route-dependent, and both sweep the
+/// existing DOM when they run, so arriving after the markup is normal
+/// operation rather than a race.
+///
+/// Must render INSIDE `<Router>`: `use_location` panics without that context,
+/// and it does so at hydration, which takes the whole app down rather than
+/// just this effect.
+#[component]
+fn RouteScripts() -> impl IntoView {
+    #[cfg(feature = "hydrate")]
+    {
+        let location = leptos_router::hooks::use_location();
+        Effect::new(move |_| {
+            let path = location.pathname.get();
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let Ok(loader) =
+                js_sys::Reflect::get(&window, &wasm_bindgen::JsValue::from_str("IronpadLoad"))
+            else {
+                return;
+            };
+            let Ok(ensure) =
+                js_sys::Reflect::get(&loader, &wasm_bindgen::JsValue::from_str("ensureForPath"))
+            else {
+                return;
+            };
+            if let Some(f) = ensure.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&loader, &wasm_bindgen::JsValue::from_str(&path));
+            }
+        });
+    }
+}
+
 /// Root application component.
 ///
 /// Sets up leptos_meta context, provides the app-level [`Toaster`], and
@@ -211,6 +225,7 @@ pub fn App() -> impl IntoView {
         <Title text="ironpad"/>
 
         <Router>
+            <RouteScripts/>
             <AppLayout>
                 <Routes fallback=|| "Page not found.".into_view()>
                     <Route path=StaticSegment("") view=HomePage/>
