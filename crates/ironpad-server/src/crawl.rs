@@ -23,7 +23,14 @@ use crate::state::AppState;
 /// `/embed/*` renders the same notebooks as `/public` and `/shared` without
 /// the surrounding chrome. Indexing both would be duplicate content, and the
 /// embed variant is the one no human should land on from a search result.
-const DISALLOWED: &[&str] = &["/embed/"];
+/// Paths kept out of search results by `robots.txt`.
+///
+/// `/embed/` is duplicate content. `/admin` is disallowed here rather than
+/// left to its `noindex` tag, which is the opposite of the call made for
+/// `/shared` and `/mutable`: those need unfurlers to fetch them to build a
+/// link preview, and several unfurlers honour `robots.txt`, so a `Disallow`
+/// would suppress the preview entirely. Nothing ever previews `/admin`.
+const DISALLOWED: &[&str] = &["/embed/", "/admin"];
 
 /// Builds `robots.txt` for an origin.
 #[must_use]
@@ -137,13 +144,27 @@ mod tests {
     }
 
     #[test]
-    fn robots_hides_only_the_embed_surface() {
+    fn robots_hides_the_embed_and_admin_surfaces_only() {
         let txt = robots_txt(ORIGIN);
-        assert!(txt.contains("Disallow: /embed/"));
+        assert!(txt.contains("Disallow: /embed/"), "{txt}");
+        assert!(txt.contains("Disallow: /admin"), "{txt}");
+
         // Blocking these here would stop Twitterbot fetching the page at all,
-        // and with it the preview card the noindex approach preserves.
+        // and with it the preview card the noindex approach preserves. /admin
+        // is the opposite case and is disallowed above: nothing ever previews
+        // it.
         assert!(!txt.contains("Disallow: /shared"));
         assert!(!txt.contains("Disallow: /mutable"));
+
+        // Exhaustive, so adding a path to DISALLOWED without deciding whether
+        // it should be there fails here. The previous version of this test
+        // asserted one path was present and two were absent, so it kept
+        // passing when /admin was added and its name stopped being true.
+        let disallowed: Vec<&str> = txt
+            .lines()
+            .filter_map(|l| l.strip_prefix("Disallow: "))
+            .collect();
+        assert_eq!(disallowed, vec!["/embed/", "/admin"], "{txt}");
     }
 
     #[test]

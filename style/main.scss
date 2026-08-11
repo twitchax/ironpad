@@ -3917,3 +3917,83 @@ code[class*="language-"] {
         transform: none;
     }
 }
+
+// ── Admin panel (PRD-0063) ──────────────────────────────────────────────────
+//
+// Deliberately plain. This is an operator surface seen by one person, so it
+// borrows the existing tokens and adds no new visual language.
+
+.ironpad-admin {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: 1.5rem 1rem;
+
+    h1,
+    h2 {
+        color: var(--ip-text-primary);
+    }
+
+    h2 {
+        margin-top: 2rem;
+    }
+}
+
+.ironpad-admin-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.75rem;
+    margin: 0;
+
+    > div {
+        background: var(--ip-bg-surface);
+        border: 1px solid var(--ip-border);
+        border-radius: var(--ip-radius-md);
+        padding: 0.75rem 1rem;
+    }
+
+    dt {
+        color: var(--ip-text-secondary);
+        font-size: 0.8rem;
+    }
+
+    dd {
+        margin: 0.25rem 0 0;
+        color: var(--ip-text-primary);
+        font-size: 1.35rem;
+        // Tabular figures so a column of sizes lines up as it changes.
+        font-variant-numeric: tabular-nums;
+    }
+}
+
+.ironpad-admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.75rem;
+    color: var(--ip-text-primary);
+
+    th,
+    td {
+        text-align: left;
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--ip-border);
+    }
+
+    th {
+        color: var(--ip-text-secondary);
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+
+    td:nth-child(2) {
+        font-variant-numeric: tabular-nums;
+    }
+}
+
+.ironpad-admin-loading {
+    padding: 1.5rem 1rem;
+    color: var(--ip-text-secondary);
+}
+
+.ironpad-admin-error {
+    color: var(--ip-error);
+}

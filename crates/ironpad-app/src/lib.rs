@@ -60,7 +60,7 @@ use leptos_router::{
     ParamSegment, SsrMode, StaticSegment,
 };
 use pages::{
-    EmbedMutablePage, EmbedPublicPage, EmbedSharedPage, HomePage, MutableNotebookPage,
+    AdminPage, EmbedMutablePage, EmbedPublicPage, EmbedSharedPage, HomePage, MutableNotebookPage,
     NotebookEditorPage, PublicNotebookPage, SharedNotebookPage,
 };
 
@@ -255,6 +255,19 @@ pub fn App() -> impl IntoView {
                     <Route path=(StaticSegment("shared"), ParamSegment("hash")) view=SharedNotebookPage ssr=SsrMode::Async/>
                     // Mutable shares (PRD-0049): server-backed, author-updatable.
                     <Route path=(StaticSegment("mutable"), ParamSegment("id")) view=MutableNotebookPage ssr=SsrMode::Async/>
+                    // Admin panel (PRD-0063). Rendered for everyone and
+                    // gated by its server fns, which is what keeps instance
+                    // state off the wire; a non-admin sees "Page not found."
+                    //
+                    // `SsrMode::Async` for the status code, not for metadata.
+                    // Under the default out-of-order streaming the response
+                    // status is committed when the shell flushes, which races
+                    // the gate: an anonymous visitor is denied instantly (no
+                    // cookie, no query) and got a 404, while a signed-in
+                    // non-admin needed a session lookup first and got a 200
+                    // with a not-found body. Awaiting the resource before the
+                    // first byte makes the status honest for both.
+                    <Route path=StaticSegment("admin") view=AdminPage ssr=SsrMode::Async/>
                     <Route path=(StaticSegment("embed"), StaticSegment("shared"), ParamSegment("hash")) view=EmbedSharedPage/>
                     <Route path=(StaticSegment("embed"), StaticSegment("public"), ParamSegment("filename")) view=EmbedPublicPage/>
                     <Route path=(StaticSegment("embed"), StaticSegment("mutable"), ParamSegment("id")) view=EmbedMutablePage/>

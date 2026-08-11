@@ -1729,20 +1729,24 @@ pub async fn list_mutable_shares() -> Result<Vec<ironpad_common::MutableShareSum
 /// Instance state for the operator.
 ///
 /// Gated by [`crate::auth::admin_user`], like every `admin_*` function here.
-/// The gate is asserted mechanically by
-/// `admin_fns_are_all_gated`, which scans this file rather than trusting a
-/// hand-maintained list.
+/// The gate is asserted mechanically by `admin_fns_are_all_gated`, which scans
+/// this file rather than trusting a hand-maintained list.
 ///
-/// Denial is a not-found, not a forbidden: a 403 confirms the panel exists.
+/// `Ok(None)` is denial and `Err` is a genuine failure, which are deliberately
+/// different things. Collapsing both into `Err` made a broken database look
+/// exactly like "you are not the admin" to the one person who could fix it,
+/// and that is how a wrong `count()` query hid behind the gate during
+/// development. Nothing leaks either way: denial carries no data, and an error
+/// is only reachable once the gate has already passed.
 #[server]
-pub async fn admin_overview() -> Result<ironpad_common::AdminOverview, ServerFnError> {
+pub async fn admin_overview() -> Result<Option<ironpad_common::AdminOverview>, ServerFnError> {
     use ironpad_common::{AdminOverview, AppConfig, CacheTierUsage};
 
     let db = expect_context::<crate::db::Db>();
     let config = expect_context::<AppConfig>();
-    let Some(_admin) = crate::auth::admin_user(&db, &config).await else {
-        return Err(admin_not_found());
-    };
+    if crate::auth::admin_user(&db, &config).await.is_none() {
+        return Ok(admin_denied());
+    }
 
     let (users, sessions, mutable_shares) = db
         .instance_counts()
@@ -1758,24 +1762,24 @@ pub async fn admin_overview() -> Result<ironpad_common::AdminOverview, ServerFnE
         })
         .collect();
 
-    Ok(AdminOverview {
+    Ok(Some(AdminOverview {
         users,
         sessions,
         mutable_shares,
         cache_tiers,
         database_bytes: dir_bytes(&config.data_dir.join("ironpad.db")),
-    })
+    }))
 }
 
-/// The error every admin function returns when the caller is not the admin.
+/// What every admin function returns when the caller is not the admin.
 ///
-/// Deliberately indistinguishable from a missing route. A distinct "forbidden"
-/// tells an unauthenticated prober that the panel is real and that they have
-/// found the right URL, which is the one piece of information the gate is
-/// meant to withhold.
+/// `None`, not an error. Deliberately indistinguishable from a missing route
+/// once rendered: a distinct "forbidden" tells an unauthenticated prober that
+/// the panel is real and that they have found the right URL, which is the one
+/// piece of information the gate exists to withhold.
 #[cfg(feature = "ssr")]
-fn admin_not_found() -> ServerFnError {
-    ServerFnError::new("not found")
+fn admin_denied<T>() -> Option<T> {
+    None
 }
 
 /// Total bytes under a directory tree, or 0 when it cannot be read.
@@ -1845,8 +1849,8 @@ mod tests {
                 "{name} is an admin server fn that never calls the gate"
             );
             assert!(
-                body.contains("admin_not_found()"),
-                "{name} must deny with the not-found shape, never a distinct forbidden"
+                body.contains("admin_denied()"),
+                "{name} must deny with the shared not-found shape, never a distinct forbidden"
             );
             checked.push(name);
         }

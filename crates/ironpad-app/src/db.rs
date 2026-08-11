@@ -234,18 +234,26 @@ impl Db {
     /// the panel wants a number from each, so a join would only make the
     /// failure modes harder to read.
     pub async fn instance_counts(&self) -> Result<(u64, u64, u64)> {
+        /// `GROUP ALL` yields one row shaped `{ count: N }`, not a bare
+        /// number: `SELECT VALUE count()` deserialises as an object and fails
+        /// with "Expected number, got object".
+        #[derive(SurrealValue)]
+        struct CountRow {
+            count: u64,
+        }
+
         async fn count(db: &Surreal<LocalDb>, table: &str) -> Result<u64> {
-            let sql = format!("SELECT VALUE count() FROM {table} GROUP ALL");
+            let sql = format!("SELECT count() FROM {table} GROUP ALL");
             let mut res = db
                 .query(sql)
                 .await
                 .with_context(|| format!("count of {table} failed"))?;
-            let n: Option<u64> = res
+            let row: Option<CountRow> = res
                 .take(0)
                 .with_context(|| format!("count of {table} returned an error"))?;
             // An empty table yields no group row at all, which is 0 rather
             // than a failure.
-            Ok(n.unwrap_or(0))
+            Ok(row.map_or(0, |r| r.count))
         }
 
         Ok((
@@ -906,6 +914,20 @@ mod tests {
         let (_dir, db) = test_db().await;
         db.define_schema().await.unwrap();
         db.define_schema().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn instance_counts_counts_rows() {
+        let (_dir, db) = test_db().await;
+        assert_eq!(db.instance_counts().await.unwrap(), (0, 0, 0), "empty db");
+
+        db.upsert_user("42", "octocat", "https://e.com/a.png")
+            .await
+            .unwrap();
+        let _token = db.create_session("42").await.unwrap();
+
+        let (users, sessions, shares) = db.instance_counts().await.unwrap();
+        assert_eq!((users, sessions, shares), (1, 1, 0));
     }
 
     #[tokio::test]

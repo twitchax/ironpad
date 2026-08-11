@@ -36,19 +36,19 @@ acceptance_tests:
 - id: uat-001
   name: "With IRONPAD_ADMIN_LOGIN unset, /admin is not found and every admin server fn rejects, including for a signed-in user"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "With it set, the named admin sees the panel; an anonymous visitor and a signed-in non-admin both get the ordinary not-found, never a 403"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Every admin server fn rejects anonymous and non-admin callers (enumerated, so a new fn added without the gate fails the suite)"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-004
   name: "The admin panel is covered by the shared e2e suite: the named admin sees it, another test-login user does not"
   command: cargo make playwright
-  uat_status: unverified
+  uat_status: verified
 - id: uat-005
   name: "Revoking a user's sessions signs that user out on their next request and leaves other users signed in"
   command: cargo make uat
@@ -77,7 +77,7 @@ tasks:
 - id: T-004
   title: "/admin route + read-only overview"
   priority: 2
-  status: todo
+  status: done
   notes: "SSR page, noindex, robots.txt disallow. admin_overview(): user/session/share counts, per-tier disk usage, DB + WAL bytes, build admission queue depth. Non-admin renders the standard not-found."
 - id: T-005
   title: "User list + session revoke"
@@ -92,7 +92,7 @@ tasks:
 - id: T-007
   title: "Gate coverage test + e2e"
   priority: 1
-  status: in-progress
+  status: done
   notes: "A test enumerating every admin server fn asserting anonymous and non-admin rejection, mirroring server_fns::tests::private_shares_gate_every_read_surface so a new fn without the gate fails the suite. Playwright: admin sees the panel, non-admin gets not-found, unset means not-found (IRONPAD_ADMIN_LOGIN cannot be set in the shared webServer env, so the e2e needs its own server or a route that reads config per-request)."
 ---
 
@@ -182,6 +182,22 @@ manual panel read the same tier definitions.
 
 # History
 
+- 2026-08-11: T-004 and T-007 done. Three bugs, each hidden by the one
+  before it. `SELECT VALUE count() ... GROUP ALL` returns `{count: N}` and
+  needs SurrealDB's `SurrealValue` derive, not `serde::Deserialize`. That was
+  invisible because the page rendered "Page not found." for ANY `Err`, so a
+  broken database looked exactly like "you are not the admin" to the only
+  person who could fix it; admin fns now return `Ok(None)` for denial and
+  `Err` for real failure, which leaks nothing because an error is only
+  reachable after the gate passes. And the 404 was racing: anonymous visitors
+  got 404 while signed-in non-admins got 200, because under out-of-order
+  streaming the status commits when the shell flushes, and only the signed-in
+  path needs a session lookup first. `SsrMode::Async` fixes it, the same lever
+  PRD-0050 used for the notebook routes. Only the e2e could catch that one: it
+  is invisible in the DOM and lives entirely in the response status.
+  `human_bytes` also went to integer arithmetic (clippy pedantic rejects the
+  `f64` cast) and gained rounding with carry-and-promote after a test caught
+  one byte under 1MB rendering as "1024 KB".
 - 2026-08-11: T-007's unit half landed with the first admin server fn
   (`admin_overview`), because a scanner with no subjects passes vacuously,
   which is the exact failure it exists to prevent. It reads server_fns.rs and
