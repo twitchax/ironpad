@@ -9,7 +9,7 @@ use leptos_meta::{Meta, Title};
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::social_meta::mark_not_found;
-use crate::server_fns::admin_overview;
+use crate::server_fns::{admin_list_users, admin_overview, admin_revoke_user_sessions};
 
 /// Human-readable byte size. Whole units below 10 keep one decimal, so 3.2GB
 /// does not read as 3GB.
@@ -66,6 +66,40 @@ pub fn AdminPage() -> impl IntoView {
 
     let overview = Resource::new(|| (), |()| async move { admin_overview().await });
 
+    // Bumped after a revoke so the list refetches; the counts it shows are the
+    // thing the action changes.
+    let users_epoch = RwSignal::new(0_u32);
+    let users = Resource::new(
+        move || users_epoch.get(),
+        |_| async move { admin_list_users().await },
+    );
+
+    let revoke = move |github_id: String, login: String, sessions: u64| {
+        // `web_sys` is a hydrate-only dependency here, and a click handler can
+        // only run on the client anyway; SSR compiles this branch away.
+        #[cfg(feature = "hydrate")]
+        {
+            let confirmed = web_sys::window().is_some_and(|w: web_sys::Window| {
+                w.confirm_with_message(&format!(
+                    "Sign {login} out of {sessions} session(s)?\n\n\
+                     Their notebooks and shares are untouched, and they can \
+                     sign back in."
+                ))
+                .unwrap_or(false)
+            });
+            if !confirmed {
+                return;
+            }
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (&login, sessions);
+
+        leptos::task::spawn_local(async move {
+            let _ = admin_revoke_user_sessions(github_id).await;
+            users_epoch.update(|e| *e += 1);
+        });
+    };
+
     view! {
         <Title text="Admin · ironpad"/>
         // Never indexed. robots.txt also disallows it, which is safe here in a
@@ -109,7 +143,7 @@ pub fn AdminPage() -> impl IntoView {
                             </dl>
 
                             <h2>"Compile cache"</h2>
-                            <table class="ironpad-admin-table">
+                            <table class="ironpad-admin-table ironpad-admin-table--cache">
                                 <thead>
                                     <tr>
                                         <th scope="col">"Tier"</th>
@@ -133,6 +167,68 @@ pub fn AdminPage() -> impl IntoView {
                                     }).collect_view()}
                                 </tbody>
                             </table>
+
+                            <h2>"Users"</h2>
+                            <Suspense fallback=|| view! { <p>"Loading…"</p> }>
+                                {move || Suspend::new(async move {
+                                    match users.await {
+                                        Ok(Some(list)) if list.is_empty() => {
+                                            view! { <p>"No one has signed in yet."</p> }.into_any()
+                                        }
+                                        Ok(Some(list)) => view! {
+                                            <table class="ironpad-admin-table ironpad-admin-table--users">
+                                                <thead>
+                                                    <tr>
+                                                        <th scope="col">"User"</th>
+                                                        <th scope="col">"Sessions"</th>
+                                                        <th scope="col">"Published"</th>
+                                                        <th scope="col">"Since"</th>
+                                                        <th scope="col"><span class="ironpad-visually-hidden">"Actions"</span></th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {list.into_iter().map(|u| {
+                                                        let (id, login) = (u.github_id.clone(), u.login.clone());
+                                                        let sessions = u.sessions;
+                                                        let has_sessions = sessions > 0;
+                                                        view! {
+                                                            <tr>
+                                                                <td>{u.login.clone()}</td>
+                                                                <td>{sessions}</td>
+                                                                <td>{u.owned_shares}</td>
+                                                                <td>{u.created_at.chars().take(10).collect::<String>()}</td>
+                                                                <td>
+                                                                    <button
+                                                                        class="ironpad-admin-action"
+                                                                        disabled=!has_sessions
+                                                                        title=if has_sessions {
+                                                                            "Sign this user out everywhere"
+                                                                        } else {
+                                                                            "No active sessions"
+                                                                        }
+                                                                        on:click=move |_| revoke(id.clone(), login.clone(), sessions)
+                                                                    >
+                                                                        "Revoke sessions"
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    }).collect_view()}
+                                                </tbody>
+                                            </table>
+                                        }.into_any(),
+                                        // Denial cannot happen here: the page
+                                        // only renders once the overview call
+                                        // has already passed the same gate.
+                                        Ok(None) => view! { <p>"Page not found."</p> }.into_any(),
+                                        Err(e) => view! {
+                                            <p class="ironpad-admin-error">
+                                                "Could not list users: " {e.to_string()}
+                                            </p>
+                                        }.into_any(),
+                                    }
+                                })}
+                            </Suspense>
                         </div>
                     }.into_any(),
                 }

@@ -1771,6 +1771,70 @@ pub async fn admin_overview() -> Result<Option<ironpad_common::AdminOverview>, S
     }))
 }
 
+/// Every user on this instance, with session and share counts.
+///
+/// Read-only by design (PRD-0063): no role editing, because `rbac_grant` only
+/// ever mints OWNER and READ from existing flows, and no deletion, because the
+/// cascade to a user's shares loses data irrecoverably.
+#[server]
+pub async fn admin_list_users() -> Result<Option<Vec<ironpad_common::AdminUser>>, ServerFnError> {
+    use ironpad_common::{AdminUser, AppConfig};
+
+    let db = expect_context::<crate::db::Db>();
+    let config = expect_context::<AppConfig>();
+    if crate::auth::admin_user(&db, &config).await.is_none() {
+        return Ok(admin_denied());
+    }
+
+    let users = db
+        .list_users_for_admin()
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+        .into_iter()
+        .map(|u| AdminUser {
+            github_id: u.github_id,
+            login: u.login,
+            avatar_url: u.avatar_url,
+            created_at: u.created_at,
+            sessions: u.sessions,
+            owned_shares: u.owned_shares,
+        })
+        .collect();
+    Ok(Some(users))
+}
+
+/// Sign a user out everywhere, returning how many sessions were dropped.
+///
+/// Keyed on `github_id` rather than login, because a login can be renamed and
+/// the panel would then act on whoever holds the handle now.
+///
+/// The admin may revoke their own sessions. It signs them out of this page,
+/// which is recoverable by signing back in, and special-casing it would be a
+/// surprise of its own: "revoke all sessions" that quietly skips one is not
+/// what the button says.
+#[server]
+pub async fn admin_revoke_user_sessions(github_id: String) -> Result<Option<u64>, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let db = expect_context::<crate::db::Db>();
+    let config = expect_context::<AppConfig>();
+    let Some(admin) = crate::auth::admin_user(&db, &config).await else {
+        return Ok(admin_denied());
+    };
+
+    let revoked = db
+        .revoke_user_sessions(&github_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    tracing::info!(
+        actor = %admin.login,
+        target = %github_id,
+        revoked,
+        "admin revoked sessions"
+    );
+    Ok(Some(revoked))
+}
+
 /// What every admin function returns when the caller is not the admin.
 ///
 /// `None`, not an error. Deliberately indistinguishable from a missing route

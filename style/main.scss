@@ -3997,3 +3997,34 @@ code[class*="language-"] {
 .ironpad-admin-error {
     color: var(--ip-error);
 }
+
+// Visible to screen readers only. The user table's action column has no
+// visible header (the buttons label themselves), but a bare <th> reads as an
+// unnamed column.
+.ironpad-visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.ironpad-admin-action {
+    @include ip-button-shape($height: 30px, $pad: 4px 10px, $font: 0.8rem);
+
+    background: var(--ip-bg-elevated);
+    color: var(--ip-text-primary);
+    border: 1px solid var(--ip-border);
+
+    &:hover:not(:disabled) {
+        border-color: var(--ip-border-hover);
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
+}

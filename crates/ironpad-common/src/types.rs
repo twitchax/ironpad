@@ -1366,3 +1366,16 @@ pub struct AdminOverview {
     /// Bytes under the accounts database directory, write-ahead log included.
     pub database_bytes: u64,
 }
+
+/// One user in the admin panel's list (PRD-0063).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AdminUser {
+    /// GitHub's numeric id as a string, and the handle for actions. Stable
+    /// across a login rename, which the login itself is not.
+    pub github_id: String,
+    pub login: String,
+    pub avatar_url: String,
+    pub created_at: String,
+    pub sessions: u64,
+    pub owned_shares: u64,
+}

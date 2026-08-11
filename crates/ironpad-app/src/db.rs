@@ -48,6 +48,17 @@ pub struct AuthUser {
     pub avatar_url: String,
 }
 
+/// One user as the admin panel shows them (PRD-0063 T-005).
+#[derive(Debug, Clone)]
+pub struct AdminUserRow {
+    pub github_id: String,
+    pub login: String,
+    pub avatar_url: String,
+    pub created_at: String,
+    pub sessions: u64,
+    pub owned_shares: u64,
+}
+
 /// One mutable share row, with its owner attribution resolved.
 #[derive(Debug, Clone)]
 pub struct MutableShareRow {
@@ -261,6 +272,95 @@ impl Db {
             count(&self.inner, "session").await?,
             count(&self.inner, "mutable_share").await?,
         ))
+    }
+
+    /// Every user, with the counts the admin panel shows (PRD-0063 T-005).
+    ///
+    /// Aggregates are grouped queries rather than a count per user: the panel
+    /// is a request handler, and N+1 queries against a growing user table is a
+    /// shape that only misbehaves once it matters.
+    pub async fn list_users_for_admin(&self) -> Result<Vec<AdminUserRow>> {
+        #[derive(SurrealValue)]
+        struct UserRow {
+            github_id: String,
+            login: String,
+            avatar_url: String,
+            created_at: String,
+        }
+        #[derive(SurrealValue)]
+        struct GroupRow {
+            user: String,
+            count: u64,
+        }
+
+        let mut res = self
+            .inner
+            .query(
+                "SELECT record::id(id) AS github_id, login, avatar_url, created_at \
+                 FROM user ORDER BY created_at",
+            )
+            .await
+            .context("user list failed")?;
+        let users: Vec<UserRow> = res.take(0).context("user list rows malformed")?;
+
+        let mut res = self
+            .inner
+            .query(
+                "SELECT record::id(user) AS user, count() FROM session \
+                 GROUP BY user",
+            )
+            .await
+            .context("session counts failed")?;
+        let sessions: Vec<GroupRow> = res.take(0).context("session count rows malformed")?;
+
+        let mut res = self
+            .inner
+            .query(
+                "SELECT record::id(user) AS user, count() FROM rbac_grant \
+                 WHERE resource_kind = $kind AND role = $role GROUP BY user",
+            )
+            .bind(("kind", KIND_MUTABLE_SHARE))
+            .bind(("role", ROLE_OWNER))
+            .await
+            .context("share counts failed")?;
+        let shares: Vec<GroupRow> = res.take(0).context("share count rows malformed")?;
+
+        let lookup = |rows: &[GroupRow], id: &str| -> u64 {
+            rows.iter().find(|r| r.user == id).map_or(0, |r| r.count)
+        };
+
+        Ok(users
+            .into_iter()
+            .map(|u| AdminUserRow {
+                sessions: lookup(&sessions, &u.github_id),
+                owned_shares: lookup(&shares, &u.github_id),
+                github_id: u.github_id,
+                login: u.login,
+                avatar_url: u.avatar_url,
+                created_at: u.created_at,
+            })
+            .collect())
+    }
+
+    /// Delete every session belonging to a user, returning how many went.
+    ///
+    /// Signs them out everywhere on their next request. Deliberately not a
+    /// user deletion: their notebooks and grants are untouched, and they can
+    /// sign back in.
+    pub async fn revoke_user_sessions(&self, github_id: &str) -> Result<u64> {
+        #[derive(SurrealValue)]
+        struct Deleted {
+            #[allow(dead_code)]
+            expires_at: i64,
+        }
+        let mut res = self
+            .inner
+            .query("DELETE session WHERE user = type::record('user', $id) RETURN BEFORE")
+            .bind(("id", github_id.to_string()))
+            .await
+            .context("session revoke failed")?;
+        let gone: Vec<Deleted> = res.take(0).context("session revoke rows malformed")?;
+        Ok(gone.len() as u64)
     }
 
     // ── Sessions ────────────────────────────────────────────────────────
@@ -928,6 +1028,63 @@ mod tests {
 
         let (users, sessions, shares) = db.instance_counts().await.unwrap();
         assert_eq!((users, sessions, shares), (1, 1, 0));
+    }
+
+    #[tokio::test]
+    async fn admin_user_list_carries_per_user_counts() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "alice", "https://e.com/a.png")
+            .await
+            .unwrap();
+        db.upsert_user("2", "bob", "https://e.com/b.png")
+            .await
+            .unwrap();
+
+        let _t1 = db.create_session("1").await.unwrap();
+        let _t2 = db.create_session("1").await.unwrap();
+        db.create_mutable_share("s1", "1", "{}", None)
+            .await
+            .unwrap();
+
+        let users = db.list_users_for_admin().await.unwrap();
+        assert_eq!(users.len(), 2);
+
+        let alice = users.iter().find(|u| u.login == "alice").unwrap();
+        assert_eq!(alice.sessions, 2, "two sessions minted");
+        assert_eq!(alice.owned_shares, 1);
+
+        // A user with nothing must appear with zeroes, not be missing: the
+        // counts come from grouped queries that only return rows for users
+        // who have something.
+        let bob = users.iter().find(|u| u.login == "bob").unwrap();
+        assert_eq!(bob.sessions, 0);
+        assert_eq!(bob.owned_shares, 0);
+    }
+
+    #[tokio::test]
+    async fn revoking_sessions_signs_out_only_that_user() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "alice", "").await.unwrap();
+        db.upsert_user("2", "bob", "").await.unwrap();
+        let alice_token = db.create_session("1").await.unwrap();
+        let bob_token = db.create_session("2").await.unwrap();
+
+        assert_eq!(db.revoke_user_sessions("1").await.unwrap(), 1);
+        assert!(
+            db.session_user(&alice_token).await.unwrap().is_none(),
+            "alice is signed out"
+        );
+        assert!(
+            db.session_user(&bob_token).await.unwrap().is_some(),
+            "bob is untouched"
+        );
+
+        // Idempotent: revoking again removes nothing and is not an error.
+        assert_eq!(db.revoke_user_sessions("1").await.unwrap(), 0);
+
+        // The user itself survives; this is a sign-out, not a deletion.
+        let users = db.list_users_for_admin().await.unwrap();
+        assert!(users.iter().any(|u| u.login == "alice"));
     }
 
     #[tokio::test]

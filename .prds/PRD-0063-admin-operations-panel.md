@@ -52,7 +52,7 @@ acceptance_tests:
 - id: uat-005
   name: "Revoking a user's sessions signs that user out on their next request and leaves other users signed in"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 - id: uat-006
   name: "A cache tier wipe removes only the named tier, reports the bytes freed, and leaves the others intact"
   command: cargo make test
@@ -82,7 +82,7 @@ tasks:
 - id: T-005
   title: "User list + session revoke"
   priority: 2
-  status: todo
+  status: done
   notes: "admin_list_users(): login, avatar, created_at, session count, grant count, owned share count. admin_revoke_user_sessions(github_id). Read-only otherwise: no role editing (rbac_grant only ever mints OWNER and READ from existing flows) and no user deletion (cascade to shares loses data irrecoverably). Both are explicit non-goals."
 - id: T-006
   title: "Cache tier operations with cost-stating confirms"
@@ -182,6 +182,20 @@ manual panel read the same tier definitions.
 
 # History
 
+- 2026-08-11: T-005 done. The user list keys actions on `github_id` rather
+  than login, for the same reason T-002 pins it: a renamed handle would send
+  the action to whoever holds it now. Counts come from two grouped queries
+  rather than one per user, and a test covers what that shape gets wrong,
+  which is that a user with nothing must appear with zeroes instead of
+  vanishing (grouped queries only return rows for users who have something).
+  The admin may revoke their own sessions: it signs them out of the panel,
+  which is recoverable, and a button labelled "revoke sessions" that silently
+  skips one would be a worse surprise. Adding a second table also broke the
+  overview spec, whose `.ironpad-admin-table tbody tr` selector silently began
+  counting both tables; both now carry modifier classes. Separately, the
+  first-paint timing test was rewritten: it compared FCP against the last
+  script's responseEnd, which inverts harmlessly on a fast run, and now
+  injects a 1500ms delay and asserts paint lands before it.
 - 2026-08-11: T-004 and T-007 done. Three bugs, each hidden by the one
   before it. `SELECT VALUE count() ... GROUP ALL` returns `{count: N}` and
   needs SurrealDB's `SurrealValue` derive, not `serde::Deserialize`. That was

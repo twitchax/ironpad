@@ -30,11 +30,12 @@ test.describe("Admin panel", () => {
     await expect(page.getByRole("heading", { name: "Instance" })).toBeVisible();
 
     // Every cache tier is listed, including the one the automatic valve is
-    // never allowed to clear.
-    const rows = page.locator(".ironpad-admin-table tbody tr");
-    await expect(rows).toHaveCount(4);
-    await expect(page.locator(".ironpad-admin-table")).toContainText("blobs");
-    await expect(page.locator(".ironpad-admin-table")).toContainText("never");
+    // never allowed to clear. Scoped to the cache table: the users table below
+    // shares the base class, and an unscoped row count silently counted both.
+    const cache = page.locator(".ironpad-admin-table--cache");
+    await expect(cache.locator("tbody tr")).toHaveCount(4);
+    await expect(cache).toContainText("blobs");
+    await expect(cache).toContainText("never");
   });
 
   test("a signed-in non-admin gets an ordinary not found", async ({ page }) => {
@@ -74,6 +75,44 @@ test.describe("Admin panel", () => {
     expect(body).not.toContain("ironpad-admin-stats");
     expect(body).not.toContain("Published notebooks");
     expect(body).not.toContain("cargo-home");
+  });
+
+  test("the user list shows per-user counts and revokes sessions", async ({
+    page,
+    context,
+  }) => {
+    // A second signed-in user to act on, in its own browser context so the
+    // admin's session is not the one being revoked.
+    const victim = await context.browser()!.newContext();
+    const victimPage = await victim.newPage();
+    await loginTestUser(victimPage, "revoke-me");
+
+    await loginTestUser(page, ADMIN);
+    await page.goto("/admin");
+    await expect(page.locator(".ironpad-admin")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const row = page
+      .locator(".ironpad-admin-table--users tbody tr")
+      .filter({ hasText: "revoke-me" });
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await expect(row).toContainText("1");
+
+    // The confirm is part of the action, so accept it rather than routing
+    // around the code under test.
+    page.once("dialog", (d) => d.accept());
+    await row.getByRole("button", { name: "Revoke sessions" }).click();
+
+    // The count is what the action changes, so the list must refetch.
+    await expect
+      .poll(async () => (await row.textContent()) ?? "", { timeout: 15_000 })
+      .toMatch(/revoke-me\s*0/);
+
+    // And the revoked user is actually signed out, which is the point.
+    await victimPage.goto("/");
+    await expect(victimPage.locator("a.ironpad-auth")).toHaveCount(0);
+    await victim.close();
   });
 
   test("the panel is kept out of search results", async ({ page, request }) => {
