@@ -99,27 +99,6 @@ pub struct CliArgs {
     pub guest_idle_timeout_secs: u64,
 }
 
-impl CliArgs {
-    /// Reject configurations that are individually valid but unsafe together.
-    ///
-    /// `/auth/test-login` mints a session for an arbitrary user, so an
-    /// instance with both that endpoint and a named administrator hands admin
-    /// to anyone who asks. Production never sets `IRONPAD_TEST_AUTH`, but that
-    /// is a habit rather than a guarantee, and the cost of being wrong once is
-    /// the whole panel.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.test_auth && self.admin_login.is_some() {
-            return Err(
-                "IRONPAD_TEST_AUTH and IRONPAD_ADMIN_LOGIN must not both be set: \
-                 test-login mints sessions for arbitrary users, which would make \
-                 the admin gate meaningless"
-                    .to_string(),
-            );
-        }
-        Ok(())
-    }
-}
-
 impl From<CliArgs> for AppConfig {
     fn from(args: CliArgs) -> Self {
         // Derived from the resolved port rather than a literal clap default, so
@@ -161,32 +140,28 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_and_admin_login_are_mutually_exclusive() {
-        // /auth/test-login mints a session for an arbitrary user, so an
-        // instance with both would hand admin to anyone who asked for it.
-        let args = CliArgs::parse_from([
+    fn test_auth_and_admin_login_may_coexist() {
+        // Deliberately allowed, so the e2e suite can drive the admin panel on
+        // the same server as everything else.
+        //
+        // An instance with IRONPAD_TEST_AUTH is already fully compromised:
+        // /auth/test-login mints a session for ANY user, so a visitor can
+        // already be any existing account and rewrite or delete its notebooks.
+        // Admin adds cache clearing on top of that, which is an escalation of
+        // something already total. The invariant that protects production is
+        // "prod never sets IRONPAD_TEST_AUTH", which is asserted separately by
+        // auth::tests::test_login_route_is_env_gated; a second, weaker
+        // invariant here bought nothing and cost the admin panel its coverage
+        // in the shared suite.
+        let config: AppConfig = CliArgs::parse_from([
             "ironpad",
             "--admin-login",
             "twitchax",
             "--test-auth",
             "true",
-        ]);
-        let err = args.validate().expect_err("both set must be rejected");
-        assert!(err.contains("IRONPAD_TEST_AUTH"), "{err}");
-        assert!(err.contains("IRONPAD_ADMIN_LOGIN"), "{err}");
-    }
-
-    #[test]
-    fn either_flag_alone_is_fine() {
-        assert!(CliArgs::parse_from(["ironpad", "--test-auth", "true"])
-            .validate()
-            .is_ok());
-        assert!(
-            CliArgs::parse_from(["ironpad", "--admin-login", "twitchax"])
-                .validate()
-                .is_ok()
-        );
-        assert!(CliArgs::parse_from(["ironpad"]).validate().is_ok());
+        ])
+        .into();
+        assert_eq!(config.admin_login.as_deref(), Some("twitchax"));
     }
 
     #[test]

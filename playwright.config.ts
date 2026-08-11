@@ -44,6 +44,13 @@ export default defineConfig({
       // Registers /auth/test-login (PRD-0053) so specs can mint real
       // sessions without GitHub. Production never sets this.
       IRONPAD_TEST_AUTH: "1",
+      // Names the admin for PRD-0063, so the panel is covered by the same
+      // suite as everything else rather than needing its own server. Safe to
+      // pair with test auth: an instance that can mint a session for any user
+      // is already fully compromised, so admin is not the escalation that
+      // matters. Specs become the admin by signing in as this login, and any
+      // other login exercises the denial path.
+      IRONPAD_ADMIN_LOGIN: "ironpad-admin",
       // Dummy OAuth credentials so the sign-in surface renders (the footer
       // hides it entirely when unconfigured). Nothing ever completes the
       // GitHub dance in e2e — test-login mints the sessions.

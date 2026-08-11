@@ -15,7 +15,7 @@ principles:
 - "Denial is a 404, not a 403. A 403 confirms the panel exists and invites attention; a non-admin sees what any visitor to an unknown route sees. This deliberately differs from PRD-0061, where an explicit denial was correct because a private share link handed to the right person must work after one sign-in. Nobody is meant to arrive at /admin by invitation."
 - "One gate, called first, everywhere. `admin_user()` is the single predicate, mirroring mutable_access_core and private_share_readable. These are the most destructive server fns in the app, so the coverage test enumerates them and asserts each one rejects both anonymous and signed-in-non-admin callers, rather than trusting that the tenth function remembered."
 - "Identity pins to github_id, not the login string. db.rs already notes that logins can be renamed on GitHub; a renamed handle is freed for anyone to claim, and a squatter would then match a login allowlist with a different github_id. The configured value stays a readable login, and the resolved github_id is pinned on first match so a rename fails closed instead of transferring admin."
-- "IRONPAD_TEST_AUTH and IRONPAD_ADMIN_LOGIN are mutually exclusive at startup. /auth/test-login mints a session for an arbitrary user, so together they are a complete bypass of the gate. Prod never sets test auth, but that is a habit; this makes it an assertion the process refuses to start without."
+- "IRONPAD_TEST_AUTH and IRONPAD_ADMIN_LOGIN may coexist, and the e2e suite sets both. This reverses the original decision to make them mutually exclusive. An instance with test auth is ALREADY fully compromised: /auth/test-login mints a session for any user, so a visitor can already be any account and rewrite or delete its notebooks and shares. Admin adds cache clearing on top of something already total, so refusing to start bought very little, and it cost the panel its coverage in the shared suite by forcing a second Playwright server. The invariant that protects production is the one that already existed: prod never sets IRONPAD_TEST_AUTH, asserted by auth::tests::test_login_route_is_env_gated and now stated in full at startup."
 - "Destructive actions state their cost before they run. Wiping `targets` (3.2GB) means every cell recompiles cold, and wiping `blobs` (166MB, 1,915 entries) is what stands between readers and a cold compile. The confirm names the tier, its measured size, and what users lose, because the panel exists to operate the instance, not to make an irreversible action one click away."
 
 references:
@@ -46,8 +46,8 @@ acceptance_tests:
   command: cargo make uat
   uat_status: unverified
 - id: uat-004
-  name: "The server refuses to start when IRONPAD_TEST_AUTH and IRONPAD_ADMIN_LOGIN are both set"
-  command: cargo make test
+  name: "The admin panel is covered by the shared e2e suite: the named admin sees it, another test-login user does not"
+  command: cargo make playwright
   uat_status: unverified
 - id: uat-005
   name: "Revoking a user's sessions signs that user out on their next request and leaves other users signed in"
@@ -63,7 +63,7 @@ tasks:
   title: "Config + the one gate"
   priority: 1
   status: done
-  notes: "AppConfig.admin_login: Option<String> (IRONPAD_ADMIN_LOGIN). admin_user(db, config) -> Option<AuthUser> in auth.rs: requires current_user AND a case-insensitive login match (GitHub logins are case-insensitive). Startup refuses when test_auth && admin_login.is_some(). Unit tests for the predicate: unset, match, mismatch, anonymous, case difference."
+  notes: "AppConfig.admin_login: Option<String> (IRONPAD_ADMIN_LOGIN). admin_user(db, config) -> Option<AuthUser> in auth.rs: requires current_user AND a case-insensitive login match (GitHub logins are case-insensitive). Unit tests for the predicate: unset, match, mismatch, empty, case difference. Coexists with test auth by design; see the principle."
 - id: T-002
   title: "Pin the admin github_id on first match"
   priority: 1
@@ -155,9 +155,11 @@ manual panel read the same tier definitions.
 
 - `rbac_grant` only ever mints `OWNER` and `READ`, both from existing flows, so
   role management is out of scope rather than partially built.
-- Playwright's `webServer` is shared across the suite and sets
-  `IRONPAD_TEST_AUTH`, which T-001 makes mutually exclusive with an admin
-  login. The e2e for the panel therefore needs its own server instance.
+- The e2e suite drives the panel on the shared `webServer`, which sets both
+  `IRONPAD_TEST_AUTH` and `IRONPAD_ADMIN_LOGIN`. Specs become the admin by
+  signing in as that login; any other login exercises denial. `test-login`
+  derives `github_id` as `test-{login}`, so the T-002 pin is stable across
+  runs rather than a source of order-dependent flakiness.
 - The panel reads live filesystem state, so its numbers are only as fresh as
   the request; nothing is cached.
 
@@ -180,6 +182,12 @@ manual panel read the same tier definitions.
 
 # History
 
+- 2026-08-11: Reversed the IRONPAD_TEST_AUTH exclusion after review. It was
+  defence in depth against a misconfiguration that is already catastrophic on
+  its own, and the price was pulling the admin panel out of the shared e2e
+  suite into a second Playwright server. `CliArgs::validate` is deleted (the
+  exclusion was its only rule) and the startup warning now states the whole
+  consequence instead of naming the route.
 - 2026-08-11: T-001, T-002, T-003 done. The `meta` table had to be created
   as part of T-002: this PRD referenced it because a reverted WAL change had
   introduced it, so the PRD was written against code that no longer existed.

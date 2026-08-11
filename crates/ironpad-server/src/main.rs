@@ -103,10 +103,6 @@ async fn main() {
     };
     // Refuses combinations that are individually valid but unsafe together.
     // Fail at startup rather than serve a compromised instance.
-    if let Err(e) = args.validate() {
-        tracing::error!("{e}");
-        std::process::exit(1);
-    }
     let test_auth = args.test_auth;
     let config: AppConfig = args.into();
 
@@ -135,7 +131,14 @@ async fn main() {
 
     let auth_enabled = github_oauth.is_some();
     if test_auth {
-        tracing::warn!("IRONPAD_TEST_AUTH is set: /auth/test-login is live (e2e only!)");
+        // The single load-bearing invariant for this instance's security, so
+        // it says the whole consequence rather than naming the route: anyone
+        // can mint a session as ANY user, which includes the administrator
+        // named by IRONPAD_ADMIN_LOGIN.
+        tracing::warn!(
+            "IRONPAD_TEST_AUTH is set: /auth/test-login will mint a session for \
+             ANY user, including the admin. e2e only, NEVER production."
+        );
     }
     let auth_router = ironpad_server::auth::router(ironpad_server::auth::AuthState {
         db: db.clone(),
