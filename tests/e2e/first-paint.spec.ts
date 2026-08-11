@@ -171,40 +171,45 @@ test.describe("Shell critical path", () => {
   });
 
   test("first paint does not wait for the shell scripts", async ({ page }) => {
-    await page.goto("/");
-    await page.waitForLoadState("load");
+    // Delay every shell script and check that first paint does not move.
+    //
+    // The previous version compared FCP against the last script's responseEnd,
+    // which is only meaningful while the scripts are still in flight at paint
+    // time. On a fast run they finish first and the comparison inverts with
+    // nothing wrong, which is exactly how it failed under full-suite load.
+    // Injecting the delay makes the property deterministic instead of relying
+    // on the machine being slow.
+    const DELAY_MS = 1500;
 
-    const timing = await page.evaluate(() => {
-      const paint = performance
-        .getEntriesByType("paint")
-        .find((p) => p.name === "first-contentful-paint");
-      const shell = performance
-        .getEntriesByType("resource")
-        .filter(
-          (r) =>
-            new URL(r.name).pathname.endsWith(".js") &&
-            !r.name.includes("/pkg/"),
-        );
-      return {
-        fcp: paint ? paint.startTime : null,
-        lastShellScriptEnd: shell.length
-          ? Math.max(...shell.map((r) => r.responseEnd))
-          : null,
-        count: shell.length,
-      };
+    await page.route(/\.js(\?|$)/, async (route) => {
+      if (route.request().url().includes("/pkg/")) return route.continue();
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+      return route.continue();
     });
 
-    // Skip rather than pass vacuously when the browser withholds the entries
-    // (a warm memory cache reports no resource timing for these).
-    test.skip(
-      timing.fcp === null ||
-        timing.lastShellScriptEnd === null ||
-        timing.count === 0,
-      "no paint or resource timing available in this run",
+    await page.goto("/");
+    const fcp = await page.evaluate(
+      () =>
+        new Promise<number | null>((resolve) => {
+          const find = () =>
+            performance
+              .getEntriesByType("paint")
+              .find((p) => p.name === "first-contentful-paint");
+          if (find()) return resolve(find()!.startTime);
+          const obs = new PerformanceObserver(() => {
+            if (find()) {
+              obs.disconnect();
+              resolve(find()!.startTime);
+            }
+          });
+          obs.observe({ type: "paint", buffered: true });
+          setTimeout(() => resolve(find()?.startTime ?? null), 5000);
+        }),
     );
 
-    // The whole point of deferring: paint no longer sits behind the last
-    // script. Before the change these were within a few ms of each other.
-    expect(timing.fcp!).toBeLessThan(timing.lastShellScriptEnd!);
+    expect(fcp, "no paint was recorded").not.toBeNull();
+    // Painting before the scripts could possibly have landed is the whole
+    // claim. Blocking scripts would push this past the delay.
+    expect(fcp!).toBeLessThan(DELAY_MS);
   });
 });
