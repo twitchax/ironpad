@@ -12,62 +12,9 @@
 //! written; there is no spelling of [`CacheTier`] that escapes the cache
 //! directory.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// One directory under the cache root.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum CacheTier {
-    /// cargo target dirs for cell builds. The largest tier by far (3.2GB in
-    /// production) and pure derived state.
-    Targets,
-    /// Scaffolded micro-crates. Rebuilt per compile.
-    Workspaces,
-    /// The shared cargo registry. Rebuildable, but re-downloading it makes
-    /// every first compile slow, so the valve only reaches for it under
-    /// sustained pressure.
-    CargoHome,
-    /// Compiled cell blobs, keyed by content hash. **Not rebuildable without
-    /// recompiling**, and what stands between a reader and a cold compile, so
-    /// the automatic valve never touches it.
-    Blobs,
-}
-
-impl CacheTier {
-    /// Every tier, coarsest and most disposable first.
-    pub const ALL: [Self; 4] = [
-        Self::Targets,
-        Self::Workspaces,
-        Self::CargoHome,
-        Self::Blobs,
-    ];
-
-    /// The directory name under the cache root.
-    #[must_use]
-    pub fn dir_name(self) -> &'static str {
-        match self {
-            Self::Targets => "targets",
-            Self::Workspaces => "workspaces",
-            Self::CargoHome => "cargo-home",
-            Self::Blobs => "blobs",
-        }
-    }
-
-    /// Whether the automatic pressure valve may clear this tier.
-    ///
-    /// [`Self::Blobs`] is excluded: the valve runs unattended at boot, and
-    /// losing compiled output silently turns every subsequent page view into a
-    /// cold compile. An administrator can still clear it deliberately.
-    #[must_use]
-    pub fn valve_may_clear(self) -> bool {
-        !matches!(self, Self::Blobs)
-    }
-
-    /// Path of this tier under `cache_dir`.
-    #[must_use]
-    pub fn path(self, cache_dir: &Path) -> PathBuf {
-        cache_dir.join(self.dir_name())
-    }
-}
+pub use ironpad_common::CacheTier;
 
 /// Total bytes under a tier, or 0 when it does not exist.
 ///

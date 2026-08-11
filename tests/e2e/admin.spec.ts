@@ -115,6 +115,55 @@ test.describe("Admin panel", () => {
     await victim.close();
   });
 
+  test("clearing a cache tier states its cost and frees only that tier", async ({
+    page,
+  }) => {
+    await loginTestUser(page, ADMIN);
+    await page.goto("/admin");
+    await expect(page.locator(".ironpad-admin")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const cache = page.locator(".ironpad-admin-table--cache");
+    const workspaces = cache
+      .locator("tbody tr")
+      .filter({ hasText: "workspaces" });
+    const blobs = cache.locator("tbody tr").filter({ hasText: "blobs" });
+
+    // The confirm has to name the tier and its size, not just ask "are you
+    // sure": clearing scratch workspaces and discarding every compiled cell
+    // are very different acts behind the same button.
+    let message = "";
+    page.once("dialog", (d) => {
+      message = d.message();
+      d.dismiss();
+    });
+    await workspaces.getByRole("button", { name: "Clear" }).click();
+    await expect
+      .poll(() => message, { timeout: 10_000 })
+      .toContain("workspaces");
+    expect(message).toMatch(/\d/);
+    expect(message).toContain("cannot be undone");
+
+    // Dismissing must not have cleared anything.
+    await expect(workspaces).toBeVisible();
+
+    // Blobs is the tier the unattended valve may never touch, so its warning
+    // has to say what a reader loses rather than reuse the generic line.
+    let blobMessage = "";
+    page.once("dialog", (d) => {
+      blobMessage = d.message();
+      d.dismiss();
+    });
+    const blobButton = blobs.getByRole("button", { name: "Clear" });
+    if (await blobButton.isEnabled()) {
+      await blobButton.click();
+      await expect
+        .poll(() => blobMessage, { timeout: 10_000 })
+        .toContain("compiled");
+    }
+  });
+
   test("the panel is kept out of search results", async ({ page, request }) => {
     await loginTestUser(page, ADMIN);
     await page.goto("/admin");

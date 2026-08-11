@@ -1756,6 +1756,7 @@ pub async fn admin_overview() -> Result<Option<ironpad_common::AdminOverview>, S
     let cache_tiers = crate::cache_tiers::CacheTier::ALL
         .iter()
         .map(|&tier| CacheTierUsage {
+            tier,
             name: tier.dir_name().to_string(),
             bytes: crate::cache_tiers::tier_bytes(&config.cache_dir, tier),
             valve_may_clear: tier.valve_may_clear(),
@@ -1833,6 +1834,39 @@ pub async fn admin_revoke_user_sessions(github_id: String) -> Result<Option<u64>
         "admin revoked sessions"
     );
     Ok(Some(revoked))
+}
+
+/// Clear one cache tier, returning the bytes freed.
+///
+/// The tier is an enum, not a name: a caller-supplied string joined onto the
+/// cache path is a directory traversal, and no value of `CacheTier` escapes
+/// `cache_dir`.
+///
+/// This is the panel's one irreversible action, and it is deliberately manual.
+/// The automatic pressure valve at boot never touches `blobs` because losing
+/// compiled output unattended turns every later page view into a cold compile;
+/// an administrator who asks for it explicitly, having been told the size and
+/// the consequence, is a different situation.
+#[server]
+pub async fn admin_wipe_cache_tier(
+    tier: ironpad_common::CacheTier,
+) -> Result<Option<u64>, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let db = expect_context::<crate::db::Db>();
+    let config = expect_context::<AppConfig>();
+    let Some(admin) = crate::auth::admin_user(&db, &config).await else {
+        return Ok(admin_denied());
+    };
+
+    let freed = crate::cache_tiers::clear_tier(&config.cache_dir, tier);
+    tracing::warn!(
+        actor = %admin.login,
+        tier = tier.dir_name(),
+        bytes_freed = freed,
+        "admin cleared a cache tier"
+    );
+    Ok(Some(freed))
 }
 
 /// What every admin function returns when the caller is not the admin.

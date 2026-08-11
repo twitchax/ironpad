@@ -9,7 +9,9 @@ use leptos_meta::{Meta, Title};
 
 use crate::components::app_layout::LayoutContext;
 use crate::components::social_meta::mark_not_found;
-use crate::server_fns::{admin_list_users, admin_overview, admin_revoke_user_sessions};
+use crate::server_fns::{
+    admin_list_users, admin_overview, admin_revoke_user_sessions, admin_wipe_cache_tier,
+};
 
 /// Human-readable byte size. Whole units below 10 keep one decimal, so 3.2GB
 /// does not read as 3GB.
@@ -64,8 +66,6 @@ pub fn AdminPage() -> impl IntoView {
     let ctx = expect_context::<LayoutContext>();
     ctx.notebook_title.set(None);
 
-    let overview = Resource::new(|| (), |()| async move { admin_overview().await });
-
     // Bumped after a revoke so the list refetches; the counts it shows are the
     // thing the action changes.
     let users_epoch = RwSignal::new(0_u32);
@@ -73,6 +73,45 @@ pub fn AdminPage() -> impl IntoView {
         move || users_epoch.get(),
         |_| async move { admin_list_users().await },
     );
+
+    // Bumped after a wipe so the sizes refetch.
+    let overview_epoch = RwSignal::new(0_u32);
+    let overview = Resource::new(
+        move || overview_epoch.get(),
+        |_| async move { admin_overview().await },
+    );
+
+    let wipe = move |tier: ironpad_common::CacheTier, name: String, size: String| {
+        #[cfg(feature = "hydrate")]
+        {
+            // The confirm states the measured size and what is actually lost,
+            // because "are you sure?" does not distinguish clearing 120MB of
+            // scratch workspaces from throwing away every compiled cell.
+            let consequence = if tier.valve_may_clear() {
+                "Cells will recompile from scratch until it is rebuilt."
+            } else {
+                "Every compiled cell is discarded. Readers will wait for a \
+                 cold compile on notebooks that are currently instant."
+            };
+            let confirmed = web_sys::window().is_some_and(|w: web_sys::Window| {
+                w.confirm_with_message(&format!(
+                    "Clear the {name} cache ({size})?\n\n{consequence}\n\n\
+                     This cannot be undone."
+                ))
+                .unwrap_or(false)
+            });
+            if !confirmed {
+                return;
+            }
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (&name, &size);
+
+        leptos::task::spawn_local(async move {
+            let _ = admin_wipe_cache_tier(tier).await;
+            overview_epoch.update(|e| *e += 1);
+        });
+    };
 
     let revoke = move |github_id: String, login: String, sessions: u64| {
         // `web_sys` is a hydrate-only dependency here, and a click handler can
@@ -149,21 +188,48 @@ pub fn AdminPage() -> impl IntoView {
                                         <th scope="col">"Tier"</th>
                                         <th scope="col">"Size"</th>
                                         <th scope="col">"Cleared automatically"</th>
+                                        <th scope="col">
+                                            <span class="ironpad-visually-hidden">"Actions"</span>
+                                        </th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {o.cache_tiers.into_iter().map(|t| view! {
-                                        <tr>
-                                            <td>{t.name}</td>
-                                            <td>{human_bytes(t.bytes)}</td>
-                                            <td>
-                                                {if t.valve_may_clear {
-                                                    "under disk pressure"
-                                                } else {
-                                                    "never"
-                                                }}
-                                            </td>
-                                        </tr>
+                                    {o.cache_tiers.into_iter().map(|t| {
+                                        let size = human_bytes(t.bytes);
+                                        let (tier, name, arg_size) =
+                                            (t.tier, t.name.clone(), size.clone());
+                                        let empty = t.bytes == 0;
+                                        view! {
+                                            <tr>
+                                                <td>{t.name.clone()}</td>
+                                                <td>{size}</td>
+                                                <td>
+                                                    {if t.valve_may_clear {
+                                                        "under disk pressure"
+                                                    } else {
+                                                        "never"
+                                                    }}
+                                                </td>
+                                                <td>
+                                                    <button
+                                                        class="ironpad-admin-action"
+                                                        disabled=empty
+                                                        title=if empty {
+                                                            "Nothing to clear"
+                                                        } else {
+                                                            "Clear this tier now"
+                                                        }
+                                                        on:click=move |_| wipe(
+                                                            tier,
+                                                            name.clone(),
+                                                            arg_size.clone(),
+                                                        )
+                                                    >
+                                                        "Clear"
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        }
                                     }).collect_view()}
                                 </tbody>
                             </table>

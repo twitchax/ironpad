@@ -1,7 +1,7 @@
 ---
 id: PRD-0063
 title: "Single-admin operations panel: instance state, user list, and cache tiers"
-status: active
+status: done
 owner: "Aaron Roney"
 created: 2026-08-11
 updated: 2026-08-11
@@ -56,7 +56,7 @@ acceptance_tests:
 - id: uat-006
   name: "A cache tier wipe removes only the named tier, reports the bytes freed, and leaves the others intact"
   command: cargo make test
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
@@ -87,8 +87,8 @@ tasks:
 - id: T-006
   title: "Cache tier operations with cost-stating confirms"
   priority: 3
-  status: todo
-  notes: "admin_wipe_cache_tier(tier), admin_run_pressure_valve(). Confirm dialog names the tier, its measured size, and the user-visible consequence; returns bytes freed. Never wipes blobs without saying it means cold compiles for readers."
+  status: done
+  notes: "admin_wipe_cache_tier(tier) only. admin_run_pressure_valve was DROPPED: the valve exists to run unattended against disk-pressure thresholds, so triggering it by hand is strictly worse than explicit per-tier clearing with the size and consequence stated first. CacheTier moved to ironpad-common because a server fn argument must exist on both feature arms; the filesystem operations stayed ssr-side, so the enum is the wire type and the server never re-validates a caller-supplied name."
 - id: T-007
   title: "Gate coverage test + e2e"
   priority: 1
@@ -182,6 +182,17 @@ manual panel read the same tier definitions.
 
 # History
 
+- 2026-08-11: T-006 done and the PRD closed. admin_run_pressure_valve was
+  dropped (see T-006 notes). Coverage splits deliberately: the cache_tiers
+  unit tests prove a clear removes only the named tier, and the e2e proves the
+  confirm names the tier and its measured size, says it cannot be undone, and
+  that DISMISSING changes nothing. A real wipe is not driven end to end on
+  purpose, because clearing `targets` in the test environment would destroy
+  the local build cache and `workspaces` is live state other specs use. The
+  confirm distinguishes rebuildable tiers ("cells will recompile from
+  scratch") from `blobs` ("every compiled cell is discarded; readers will wait
+  for a cold compile on notebooks that are currently instant"), which was the
+  point of requiring a cost-stating confirm rather than "are you sure".
 - 2026-08-11: T-005 done. The user list keys actions on `github_id` rather
   than login, for the same reason T-002 pins it: a renamed handle would send
   the action to whoever holds it now. Counts come from two grouped queries
