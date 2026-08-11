@@ -1724,6 +1724,76 @@ pub async fn list_mutable_shares() -> Result<Vec<ironpad_common::MutableShareSum
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
+// ── Admin panel (PRD-0063) ──────────────────────────────────────────────────
+
+/// Instance state for the operator.
+///
+/// Gated by [`crate::auth::admin_user`], like every `admin_*` function here.
+/// The gate is asserted mechanically by
+/// `admin_fns_are_all_gated`, which scans this file rather than trusting a
+/// hand-maintained list.
+///
+/// Denial is a not-found, not a forbidden: a 403 confirms the panel exists.
+#[server]
+pub async fn admin_overview() -> Result<ironpad_common::AdminOverview, ServerFnError> {
+    use ironpad_common::{AdminOverview, AppConfig, CacheTierUsage};
+
+    let db = expect_context::<crate::db::Db>();
+    let config = expect_context::<AppConfig>();
+    let Some(_admin) = crate::auth::admin_user(&db, &config).await else {
+        return Err(admin_not_found());
+    };
+
+    let (users, sessions, mutable_shares) = db
+        .instance_counts()
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+
+    let cache_tiers = crate::cache_tiers::CacheTier::ALL
+        .iter()
+        .map(|&tier| CacheTierUsage {
+            name: tier.dir_name().to_string(),
+            bytes: crate::cache_tiers::tier_bytes(&config.cache_dir, tier),
+            valve_may_clear: tier.valve_may_clear(),
+        })
+        .collect();
+
+    Ok(AdminOverview {
+        users,
+        sessions,
+        mutable_shares,
+        cache_tiers,
+        database_bytes: dir_bytes(&config.data_dir.join("ironpad.db")),
+    })
+}
+
+/// The error every admin function returns when the caller is not the admin.
+///
+/// Deliberately indistinguishable from a missing route. A distinct "forbidden"
+/// tells an unauthenticated prober that the panel is real and that they have
+/// found the right URL, which is the one piece of information the gate is
+/// meant to withhold.
+#[cfg(feature = "ssr")]
+fn admin_not_found() -> ServerFnError {
+    ServerFnError::new("not found")
+}
+
+/// Total bytes under a directory tree, or 0 when it cannot be read.
+#[cfg(feature = "ssr")]
+fn dir_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_bytes(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
 // ── Accounts (PRD-0053) ─────────────────────────────────────────────────────
 
 /// Auth surface for the client: whether sign-in exists on this deployment,
@@ -1746,6 +1816,48 @@ pub async fn get_auth_info() -> Result<ironpad_common::AuthInfo, ServerFnError> 
 #[cfg(all(test, feature = "ssr"))]
 mod tests {
     use super::*;
+
+    /// Every `admin_*` server fn must call the gate, and this scans the source
+    /// rather than trusting a list someone remembers to update.
+    ///
+    /// A runtime test can only cover the functions it was told about, so the
+    /// failure it cannot catch is the one that matters: a new admin function
+    /// added next year without `admin_user`. These are the most destructive
+    /// functions in the app, so the check is mechanical and the list derived.
+    #[test]
+    fn admin_fns_are_all_gated() {
+        let src = include_str!("server_fns.rs");
+
+        let mut checked = Vec::new();
+        for (idx, _) in src.match_indices("pub async fn admin_") {
+            let name: String = src[idx + "pub async fn ".len()..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+
+            // The body runs to the next top-level attribute, or to the end.
+            let rest = &src[idx..];
+            let end = rest[1..].find("\n#[server]").map_or(rest.len(), |k| k + 1);
+            let body = &rest[..end];
+
+            assert!(
+                body.contains("crate::auth::admin_user("),
+                "{name} is an admin server fn that never calls the gate"
+            );
+            assert!(
+                body.contains("admin_not_found()"),
+                "{name} must deny with the not-found shape, never a distinct forbidden"
+            );
+            checked.push(name);
+        }
+
+        // Guard the guard: a scanner that matches nothing passes silently, and
+        // failing when a function is added is this test's whole purpose.
+        assert!(
+            !checked.is_empty(),
+            "found no admin server fns; the scan pattern has drifted from the code"
+        );
+    }
 
     #[test]
     fn redact_server_paths_strips_crate_and_cache_dirs() {

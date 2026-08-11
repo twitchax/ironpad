@@ -1338,3 +1338,31 @@ mod tests {
         );
     }
 }
+
+// ── Admin panel (PRD-0063) ──────────────────────────────────────────────────
+
+/// One cache tier's name and current size, for the admin overview.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct CacheTierUsage {
+    /// Directory name under the cache root, e.g. `targets`.
+    pub name: String,
+    pub bytes: u64,
+    /// Whether the unattended boot-time pressure valve is allowed to clear it.
+    /// `blobs` is not: losing compiled output turns every later page view into
+    /// a cold compile.
+    pub valve_may_clear: bool,
+}
+
+/// Instance state for the admin overview.
+///
+/// Read live from the filesystem and the database on every request; nothing
+/// here is cached, so the numbers are only as fresh as the page.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AdminOverview {
+    pub users: u64,
+    pub sessions: u64,
+    pub mutable_shares: u64,
+    pub cache_tiers: Vec<CacheTierUsage>,
+    /// Bytes under the accounts database directory, write-ahead log included.
+    pub database_bytes: u64,
+}

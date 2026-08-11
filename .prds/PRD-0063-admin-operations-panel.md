@@ -92,7 +92,7 @@ tasks:
 - id: T-007
   title: "Gate coverage test + e2e"
   priority: 1
-  status: todo
+  status: in-progress
   notes: "A test enumerating every admin server fn asserting anonymous and non-admin rejection, mirroring server_fns::tests::private_shares_gate_every_read_surface so a new fn without the gate fails the suite. Playwright: admin sees the panel, non-admin gets not-found, unset means not-found (IRONPAD_ADMIN_LOGIN cannot be set in the shared webServer env, so the e2e needs its own server or a route that reads config per-request)."
 ---
 
@@ -182,6 +182,14 @@ manual panel read the same tier definitions.
 
 # History
 
+- 2026-08-11: T-007's unit half landed with the first admin server fn
+  (`admin_overview`), because a scanner with no subjects passes vacuously,
+  which is the exact failure it exists to prevent. It reads server_fns.rs and
+  asserts every `pub async fn admin_*` calls `crate::auth::admin_user(` and
+  denies via `admin_not_found()`, then asserts it matched at least one
+  function. Verified by injecting an ungated `admin_danger_ungated`: the test
+  fails with that name, and passes again once removed. The e2e half of T-007
+  waits on T-004's route.
 - 2026-08-11: Reversed the IRONPAD_TEST_AUTH exclusion after review. It was
   defence in depth against a misconfiguration that is already catastrophic on
   its own, and the price was pulling the admin panel out of the shared e2e

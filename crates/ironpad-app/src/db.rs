@@ -228,6 +228,33 @@ impl Db {
         Ok(github_id.to_string())
     }
 
+    /// Row counts for the admin overview (PRD-0063).
+    ///
+    /// One query per table rather than a join: they are unrelated tables and
+    /// the panel wants a number from each, so a join would only make the
+    /// failure modes harder to read.
+    pub async fn instance_counts(&self) -> Result<(u64, u64, u64)> {
+        async fn count(db: &Surreal<LocalDb>, table: &str) -> Result<u64> {
+            let sql = format!("SELECT VALUE count() FROM {table} GROUP ALL");
+            let mut res = db
+                .query(sql)
+                .await
+                .with_context(|| format!("count of {table} failed"))?;
+            let n: Option<u64> = res
+                .take(0)
+                .with_context(|| format!("count of {table} returned an error"))?;
+            // An empty table yields no group row at all, which is 0 rather
+            // than a failure.
+            Ok(n.unwrap_or(0))
+        }
+
+        Ok((
+            count(&self.inner, "user").await?,
+            count(&self.inner, "session").await?,
+            count(&self.inner, "mutable_share").await?,
+        ))
+    }
+
     // ── Sessions ────────────────────────────────────────────────────────
 
     /// Mint a session for a user, returning the plaintext token destined for
