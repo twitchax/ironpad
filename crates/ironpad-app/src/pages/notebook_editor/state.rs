@@ -4,6 +4,9 @@ use ironpad_common::{CellManifest, IronpadNotebook};
 use leptos::prelude::*;
 
 use crate::components::monaco_editor::MonacoEditorHandle;
+#[cfg(feature = "hydrate")]
+use crate::components::toaster::ToastIntent;
+use crate::components::toaster::Toaster;
 // Re-exported so the rest of `notebook_editor` keeps importing it as
 // `super::state::CellOutputData`; the single definition lives in `output_render`.
 pub(super) use crate::components::output_render::CellOutputData;
@@ -32,6 +35,12 @@ const DRAFT_SAVE_INFLIGHT_POLL_MS: i32 = 50;
 #[cfg(feature = "hydrate")]
 const DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS: i32 = 5000;
 
+/// Lifetime (s) of the one toast a refused draft save gets. Long: it is shown
+/// once, it carries the limit and the remedy, and the alternative to reading
+/// it is losing work.
+#[cfg(feature = "hydrate")]
+const REFUSAL_TOAST_SECS: u32 = 15;
+
 // ── Cell status ─────────────────────────────────────────────────────────────
 
 /// Reactive cell execution status for the UI.
@@ -49,11 +58,66 @@ pub(super) enum CellStatus {
 
 /// Autosave state of the server draft (PRD-0054), shown beside the Push
 /// button. `Failed` self-heals: the save is rescheduled on a retry delay.
+///
+/// `Refused` does NOT self-heal, and that is the whole reason it exists
+/// (PRD-0064): a write the server declines for a storage cap will be declined
+/// identically forever, so retrying it is a loop that cannot terminate under
+/// an indicator promising that it will. The state stops the loop and says so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DraftSaveState {
     Synced,
     Saving,
     Failed,
+    /// The server refused the write for a reason no retry can change.
+    Refused,
+}
+
+/// What the toolbar's one editorial button offers (PRD-0064).
+///
+/// Derived from two independent flags rather than one: an account notebook
+/// that has never been published is permanently `dirty` by construction (its
+/// content IS the draft), so `dirty` alone cannot tell a first publish from a
+/// republish, and the button must stay armed either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PublishButton {
+    /// No published copy yet: publishing makes the link resolve at all.
+    Publish,
+    /// Published, with edits the readers have not seen.
+    Push,
+    /// Published and clean. The resting, disabled state.
+    Published,
+}
+
+impl PublishButton {
+    /// `published`: a published copy exists. `dirty`: the draft differs.
+    pub(super) fn from_flags(published: bool, dirty: bool) -> Self {
+        match (published, dirty) {
+            (false, _) => Self::Publish,
+            (true, true) => Self::Push,
+            (true, false) => Self::Published,
+        }
+    }
+
+    /// Whether clicking does anything.
+    pub(super) fn armed(self) -> bool {
+        !matches!(self, Self::Published)
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Publish => "Publish",
+            Self::Push => "Push",
+            Self::Published => "Published",
+        }
+    }
+
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Self::Publish => "Publish this notebook: its link starts working for readers",
+            Self::Push => "Publish your draft: readers see it after this",
+            Self::Published => "The published copy matches your draft",
+        }
+    }
 }
 
 // ── Notebook-level reactive state ───────────────────────────────────────────
@@ -127,6 +191,11 @@ pub(crate) struct NotebookState {
     pub(crate) server_draft_share: RwSignal<Option<String>>,
     /// The server draft differs from published — arms the Push button.
     pub(super) draft_dirty: RwSignal<bool>,
+    /// Whether the share has a published copy (PRD-0064). `false` for an
+    /// account notebook that has never been published: it is server-stored
+    /// and editable, but invisible to everyone else, so the button says
+    /// Publish and the access controls stay hidden.
+    pub(super) share_published: RwSignal<bool>,
     /// Autosave indicator state for `ServerDraft` mode.
     pub(super) draft_save_state: RwSignal<DraftSaveState>,
     /// Monotonic epoch coalescing debounced draft saves: each schedule bumps
@@ -137,6 +206,15 @@ pub(crate) struct NotebookState {
     /// have not fired yet, but a request already on the wire could land
     /// AFTER the durable write and revert the draft the promote publishes.
     pub(super) draft_save_inflight: RwSignal<u32>,
+    /// App-level toast handle, resolved once at mount.
+    ///
+    /// Carried here rather than threaded through `persist_notebook`: the
+    /// autosave chain starts at a dozen call sites that hold only a
+    /// `NotebookState`, and `leptos::task::spawn_local` does NOT propagate
+    /// the reactive owner, so a continuation cannot resolve the toaster from
+    /// context itself. `Toaster` is `Copy` and app-root-owned, which is what
+    /// makes dispatching from a post-await continuation disposal-safe.
+    pub(super) toaster: Toaster,
 }
 
 // ── Reactive execution scheduling ───────────────────────────────────────────
@@ -425,9 +503,54 @@ pub(super) fn schedule_draft_save(state: &NotebookState, after_ms: i32) {
     });
 }
 
+// ── Refused draft saves (PRD-0064) ──────────────────────────────────────────
+
+/// Substrings marking a server refusal that retrying cannot fix.
+///
+/// The autosave loop is retry-until-it-lands, which is right for a dropped
+/// connection and wrong for a full account: the same bytes are refused every
+/// time, forever, under an indicator that promises a retry. The wording is
+/// produced by `admit_mutable_write` in `server_fns.rs`, and
+/// `quota_refusals_are_classified_permanent` reads that function so the pair
+/// cannot drift apart in silence.
+#[cfg(any(feature = "hydrate", test))]
+const PERMANENT_REFUSAL_MARKERS: [&str; 3] = ["store full", "storage full", "quota"];
+
+/// Whether a failed draft save was REFUSED (permanent) rather than lost
+/// (transient).
+///
+/// Substring matching over the server's own prose, because that is all the
+/// wire carries: a server-fn error reaches the client wrapped ("error running
+/// server function: …"), so the marker has to survive being embedded rather
+/// than being the whole message. Erring toward "transient" is the safe
+/// direction — that is today's behaviour, a retry loop.
+#[cfg(any(feature = "hydrate", test))]
+pub(super) fn is_permanent_refusal(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    PERMANENT_REFUSAL_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+}
+
+/// Body of the one-time toast for a refused draft save: the server's message,
+/// which already names the limit, plus the only act that changes the answer.
+///
+/// Naming the remedy matters more here than usual — the same refusal also
+/// aborts Push, so an owner who is over the cap is locked out of both saving
+/// and publishing, and nothing else on the page says why or what to do.
+#[cfg(any(feature = "hydrate", test))]
+pub(super) fn refusal_toast_body(server_message: &str) -> String {
+    format!(
+        "{server_message}. Delete a notebook from your account to free space \
+         (Download .ironpad first if you want to keep it). Nothing you have \
+         typed since the last successful save has reached the server."
+    )
+}
+
 /// Serialize the current notebook and write the server draft, updating the
 /// indicator. Returns whether the write landed; a failure schedules a retry
-/// (epoch-guarded, so an intervening edit's own save wins).
+/// (epoch-guarded, so an intervening edit's own save wins) UNLESS the server
+/// refused it, which no retry can change.
 ///
 /// `enrich_outputs` embeds the author's last-run panels (PRD-0056) into the
 /// outgoing JSON. Only the pre-Push durable save sets it: the promote then
@@ -464,6 +587,32 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
             true
         }
         Err(e) => {
+            let message = e.to_string();
+            if is_permanent_refusal(&message) {
+                leptos::logging::warn!("draft autosave refused, not retrying: {message}");
+                // Say it ONCE. The debounce fires on every typing burst, so a
+                // toast per refusal would bury the message under copies of
+                // itself; a later success resets the state, so a fresh
+                // refusal speaks again.
+                let already_refused = matches!(
+                    state.draft_save_state.try_get_untracked(),
+                    Some(DraftSaveState::Refused)
+                );
+                if state
+                    .draft_save_state
+                    .try_set(DraftSaveState::Refused)
+                    .is_none()
+                    && !already_refused
+                {
+                    state.toaster.toast(
+                        ToastIntent::Error,
+                        "Draft Not Saved",
+                        refusal_toast_body(&message),
+                        REFUSAL_TOAST_SECS,
+                    );
+                }
+                return false;
+            }
             leptos::logging::warn!("draft autosave failed (will retry): {e}");
             if state
                 .draft_save_state
@@ -524,6 +673,132 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn publish_button_stays_armed_while_unpublished() {
+        // An account notebook that has never been published (PRD-0064) is
+        // permanently dirty by construction, but the button must not depend
+        // on that: even a (nominally) clean unpublished notebook offers
+        // Publish, because nothing is readable until it happens.
+        assert_eq!(
+            PublishButton::from_flags(false, true),
+            PublishButton::Publish
+        );
+        assert_eq!(
+            PublishButton::from_flags(false, false),
+            PublishButton::Publish
+        );
+        assert!(PublishButton::from_flags(false, false).armed());
+    }
+
+    #[test]
+    fn publish_button_reads_push_then_published_once_published() {
+        assert_eq!(PublishButton::from_flags(true, true), PublishButton::Push);
+        assert!(PublishButton::from_flags(true, true).armed());
+        assert_eq!(
+            PublishButton::from_flags(true, false),
+            PublishButton::Published
+        );
+        assert!(
+            !PublishButton::from_flags(true, false).armed(),
+            "a published, clean notebook is the one resting state"
+        );
+    }
+
+    #[test]
+    fn publish_button_labels_and_titles_are_distinct() {
+        let states = [
+            PublishButton::Publish,
+            PublishButton::Push,
+            PublishButton::Published,
+        ];
+        for (i, a) in states.iter().enumerate() {
+            for b in &states[i + 1..] {
+                assert_ne!(a.label(), b.label(), "{a:?} and {b:?} share a label");
+                assert_ne!(a.title(), b.title(), "{a:?} and {b:?} share a tooltip");
+            }
+        }
+    }
+
+    // ── Refused draft saves (PRD-0064) ──────────────────────────────────
+
+    #[test]
+    fn quota_refusals_are_classified_permanent() {
+        // The classifier keys on the SERVER's prose, so this pairing is only
+        // as good as a check that reads the server. `admit_mutable_write` is
+        // the source of truth; a reworded refusal there would otherwise put
+        // the autosave loop back on an infinite retry, silently, and the
+        // first person to find out would be a user who had already lost the
+        // afternoon's typing.
+        const SERVER_FNS: &str = include_str!("../../server_fns.rs");
+        let body = SERVER_FNS
+            .split_once("async fn admit_mutable_write(")
+            .expect("admit_mutable_write was renamed or moved out of server_fns.rs")
+            .1;
+        let body = &body[..body
+            .find("\n}\n")
+            .expect("could not find the end of admit_mutable_write")];
+
+        let refusals: Vec<&str> = body
+            .split("anyhow::bail!(")
+            .skip(1)
+            .map(|rest| &rest[..rest.find(");").expect("unterminated bail!")])
+            .collect();
+        assert_eq!(
+            refusals.len(),
+            2,
+            "expected the instance cap and the per-user cap to be the two \
+             refusals admit_mutable_write can emit; found {refusals:?}"
+        );
+        for refusal in refusals {
+            assert!(
+                is_permanent_refusal(refusal),
+                "the autosave loop would retry this refusal forever: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn transport_failures_stay_transient() {
+        // Everything that is not a refusal keeps today's behaviour, a retry.
+        for message in [
+            "error running server function: Failed to fetch",
+            "error reaching server: NetworkError when attempting to fetch resource",
+            "error running server function: mutable share not found or not yours",
+        ] {
+            assert!(
+                !is_permanent_refusal(message),
+                "{message} would stop the retry loop"
+            );
+        }
+    }
+
+    #[test]
+    fn refusal_is_classified_through_the_leptos_wrapper() {
+        // The client never sees the bare message: server_fn Display wraps it.
+        assert!(is_permanent_refusal(
+            "error running server function: account storage full: 33554432 \
+             bytes stored for this account, cap is 33554432 bytes"
+        ));
+    }
+
+    #[test]
+    fn refusal_toast_repeats_the_server_message_and_names_the_remedy() {
+        let server = "account storage full: 40000000 bytes stored for this \
+                      account, cap is 33554432 bytes";
+        let body = refusal_toast_body(server);
+        assert!(
+            body.contains(server),
+            "the limit is only named in the server's own message"
+        );
+        assert!(body.to_ascii_lowercase().contains("delete a notebook"));
+    }
+
+    #[test]
+    fn draft_save_states_are_distinct() {
+        assert_ne!(DraftSaveState::Refused, DraftSaveState::Failed);
+        assert_ne!(DraftSaveState::Refused, DraftSaveState::Synced);
     }
 
     #[test]

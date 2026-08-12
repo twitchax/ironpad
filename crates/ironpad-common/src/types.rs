@@ -598,17 +598,53 @@ pub struct PublicNotebookSummary {
 
 // ── Mutable Share Types (PRD-0049) ──────────────────────────────────────────
 
-/// Lightweight summary of a mutable share owned by a given user key, for the
-/// home-page "Published" listing and the "find everything on a fresh machine"
-/// flow. Enumerated server-side by matching the caller's user-key hash.
+/// Lightweight summary of one server-stored notebook owned by the caller,
+/// for the home-page account listing and the "find everything on a fresh
+/// machine" flow. Enumerated server-side from the caller's OWNER grants.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MutableShareSummary {
     /// Server-minted share id (the `/mutable/{id}` path segment).
     pub id: String,
     pub title: String,
-    /// ISO 8601 timestamp of the last push.
-    pub pushed_at: String,
+    /// Whether a reader-visible published copy exists (PRD-0064). An
+    /// account notebook that has never been published is 404 to everyone
+    /// but its owner, so the listing is the only place it appears.
+    #[serde(default)]
+    pub published: bool,
+    /// ISO 8601 timestamp of the last push. `None` until the first publish.
+    #[serde(default)]
+    pub pushed_at: Option<String>,
+    /// ISO 8601 timestamp the notebook entered the account.
+    #[serde(default)]
+    pub created_at: String,
     pub cell_count: usize,
+    /// The notebook's tags, so the home search matches an account notebook
+    /// on a tag exactly as it matches a local or public one.
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// The timestamp an account-notebook listing dates and orders by: the last
+/// publish, else creation. Ordering on `pushed_at` alone would sink every
+/// unpublished notebook below every published one (PRD-0064).
+///
+/// ONE home for the rule, deliberately. The server sorts owned rows by it
+/// and the home page dates cards by it, off two different structs, and a
+/// listing sorted by one definition while dated by another is a bug nobody
+/// would think to look for. Anything carrying an optional publish timestamp
+/// and a creation timestamp calls this rather than re-deriving it.
+#[must_use]
+pub fn last_activity<'a>(pushed_at: Option<&'a str>, created_at: &'a str) -> &'a str {
+    pushed_at.unwrap_or(created_at)
+}
+
+impl MutableShareSummary {
+    /// See [`last_activity`]: this is that one rule, applied to this struct's
+    /// fields. It holds no rule of its own.
+    #[must_use]
+    pub fn last_activity(&self) -> &str {
+        last_activity(self.pushed_at.as_deref(), &self.created_at)
+    }
 }
 
 // ── Accounts Types (PRD-0053) ───────────────────────────────────────────────
@@ -688,6 +724,12 @@ pub struct ShareAccess {
 pub struct MutableEditResponse {
     pub notebook: IronpadNotebook,
     pub dirty: bool,
+    /// Whether a published copy exists (PRD-0064). `dirty` cannot tell an
+    /// unpublished notebook from a published one with pending edits — the
+    /// first is permanently dirty by construction — and the toolbar says
+    /// Publish for one and Push for the other.
+    #[serde(default)]
+    pub published: bool,
     /// The share's privacy flag (PRD-0061). Serde default keeps pre-0061
     /// clients decoding.
     #[serde(default)]
@@ -699,6 +741,93 @@ pub struct MutableEditResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Account-notebook listing wire contract (PRD-0064) ───────────────
+
+    /// One rule, applied off two structs. The method must hold no rule of
+    /// its own, or the server's sort and the home page's date can disagree.
+    #[test]
+    fn last_activity_is_publish_then_creation() {
+        assert_eq!(
+            last_activity(Some("2026-08-12"), "2026-08-01"),
+            "2026-08-12"
+        );
+        assert_eq!(last_activity(None, "2026-08-01"), "2026-08-01");
+
+        let mut s = MutableShareSummary {
+            id: "abcdef0123456789".into(),
+            title: "Account Notebook".into(),
+            published: false,
+            pushed_at: None,
+            created_at: "2026-08-01T00:00:00Z".into(),
+            cell_count: 3,
+            tags: vec![],
+        };
+        assert_eq!(s.last_activity(), s.created_at);
+        assert_eq!(
+            s.last_activity(),
+            last_activity(s.pushed_at.as_deref(), &s.created_at)
+        );
+
+        s.published = true;
+        s.pushed_at = Some("2026-08-12T00:00:00Z".into());
+        assert_eq!(s.last_activity(), s.pushed_at.as_deref().unwrap());
+        assert_eq!(
+            s.last_activity(),
+            last_activity(s.pushed_at.as_deref(), &s.created_at)
+        );
+    }
+
+    /// `serde(default)` covers a MISSING field, never a null one, and the
+    /// two halves of that sentence have opposite consequences here.
+    ///
+    /// Decoding is tolerant in the direction that matters for a stale
+    /// cached bundle reading a payload it predates: absent `published`,
+    /// `created_at` and `tags` all decode.
+    ///
+    /// Encoding is NOT: an unpublished notebook puts an explicit
+    /// `"pushed_at": null` on the wire, which a client compiled against the
+    /// pre-0064 `String` rejects, failing the WHOLE `Vec` rather than one
+    /// row. That is pinned here so widening the field again is a deliberate
+    /// act; the shell's `?v={release}` cache-buster is what keeps a stale
+    /// bundle from seeing it, and `home_page.rs` logs the decode failure so
+    /// the empty group is diagnosable if one ever does.
+    #[test]
+    fn summary_decodes_a_pre_0064_payload_but_encodes_an_explicit_null() {
+        let legacy = r#"{
+            "id": "abcdef0123456789",
+            "title": "Published Before 0064",
+            "pushed_at": "2026-07-01T00:00:00Z",
+            "cell_count": 4
+        }"#;
+        let s: MutableShareSummary =
+            serde_json::from_str(legacy).expect("pre-0064 payload decodes");
+        assert_eq!(s.pushed_at.as_deref(), Some("2026-07-01T00:00:00Z"));
+        assert!(!s.published, "absent flag defaults to unpublished");
+        assert!(s.created_at.is_empty());
+        assert!(s.tags.is_empty());
+        // Still dates correctly off the one field a pre-0064 row carried.
+        assert_eq!(s.last_activity(), "2026-07-01T00:00:00Z");
+
+        let unpublished = MutableShareSummary {
+            id: "abcdef0123456789".into(),
+            title: "Never Published".into(),
+            published: false,
+            pushed_at: None,
+            created_at: "2026-08-01T00:00:00Z".into(),
+            cell_count: 1,
+            tags: vec!["wip".into()],
+        };
+        let wire = serde_json::to_string(&unpublished).unwrap();
+        assert!(
+            wire.contains("\"pushed_at\":null"),
+            "None is an explicit null on the wire, not an omission: {wire}"
+        );
+        assert_eq!(
+            serde_json::from_str::<MutableShareSummary>(&wire).unwrap(),
+            unpublished
+        );
+    }
 
     #[test]
     fn manifest_custom_deps_classification() {

@@ -32,6 +32,24 @@ use super::state::NotebookState;
 #[cfg(feature = "hydrate")]
 const MIN_SAVING_MS: i32 = 500;
 
+/// Hint under the notebook's address while it has no published copy.
+const UNPUBLISHED_URL_HINT: &str =
+    "Only you can open this. Publish to make the link work for anyone else.";
+
+/// Label for the `/mutable/{id}` address row.
+///
+/// Both storage states share one address (PRD-0064: the URL does not change
+/// when you publish), so the label is the only thing that can tell them
+/// apart. "Published at" over an unpublished notebook asserts a state that
+/// does not hold, next to a copy button that invites acting on it.
+fn published_url_label(published: bool) -> &'static str {
+    if published {
+        "Published at"
+    } else {
+        "Notebook link (not published)"
+    }
+}
+
 /// Collapsed-by-default metadata section. Expanding lazily mounts the form.
 #[component]
 pub(super) fn NotebookMetadataSection(
@@ -249,15 +267,32 @@ fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<String>>) -> impl Into
 
             {move || mutable_binding.get().map(|share_id| {
                 let url = format!("{}/mutable/{share_id}", published_origin());
+                let access_share_id = share_id;
                 view! {
                     <div class="ironpad-metadata-field">
-                        <span class="ironpad-metadata-label">"Published at"</span>
+                        <span class="ironpad-metadata-label">
+                            {move || published_url_label(state.share_published.get())}
+                        </span>
                         <div class="ironpad-metadata-published-url">
                             <code>{url.clone()}</code>
                             <CopyButton text=url />
                         </div>
+                        // An account notebook that has never been published
+                        // (PRD-0064) HAS this address and the owner can open
+                        // it; everyone else gets a 404. Labelling it
+                        // "Published at" beside a copy button told the owner
+                        // to go hand that link to someone.
+                        {move || (!state.share_published.get()).then(|| view! {
+                            <span class="ironpad-metadata-hint">{UNPUBLISHED_URL_HINT}</span>
+                        })}
                     </div>
-                    <ShareAccessSection share_id=share_id />
+                    // Access is a property of the PUBLISHED thing (PRD-0064):
+                    // an unpublished account notebook is already invisible to
+                    // everyone, so a private toggle over it would offer to
+                    // change nothing.
+                    {move || state.share_published.get().then(|| {
+                        view! { <ShareAccessSection share_id=access_share_id.clone() /> }
+                    })}
                 }
             })}
 
@@ -351,5 +386,34 @@ fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<String>>) -> impl Into
                 </button>
             </div>
         </div>
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One address serves both states (PRD-0064), so the label carries the
+    /// whole distinction: an unpublished notebook's link 404s for everyone
+    /// except its owner, and the row must not claim otherwise.
+    #[test]
+    fn unpublished_notebook_link_is_not_labelled_published() {
+        assert_eq!(published_url_label(true), "Published at");
+        let unpublished = published_url_label(false);
+        assert!(
+            !unpublished.to_ascii_lowercase().contains("published at"),
+            "an unpublished notebook's address must not read as published: {unpublished}"
+        );
+        assert!(unpublished.to_ascii_lowercase().contains("not published"));
+    }
+
+    #[test]
+    fn unpublished_hint_says_who_can_open_the_link() {
+        let hint = UNPUBLISHED_URL_HINT.to_ascii_lowercase();
+        assert!(hint.contains("only you"));
+        assert!(hint.contains("publish"));
+        assert!(!UNPUBLISHED_URL_HINT.contains('—'));
     }
 }

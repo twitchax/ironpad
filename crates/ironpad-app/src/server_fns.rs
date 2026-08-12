@@ -1132,18 +1132,70 @@ pub async fn get_shared_notebook(hash: String) -> Result<IronpadNotebook, Server
 
 /// Aggregate cap on stored mutable-share notebook JSON, drafts included
 /// (blobs live in the shared blob store under its own cap). Beyond it,
-/// creating a *new* mutable share and saving a draft are both refused;
-/// pushing an existing draft overwrites published in place and is always
-/// allowed. The cores take the cap as a parameter so tests can exercise the
-/// refusal without generating half a gigabyte of JSON.
+/// saving a notebook to an account, creating a *new* mutable share and
+/// saving a draft are all refused; pushing an existing draft overwrites
+/// published in place and is always allowed.
 #[cfg(feature = "ssr")]
 const MAX_TOTAL_MUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 
-/// A fresh unguessable 16-hex share id (64 bits of randomness, matching the
-/// immutable-share hash posture — the id doubles as the read capability).
+/// One account's share of that store (PRD-0064). Account notebooks make
+/// server storage the ordinary case rather than the publishing case, and a
+/// global cap alone lets a single account consume the instance before
+/// anybody else's first save.
 #[cfg(feature = "ssr")]
-fn random_mutable_id() -> String {
-    uuid::Uuid::new_v4().simple().to_string()[..16].to_string()
+const MAX_PER_USER_MUTABLE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The two byte caps every mutable write is admitted against. Passed into
+/// the cores rather than read from the constants there, so tests can
+/// exercise a refusal without generating half a gigabyte of JSON.
+#[cfg(feature = "ssr")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MutableQuota {
+    /// Instance-wide cap across every stored share.
+    pub total: u64,
+    /// Cap across the shares carrying one user's OWNER grant.
+    pub per_user: u64,
+}
+
+#[cfg(feature = "ssr")]
+impl MutableQuota {
+    /// The deployed caps.
+    pub(crate) const DEFAULT: Self = Self {
+        total: MAX_TOTAL_MUTABLE_BYTES,
+        per_user: MAX_PER_USER_MUTABLE_BYTES,
+    };
+}
+
+/// Admit a write of `incoming` bytes against both caps — the ONE place
+/// either is enforced, so a new write path cannot be metered against the
+/// instance and not the account.
+///
+/// Minor TOCTOU is fine: these bound steady-state storage, they are not
+/// hard quotas. Conservative by up to the size of whatever is being
+/// replaced (both totals still include it), which at worst refuses one
+/// notebook-size early near a cap.
+#[cfg(feature = "ssr")]
+async fn admit_mutable_write(
+    db: &crate::db::Db,
+    github_id: &str,
+    incoming: u64,
+    quota: MutableQuota,
+) -> anyhow::Result<()> {
+    let total = db.total_mutable_bytes().await?;
+    if total.saturating_add(incoming) > quota.total {
+        anyhow::bail!(
+            "mutable share store full: {total} bytes stored, cap is {} bytes",
+            quota.total
+        );
+    }
+    let mine = db.total_mutable_bytes_for_user(github_id).await?;
+    if mine.saturating_add(incoming) > quota.per_user {
+        anyhow::bail!(
+            "account storage full: {mine} bytes stored for this account, cap is {} bytes",
+            quota.per_user
+        );
+    }
+    Ok(())
 }
 
 /// Snapshot a notebook's warm blobs into the shared content-addressed store
@@ -1181,6 +1233,55 @@ fn manifest_to_json(manifest: Option<ironpad_common::ShareManifest>) -> Option<S
     manifest.and_then(|m| serde_json::to_string(&m).ok())
 }
 
+/// Save a notebook into the signed-in user's account (PRD-0064): a share
+/// with no published copy, whose content lives in the draft slot the editor
+/// already writes to. Returns the server-minted id (the `/mutable/{id}`
+/// path segment).
+///
+/// This is the ONE upload path. Publishing is [`push_mutable_core`] layered
+/// on top of it, so a published notebook and an account notebook differ by
+/// an editorial act rather than by a storage class — two upload paths meant
+/// two places to validate JSON, meter bytes and mint an id, and only one of
+/// them would ever get the next fix.
+#[cfg(feature = "ssr")]
+#[tracing::instrument(name = "save_notebook_to_account", level = "info", skip_all, fields(bytes = notebook_json.len()))]
+pub(crate) async fn save_notebook_to_account_core(
+    db: &crate::db::Db,
+    owner_github_id: &str,
+    notebook_json: &str,
+    quota: MutableQuota,
+) -> anyhow::Result<String> {
+    if notebook_json.len() > MAX_SHARE_BYTES {
+        anyhow::bail!(
+            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
+            notebook_json.len()
+        );
+    }
+    // Parse to reject garbage before anything is stored; only the publish
+    // path needs the notebook itself (for the blob snapshot).
+    let _: IronpadNotebook = serde_json::from_str(notebook_json)
+        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+
+    admit_mutable_write(db, owner_github_id, notebook_json.len() as u64, quota).await?;
+
+    let id = db
+        .create_account_notebook(owner_github_id, notebook_json)
+        .await?;
+    tracing::info!(id = %id, "notebook saved to account");
+    Ok(id)
+}
+
+/// Share Mutable: save into the account, then publish, in one act. Thin by
+/// construction — the create half and the publish half each already exist,
+/// and this is the only place they are performed together.
+///
+/// A failure of the publish half ROLLS BACK the create half. Share Mutable is
+/// a move: the browser deletes its local copy only on `Ok`, so returning an
+/// error while leaving the account row behind would give the user a `/local`
+/// original beside an invisible, unpublished account copy — two notebooks
+/// with no reconciliation, which is exactly what PRD-0054 deleted the local
+/// mutable store to stop — and every retry would mint another orphan against
+/// both quotas.
 #[cfg(feature = "ssr")]
 #[tracing::instrument(name = "create_mutable_share", level = "info", skip_all, fields(bytes = notebook_json.len()))]
 pub(crate) async fn create_mutable_share_core(
@@ -1190,46 +1291,27 @@ pub(crate) async fn create_mutable_share_core(
     owner_github_id: &str,
     notebook_json: &str,
     cell_type_tags: &[String],
-    max_total_bytes: u64,
+    quota: MutableQuota,
 ) -> anyhow::Result<String> {
-    if notebook_json.len() > MAX_SHARE_BYTES {
-        anyhow::bail!(
-            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
-            notebook_json.len()
-        );
-    }
-    let notebook: IronpadNotebook = serde_json::from_str(notebook_json)
-        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
-
-    // Aggregate cap for a NEW share (minor TOCTOU is fine; the cap bounds
-    // steady-state storage, it is not a hard quota).
-    let existing_total = db.total_mutable_bytes().await?;
-    if existing_total.saturating_add(notebook_json.len() as u64) > max_total_bytes {
-        anyhow::bail!(
-            "mutable share store full: {existing_total} bytes stored, cap is {max_total_bytes}"
-        );
-    }
-
-    // Mint an id that isn't already taken. Collisions are astronomically
-    // unlikely at 64 bits; the loop is a belt-and-suspenders guard.
-    let mut minted = None;
-    for _ in 0..8 {
-        let candidate = random_mutable_id();
-        if !db.mutable_share_exists(&candidate).await? {
-            minted = Some(candidate);
-            break;
-        }
-    }
-    let id = minted.ok_or_else(|| anyhow::anyhow!("failed to mint a unique mutable id"))?;
-
-    let manifest = snapshot_mutable_manifest(data_dir, cache_dir, &notebook, cell_type_tags).await;
-    db.create_mutable_share(
-        &id,
+    let id = save_notebook_to_account_core(db, owner_github_id, notebook_json, quota).await?;
+    if let Err(e) = push_mutable_core(
+        db,
+        data_dir,
+        cache_dir,
         owner_github_id,
-        notebook_json,
-        manifest_to_json(manifest),
+        &id,
+        cell_type_tags,
     )
-    .await?;
+    .await
+    {
+        // Safe by construction: this id was minted moments ago inside this
+        // call and has never been returned to anyone, so the only content it
+        // can hold is the upload that just failed to publish.
+        if let Err(cleanup) = db.delete_mutable_share(&id).await {
+            tracing::error!(id = %id, error = %cleanup, "rollback of a half-created mutable share failed; an unpublished orphan remains");
+        }
+        return Err(e.context("publish failed; the notebook was not saved"));
+    }
 
     tracing::info!(id = %id, "mutable share created");
     Ok(id)
@@ -1245,7 +1327,7 @@ pub(crate) async fn save_mutable_draft_core(
     github_id: &str,
     id: &str,
     notebook_json: &str,
-    max_total_bytes: u64,
+    quota: MutableQuota,
 ) -> anyhow::Result<()> {
     if notebook_json.len() > MAX_SHARE_BYTES {
         anyhow::bail!(
@@ -1258,17 +1340,10 @@ pub(crate) async fn save_mutable_draft_core(
     if !db.user_owns_share(github_id, id).await? {
         anyhow::bail!("unauthorized: you do not own this share");
     }
-    // Aggregate cap: drafts count (they are the one write path an owner can
-    // drive at will; uncounted, N tiny shares each autosaving a 4 MiB draft
-    // would grow storage unboundedly). Conservative by up to the size of the
-    // draft being replaced — the total still includes it — which at worst
-    // refuses one draft-size early near the cap.
-    let existing_total = db.total_mutable_bytes().await?;
-    if existing_total.saturating_add(notebook_json.len() as u64) > max_total_bytes {
-        anyhow::bail!(
-            "mutable share store full: {existing_total} bytes stored, cap is {max_total_bytes}"
-        );
-    }
+    // Drafts count toward both caps: they are the one write path an owner
+    // can drive at will, and uncounted, N tiny shares each autosaving a
+    // 4 MiB draft would grow storage unboundedly.
+    admit_mutable_write(db, github_id, notebook_json.len() as u64, quota).await?;
     db.save_draft(id, notebook_json).await
 }
 
@@ -1294,7 +1369,11 @@ pub(crate) async fn push_mutable_core(
         .get_share_for_edit(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("mutable share not found"))?;
-    if !edit.dirty {
+    // "Nothing to push" requires a published copy to be up to date WITH.
+    // An account notebook that has never been published (PRD-0064) is
+    // permanently dirty by construction — its content IS the draft — so a
+    // short circuit on `dirty` alone would refuse to ever publish it.
+    if edit.published && !edit.dirty {
         return Ok(false);
     }
 
@@ -1315,6 +1394,19 @@ pub(crate) async fn push_mutable_core(
     Ok(true)
 }
 
+/// The ONE "is there a reader-facing copy" predicate (PRD-0064). A share
+/// whose `notebook_json` is `None` has content only in its draft slot: an
+/// account notebook that has never been published, or one that has been
+/// unpublished in place. Every reader surface — the reader page, the embed,
+/// the OG card, oEmbed, and the blob manifest — must read that as "no such
+/// notebook", so the rule is written once and consumed by all three access
+/// cores. Restating it per surface is how a fourth surface inherits two of
+/// the three.
+#[cfg(feature = "ssr")]
+fn published_copy(row: &crate::db::MutableShareRow) -> Option<&str> {
+    row.notebook_json.as_deref()
+}
+
 /// Fetch just the notebook of a mutable share for ANONYMOUS surfaces — the
 /// OG-card handler, the oEmbed provider, and tests. A private share returns
 /// `None` here unconditionally (PRD-0061): these surfaces serve crawlers and
@@ -1329,12 +1421,37 @@ pub async fn get_mutable_notebook_core(
     let Some(row) = db.get_mutable_share(id).await? else {
         return Ok(None);
     };
+    let Some(notebook_json) = published_copy(&row) else {
+        return Ok(None);
+    };
     if row.private {
         return Ok(None);
     }
-    serde_json::from_str(&row.notebook_json)
+    serde_json::from_str(notebook_json)
         .map(Some)
         .map_err(|e| anyhow::anyhow!("invalid stored notebook: {e}"))
+}
+
+/// Unpublish in place (PRD-0064): clear the published copy and its manifest,
+/// keeping the notebook in its owner's account, at the same id, still
+/// editable. The db call folds the published copy back into an empty draft
+/// slot, so the content is never briefly nowhere — which is exactly what the
+/// old save-to-`IndexedDB`-then-delete dance risked.
+#[cfg(feature = "ssr")]
+#[tracing::instrument(name = "unpublish_mutable", level = "info", skip_all, fields(id = %id))]
+pub(crate) async fn unpublish_mutable_core(
+    db: &crate::db::Db,
+    github_id: &str,
+    id: &str,
+) -> anyhow::Result<()> {
+    // Same gate, same non-oracle as every other owner action: a share you do
+    // not own reads exactly like one that does not exist.
+    if !db.user_owns_share(github_id, id).await? {
+        anyhow::bail!("unauthorized: you do not own this share");
+    }
+    db.unpublish_share(id).await?;
+    tracing::info!(id = %id, "mutable share unpublished");
+    Ok(())
 }
 
 #[cfg(feature = "ssr")]
@@ -1350,7 +1467,7 @@ pub(crate) async fn delete_mutable_core(
     // references them and bounded by the blob-store cap, so (like immutable
     // unshares) they are left in place; only the record + grants go.
     db.delete_mutable_share(id).await?;
-    tracing::info!(id = %id, "mutable share unpublished");
+    tracing::info!(id = %id, "mutable share deleted");
     Ok(())
 }
 
@@ -1364,27 +1481,46 @@ pub(crate) async fn list_mutable_core(
     Ok(rows
         .into_iter()
         .filter_map(|row| {
+            // Draft-or-published content, so an unpublished notebook is
+            // titled from the copy that exists (PRD-0064).
             let nb: IronpadNotebook = serde_json::from_str(&row.notebook_json).ok()?;
             Some(ironpad_common::MutableShareSummary {
                 id: row.id,
                 title: nb.title,
+                published: row.published,
                 pushed_at: row.pushed_at,
+                created_at: row.created_at,
                 cell_count: nb.cells.len(),
+                tags: nb.tags.unwrap_or_default(),
             })
         })
         .collect())
 }
 
 /// Resolve the signed-in user or fail the (write) server fn with a clear,
-/// toast-ready message.
+/// toast-ready message. Shared by the save and the publish paths, so the
+/// wording names both (PRD-0064).
 #[cfg(feature = "ssr")]
 async fn require_login(db: &crate::db::Db) -> Result<crate::db::AuthUser, ServerFnError> {
     crate::auth::current_user(db)
         .await
-        .ok_or_else(|| ServerFnError::new("sign in with GitHub to publish"))
+        .ok_or_else(|| ServerFnError::new("sign in with GitHub to save or publish notebooks"))
 }
 
-/// Convert a notebook into a mutable share owned by the signed-in user.
+/// Save a notebook into the signed-in user's account (PRD-0064): server
+/// stored, editable at `/mutable/{id}`, and invisible to everyone else
+/// until it is published. Returns the server-minted id.
+#[server]
+pub async fn save_notebook_to_account(notebook_json: String) -> Result<String, ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    let user = require_login(&db).await?;
+    save_notebook_to_account_core(&db, &user.github_id, &notebook_json, MutableQuota::DEFAULT)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Convert a notebook into a PUBLISHED mutable share owned by the signed-in
+/// user: [`save_notebook_to_account`] plus the publish, in one call.
 /// Returns the server-minted id (the `/mutable/{id}` path segment).
 #[server]
 pub async fn create_mutable_share(
@@ -1405,7 +1541,7 @@ pub async fn create_mutable_share(
         &user.github_id,
         &notebook_json,
         &cell_type_tags.unwrap_or_default(),
-        MAX_TOTAL_MUTABLE_BYTES,
+        MutableQuota::DEFAULT,
     )
     .await
     .map_err(|e| ServerFnError::new(e.to_string()))
@@ -1445,7 +1581,7 @@ pub async fn save_mutable_draft(id: String, notebook_json: String) -> Result<(),
         &user.github_id,
         &id,
         &notebook_json,
-        MAX_TOTAL_MUTABLE_BYTES,
+        MutableQuota::DEFAULT,
     )
     .await
     .map_err(|e| ServerFnError::new(e.to_string()))
@@ -1471,13 +1607,20 @@ pub async fn get_mutable_for_edit(
     Ok(Some(ironpad_common::MutableEditResponse {
         notebook,
         dirty: edit.dirty,
+        published: edit.published,
         private: edit.private,
     }))
 }
 
 /// Discard the draft: revert the editor to the published copy (PRD-0054).
+///
+/// `Ok(false)` means nothing was discarded — mirroring [`push_mutable`]'s
+/// "already clean". An unpublished account notebook's draft IS its content
+/// (PRD-0064), so there is nothing to revert to and the write is declined;
+/// reporting success would have the editor announce a revert and reload over
+/// content nothing touched.
 #[server]
-pub async fn discard_mutable_draft(id: String) -> Result<(), ServerFnError> {
+pub async fn discard_mutable_draft(id: String) -> Result<bool, ServerFnError> {
     let db = expect_context::<crate::db::Db>();
     require_share_owner(&db, &id).await?;
     db.discard_draft(&id)
@@ -1524,13 +1667,26 @@ pub async fn mutable_access_core(
         return Ok(MutableNotebookAccess::NotFound);
     };
 
+    // BEFORE the privacy gate, deliberately. Unpublishing does not clear the
+    // private flag, so checking privacy first would answer "this notebook is
+    // private, ask the author for access" for a notebook that was published
+    // privately and then unpublished, while the same notebook published
+    // publicly and then unpublished answers not-found. That tells a stranger
+    // a specific id exists and belongs to someone, and splits one state into
+    // two distinguishable answers. Unpublished is indistinguishable from
+    // private-with-no-grants (PRD-0064), which means it reads as NotFound
+    // whatever the flag happens to say.
+    let Some(notebook_json) = published_copy(&row) else {
+        return Ok(MutableNotebookAccess::NotFound);
+    };
+
     if !private_share_readable(db, id, row.private, viewer).await? {
         return Ok(MutableNotebookAccess::Private {
             signed_in: viewer.is_some(),
         });
     }
 
-    let notebook: IronpadNotebook = serde_json::from_str(&row.notebook_json)
+    let notebook: IronpadNotebook = serde_json::from_str(notebook_json)
         .map_err(|e| anyhow::anyhow!("invalid stored notebook: {e}"))?;
     let is_owner = matches!(
         (viewer, &row.owner),
@@ -1575,6 +1731,14 @@ pub(crate) async fn mutable_manifest_access_core(
     let Some(row) = db.get_mutable_share(id).await? else {
         return Ok(None);
     };
+    // No published copy, no reader-facing blobs to name (PRD-0064). The
+    // manifest is cleared on unpublish and never written for an account
+    // notebook, so this is belt and braces — but the manifest is the hash
+    // list that unlocks the ungated `/share-blobs/` route, and it must be
+    // withheld everywhere the notebook is.
+    if published_copy(&row).is_none() {
+        return Ok(None);
+    }
     if !private_share_readable(db, id, row.private, viewer).await? {
         return Ok(None);
     }
@@ -1602,6 +1766,18 @@ pub async fn delete_mutable_share(id: String) -> Result<(), ServerFnError> {
     let db = expect_context::<crate::db::Db>();
     let user = require_login(&db).await?;
     delete_mutable_core(&db, &user.github_id, &id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// Unpublish a mutable share (PRD-0064): the published copy goes away, the
+/// notebook stays in the owner's account and keeps its `/mutable/{id}` URL.
+/// Publishing again is a Push.
+#[server]
+pub async fn unpublish_mutable_share(id: String) -> Result<(), ServerFnError> {
+    let db = expect_context::<crate::db::Db>();
+    let user = require_login(&db).await?;
+    unpublish_mutable_core(&db, &user.github_id, &id)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
@@ -1710,8 +1886,11 @@ pub async fn get_mutable_access(id: String) -> Result<ironpad_common::ShareAcces
     })
 }
 
-/// Enumerate the mutable shares owned by the signed-in user (the home-page
-/// "Published" listing). Anonymous callers get an empty list, not an error.
+/// Enumerate the notebooks stored in the signed-in user's account: every
+/// share they own, published or not (PRD-0064), each flagged with whether a
+/// reader-visible copy exists. This listing is the ONLY surface an
+/// unpublished notebook appears on. Anonymous callers get an empty list,
+/// not an error.
 #[server]
 pub async fn list_mutable_shares() -> Result<Vec<ironpad_common::MutableShareSummary>, ServerFnError>
 {
@@ -2796,6 +2975,31 @@ mod tests {
         serde_json::to_string(&nb).unwrap()
     }
 
+    /// A PUBLISHED share carrying a real blob manifest, minted the only way
+    /// production mints one: an account notebook promoted by a push. There
+    /// is no create-a-published-row shortcut any more, deliberately — a
+    /// fixture that wrote one could keep tests green against a row shape no
+    /// code path produces.
+    async fn published_share_with_manifest(
+        db: &crate::db::Db,
+        owner_github_id: &str,
+        notebook_json: &str,
+    ) -> String {
+        let manifest = serde_json::to_string(&ironpad_common::ShareManifest {
+            version: 1,
+            cells: std::collections::BTreeMap::new(),
+        })
+        .unwrap();
+        let id = db
+            .create_account_notebook(owner_github_id, notebook_json)
+            .await
+            .unwrap();
+        db.promote_draft(&id, Some(manifest), notebook_json.len() as u64)
+            .await
+            .unwrap();
+        id
+    }
+
     /// A DB seeded with two users: "1" (alice) and "2" (bob).
     async fn accounts_db() -> (tempfile::TempDir, crate::db::Db) {
         let dir = tempfile::tempdir().unwrap();
@@ -2833,7 +3037,7 @@ mod tests {
             "1",
             VALID_NOTEBOOK_JSON,
             &[String::new()],
-            MAX_TOTAL_MUTABLE_BYTES,
+            MutableQuota::DEFAULT,
         )
         .await
         .unwrap();
@@ -2899,41 +3103,32 @@ mod tests {
         // is the hash list unlocking the ungated /share-blobs route, so the
         // signed-in arms matter as much as the anonymous one. A share with
         // an actual manifest distinguishes denial (None) from admission.
-        let manifest = serde_json::to_string(&ironpad_common::ShareManifest {
-            version: 1,
-            cells: std::collections::BTreeMap::new(),
-        })
-        .unwrap();
-        db.create_mutable_share("manifested0000ff", "1", VALID_NOTEBOOK_JSON, Some(manifest))
-            .await
-            .unwrap();
-        db.set_share_private("manifested0000ff", true)
-            .await
-            .unwrap();
+        let manifested = published_share_with_manifest(&db, "1", VALID_NOTEBOOK_JSON).await;
+        db.set_share_private(&manifested, true).await.unwrap();
         assert!(
-            mutable_manifest_access_core(&db, "manifested0000ff", None)
+            mutable_manifest_access_core(&db, &manifested, None)
                 .await
                 .unwrap()
                 .is_none(),
             "anonymous: manifest withheld"
         );
         assert!(
-            mutable_manifest_access_core(&db, "manifested0000ff", Some(&bob))
+            mutable_manifest_access_core(&db, &manifested, Some(&bob))
                 .await
                 .unwrap()
                 .is_none(),
             "signed-in non-grantee: manifest withheld"
         );
-        db.grant_read("manifested0000ff", "2").await.unwrap();
+        db.grant_read(&manifested, "2").await.unwrap();
         assert!(
-            mutable_manifest_access_core(&db, "manifested0000ff", Some(&bob))
+            mutable_manifest_access_core(&db, &manifested, Some(&bob))
                 .await
                 .unwrap()
                 .is_some(),
             "grantee: manifest served"
         );
         assert!(
-            mutable_manifest_access_core(&db, "manifested0000ff", Some(&alice))
+            mutable_manifest_access_core(&db, &manifested, Some(&alice))
                 .await
                 .unwrap()
                 .is_some(),
@@ -2959,7 +3154,7 @@ mod tests {
             "1",
             VALID_NOTEBOOK_JSON,
             &[String::new()],
-            MAX_TOTAL_MUTABLE_BYTES,
+            MutableQuota::DEFAULT,
         )
         .await
         .unwrap();
@@ -2982,7 +3177,7 @@ mod tests {
             "1",
             &id,
             &zero_cell_notebook_json("Pushed"),
-            MAX_TOTAL_MUTABLE_BYTES,
+            MutableQuota::DEFAULT,
         )
         .await
         .expect("owner draft save");
@@ -3023,7 +3218,7 @@ mod tests {
             "2",
             &id,
             &zero_cell_notebook_json("nope"),
-            MAX_TOTAL_MUTABLE_BYTES,
+            MutableQuota::DEFAULT,
         )
         .await
         .unwrap_err()
@@ -3057,6 +3252,82 @@ mod tests {
         assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_none());
     }
 
+    /// Unpublish is in place (PRD-0064): the published copy goes, the
+    /// notebook stays. The old flow saved to `IndexedDB` and DELETED the
+    /// share, so this asserts the notebook survives the round trip at the
+    /// same id — the whole point of the change.
+    #[tokio::test]
+    async fn unpublish_clears_the_published_copy_and_keeps_the_notebook() {
+        let (_dbdir, db) = accounts_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        let id = create_mutable_share_core(
+            &db,
+            data.path(),
+            cache.path(),
+            "1",
+            &zero_cell_notebook_json("Published Once"),
+            &[],
+            MutableQuota::DEFAULT,
+        )
+        .await
+        .unwrap();
+        assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_some());
+
+        // A non-owner cannot unpublish someone else's notebook.
+        assert!(unpublish_mutable_core(&db, "2", &id).await.is_err());
+        assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_some());
+
+        unpublish_mutable_core(&db, "1", &id).await.unwrap();
+        assert!(
+            get_mutable_notebook_core(&db, &id).await.unwrap().is_none(),
+            "an unpublished notebook is 404 on every anonymous surface"
+        );
+        assert!(
+            mutable_manifest_access_core(&db, &id, None)
+                .await
+                .unwrap()
+                .is_none(),
+            "the manifest is the hash list; it goes with the published copy"
+        );
+
+        // Still in the account, still editable, content intact.
+        let edit = db
+            .get_share_for_edit(&id)
+            .await
+            .unwrap()
+            .expect("the notebook is still in the account");
+        assert!(!edit.published);
+        assert!(
+            edit.dirty,
+            "unpublished is permanently dirty, which arms Publish"
+        );
+        assert_eq!(
+            serde_json::from_str::<IronpadNotebook>(&edit.notebook_json)
+                .unwrap()
+                .title,
+            "Published Once"
+        );
+        let listed = list_mutable_core(&db, "1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].published);
+
+        // Publishing again lands on the SAME id: the URL never changes.
+        assert!(
+            push_mutable_core(&db, data.path(), cache.path(), "1", &id, &[])
+                .await
+                .unwrap()
+        );
+        assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_some());
+
+        // Idempotent: a second unpublish is a no-op, not a delete.
+        unpublish_mutable_core(&db, "1", &id).await.unwrap();
+        unpublish_mutable_core(&db, "1", &id).await.unwrap();
+        assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_none());
+        assert!(db.get_share_for_edit(&id).await.unwrap().is_some());
+    }
+
     #[tokio::test]
     async fn mutable_list_enumerates_only_the_owners_shares() {
         let (_dbdir, db) = accounts_db().await;
@@ -3071,7 +3342,7 @@ mod tests {
                 owner,
                 &zero_cell_notebook_json(title),
                 &[],
-                MAX_TOTAL_MUTABLE_BYTES,
+                MutableQuota::DEFAULT,
             )
             .await
             .unwrap();
@@ -3098,7 +3369,7 @@ mod tests {
             "1",
             VALID_NOTEBOOK_JSON,
             &[String::new()],
-            MAX_TOTAL_MUTABLE_BYTES,
+            MutableQuota::DEFAULT,
         )
         .await
         .unwrap();
@@ -3118,7 +3389,7 @@ mod tests {
             "1",
             "not json",
             &[],
-            MAX_TOTAL_MUTABLE_BYTES,
+            MutableQuota::DEFAULT,
         )
         .await
         .is_err());
@@ -3135,7 +3406,10 @@ mod tests {
         // entirely, making stored bytes owner-drivable without limit.
         let published = zero_cell_notebook_json("Capped");
         let draft = zero_cell_notebook_json("Drafty");
-        let one_byte_short = published.len() as u64 + draft.len() as u64 - 1;
+        let one_byte_short = MutableQuota {
+            total: published.len() as u64 + draft.len() as u64 - 1,
+            ..MutableQuota::DEFAULT
+        };
         let id = create_mutable_share_core(
             &db,
             data.path(),
@@ -3158,13 +3432,460 @@ mod tests {
         // draft passes a cap of total + one draft: the check is conservative
         // (it still counts the draft being replaced) but the slot itself is
         // replaced, not appended.
-        save_mutable_draft_core(&db, "1", &id, &draft, MAX_TOTAL_MUTABLE_BYTES)
+        save_mutable_draft_core(&db, "1", &id, &draft, MutableQuota::DEFAULT)
             .await
             .expect("draft fits under the real cap");
         let total = db.total_mutable_bytes().await.unwrap();
         assert_eq!(total, (published.len() + draft.len()) as u64);
-        save_mutable_draft_core(&db, "1", &id, &draft, total + draft.len() as u64)
+        save_mutable_draft_core(
+            &db,
+            "1",
+            &id,
+            &draft,
+            MutableQuota {
+                total: total + draft.len() as u64,
+                ..MutableQuota::DEFAULT
+            },
+        )
+        .await
+        .expect("replacing the draft is bounded, not accumulating");
+    }
+
+    // ── Account notebooks (PRD-0064) ────────────────────────────────
+
+    /// The whole visibility claim of PRD-0064, asserted surface by surface:
+    /// an unpublished account notebook is 404 to EVERYONE but its owner.
+    /// The signed-in non-owner is the arm that matters — "anonymous cannot
+    /// see it" would also hold if the row were merely private, and the
+    /// denial has to be about there being no published copy at all.
+    #[tokio::test]
+    async fn account_notebooks_are_invisible_until_published() {
+        use ironpad_common::MutableNotebookAccess as Access;
+
+        let (_dbdir, db) = accounts_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let bob = crate::db::AuthUser {
+            github_id: "2".into(),
+            login: "bob".into(),
+            avatar_url: String::new(),
+        };
+
+        let id =
+            save_notebook_to_account_core(&db, "1", VALID_NOTEBOOK_JSON, MutableQuota::DEFAULT)
+                .await
+                .expect("owner saves to their account");
+        assert_eq!(id.len(), 16, "server mints a 16-hex id");
+
+        // Reader page and embed (mutable_access_core), OG card and oEmbed
+        // (get_mutable_notebook_core), and the manifest that unlocks the
+        // ungated blob route.
+        assert_eq!(
+            mutable_access_core(&db, &id, None).await.unwrap(),
+            Access::NotFound,
+            "anonymous visitors must not see an unpublished notebook"
+        );
+        assert_eq!(
+            mutable_access_core(&db, &id, Some(&bob)).await.unwrap(),
+            Access::NotFound,
+            "a signed-in non-owner must not see an unpublished notebook"
+        );
+        assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_none());
+        for viewer in [None, Some(&bob)] {
+            assert!(
+                mutable_manifest_access_core(&db, &id, viewer)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "the manifest is the hash list; it goes nowhere the notebook does not"
+            );
+        }
+
+        // The owner edits it: draft content, permanently dirty, not
+        // published. `get_mutable_for_edit` is a pass-through over this row
+        // (owner gate + parse), so this is what it serves.
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(edit.dirty, "an account notebook IS its draft");
+        assert!(!edit.published);
+        let stored: IronpadNotebook = serde_json::from_str(&edit.notebook_json).unwrap();
+        assert_eq!(stored.title, "Test Notebook");
+
+        // It is listed for its owner regardless, flagged unpublished and
+        // dated from creation, and listed for nobody else.
+        let listed = list_mutable_core(&db, "1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].published);
+        assert!(listed[0].pushed_at.is_none());
+        assert!(!listed[0].created_at.is_empty());
+        assert_eq!(listed[0].last_activity(), listed[0].created_at);
+        assert!(list_mutable_core(&db, "2").await.unwrap().is_empty());
+
+        // Publishing it is the ordinary push: no draft-to-published dance,
+        // and the short circuit must not mistake "never published" for
+        // "nothing to push".
+        assert!(
+            push_mutable_core(&db, data.path(), cache.path(), "1", &id, &[])
+                .await
+                .expect("owner publishes"),
+            "an unpublished account notebook always has something to push"
+        );
+        assert!(matches!(
+            mutable_access_core(&db, &id, None).await.unwrap(),
+            Access::Found(_)
+        ));
+        let listed = list_mutable_core(&db, "1").await.unwrap();
+        assert!(listed[0].published);
+        assert_eq!(
+            listed[0].last_activity(),
+            listed[0].pushed_at.as_deref().unwrap()
+        );
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(edit.published && !edit.dirty, "published and clean");
+
+        // And now, with a published copy to be up to date with, a second
+        // push reports "nothing to do".
+        assert!(
+            !push_mutable_core(&db, data.path(), cache.path(), "1", &id, &[])
+                .await
+                .expect("clean push is Ok(false)")
+        );
+    }
+
+    /// Unpublishing does not clear the private flag, so the denial a reader
+    /// receives must not be allowed to depend on it. A notebook published
+    /// privately and then unpublished has to answer exactly what one
+    /// published publicly and then unpublished answers, and what an id that
+    /// never existed answers. "This notebook is private, ask the author for
+    /// access" tells a stranger that this specific id exists and belongs to
+    /// someone, and splits one state into two distinguishable replies —
+    /// PRD-0064 makes unpublished indistinguishable from
+    /// private-with-no-grants on purpose.
+    #[tokio::test]
+    async fn an_unpublished_notebook_reads_as_not_found_whatever_its_private_flag_says() {
+        use ironpad_common::MutableNotebookAccess as Access;
+
+        let (_dbdir, db) = accounts_db().await;
+        let bob = crate::db::AuthUser {
+            github_id: "2".into(),
+            login: "bob".into(),
+            avatar_url: String::new(),
+        };
+
+        // Published privately, then unpublished. The flag survives, which is
+        // the whole hazard.
+        let was_private = published_share_with_manifest(&db, "1", VALID_NOTEBOOK_JSON).await;
+        db.set_share_private(&was_private, true).await.unwrap();
+        db.unpublish_share(&was_private).await.unwrap();
+        assert!(
+            db.get_share_for_edit(&was_private)
+                .await
+                .unwrap()
+                .unwrap()
+                .private,
+            "the fixture must still be flagged private, or this test proves nothing"
+        );
+
+        // Published publicly, then unpublished.
+        let was_public = published_share_with_manifest(&db, "1", VALID_NOTEBOOK_JSON).await;
+        db.unpublish_share(&was_public).await.unwrap();
+
+        // Never published at all.
+        let never =
+            save_notebook_to_account_core(&db, "1", VALID_NOTEBOOK_JSON, MutableQuota::DEFAULT)
+                .await
+                .unwrap();
+
+        for (state, id) in [
+            ("published privately, then unpublished", &was_private),
+            ("published publicly, then unpublished", &was_public),
+            ("never published", &never),
+        ] {
+            for (who, viewer) in [("anonymous", None), ("a signed-in stranger", Some(&bob))] {
+                assert_eq!(
+                    mutable_access_core(&db, id, viewer).await.unwrap(),
+                    Access::NotFound,
+                    "{who} must get the same answer for a notebook {state} as for an id \
+                     that never existed"
+                );
+            }
+            // The three reader surfaces agree because they consult ONE
+            // predicate; asserting them together is what would catch a fourth
+            // surface inheriting two of the three.
+            assert!(get_mutable_notebook_core(&db, id).await.unwrap().is_none());
+            for viewer in [None, Some(&bob)] {
+                assert!(
+                    mutable_manifest_access_core(&db, id, viewer)
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "the manifest is the hash list; it goes nowhere the notebook does not"
+                );
+            }
+        }
+
+        // The reference answer these are all being held against.
+        assert_eq!(
+            mutable_access_core(&db, "0000000000000000", None)
+                .await
+                .unwrap(),
+            Access::NotFound
+        );
+    }
+
+    /// Share Mutable is a MOVE (PRD-0064): the browser deletes its local copy
+    /// only when this returns `Ok`. So a create half that survives a failed
+    /// publish half leaves the user a `/local` original beside an invisible,
+    /// unpublished account copy — two notebooks with no reconciliation, which
+    /// is the exact failure PRD-0054 deleted the local mutable store to
+    /// remove — and every retry mints another orphan against both quotas.
+    #[tokio::test]
+    async fn a_failed_publish_rolls_back_the_notebook_it_just_uploaded() {
+        let (_dbdir, db) = accounts_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        // Fail the PUBLISH half only: the save still lands, so what is being
+        // tested is the rollback rather than a create that never happened.
+        db.break_publish_for_tests().await.unwrap();
+
+        for attempt in 1..=2 {
+            let Err(err) = create_mutable_share_core(
+                &db,
+                data.path(),
+                cache.path(),
+                "1",
+                VALID_NOTEBOOK_JSON,
+                &[],
+                MutableQuota::DEFAULT,
+            )
             .await
-            .expect("replacing the draft is bounded, not accumulating");
+            else {
+                panic!("attempt {attempt}: the publish must fail, or this proves nothing");
+            };
+            assert!(
+                err.to_string().contains("publish failed"),
+                "attempt {attempt}: the caller has to learn the notebook was not saved: {err}"
+            );
+
+            // ONE recoverable copy of this notebook exists, and it is the
+            // caller's local one. Retrying must not stack up orphans either.
+            assert!(
+                list_mutable_core(&db, "1").await.unwrap().is_empty(),
+                "attempt {attempt}: a half-created share is an orphan its owner can \
+                 neither see on the home page nor reach at a URL"
+            );
+            assert_eq!(
+                db.total_mutable_bytes().await.unwrap(),
+                0,
+                "attempt {attempt}: and it must not be charged to either quota"
+            );
+            assert_eq!(db.total_mutable_bytes_for_user("1").await.unwrap(), 0);
+        }
+    }
+
+    /// Share Mutable is save-then-publish over the SAME create path, not a
+    /// second uploader. Two of them meant two places to meter bytes and
+    /// mint an id.
+    #[tokio::test]
+    async fn share_mutable_is_the_account_save_plus_a_publish() {
+        let (_dbdir, db) = accounts_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        let id = create_mutable_share_core(
+            &db,
+            data.path(),
+            cache.path(),
+            "1",
+            VALID_NOTEBOOK_JSON,
+            &[String::new()],
+            MutableQuota::DEFAULT,
+        )
+        .await
+        .unwrap();
+
+        // Indistinguishable from the pre-0064 direct create: published,
+        // clean, dated, readable, and byte-accounted.
+        let row = db.get_mutable_share(&id).await.unwrap().unwrap();
+        assert!(row.notebook_json.is_some());
+        assert!(
+            list_mutable_core(&db, "1").await.unwrap()[0]
+                .pushed_at
+                .is_some(),
+            "the publish dated it"
+        );
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(edit.published && !edit.dirty);
+        assert_eq!(
+            get_mutable_notebook_core(&db, &id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Test Notebook"
+        );
+        assert_eq!(
+            db.total_mutable_bytes().await.unwrap(),
+            VALID_NOTEBOOK_JSON.len() as u64,
+            "the draft slot is emptied by the promote, so bytes are counted once"
+        );
+
+        // The validation the create path owns still runs through it.
+        assert!(create_mutable_share_core(
+            &db,
+            data.path(),
+            cache.path(),
+            "1",
+            "not json",
+            &[],
+            MutableQuota::DEFAULT,
+        )
+        .await
+        .is_err());
+    }
+
+    /// The manifest is the FIFTH reader-facing surface, and the only one that
+    /// funnels through NEITHER `get_mutable_notebook_core` nor
+    /// `mutable_access_core`: it has its own core, reading `manifest_json`
+    /// off the row. PRD-0064's "visibility is free, everything goes through
+    /// the one gate" claim is therefore false here, and
+    /// `mutable_manifest_access_core` carries an explicit
+    /// `notebook_json.is_none()` arm because of it.
+    ///
+    /// That matters more than it looks: the manifest is the hash list, and
+    /// the content-addressed `/share-blobs/` route is deliberately ungated
+    /// on the theory that hashes are only knowable FROM a manifest. Handing
+    /// one out for a notebook nobody may read hands out the blobs too.
+    ///
+    /// Two independent defenses, so each gets its own assertion — either one
+    /// alone makes the black-box behavior correct, which is exactly how a
+    /// regression in one of them hides.
+    #[tokio::test]
+    async fn the_manifest_is_withheld_wherever_the_notebook_is() {
+        use ironpad_common::MutableNotebookAccess as Access;
+
+        let (_dbdir, db) = accounts_db().await;
+        let alice = crate::db::AuthUser {
+            github_id: "1".into(),
+            login: "alice".into(),
+            avatar_url: String::new(),
+        };
+        let bob = crate::db::AuthUser {
+            github_id: "2".into(),
+            login: "bob".into(),
+            avatar_url: String::new(),
+        };
+        // A REAL manifest on the row, so "withheld" is distinguishable from
+        // "there was nothing to serve" — a test that cannot tell those apart
+        // passes against a gate that does nothing.
+        let id = published_share_with_manifest(&db, "1", VALID_NOTEBOOK_JSON).await;
+        let id = id.as_str();
+        assert!(
+            mutable_manifest_access_core(&db, id, None)
+                .await
+                .unwrap()
+                .is_some(),
+            "published and public: the manifest is served, so the assertions below can fail"
+        );
+
+        // Unpublish in place (PRD-0064): the notebook stops being reader
+        // facing, and its hash list must stop with it.
+        db.unpublish_share(id).await.unwrap();
+
+        let row = db.get_mutable_share(id).await.unwrap().unwrap();
+        assert!(row.notebook_json.is_none(), "no published copy remains");
+        assert!(
+            row.manifest_json.is_none(),
+            "unpublish must clear the manifest at the source, not lean on the read gate"
+        );
+
+        // Owner included: the manifest is a READER artifact. The owner edits
+        // through the draft, which has no snapshotted blobs to name.
+        for (who, viewer) in [
+            ("anonymous", None),
+            ("signed-in stranger", Some(&bob)),
+            ("the owner", Some(&alice)),
+        ] {
+            assert!(
+                mutable_manifest_access_core(&db, id, viewer)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{who} must not receive the manifest of an unpublished notebook"
+            );
+        }
+
+        // And the notebook itself is gone from every surface that reads it,
+        // for both denied identities.
+        assert_eq!(
+            mutable_access_core(&db, id, None).await.unwrap(),
+            Access::NotFound
+        );
+        assert_eq!(
+            mutable_access_core(&db, id, Some(&bob)).await.unwrap(),
+            Access::NotFound
+        );
+        assert!(get_mutable_notebook_core(&db, id).await.unwrap().is_none());
+
+        // The owner keeps it, editable, at the same address (PRD-0064): the
+        // unpublish moved the published copy into the draft slot rather than
+        // leaving the row contentless.
+        let edit = db.get_share_for_edit(id).await.unwrap().unwrap();
+        assert!(!edit.published && edit.dirty);
+        let kept: IronpadNotebook = serde_json::from_str(&edit.notebook_json).unwrap();
+        assert_eq!(kept.title, "Test Notebook");
+    }
+
+    /// One account cannot eat the instance's allowance, and the refusal
+    /// names the cap it hit (the toast is the only place a user learns it).
+    #[tokio::test]
+    async fn per_user_cap_refuses_one_account_and_spares_the_others() {
+        let (_dbdir, db) = accounts_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        let first = zero_cell_notebook_json("First");
+        let second = zero_cell_notebook_json("Second");
+        // Room for exactly one notebook per account (either of them), with
+        // the instance-wide cap left wide open so only the per-user arm can
+        // fire.
+        let quota = MutableQuota {
+            total: MAX_TOTAL_MUTABLE_BYTES,
+            per_user: first.len().max(second.len()) as u64,
+        };
+
+        save_notebook_to_account_core(&db, "1", &first, quota)
+            .await
+            .expect("the first save fits");
+        let err = save_notebook_to_account_core(&db, "1", &second, quota)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("account storage full"), "unexpected: {err}");
+        assert!(
+            err.contains(&quota.per_user.to_string()),
+            "the message must name the limit: {err}"
+        );
+
+        // Another account is unaffected by alice's usage.
+        save_notebook_to_account_core(&db, "2", &second, quota)
+            .await
+            .expect("bob has his own allowance");
+
+        // Autosave is metered the same way, by the same helper.
+        let id = list_mutable_core(&db, "1").await.unwrap()[0].id.clone();
+        let err = save_mutable_draft_core(&db, "1", &id, &second, quota)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("account storage full"), "unexpected: {err}");
+
+        // And Share Mutable, which is that same save with a publish on top.
+        let err =
+            create_mutable_share_core(&db, data.path(), cache.path(), "1", &second, &[], quota)
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("account storage full"), "unexpected: {err}");
     }
 }

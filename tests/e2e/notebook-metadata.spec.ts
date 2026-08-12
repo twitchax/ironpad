@@ -1,5 +1,6 @@
 import { test, expect, Page } from "@playwright/test";
 import { menuClick } from "./helpers/menu";
+import { openMetadataPanel } from "./helpers/metadata";
 import { createNotebook } from "./helpers/session";
 
 /**
@@ -20,19 +21,6 @@ function metaContent(html: string, key: string): string | null {
     new RegExp(`<meta[^>]+(?:property|name)="${key}"[^>]*>`, "i")
   )?.[0];
   return tag?.match(/content="([^"]*)"/i)?.[1] ?? null;
-}
-
-/** Opens the metadata panel on the current editor page. */
-async function openMetadataPanel(page: Page) {
-  const section = page.locator(
-    ".ironpad-editor-metadata-appendix .view-only-shared-section"
-  );
-  await expect(section).toBeVisible({ timeout: 15_000 });
-  await section.locator(".view-only-shared-header").click();
-  await expect(section.locator(".ironpad-metadata-textarea")).toBeVisible({
-    timeout: 10_000,
-  });
-  return section;
 }
 
 /** Clicks Save and waits for the durable-write toast. */

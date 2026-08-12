@@ -1,5 +1,5 @@
-//! Notebook lifecycle workflows: Share Immutable, Share Mutable, Push,
-//! Discard Draft, Unpublish, and Download .ironpad.
+//! Notebook lifecycle workflows: Share Immutable, Save to Account, Share
+//! Mutable, Push, Discard Draft, Unpublish, Delete, and Download .ironpad.
 //!
 //! Extracted from the editor component (`mod.rs`) so every serialize-flow
 //! shares the same flush discipline (PRD-0032 T-007) — the one inline flow
@@ -135,6 +135,103 @@ pub(super) fn share_current_notebook(state: &NotebookState, toaster: Toaster) {
     });
 }
 
+// ── Account notebooks (PRD-0064) ────────────────────────────────────────────
+
+/// Confirm copy for Save to Account.
+///
+/// Gated at all because the move is lossy in a way nothing else on the page
+/// says: `deleteNotebook` takes the notebook's version-history ring
+/// (PRD-0058, up to 30 snapshots) with it, server-side history is an explicit
+/// PRD-0064 non-goal, and Unpublish no longer hands a notebook back to
+/// `/local`. So the snapshots are gone at the moment of the click, and this
+/// is the only place a user can still decide otherwise.
+#[cfg(any(feature = "hydrate", test))]
+pub(super) const SAVE_TO_ACCOUNT_CONFIRM: &str = "Move this notebook into your account? \
+     The copy in this browser is deleted, and its local version history goes with it: \
+     snapshots are a local-notebook feature and do not follow it to the server. \
+     Your notebook stays private until you publish it.";
+
+/// Save to Account (PRD-0064): upload the current notebook into the
+/// signed-in user's account, DELETE the local copy, and hard-navigate to
+/// `/mutable/{id}`, which mounts the `ServerDraft` editor.
+///
+/// Share Mutable minus the publish: the notebook is server-stored and
+/// editable from any browser the owner is signed in on, and invisible to
+/// everyone else until Publish. The delete-then-navigate is the same
+/// move-never-copy discipline Share Mutable follows — two unreconciled
+/// copies of one notebook is the failure PRD-0054 removed, and a feature
+/// whose point is durable storage must not reintroduce it.
+#[cfg(feature = "hydrate")]
+pub(super) fn save_to_account_current_notebook(state: &NotebookState, toaster: Toaster) {
+    let state = *state;
+    let Some(uuid) = state.notebook_id.try_get_untracked() else {
+        return;
+    };
+    let confirmed = web_sys::window().is_some_and(|w| {
+        w.confirm_with_message(SAVE_TO_ACCOUNT_CONFIRM)
+            .unwrap_or(false)
+    });
+    if !confirmed {
+        return;
+    }
+    // Immediate ack: the menu closes on click, and the upload plus the
+    // navigation are a few seconds of visible nothing otherwise.
+    toaster.toast(
+        ToastIntent::Info,
+        "Saving…",
+        "Moving this notebook into your account.",
+        3,
+    );
+    leptos::task::spawn_local(async move {
+        // The one flush-before-serialize path (PRD-0032 T-007). The tags are
+        // for blob snapshotting, which only a publish does — an unpublished
+        // notebook has no reader-facing blobs to snapshot.
+        let Some((json, _tags)) = flush_serialize_tags(&state, toaster, "Save Failed").await else {
+            return;
+        };
+        match crate::server_fns::save_notebook_to_account(json).await {
+            Ok(share_id) => {
+                // Move, never copy — but only claim the move happened. A
+                // delete that fails leaves a second, silently diverging copy
+                // of this notebook on the home page, which is exactly the
+                // reconciliation problem PRD-0054 removed, so it is named
+                // rather than swallowed. (`delete_notebook` logs and returns
+                // nothing, so the surviving record is the only evidence.)
+                crate::storage::client::delete_notebook(&uuid).await;
+                let local_copy_survived =
+                    crate::storage::client::get_notebook(&uuid).await.is_some();
+                if local_copy_survived {
+                    leptos::logging::warn!(
+                        "local notebook {uuid} survived the delete after Save to Account"
+                    );
+                }
+                // Hard navigation (the URL and storage class both change);
+                // the toast rides sessionStorage across it.
+                let (intent, title, body) = if local_copy_survived {
+                    (
+                        ToastIntent::Info,
+                        "Saved, With a Leftover Copy",
+                        "The notebook is in your account, but the copy in this browser \
+                         could not be removed. Delete it from the home page so you do \
+                         not end up editing two of them.",
+                    )
+                } else {
+                    (
+                        ToastIntent::Success,
+                        "Saved to Your Account",
+                        "Only you can see it until you publish it.",
+                    )
+                };
+                Toaster::toast_after_reload(intent, title, body, 6);
+                if let Some(window) = web_sys::window() {
+                    let _ = window.location().set_href(&format!("/mutable/{share_id}"));
+                }
+            }
+            Err(e) => toaster.toast(ToastIntent::Error, "Save Failed", format!("{e}"), 6),
+        }
+    });
+}
+
 // ── Mutable shares (PRD-0049 / PRD-0054) ────────────────────────────────────
 
 /// Convert the current notebook into a mutable share (PRD-0054): create the
@@ -156,7 +253,13 @@ pub(super) fn share_mutable_current_notebook(state: &NotebookState, toaster: Toa
         };
         #[cfg(feature = "hydrate")]
         {
-            let uuid = state.notebook_id.get_untracked();
+            // `try_`, because this read sits AFTER an await: navigating away
+            // mid-flush disposes the signal, and a plain read of a disposed
+            // signal panics, which takes the whole wasm app down rather than
+            // just this flow. Mirrors `save_to_account_current_notebook`.
+            let Some(uuid) = state.notebook_id.try_get_untracked() else {
+                return;
+            };
             match crate::server_fns::create_mutable_share(json, Some(tags)).await {
                 Ok(share_id) => {
                     // The notebook's home is the share now; the local copy
@@ -206,24 +309,46 @@ pub(super) fn push_mutable_current_notebook(
         };
         // The durable save is the payload of a Push: if the server never got
         // the draft, promoting would publish stale content while the UI
-        // claims success. Abort loudly instead — the autosave retry loop
-        // keeps trying in the background.
+        // claims success. Abort loudly instead, and say WHICH failure this
+        // was: a transient one is retrying in the background, a refusal is
+        // not (PRD-0064).
         #[cfg(feature = "hydrate")]
         if !super::state::persist_notebook_durable(&state).await {
-            toaster.toast(
-                ToastIntent::Error,
-                "Push Failed",
+            // A REFUSED draft (PRD-0064) is not a retry away from working, so
+            // the advice differs: the same cap that blocks the autosave blocks
+            // the push, and telling the owner to wait for an indicator that
+            // will never clear is how this failure became undiagnosable.
+            let refused = matches!(
+                state.draft_save_state.try_get_untracked(),
+                Some(super::state::DraftSaveState::Refused)
+            );
+            let body = if refused {
+                "Your account is out of storage, so the draft never reached the \
+                 server and nothing was published. Delete a notebook from your \
+                 account to free space, then push again."
+            } else {
                 "Your draft could not be saved to the server, so nothing was \
                  published. It will keep retrying; push again once the draft \
-                 indicator clears.",
-                6,
-            );
+                 indicator clears."
+            };
+            toaster.toast(ToastIntent::Error, "Push Failed", body, 6);
             return;
         }
+        // Whether this is the FIRST publish (PRD-0064) decides the wording:
+        // "Pushed" on a notebook nobody could read yet says nothing useful.
+        let was_published = state.share_published.try_get_untracked().unwrap_or(true);
         match crate::server_fns::push_mutable(share_id, Some(tags)).await {
             Ok(promoted) => {
                 let _ = state.draft_dirty.try_set(false);
-                if promoted {
+                let _ = state.share_published.try_set(true);
+                if !was_published {
+                    toaster.toast(
+                        ToastIntent::Success,
+                        "Published",
+                        "Your notebook is readable at its link now.",
+                        4,
+                    );
+                } else if promoted {
                     toaster.toast(
                         ToastIntent::Success,
                         "Pushed",
@@ -274,7 +399,7 @@ pub(super) fn discard_draft_current_notebook(
     }
     leptos::task::spawn_local(async move {
         match crate::server_fns::discard_mutable_draft(share_id).await {
-            Ok(()) => {
+            Ok(true) => {
                 Toaster::toast_after_reload(
                     ToastIntent::Success,
                     "Draft Discarded",
@@ -285,19 +410,32 @@ pub(super) fn discard_draft_current_notebook(
                     let _ = window.location().reload();
                 }
             }
+            // The server declined (PRD-0064: an unpublished notebook's draft
+            // IS its content, so there is nothing to revert to). The menu
+            // item is hidden in that state, so this is a stale page rather
+            // than a normal path; reloading would still show the same text
+            // under a toast claiming a revert.
+            Ok(false) => toaster.toast(
+                ToastIntent::Success,
+                "Nothing to Discard",
+                "This notebook has no published copy to return to.",
+                5,
+            ),
             Err(e) => toaster.toast(ToastIntent::Error, "Discard Failed", format!("{e}"), 6),
         }
     });
 }
 
-/// Unpublish (PRD-0054): save the current content into the private
-/// `IndexedDB` store FIRST, then delete the share, then hard-navigate to
-/// `/local/{uuid}`.
+/// Unpublish (PRD-0064): clear the published copy server-side. The notebook
+/// stays in the owner's account, at the same URL, still editable — publishing
+/// again is a Push.
 ///
-/// The flush before the local save is load-bearing: the model lags open
-/// editors by up to the cell debounce, and once the share (published AND
-/// draft) is deleted, the local save is the only surviving copy of the
-/// notebook — an unflushed keystroke here would be gone permanently.
+/// This replaced a flow that wrote the notebook into `IndexedDB`, deleted the
+/// share, and navigated to `/local/{uuid}`: for one moment that local write
+/// was the ONLY surviving copy, which is why it carried a load-bearing flush
+/// and a confirm about losing it. Clearing the published copy in place
+/// removes that moment rather than guarding it. Download .ironpad is how you
+/// take a local file home; Delete is how you remove it from the account.
 #[cfg(feature = "hydrate")]
 pub(super) fn unpublish_current_notebook(
     state: &NotebookState,
@@ -306,57 +444,80 @@ pub(super) fn unpublish_current_notebook(
 ) {
     let confirmed = web_sys::window().is_some_and(|w| {
         w.confirm_with_message(
-            "Unpublish this notebook? The public link stops working and it \
-             returns to your private list.",
+            "Unpublish this notebook? Its link stops working for readers. It \
+             stays in your account, and you can publish it again.",
         )
         .unwrap_or(false)
     });
     if !confirmed {
         return;
     }
-    // Immediate ack, same as Share: the menu closes on click and the flush +
-    // local save + server delete is several seconds of visible nothing before
-    // the navigation lands.
     toaster.toast(
         ToastIntent::Info,
         "Unpublishing…",
-        "Saving this notebook back to your private list.",
+        "Removing the published copy.",
         3,
     );
     let state = *state;
     leptos::task::spawn_local(async move {
-        let Some(nb) = flush_and_read_notebook(&state).await else {
-            return;
-        };
-        let Some(uuid) = state.notebook_id.try_get_untracked() else {
-            return;
-        };
-        // Bring the content home BEFORE deleting the share so a failure
-        // can't strand the notebook nowhere.
-        if let Err(e) = crate::storage::client::save_notebook(&nb).await {
-            toaster.toast(
-                ToastIntent::Error,
-                "Unpublish Failed",
-                format!("Could not save locally: {e:?}"),
-                6,
-            );
-            return;
-        }
-        match crate::server_fns::delete_mutable_share(share_id).await {
+        match crate::server_fns::unpublish_mutable_share(share_id).await {
             Ok(()) => {
-                // Hard navigation: the storage class and URL both change
-                // (PRD-0054).
-                Toaster::toast_after_reload(
+                // Back to the unpublished state, in place: no navigation, no
+                // remount. The draft is now ahead of nothing, which is what
+                // re-arms the toolbar button as "Publish".
+                let _ = state.share_published.try_set(false);
+                let _ = state.draft_dirty.try_set(true);
+                toaster.toast(
                     ToastIntent::Success,
                     "Unpublished",
-                    "Back in your private list.",
+                    "The link no longer resolves. Your notebook is still here.",
+                    5,
+                );
+            }
+            Err(e) => toaster.toast(ToastIntent::Error, "Unpublish Failed", format!("{e}"), 6),
+        }
+    });
+}
+
+/// Delete an account notebook (PRD-0064): the share, its draft, its published
+/// copy, and its grants all go, then home. Local mode's Delete removes the
+/// `IndexedDB` record; this is the same act for the other storage class, and
+/// it is the only destructive one now that Unpublish leaves the notebook in
+/// place.
+#[cfg(feature = "hydrate")]
+pub(super) fn delete_mutable_current_notebook(toaster: Toaster, share_id: String) {
+    let confirmed = web_sys::window().is_some_and(|w| {
+        w.confirm_with_message(
+            "Delete this notebook from your account? Its link stops working \
+             and this cannot be undone. Download .ironpad first if you want \
+             to keep a copy.",
+        )
+        .unwrap_or(false)
+    });
+    if !confirmed {
+        return;
+    }
+    toaster.toast(
+        ToastIntent::Info,
+        "Deleting…",
+        "Removing this notebook from your account.",
+        3,
+    );
+    leptos::task::spawn_local(async move {
+        match crate::server_fns::delete_mutable_share(share_id).await {
+            Ok(()) => {
+                // Hard navigation: the notebook this page edits is gone.
+                Toaster::toast_after_reload(
+                    ToastIntent::Success,
+                    "Deleted",
+                    "The notebook is no longer in your account.",
                     4,
                 );
                 if let Some(window) = web_sys::window() {
-                    let _ = window.location().set_href(&format!("/local/{uuid}"));
+                    let _ = window.location().set_href("/");
                 }
             }
-            Err(e) => toaster.toast(ToastIntent::Error, "Unpublish Failed", format!("{e}"), 6),
+            Err(e) => toaster.toast(ToastIntent::Error, "Delete Failed", format!("{e}"), 6),
         }
     });
 }
@@ -390,4 +551,39 @@ pub(super) fn download_current_notebook(state: &NotebookState, toaster: Toaster)
             ),
         }
     });
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Save to Account is a MOVE, and one thing it moves is unrecoverable:
+    /// `deleteNotebook` in `storage.js` takes the notebook's history ring with
+    /// the record, server-side history is an explicit PRD-0064 non-goal, and
+    /// Unpublish no longer returns anything to `/local`. There is no route
+    /// back, so the disclosure has to survive a copy edit.
+    #[test]
+    fn save_to_account_confirm_names_what_the_move_costs() {
+        let copy = SAVE_TO_ACCOUNT_CONFIRM.to_ascii_lowercase();
+        assert!(
+            copy.contains("version history"),
+            "the confirm must say the local version history does not come along"
+        );
+        assert!(
+            copy.contains("deleted"),
+            "the confirm must say the browser-local copy is deleted"
+        );
+        assert!(
+            copy.contains("publish"),
+            "the confirm must say the notebook is not published by this act"
+        );
+    }
+
+    /// User-visible strings carry no em-dashes (repo-wide style pass).
+    #[test]
+    fn save_to_account_confirm_has_no_em_dash() {
+        assert!(!SAVE_TO_ACCOUNT_CONFIRM.contains('—'));
+    }
 }

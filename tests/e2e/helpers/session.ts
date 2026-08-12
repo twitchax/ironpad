@@ -33,6 +33,29 @@ export async function createNotebook(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Rename the open notebook through the header title input, and confirm the
+ * change landed in the header.
+ *
+ * The one home for the flow: it types with `pressSequentially` rather than
+ * `fill` because the title is debounced into the model, and it waits for the
+ * header to read back the new value so a following action cannot race the
+ * write. Specs used to hand-roll this; a `fill`-based copy looks identical
+ * and drops characters under load.
+ */
+export async function renameNotebook(page: Page, title: string): Promise<void> {
+  await page.locator(".ironpad-notebook-title--editable").click();
+  const input = page.locator(".ironpad-header-title-input");
+  await expect(input).toBeVisible();
+  await input.fill("");
+  await input.pressSequentially(title, { delay: 15 });
+  await input.press("Enter");
+  await expect(page.locator(".ironpad-notebook-title--editable")).toHaveText(
+    title,
+    { timeout: 10_000 },
+  );
+}
+
 /** Start an agent session and return the token. */
 export async function startSession(page: Page): Promise<string> {
   // Click the session button.

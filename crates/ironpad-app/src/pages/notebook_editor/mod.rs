@@ -38,13 +38,14 @@ use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
 
 #[cfg(feature = "hydrate")]
 use self::sharing::{
-    discard_draft_current_notebook, download_current_notebook, unpublish_current_notebook,
+    delete_mutable_current_notebook, discard_draft_current_notebook, download_current_notebook,
+    save_to_account_current_notebook, unpublish_current_notebook,
 };
 use self::sharing::{
     push_mutable_current_notebook, share_current_notebook, share_mutable_current_notebook,
 };
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
-use self::state::{persist_notebook, DraftSaveState, NotebookState};
+use self::state::{persist_notebook, DraftSaveState, NotebookState, PublishButton};
 
 // ── Flush-before-serialize helper (PRD-0032 T-007) ──────────────────────────
 //
@@ -91,6 +92,27 @@ fn destroy_sortable(instance: StoredValue<Option<wasm_bindgen::JsValue>, LocalSt
     }
 }
 
+/// What `ServerDraft` mode needs at mount (PRD-0054/PRD-0064): the share this
+/// editor persists into, its preloaded draft, and the two flags the toolbar
+/// reads.
+///
+/// A struct rather than a tuple: `dirty` and `published` are independent
+/// bools that mean different things, and a positional pair of them is one
+/// transposed call site away from an editor that offers Push on a notebook
+/// nobody can read.
+#[derive(Clone, Debug)]
+pub struct ServerDraftMount {
+    /// The `/mutable/{id}` segment.
+    pub share_id: String,
+    /// Draft-or-published content, already resolved server-side.
+    pub notebook: IronpadNotebook,
+    /// The draft differs from the published copy.
+    pub dirty: bool,
+    /// A published copy exists. `false` for an account notebook that has
+    /// never been published (PRD-0064).
+    pub published: bool,
+}
+
 /// Route component for `/local/{id}`: the editor in Local (`IndexedDB`)
 /// mode.
 #[component]
@@ -114,9 +136,9 @@ pub fn NotebookEditor(
     /// The notebook uuid: the `IndexedDB` key in Local mode, the embedded id
     /// in `ServerDraft` mode. Sessions key on it either way.
     notebook_id: String,
-    /// `Some((share_id, notebook, server_dirty))` mounts `ServerDraft` mode.
+    /// `Some(_)` mounts `ServerDraft` mode over the share's server draft.
     #[prop(default = None)]
-    server_draft: Option<(String, IronpadNotebook, bool)>,
+    server_draft: Option<ServerDraftMount>,
 ) -> impl IntoView {
     // Set up notebook-level reactive state.
 
@@ -145,9 +167,14 @@ pub fn NotebookEditor(
         reactive_timer_fn: StoredValue::new_local(None),
         server_draft_share: RwSignal::new(None),
         draft_dirty: RwSignal::new(false),
+        share_published: RwSignal::new(false),
         draft_save_state: RwSignal::new(DraftSaveState::Synced),
         draft_save_epoch: RwSignal::new(0),
         draft_save_inflight: RwSignal::new(0),
+        // Resolved HERE, under the component's owner: the autosave chain that
+        // needs it runs inside `spawn_local`, which does not carry the owner
+        // (and therefore cannot look up context) across an await.
+        toaster: Toaster::expect_context(),
     };
     // Build the reactive-debounce callback once, under this component's owner,
     // so it's dropped on unmount instead of leaked per edit.
@@ -176,10 +203,11 @@ pub fn NotebookEditor(
     // Load the notebook: `ServerDraft` mode arrives preloaded (the mutable
     // page already fetched the draft); Local mode reads IndexedDB.
 
-    if let Some((share_id, nb, server_dirty)) = server_draft {
-        state.server_draft_share.set(Some(share_id));
-        state.draft_dirty.set(server_dirty);
-        state.notebook.set(Some(nb));
+    if let Some(mount) = server_draft {
+        state.server_draft_share.set(Some(mount.share_id));
+        state.draft_dirty.set(mount.dirty);
+        state.share_published.set(mount.published);
+        state.notebook.set(Some(mount.notebook));
         model.sync_from_notebook();
     } else {
         #[cfg(feature = "hydrate")]
@@ -430,6 +458,21 @@ fn NotebookContent() -> impl IntoView {
     // notebooks anymore). Drives the menu swaps and the metadata panel.
     let mutable_binding = state.server_draft_share;
 
+    // What the one editorial button offers (PRD-0064). Two flags, not one:
+    // an account notebook that has never been published is permanently
+    // dirty, so `draft_dirty` alone would read as "Push" on something no
+    // reader can reach.
+    let publish_button = Memo::new(move |_| {
+        PublishButton::from_flags(state.share_published.get(), state.draft_dirty.get())
+    });
+
+    // The signed-in surface (PRD-0053): Save to Account exists only for a
+    // user with an account to save into. `auth` is `None` until
+    // `get_auth_info` resolves, which reads as anonymous — the item appears
+    // on hydrate.
+    let auth = expect_context::<LayoutContext>().auth;
+    let signed_in = Memo::new(move |_| auth.get().is_some_and(|info| info.user.is_some()));
+
     // ── Cells container ref for SortableJS ──────────────────────────────
 
     let cells_container_ref = NodeRef::new();
@@ -606,9 +649,10 @@ fn NotebookContent() -> impl IntoView {
                 </button>
 
                 // ── Push button + draft indicator (PRD-0054) ────────────
-                // `ServerDraft` mode only: the one editorial control. Grayed
-                // "Published" when the draft matches; an active "Push" the
-                // moment an edit lands.
+                // `ServerDraft` mode only: the one editorial control.
+                // "Publish" while the notebook has never been published
+                // (PRD-0064), then an active "Push" the moment an edit lands
+                // and a grayed "Published" when the draft matches.
                 //
                 // The indicator trails the button rather than leading it: its
                 // text appears and disappears on every autosave, and ahead of
@@ -617,14 +661,10 @@ fn NotebookContent() -> impl IntoView {
                 {move || state.server_draft_share.get().map(|share_id| view! {
                     <button
                         class="ironpad-push-button"
-                        disabled=move || !state.draft_dirty.get()
-                        title=move || if state.draft_dirty.get() {
-                            "Publish your draft: readers see it after this"
-                        } else {
-                            "The published copy matches your draft"
-                        }
+                        disabled=move || !publish_button.get().armed()
+                        title=move || publish_button.get().title()
                         on:click=move |_| {
-                            if !state.draft_dirty.get_untracked() {
+                            if !publish_button.get_untracked().armed() {
                                 return;
                             }
                             push_mutable_current_notebook(
@@ -634,16 +674,25 @@ fn NotebookContent() -> impl IntoView {
                             );
                         }
                     >
-                        {move || if state.draft_dirty.get() {
-                        view! { <IconLabel icon=icons::PUSH label="Push"/> }
-                    } else {
-                        view! { <IconLabel icon=icons::SUCCESS label="Published"/> }
-                    }}
+                        {move || {
+                            let publish = publish_button.get();
+                            let icon = if publish == PublishButton::Published {
+                                icons::SUCCESS
+                            } else {
+                                icons::PUSH
+                            };
+                            view! { <IconLabel icon=icon label=publish.label()/> }
+                        }}
                     </button>
                     <span class="ironpad-draft-indicator">
                         {move || match state.draft_save_state.get() {
                             DraftSaveState::Saving => "Saving draft…",
                             DraftSaveState::Failed => "Draft not saved; retrying",
+                            // No "retrying" here (PRD-0064): the server
+                            // refused this write and will refuse the next
+                            // one identically. The toast carries the limit
+                            // and the remedy; this says the state.
+                            DraftSaveState::Refused => "Draft not saved: storage full",
                             DraftSaveState::Synced => "",
                         }}
                     </span>
@@ -693,9 +742,29 @@ fn NotebookContent() -> impl IntoView {
                                     >
                                         <IconLabel icon=icons::SHARE label="Share Immutable"/>
                                     </button>
-                                    // Share Mutable / Push Update (PRD-0049)
+                                    // Save to Account / Share Mutable (PRD-0064, PRD-0049)
                                     {move || match mutable_binding.get() {
                                         None => view! {
+                                            // Save to Account is the same
+                                            // upload MINUS the publish, so it
+                                            // leads: storing your own work is
+                                            // the common case, publishing it
+                                            // is the editorial one.
+                                            {move || signed_in.get().then(|| view! {
+                                                <button
+                                                    class="ironpad-toolbar-dropdown-item"
+                                                    on:click=move |_| {
+                                                        hamburger_open.set(false);
+                                                        #[cfg(feature = "hydrate")]
+                                                        save_to_account_current_notebook(
+                                                            &state,
+                                                            Toaster::expect_context(),
+                                                        );
+                                                    }
+                                                >
+                                                    <IconLabel icon=icons::LOCKED label="Save to Account"/>
+                                                </button>
+                                            })}
                                             <button
                                                 class="ironpad-toolbar-dropdown-item"
                                                 on:click=move |_| {
@@ -713,6 +782,14 @@ fn NotebookContent() -> impl IntoView {
                                             // Push lives in the toolbar button now
                                             // (PRD-0054); the menu keeps the
                                             // secondary actions.
+                                            //
+                                            // Both are published-only (PRD-0064):
+                                            // the reader link would 404, and
+                                            // discarding the draft of an
+                                            // unpublished notebook is a server-side
+                                            // no-op (its content IS the draft), so
+                                            // an armed menu item would claim to
+                                            // have discarded something it did not.
                                             let reader_href =
                                                 format!("/mutable/{share_id}?view=reader");
                                             let discard_share_id = share_id.clone();
@@ -728,29 +805,35 @@ fn NotebookContent() -> impl IntoView {
                                                 // read as duplicates until
                                                 // their labels name the thing
                                                 // each one shows.
-                                                <a
-                                                    class="ironpad-toolbar-dropdown-item"
-                                                    href=reader_href
-                                                    rel="external"
-                                                    title="Open the published copy readers currently see"
-                                                    on:click=move |_| hamburger_open.set(false)
-                                                >
-                                                    <IconLabel icon=icons::PUBLISHED label="View Published"/>
-                                                </a>
-                                                <button
-                                                    class="ironpad-toolbar-dropdown-item"
-                                                    on:click=move |_| {
-                                                        hamburger_open.set(false);
-                                                        #[cfg(feature = "hydrate")]
-                                                        discard_draft_current_notebook(
-                                                            &state,
-                                                            Toaster::expect_context(),
-                                                            discard_share_id.clone(),
-                                                        );
+                                                {move || state.share_published.get().then(|| {
+                                                    let reader_href = reader_href.clone();
+                                                    let discard_share_id = discard_share_id.clone();
+                                                    view! {
+                                                        <a
+                                                            class="ironpad-toolbar-dropdown-item"
+                                                            href=reader_href
+                                                            rel="external"
+                                                            title="Open the published copy readers currently see"
+                                                            on:click=move |_| hamburger_open.set(false)
+                                                        >
+                                                            <IconLabel icon=icons::PUBLISHED label="View Published"/>
+                                                        </a>
+                                                        <button
+                                                            class="ironpad-toolbar-dropdown-item"
+                                                            on:click=move |_| {
+                                                                hamburger_open.set(false);
+                                                                #[cfg(feature = "hydrate")]
+                                                                discard_draft_current_notebook(
+                                                                    &state,
+                                                                    Toaster::expect_context(),
+                                                                    discard_share_id.clone(),
+                                                                );
+                                                            }
+                                                        >
+                                                            <IconLabel icon=icons::RESTORE label="Discard Draft"/>
+                                                        </button>
                                                     }
-                                                >
-                                                    <IconLabel icon=icons::RESTORE label="Discard Draft"/>
-                                                </button>
+                                                })}
                                             }.into_any()
                                         },
                                     }}
@@ -821,24 +904,52 @@ fn NotebookContent() -> impl IntoView {
                                             <IconLabel icon=icons::HISTORY label="History"/>
                                         </button>
                                     })}
-                                    // Delete (private) / Unpublish (mutable, PRD-0049)
+                                    // Unpublish (published only) + Delete, for
+                                    // both storage classes (PRD-0064).
+                                    //
+                                    // Unpublish no longer removes the notebook
+                                    // from anywhere — it clears the published
+                                    // copy in place — so an account notebook
+                                    // needs its own Delete, exactly as a local
+                                    // one does.
                                     {move || match mutable_binding.get() {
-                                        Some(share_id) => view! {
-                                            <button
-                                                class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
-                                                on:click=move |_| {
-                                                    hamburger_open.set(false);
-                                                    #[cfg(feature = "hydrate")]
-                                                    unpublish_current_notebook(
-                                                        &state,
-                                                        Toaster::expect_context(),
-                                                        share_id.clone(),
-                                                    );
-                                                }
-                                            >
-                                                <IconLabel icon=icons::REMOVE label="Unpublish"/>
-                                            </button>
-                                        }.into_any(),
+                                        Some(share_id) => {
+                                            let unpublish_share_id = share_id.clone();
+                                            view! {
+                                                {move || state.share_published.get().then(|| {
+                                                    let unpublish_share_id = unpublish_share_id.clone();
+                                                    view! {
+                                                        <button
+                                                            class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
+                                                            on:click=move |_| {
+                                                                hamburger_open.set(false);
+                                                                #[cfg(feature = "hydrate")]
+                                                                unpublish_current_notebook(
+                                                                    &state,
+                                                                    Toaster::expect_context(),
+                                                                    unpublish_share_id.clone(),
+                                                                );
+                                                            }
+                                                        >
+                                                            <IconLabel icon=icons::REMOVE label="Unpublish"/>
+                                                        </button>
+                                                    }
+                                                })}
+                                                <button
+                                                    class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"
+                                                    on:click=move |_| {
+                                                        hamburger_open.set(false);
+                                                        #[cfg(feature = "hydrate")]
+                                                        delete_mutable_current_notebook(
+                                                            Toaster::expect_context(),
+                                                            share_id.clone(),
+                                                        );
+                                                    }
+                                                >
+                                                    <IconLabel icon=icons::DELETE label="Delete"/>
+                                                </button>
+                                            }.into_any()
+                                        },
                                         None => view! {
                                             <button
                                                 class="ironpad-toolbar-dropdown-item ironpad-toolbar-dropdown-item--danger"

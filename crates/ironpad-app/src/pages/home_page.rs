@@ -1,4 +1,4 @@
-use crate::components::icon::{Icon, IconLabel};
+use crate::components::icon::{Icon, IconData, IconLabel};
 use crate::components::icons;
 #[cfg(feature = "hydrate")]
 use crate::components::toaster::Toaster;
@@ -16,20 +16,27 @@ use crate::server_fns::list_public_notebooks;
 
 #[derive(Clone)]
 enum NotebookListItem {
-    Private {
+    /// A local (`IndexedDB`) notebook, this browser only. Named for the
+    /// storage class like its sibling chips and its route (`/local/{id}`):
+    /// "private" described the audience, and an unpublished account
+    /// notebook is private too (PRD-0064).
+    Local {
         id: String,
         title: String,
         cell_count: usize,
         updated_at: String,
     },
-    /// A mutable share (PRD-0054): server-enumerated by session; the card
-    /// links to `/mutable/{id}`, which is the editor for the owner and the
-    /// reader for everyone else. No local copy exists.
+    /// An account notebook (PRD-0054, PRD-0064): server-enumerated by
+    /// session; the card links to `/mutable/{id}`, which is the editor for
+    /// the owner and the reader for everyone else. No local copy exists.
+    /// Listed whether or not it has ever been published: unpublished is a
+    /// flag on the row, not a separate storage class.
     Mutable {
         share_id: String,
         title: String,
         cell_count: usize,
         updated_at: String,
+        published: bool,
     },
     Public {
         title: String,
@@ -40,7 +47,7 @@ enum NotebookListItem {
     },
 }
 
-/// A mutable-share row for the home "Published" group (server-enumerated by
+/// A server-stored notebook for the home "Account" group (enumerated by
 /// session; target-agnostic so the signal type is valid on both builds).
 #[derive(Clone)]
 struct MutableEntry {
@@ -48,15 +55,58 @@ struct MutableEntry {
     title: String,
     cell_count: usize,
     updated_at: String,
+    /// Whether a reader-visible published copy exists (PRD-0064).
+    published: bool,
+    tags: Vec<String>,
 }
 
+/// The storage class a chip filters to. Named after where the notebook
+/// LIVES, not who can read it: publishing is a flag on an account notebook
+/// (PRD-0064), so "Published" stopped naming a group the moment an account
+/// notebook could be unpublished.
 #[derive(Clone, Copy, PartialEq)]
 enum FilterMode {
     All,
-    Private,
-    Mutable,
+    /// `IndexedDB`, this browser only.
+    Local,
+    /// Server-stored and owned by the signed-in user, published or not.
+    Account,
+    /// The bundled static showcase notebooks.
     Public,
 }
+
+// ── Icon roles ──────────────────────────────────────────────────────────────
+
+// The chips sort notebooks by WHERE THEY LIVE, so each one wears the icon of
+// its storage class. Named here rather than written inline in the markup so
+// the rule below is assertable: the Account group holds published and
+// unpublished notebooks at once, which means its chip cannot wear the badge
+// of either half without contradicting the other.
+//
+// (`LOCAL_CHIP_ICON` and `PUBLIC_CHIP_ICON` are the same diamond on purpose:
+// filled vs outline is a `.private` CSS rule, per the PRD-0062 sweep.)
+
+/// Local (`IndexedDB`) notebooks.
+const LOCAL_CHIP_ICON: IconData = icons::PRIVATE;
+/// Server-stored notebooks owned by the signed-in user, published or not.
+const ACCOUNT_CHIP_ICON: IconData = icons::ACCOUNT;
+/// Bundled static showcase notebooks.
+const PUBLIC_CHIP_ICON: IconData = icons::PUBLIC;
+
+/// The badge class and icon an account card wears.
+///
+/// A globe only once there is something for the world to read: an account
+/// notebook with no published copy is 404 to everyone but its owner
+/// (PRD-0064), so it wears the lock and the muted colour instead.
+fn account_badge(published: bool) -> (&'static str, IconData) {
+    if published {
+        ("ironpad-notebook-badge mutable", icons::PUBLISHED)
+    } else {
+        ("ironpad-notebook-badge mutable unpublished", icons::LOCKED)
+    }
+}
+
+// ── Search ──────────────────────────────────────────────────────────────────
 
 /// Whether a public notebook matches a lowercased search query. Matches
 /// title, description, or any tag, so tag-style queries like "blog" or
@@ -71,21 +121,93 @@ fn public_notebook_matches(summary: &PublicNotebookSummary, query: &str) -> bool
             .any(|t| t.to_lowercase().contains(query))
 }
 
-/// Whether a private (`IndexedDB`) notebook matches a lowercased search query:
-/// title or any tag, same contract as public search.
-fn private_notebook_matches(nb: &IronpadNotebook, query: &str) -> bool {
+/// Whether a title/tag pair matches a lowercased search query. The shared
+/// contract for the two storage classes that carry no description: local
+/// (`IndexedDB`) and account notebooks. One helper so an account notebook is
+/// searchable on exactly the fields a local one is.
+fn title_or_tag_matches(title: &str, tags: &[String], query: &str) -> bool {
     query.is_empty()
-        || nb.title.to_lowercase().contains(query)
-        || nb
-            .tags
-            .as_ref()
-            .is_some_and(|tags| tags.iter().any(|t| t.to_lowercase().contains(query)))
+        || title.to_lowercase().contains(query)
+        || tags.iter().any(|t| t.to_lowercase().contains(query))
+}
+
+/// Whether a local (`IndexedDB`) notebook matches a lowercased search query:
+/// title or any tag, same contract as public search.
+fn local_notebook_matches(nb: &IronpadNotebook, query: &str) -> bool {
+    title_or_tag_matches(&nb.title, nb.tags.as_deref().unwrap_or(&[]), query)
+}
+
+/// Whether an account notebook matches a lowercased search query. Published
+/// or not: an unpublished notebook is only findable here, so dropping it
+/// from search would hide it from its owner entirely.
+fn account_notebook_matches(entry: &MutableEntry, query: &str) -> bool {
+    title_or_tag_matches(&entry.title, &entry.tags, query)
+}
+
+/// Collect the cards to render, applying the search query and the storage
+/// class filter. Pure so the chip and search contracts are unit-testable:
+/// the grid below is a thin reactive wrapper over this.
+fn collect_items(
+    local: &[IronpadNotebook],
+    account: &[MutableEntry],
+    public: &[PublicNotebookSummary],
+    query: &str,
+    mode: FilterMode,
+) -> Vec<NotebookListItem> {
+    let mut items: Vec<NotebookListItem> = vec![];
+
+    // Local notebooks first (already sorted by updated_at desc from IndexedDB).
+    if matches!(mode, FilterMode::All | FilterMode::Local) {
+        for nb in local {
+            if local_notebook_matches(nb, query) {
+                items.push(NotebookListItem::Local {
+                    id: nb.id.to_string(),
+                    title: nb.title.clone(),
+                    cell_count: nb.cells.len(),
+                    updated_at: nb.updated_at.format("%b %d, %Y").to_string(),
+                });
+            }
+        }
+    }
+
+    // Account notebooks (PRD-0054, PRD-0064), between local and public.
+    if matches!(mode, FilterMode::All | FilterMode::Account) {
+        for e in account {
+            if account_notebook_matches(e, query) {
+                items.push(NotebookListItem::Mutable {
+                    share_id: e.share_id.clone(),
+                    title: e.title.clone(),
+                    cell_count: e.cell_count,
+                    updated_at: e.updated_at.clone(),
+                    published: e.published,
+                });
+            }
+        }
+    }
+
+    // Public notebooks (sorted alphabetically by title).
+    if matches!(mode, FilterMode::All | FilterMode::Public) {
+        for nb in public {
+            if public_notebook_matches(nb, query) {
+                items.push(NotebookListItem::Public {
+                    title: nb.title.clone(),
+                    description: nb.description.clone(),
+                    filename: nb.filename.clone(),
+                    cell_count: nb.cell_count,
+                    tags: nb.tags.clone(),
+                });
+            }
+        }
+    }
+
+    items
 }
 
 // ── Home page ───────────────────────────────────────────────────────────────
 
-/// Home page showing private (IndexedDB) and public notebooks with search and
-/// filter controls.
+/// Home page showing all three storage classes with search and filter
+/// controls: local (`IndexedDB`), account (server-stored and owned by the
+/// signed-in user, published or not), and public.
 #[component]
 pub fn HomePage() -> impl IntoView {
     // Reset layout context for home page.
@@ -111,25 +233,53 @@ pub fn HomePage() -> impl IntoView {
         });
     }
 
-    // Mutable shares (PRD-0054): server-enumerated by session, one source of
-    // truth. Anonymous gets an empty list; there is nothing local to merge.
+    // Account notebooks (PRD-0054, PRD-0064): server-enumerated by session,
+    // one source of truth, published or not. Anonymous gets an empty list;
+    // there is nothing local to merge.
 
     let mutable_entries: RwSignal<Vec<MutableEntry>> = RwSignal::new(vec![]);
 
     #[cfg(feature = "hydrate")]
     {
         leptos::task::spawn_local(async move {
-            if let Ok(remote) = crate::server_fns::list_mutable_shares().await {
-                let entries: Vec<MutableEntry> = remote
-                    .into_iter()
-                    .map(|s| MutableEntry {
-                        share_id: s.id,
-                        title: s.title,
-                        cell_count: s.cell_count,
-                        updated_at: s.pushed_at.get(..10).unwrap_or(&s.pushed_at).to_string(),
-                    })
-                    .collect();
-                let _ = mutable_entries.try_set(entries);
+            match crate::server_fns::list_mutable_shares().await {
+                Ok(remote) => {
+                    let entries: Vec<MutableEntry> = remote
+                        .into_iter()
+                        .map(|s| {
+                            // Last publish, else creation: an unpublished
+                            // account notebook has never been pushed
+                            // (PRD-0064).
+                            let activity = s.last_activity();
+                            let updated_at = activity.get(..10).unwrap_or(activity).to_string();
+                            MutableEntry {
+                                share_id: s.id,
+                                title: s.title,
+                                cell_count: s.cell_count,
+                                updated_at,
+                                published: s.published,
+                                tags: s.tags,
+                            }
+                        })
+                        .collect();
+                    let _ = mutable_entries.try_set(entries);
+                }
+                // Never swallowed. An anonymous caller gets `Ok(vec![])`, so
+                // reaching this arm always means something is actually
+                // wrong, and the only symptom on screen is a group that
+                // renders empty — indistinguishable from owning nothing.
+                //
+                // The likeliest cause is a decode failure rather than a
+                // transport one: `pushed_at` widened to an option in
+                // PRD-0064 and an unpublished notebook puts an explicit
+                // null on the wire, which a bundle compiled against the old
+                // `String` rejects for the WHOLE `Vec`. That is precisely
+                // the stale-cache failure mode in CLAUDE.md's
+                // browser-cache-hygiene note, which has shipped a live bug
+                // here before, so the console must name it.
+                Err(e) => {
+                    leptos::logging::error!("failed to list account notebooks: {e:?}");
+                }
             }
         });
     }
@@ -225,17 +375,17 @@ pub fn HomePage() -> impl IntoView {
                         on:click=move |_| filter_mode.set(FilterMode::All)
                     >"All"</button>
                     <button
-                        class=move || if filter_mode.get() == FilterMode::Private { "ironpad-chip active" } else { "ironpad-chip" }
-                        on:click=move |_| filter_mode.set(FilterMode::Private)
-                    ><IconLabel icon=icons::PRIVATE label="Private"/></button>
+                        class=move || if filter_mode.get() == FilterMode::Local { "ironpad-chip active" } else { "ironpad-chip" }
+                        on:click=move |_| filter_mode.set(FilterMode::Local)
+                    ><IconLabel icon=LOCAL_CHIP_ICON label="Local"/></button>
                     <button
-                        class=move || if filter_mode.get() == FilterMode::Mutable { "ironpad-chip active" } else { "ironpad-chip" }
-                        on:click=move |_| filter_mode.set(FilterMode::Mutable)
-                    ><IconLabel icon=icons::PUBLISHED label="Published"/></button>
+                        class=move || if filter_mode.get() == FilterMode::Account { "ironpad-chip active" } else { "ironpad-chip" }
+                        on:click=move |_| filter_mode.set(FilterMode::Account)
+                    ><IconLabel icon=ACCOUNT_CHIP_ICON label="Account"/></button>
                     <button
                         class=move || if filter_mode.get() == FilterMode::Public { "ironpad-chip active" } else { "ironpad-chip" }
                         on:click=move |_| filter_mode.set(FilterMode::Public)
-                    ><IconLabel icon=icons::PUBLIC label="Public"/></button>
+                    ><IconLabel icon=PUBLIC_CHIP_ICON label="Public"/></button>
                 </div>
             </div>
 
@@ -266,7 +416,7 @@ pub fn HomePage() -> impl IntoView {
 
 // ── Notebook grid ───────────────────────────────────────────────────────────
 
-/// Reactive grid that merges private and public notebooks with search/filter.
+/// Reactive grid that merges all three storage classes with search/filter.
 #[component]
 fn NotebookGrid(
     public_notebooks: Vec<PublicNotebookSummary>,
@@ -279,55 +429,13 @@ fn NotebookGrid(
         let public_notebooks = public_notebooks.clone();
         move || {
             let query = search_query.get().to_lowercase();
-            let mode = filter_mode.get();
-            let private = private_notebooks.get();
-
-            let mut items: Vec<NotebookListItem> = vec![];
-
-            // Private notebooks first (already sorted by updated_at desc from IndexedDB).
-            if matches!(mode, FilterMode::All | FilterMode::Private) {
-                for nb in &private {
-                    if private_notebook_matches(nb, &query) {
-                        items.push(NotebookListItem::Private {
-                            id: nb.id.to_string(),
-                            title: nb.title.clone(),
-                            cell_count: nb.cells.len(),
-                            updated_at: nb.updated_at.format("%b %d, %Y").to_string(),
-                        });
-                    }
-                }
-            }
-
-            // Mutable shares (PRD-0054), between private and public.
-            if matches!(mode, FilterMode::All | FilterMode::Mutable) {
-                for e in &mutable_entries.get() {
-                    if query.is_empty() || e.title.to_lowercase().contains(&query) {
-                        items.push(NotebookListItem::Mutable {
-                            share_id: e.share_id.clone(),
-                            title: e.title.clone(),
-                            cell_count: e.cell_count,
-                            updated_at: e.updated_at.clone(),
-                        });
-                    }
-                }
-            }
-
-            // Public notebooks (sorted alphabetically by title).
-            if matches!(mode, FilterMode::All | FilterMode::Public) {
-                for nb in &public_notebooks {
-                    if public_notebook_matches(nb, &query) {
-                        items.push(NotebookListItem::Public {
-                            title: nb.title.clone(),
-                            description: nb.description.clone(),
-                            filename: nb.filename.clone(),
-                            cell_count: nb.cell_count,
-                            tags: nb.tags.clone(),
-                        });
-                    }
-                }
-            }
-
-            items
+            collect_items(
+                &private_notebooks.get(),
+                &mutable_entries.get(),
+                &public_notebooks,
+                &query,
+                filter_mode.get(),
+            )
         }
     };
 
@@ -371,7 +479,7 @@ fn NotebookCard(
 ) -> impl IntoView {
     let _ = &private_notebooks;
     match item {
-        NotebookListItem::Private {
+        NotebookListItem::Local {
             id,
             title,
             cell_count,
@@ -427,25 +535,29 @@ fn NotebookCard(
             title,
             cell_count,
             updated_at,
+            published,
         } => {
             // One address (PRD-0054): the same link is the editor for the
             // owner and the reader for everyone else.
             let href = format!("/mutable/{share_id}");
             let cell_text = format_cell_count(cell_count);
-            let hint = "published";
+            // Only the published ones carry the hint under the card body.
+            let (badge_class, badge_icon) = account_badge(published);
 
             view! {
                 <div class="ironpad-notebook-card-wrapper">
                     <a href=href class="ironpad-notebook-card-link">
                         <div class="ironpad-notebook-card">
                             <div class="ironpad-notebook-card-header">
-                                <span class="ironpad-notebook-badge mutable"><Icon icon=icons::PUBLISHED/></span>
+                                <span class=badge_class><Icon icon=badge_icon/></span>
                                 <span class="ironpad-notebook-card-title">{title}</span>
                             </div>
                             <div class="ironpad-notebook-card-body">
                                 <span class="ironpad-notebook-card-cells">{cell_text}</span>
                                 <span class="ironpad-notebook-card-updated">{updated_at}</span>
-                                <span class="ironpad-notebook-card-mutable-hint">{hint}</span>
+                                {published.then(|| view! {
+                                    <span class="ironpad-notebook-card-mutable-hint">"published"</span>
+                                })}
                             </div>
                         </div>
                     </a>
@@ -672,8 +784,12 @@ fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>, 
 
 #[cfg(test)]
 mod search_tests {
-    use super::public_notebook_matches;
-    use ironpad_common::PublicNotebookSummary;
+    use super::{
+        account_badge, account_notebook_matches, collect_items, local_notebook_matches,
+        public_notebook_matches, FilterMode, MutableEntry, NotebookListItem, ACCOUNT_CHIP_ICON,
+        LOCAL_CHIP_ICON, PUBLIC_CHIP_ICON,
+    };
+    use ironpad_common::{IronpadNotebook, PublicNotebookSummary};
 
     fn summary() -> PublicNotebookSummary {
         PublicNotebookSummary {
@@ -686,20 +802,177 @@ mod search_tests {
         }
     }
 
+    fn account(title: &str, published: bool, tags: &[&str]) -> MutableEntry {
+        MutableEntry {
+            share_id: format!("{title}-id"),
+            title: title.into(),
+            cell_count: 3,
+            updated_at: "2026-08-12".into(),
+            published,
+            tags: tags.iter().map(|t| (*t).to_string()).collect(),
+        }
+    }
+
+    /// Titles of the collected cards, tagged by storage class, so a chip
+    /// test asserts on what actually renders rather than on a count.
+    fn titles(items: &[NotebookListItem]) -> Vec<(&'static str, String)> {
+        items
+            .iter()
+            .map(|i| match i {
+                NotebookListItem::Local { title, .. } => ("local", title.clone()),
+                NotebookListItem::Mutable { title, .. } => ("account", title.clone()),
+                NotebookListItem::Public { title, .. } => ("public", title.clone()),
+            })
+            .collect()
+    }
+
+    /// The chips sort by storage class; the badges inside a card report
+    /// audience. The Account group holds both halves at once, so its chip
+    /// cannot wear either badge without contradicting the other half of its
+    /// own contents (it wore the published globe over a stack of locks).
     #[test]
-    fn private_search_matches_title_and_tags() {
-        use ironpad_common::IronpadNotebook;
+    fn account_chip_wears_a_storage_class_icon_not_a_card_badge() {
+        assert_ne!(
+            ACCOUNT_CHIP_ICON,
+            account_badge(true).1,
+            "the Account chip must not be the published badge"
+        );
+        assert_ne!(
+            ACCOUNT_CHIP_ICON,
+            account_badge(false).1,
+            "the Account chip must not be the unpublished badge"
+        );
+        // And it names its own class rather than borrowing a neighbour's.
+        assert_ne!(ACCOUNT_CHIP_ICON, LOCAL_CHIP_ICON);
+        assert_ne!(ACCOUNT_CHIP_ICON, PUBLIC_CHIP_ICON);
+
+        // Published and unpublished cards stay distinguishable, in shape and
+        // in class: the colour half of that distinction is CSS-only, and a
+        // badge whose only difference is a class name reads identical if the
+        // rule is ever dropped (PRD-0062 shipped exactly that bug).
+        assert_ne!(account_badge(true).1, account_badge(false).1);
+        assert_ne!(account_badge(true).0, account_badge(false).0);
+        assert!(account_badge(false).0.contains("unpublished"));
+    }
+
+    #[test]
+    fn local_search_matches_title_and_tags() {
         let mut nb = IronpadNotebook::new("My Physics Scratchpad");
         nb.tags = Some(vec!["blog".into(), "wip".into()]);
 
-        assert!(super::private_notebook_matches(&nb, ""));
-        assert!(super::private_notebook_matches(&nb, "physics"));
-        assert!(super::private_notebook_matches(&nb, "blog"));
-        assert!(!super::private_notebook_matches(&nb, "quaternions"));
+        assert!(local_notebook_matches(&nb, ""));
+        assert!(local_notebook_matches(&nb, "physics"));
+        assert!(local_notebook_matches(&nb, "blog"));
+        assert!(!local_notebook_matches(&nb, "quaternions"));
 
         nb.tags = None;
-        assert!(super::private_notebook_matches(&nb, "scratchpad"));
-        assert!(!super::private_notebook_matches(&nb, "blog"));
+        assert!(local_notebook_matches(&nb, "scratchpad"));
+        assert!(!local_notebook_matches(&nb, "blog"));
+    }
+
+    /// An unpublished account notebook is only findable from this listing,
+    /// so search must reach it on exactly the fields a local one exposes.
+    #[test]
+    fn account_search_matches_title_and_tags_published_or_not() {
+        let draft = account("Quantum Draft", false, &["physics", "wip"]);
+        let live = account("Quantum Published", true, &["physics"]);
+
+        for nb in [&draft, &live] {
+            assert!(account_notebook_matches(nb, ""));
+            assert!(account_notebook_matches(nb, "quantum"));
+            assert!(account_notebook_matches(nb, "physics"));
+            assert!(!account_notebook_matches(nb, "quaternions"));
+        }
+        assert!(account_notebook_matches(&draft, "wip"));
+        assert!(!account_notebook_matches(&live, "wip"));
+    }
+
+    #[test]
+    fn account_chip_lists_unpublished_alongside_published() {
+        let account_notebooks = [
+            account("Draft Only", false, &[]),
+            account("Live", true, &[]),
+        ];
+
+        let items = collect_items(&[], &account_notebooks, &[], "", FilterMode::Account);
+        assert_eq!(
+            titles(&items),
+            vec![
+                ("account", "Draft Only".to_string()),
+                ("account", "Live".to_string()),
+            ]
+        );
+        // The published flag reaches the card, which is what decides the
+        // badge; listing is not conditional on it.
+        assert!(matches!(
+            items[0],
+            NotebookListItem::Mutable {
+                published: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            items[1],
+            NotebookListItem::Mutable {
+                published: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn chips_filter_to_one_storage_class_each() {
+        let local = [IronpadNotebook::new("Local Notebook")];
+        let account_notebooks = [account("Account Notebook", false, &[])];
+        let public = [summary()];
+
+        let all = collect_items(&local, &account_notebooks, &public, "", FilterMode::All);
+        assert_eq!(
+            titles(&all)
+                .into_iter()
+                .map(|(class, _)| class)
+                .collect::<Vec<_>>(),
+            vec!["local", "account", "public"]
+        );
+
+        for (mode, class) in [
+            (FilterMode::Local, "local"),
+            (FilterMode::Account, "account"),
+            (FilterMode::Public, "public"),
+        ] {
+            let items = collect_items(&local, &account_notebooks, &public, "", mode);
+            assert_eq!(items.len(), 1, "one card per storage class in this fixture");
+            assert_eq!(titles(&items)[0].0, class);
+        }
+    }
+
+    /// Search spans every storage class at once, so a tag query that hits an
+    /// account notebook must not be filtered out by the class it lives in.
+    #[test]
+    fn search_spans_storage_classes() {
+        let mut nb = IronpadNotebook::new("Local Notes");
+        nb.tags = Some(vec!["blog".into()]);
+        let local = [nb];
+        let account_notebooks = [account("Account Notes", false, &["blog"])];
+        let public = [summary()];
+
+        let items = collect_items(&local, &account_notebooks, &public, "blog", FilterMode::All);
+        assert_eq!(
+            titles(&items)
+                .into_iter()
+                .map(|(class, _)| class)
+                .collect::<Vec<_>>(),
+            vec!["local", "account", "public"]
+        );
+
+        let none = collect_items(
+            &local,
+            &account_notebooks,
+            &public,
+            "quaternions",
+            FilterMode::All,
+        );
+        assert!(none.is_empty());
     }
 
     #[test]

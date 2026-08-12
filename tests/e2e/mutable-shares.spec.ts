@@ -1,15 +1,16 @@
 import fs from "fs";
 import path from "path";
 
-import { test, expect, APIRequestContext, Page } from "@playwright/test";
+import { test, expect, APIRequestContext } from "@playwright/test";
 import { loginTestUser } from "./helpers/auth";
 import { setCellSource } from "./helpers/monaco";
 import {
+  expectLiveCard,
   expectOwnerEditor,
   menuClick,
   shareMutable,
 } from "./helpers/mutable";
-import { createNotebook } from "./helpers/session";
+import { createNotebook, renameNotebook } from "./helpers/session";
 
 /**
  * PRD-0054: server-authoritative mutable shares with a draft/published
@@ -55,39 +56,6 @@ async function rawHtml(
   return res.text();
 }
 
-/**
- * Asserts /og/mutable/{id}.png is a real card: PNG magic bytes plus the IHDR
- * width/height, because that is what an unfurler reads to size the preview.
- */
-async function expectLiveCard(
-  request: APIRequestContext,
-  shareId: string,
-): Promise<void> {
-  const res = await request.get(`${BASE}/og/mutable/${shareId}.png`);
-  expect(res.status()).toBe(200);
-  expect(res.headers()["content-type"]).toBe("image/png");
-  const body = await res.body();
-  expect(body.subarray(0, 8)).toEqual(
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  );
-  expect(body.readUInt32BE(16)).toBe(1200);
-  expect(body.readUInt32BE(20)).toBe(630);
-}
-
-/** Rename via the header title input and confirm the change landed. */
-async function rename(page: Page, title: string): Promise<void> {
-  await page.locator(".ironpad-notebook-title--editable").click();
-  const input = page.locator(".ironpad-header-title-input");
-  await expect(input).toBeVisible();
-  await input.fill("");
-  await input.pressSequentially(title, { delay: 15 });
-  await input.press("Enter");
-  await expect(page.locator(".ironpad-notebook-title--editable")).toHaveText(
-    title,
-    { timeout: 10_000 },
-  );
-}
-
 test.describe("Mutable shares (PRD-0054, draft/published)", () => {
   test("publish, draft invisibly, push: the one-URL owner lifecycle", async ({
     page,
@@ -97,7 +65,7 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     test.setTimeout(150_000);
     await loginTestUser(page, "alice");
     await createNotebook(page);
-    await rename(page, "Lifecycle One");
+    await renameNotebook(page, "Lifecycle One");
 
     const shareId = await shareMutable(page);
 
@@ -107,7 +75,7 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await expect(push).toHaveText(/Published/);
 
     // An edit arms Push and autosaves to the DRAFT.
-    await rename(page, "Lifecycle One v2");
+    await renameNotebook(page, "Lifecycle One v2");
     await expect(push).toBeEnabled({ timeout: 10_000 });
     await expect(push).toHaveText(/Push/);
     await page.waitForTimeout(DRAFT_SETTLE_MS); // draft write lands
@@ -154,11 +122,11 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     test.setTimeout(150_000);
     await loginTestUser(page, "alice");
     await createNotebook(page);
-    await rename(page, "Device One");
+    await renameNotebook(page, "Device One");
     const shareId = await shareMutable(page);
 
     // Draft an edit on device one and let the autosave land.
-    await rename(page, "Device One WIP");
+    await renameNotebook(page, "Device One WIP");
     await expect(page.locator(".ironpad-push-button")).toBeEnabled();
     await page.waitForTimeout(DRAFT_SETTLE_MS);
 
@@ -209,11 +177,11 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     test.setTimeout(150_000);
     await loginTestUser(page, "alice");
     await createNotebook(page);
-    await rename(page, "Discard Base");
+    await renameNotebook(page, "Discard Base");
     const shareId = await shareMutable(page);
 
     // Draft an edit, then throw it away.
-    await rename(page, "Discard Scratch");
+    await renameNotebook(page, "Discard Scratch");
     await expect(page.locator(".ironpad-push-button")).toBeEnabled();
     await page.waitForTimeout(DRAFT_SETTLE_MS);
     page.on("dialog", (d) => d.accept());
@@ -241,52 +209,6 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await expectOwnerEditor(page);
   });
 
-  test("unpublish brings the notebook home and 404s the link and card", async ({
-    page,
-    request,
-  }) => {
-    test.setTimeout(150_000);
-    await loginTestUser(page, "alice");
-    await createNotebook(page);
-    await rename(page, "Unpublish Me");
-    const shareId = await shareMutable(page);
-
-    // Warm the og card so the 404-after-unpublish assertion is strict: the
-    // handler must re-check existence rather than serve the cached PNG.
-    await expectLiveCard(request, shareId);
-
-    page.on("dialog", (d) => d.accept());
-    await menuClick(page, "Unpublish");
-    // Progress ack while it works: the flush, the local save, and the server
-    // delete are several seconds of visible nothing before the navigation.
-    await expect(
-      page.locator(".ironpad-toast-title", { hasText: "Unpublishing" }),
-    ).toBeVisible({ timeout: 10_000 });
-    // Hard navigation back to /local/{uuid}; toast rides sessionStorage.
-    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 30_000 });
-    await expect(
-      page.locator(".ironpad-toast-title", { hasText: "Unpublished" }),
-    ).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator(".ironpad-notebook-title--editable")).toHaveText(
-      "Unpublish Me",
-      { timeout: 15_000 },
-    );
-
-    // The share is gone server-side: hard 404 on the page AND the card.
-    const gone = await request.get(`${BASE}/mutable/${shareId}`);
-    expect(gone.status()).toBe(404);
-    const card = await request.get(`${BASE}/og/mutable/${shareId}.png`);
-    expect(card.status()).toBe(404);
-
-    // And it's back as a private notebook on home.
-    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
-    await page.goto("/");
-    await expect(page.locator(".ironpad-home")).toBeVisible();
-    await expect(page.locator(`a[href="/local/${notebookId}"]`)).toBeVisible({
-      timeout: 10_000,
-    });
-  });
-
   test("a mutable share unfurls from the raw body with unlisted robots", async ({
     page,
     request,
@@ -295,7 +217,7 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await loginTestUser(page, "alice");
     await createNotebook(page);
     const title = `Mutable unfurl ${Date.now()}`;
-    await rename(page, title);
+    await renameNotebook(page, title);
     const shareId = await shareMutable(page);
 
     const html = await rawHtml(request, `/mutable/${shareId}`);
@@ -326,7 +248,7 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     test.setTimeout(150_000);
     await loginTestUser(page, "alice");
     await createNotebook(page);
-    await rename(page, "Push Fail Base");
+    await renameNotebook(page, "Push Fail Base");
     const shareId = await shareMutable(page);
 
     // Fault injection: every draft save fails at the network layer. The
@@ -337,7 +259,7 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
       (url) => url.pathname.includes("save_mutable_draft"),
       (route) => route.abort(),
     );
-    await rename(page, "Push Fail v2");
+    await renameNotebook(page, "Push Fail v2");
     const push = page.locator(".ironpad-push-button");
     await expect(push).toBeEnabled({ timeout: 10_000 });
     await expect(page.locator(".ironpad-draft-indicator")).toHaveText(
@@ -383,7 +305,7 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await createNotebook(page);
     // Rename BEFORE adding a cell: a new cell steals focus when its Monaco
     // mounts (pending_focus_cell), which would hijack mid-flight title typing.
-    await rename(page, "Download Mutable");
+    await renameNotebook(page, "Download Mutable");
     await page.locator(".ironpad-add-cell-btn").first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
     await shareMutable(page);
@@ -402,7 +324,7 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     expect(notebook.cells.length).toBe(1);
   });
 
-  test("unpublish keeps a keystroke made inside the debounce window", async ({
+  test("push keeps a keystroke made inside the debounce window", async ({
     page,
   }) => {
     test.setTimeout(150_000);
@@ -410,7 +332,7 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await createNotebook(page);
     // Rename BEFORE adding a cell: a new cell steals focus when its Monaco
     // mounts (pending_focus_cell), which would hijack mid-flight title typing.
-    await rename(page, "Unpublish Flush");
+    await renameNotebook(page, "Push Flush");
     await page.locator(".ironpad-add-cell-btn").first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
     await shareMutable(page);
@@ -418,24 +340,35 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
       page.locator(".ironpad-cell-card .monaco-editor").first(),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Edit a cell and unpublish IMMEDIATELY — inside the ~1s editor->model
-    // debounce. Unpublish deletes the share (published AND draft), so the
-    // local save it makes is the only surviving copy: without the flush
-    // discipline this keystroke was gone permanently.
-    page.on("dialog", (d) => d.accept());
+    // Edit a cell and push IMMEDIATELY — inside the ~1s editor->model
+    // debounce. Push promotes whatever the SERVER holds, so without the
+    // flush-before-serialize discipline this keystroke would be missing from
+    // the copy readers get, behind a success toast.
+    //
+    // This assertion used to ride Unpublish, whose local save was for one
+    // moment the only surviving copy of the notebook (PRD-0064 removed that
+    // moment, and the flow with it). Push is where promoting stale content
+    // is still the failure.
     await setCellSource(
       page,
       page.locator(".ironpad-cell-card").first(),
-      "let flushed_before_unpublish = 42;",
+      "let flushed_before_push = 42;",
     );
-    await menuClick(page, "Unpublish");
+    await page.locator(".ironpad-push-button").click();
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Pushed" }),
+    ).toBeVisible({ timeout: 30_000 });
 
-    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 30_000 });
+    // The PUBLISHED copy carries it. Asserted through View Published, which
+    // renders `notebook_json` rather than the draft — the raw SSR body
+    // cannot answer this, since a view-only code cell SSRs as an empty
+    // Monaco container and only fills in on hydrate.
+    await menuClick(page, "View Published");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(
-      page.locator(".ironpad-toast-title", { hasText: "Unpublished" }),
-    ).toBeVisible({ timeout: 15_000 });
-    await expect(
-      page.locator(".ironpad-cell-card .monaco-editor .view-lines").first(),
-    ).toContainText("flushed_before_unpublish", { timeout: 30_000 });
+      page.locator(".view-only-notebook .monaco-editor .view-lines").first(),
+    ).toContainText("flushed_before_push", { timeout: 30_000 });
   });
 });

@@ -60,11 +60,16 @@ pub struct AdminUserRow {
 }
 
 /// One mutable share row, with its owner attribution resolved.
+///
+/// `notebook_json` is the PUBLISHED copy: `None` for an account notebook that
+/// has never been published (PRD-0064), whose content lives in the draft slot
+/// and is reachable only through the owner's editing view
+/// ([`get_share_for_edit`](Db::get_share_for_edit)). Reader-facing callers
+/// treat `None` as "no such published notebook".
 #[derive(Debug, Clone)]
 pub struct MutableShareRow {
-    pub notebook_json: String,
+    pub notebook_json: Option<String>,
     pub manifest_json: Option<String>,
-    pub pushed_at: String,
     /// Only the owner and READ grantees may view (PRD-0061).
     pub private: bool,
     /// `None` only for a share whose grant row is missing (should not happen;
@@ -72,12 +77,31 @@ pub struct MutableShareRow {
     pub owner: Option<AuthUser>,
 }
 
-/// Summary row for the owner's "published" listing.
+/// Summary row for the owner's account listing: every share they own,
+/// published or not (PRD-0064).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OwnedShareRow {
     pub id: String,
+    /// Draft-or-published content, so the listing titles an unpublished
+    /// notebook from the copy that actually exists.
     pub notebook_json: String,
-    pub pushed_at: String,
+    /// `None` until the first publish.
+    pub pushed_at: Option<String>,
+    pub created_at: String,
+    /// Whether a published copy exists (the reader-visible one).
+    pub published: bool,
+}
+
+impl OwnedShareRow {
+    /// See [`ironpad_common::last_activity`]: this is that one rule, applied
+    /// to this struct's fields. It holds no rule of its own.
+    ///
+    /// The db sort and the home listing read the same timestamp through this
+    /// helper, so they cannot disagree about which notebook is most recent.
+    #[must_use]
+    pub fn last_activity(&self) -> &str {
+        ironpad_common::last_activity(self.pushed_at.as_deref(), &self.created_at)
+    }
 }
 
 /// The owner's editing view of a share (PRD-0054): the draft when one
@@ -86,9 +110,15 @@ pub struct OwnedShareRow {
 pub struct ShareEditRow {
     /// Draft content if a draft exists, otherwise the published content.
     pub notebook_json: String,
-    /// True when a draft exists (draft may differ from published).
+    /// True when a draft exists (draft may differ from published). An
+    /// unpublished account notebook is permanently dirty by construction:
+    /// its content IS the draft (PRD-0064).
     pub dirty: bool,
-    pub pushed_at: String,
+    /// Whether a published copy exists. `dirty` alone cannot tell an
+    /// unpublished notebook from a published one with pending edits, and
+    /// the editor's button says Publish for the first and Push for the
+    /// second.
+    pub published: bool,
     /// The share's privacy flag, for the owner's Access UI (PRD-0061).
     pub private: bool,
 }
@@ -139,13 +169,20 @@ impl Db {
                 DEFINE FIELD IF NOT EXISTS expires_at ON session TYPE int;
 
                 DEFINE TABLE IF NOT EXISTS mutable_share SCHEMAFULL;
-                DEFINE FIELD IF NOT EXISTS notebook_json ON mutable_share TYPE string;
+                -- OVERWRITE, deliberately, on exactly these two (PRD-0064).
+                -- An account notebook has no published copy, so both widen to
+                -- option<string>. IF NOT EXISTS silently declines to redefine
+                -- an existing field, and CI opens a fresh database every run,
+                -- so the widening would look applied everywhere except the one
+                -- database that predates it. Every other field is unchanged
+                -- and keeps IF NOT EXISTS.
+                DEFINE FIELD OVERWRITE notebook_json ON mutable_share TYPE option<string>;
                 DEFINE FIELD IF NOT EXISTS manifest_json ON mutable_share TYPE option<string>;
                 DEFINE FIELD IF NOT EXISTS draft_json ON mutable_share TYPE option<string>;
                 DEFINE FIELD IF NOT EXISTS draft_bytes ON mutable_share TYPE option<int>;
                 DEFINE FIELD IF NOT EXISTS private ON mutable_share TYPE bool DEFAULT false;
                 DEFINE FIELD IF NOT EXISTS bytes ON mutable_share TYPE int;
-                DEFINE FIELD IF NOT EXISTS pushed_at ON mutable_share TYPE string;
+                DEFINE FIELD OVERWRITE pushed_at ON mutable_share TYPE option<string>;
                 DEFINE FIELD IF NOT EXISTS created_at ON mutable_share TYPE string;
 
                 DEFINE TABLE IF NOT EXISTS rbac_grant SCHEMAFULL;
@@ -468,55 +505,82 @@ impl Db {
 
     // ── Mutable shares + grants ─────────────────────────────────────────
 
-    /// Create a share and its OWNER grant in one transaction. Fails if the id
-    /// already exists (callers retry with a fresh id).
-    #[tracing::instrument(name = "db_create_share", level = "info", skip_all, fields(id = %id))]
-    pub async fn create_mutable_share(
+    /// Create an ACCOUNT notebook (PRD-0064) and return its minted id: a
+    /// share with NO published copy. The content goes straight into the draft
+    /// slot, which is where the editor already writes it, so publishing later
+    /// is the existing promote and nothing has to be moved between storage
+    /// classes.
+    ///
+    /// Transactional: a share row without its OWNER grant is a notebook
+    /// nobody can open, edit, or delete.
+    ///
+    /// This is the ONLY way a share row is born. Publishing is
+    /// [`promote_draft`](Self::promote_draft) on top of it, so no path can
+    /// write a row shape the ordinary save-then-publish sequence cannot
+    /// produce — including from a test fixture.
+    #[tracing::instrument(name = "db_create_account_notebook", level = "info", skip_all)]
+    pub async fn create_account_notebook(
         &self,
-        id: &str,
         owner_github_id: &str,
         notebook_json: &str,
-        manifest_json: Option<String>,
-    ) -> Result<()> {
-        let now = now_rfc3339();
+    ) -> Result<String> {
+        let id = self.mint_share_id().await?;
         self.inner
             .query(
                 "BEGIN;
                  CREATE type::record('mutable_share', $id) SET \
-                    notebook_json = $nb, manifest_json = $mf, \
-                    bytes = $bytes, pushed_at = $now, created_at = $now;
+                    notebook_json = NONE, manifest_json = NONE, \
+                    draft_json = $nb, draft_bytes = $bytes, \
+                    bytes = 0, pushed_at = NONE, created_at = $now;
                  CREATE rbac_grant SET \
                     user = type::record('user', $uid), \
                     resource_kind = $kind, resource_id = $id, role = $role;
                  COMMIT;",
             )
-            .bind(("id", id.to_string()))
+            .bind(("id", id.clone()))
             .bind(("nb", notebook_json.to_string()))
-            .bind(("mf", manifest_json))
             .bind((
                 "bytes",
                 i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
             ))
-            .bind(("now", now))
+            .bind(("now", now_rfc3339()))
             .bind(("uid", owner_github_id.to_string()))
             .bind(("kind", KIND_MUTABLE_SHARE))
             .bind(("role", ROLE_OWNER))
             .await
-            .context("share create failed")?
+            .context("account notebook create failed")?
             .check()
-            .context("share create returned an error")?;
-        Ok(())
+            .context("account notebook create returned an error")?;
+        Ok(id)
+    }
+
+    /// Mint a share id that is not already taken (the `/mutable/{id}` path
+    /// segment). Collisions are astronomically unlikely at 64 bits; the loop
+    /// is a belt-and-braces guard, and the transactional CREATE would reject
+    /// a collision anyway.
+    async fn mint_share_id(&self) -> Result<String> {
+        for _ in 0..8 {
+            let candidate = random_share_id();
+            if !self.mutable_share_exists(&candidate).await? {
+                return Ok(candidate);
+            }
+        }
+        anyhow::bail!("failed to mint a unique mutable share id")
     }
 
     /// Whether a share id is taken (used when minting fresh ids).
     pub async fn mutable_share_exists(&self, id: &str) -> Result<bool> {
+        // The probe reads the record id itself, which every row has. Reading
+        // a CONTENT field would make an unpublished account notebook look
+        // like a deserialization failure, in the one check that decides
+        // whether a fresh id is free (PRD-0064).
         #[derive(SurrealValue)]
         struct Row {
-            pushed_at: String,
+            id: String,
         }
         let row: Option<Row> = self
             .inner
-            .query("SELECT pushed_at FROM ONLY type::record('mutable_share', $id)")
+            .query("SELECT record::id(id) AS id FROM ONLY type::record('mutable_share', $id)")
             .bind(("id", id.to_string()))
             .await
             .context("share existence check failed")?
@@ -530,16 +594,15 @@ impl Db {
     pub async fn get_mutable_share(&self, id: &str) -> Result<Option<MutableShareRow>> {
         #[derive(SurrealValue)]
         struct ShareRowRaw {
-            notebook_json: String,
+            notebook_json: Option<String>,
             manifest_json: Option<String>,
-            pushed_at: String,
             private: Option<bool>,
         }
 
         let mut response = self
             .inner
             .query(
-                "SELECT notebook_json, manifest_json, pushed_at, private \
+                "SELECT notebook_json, manifest_json, private \
                  FROM ONLY type::record('mutable_share', $id);
                  SELECT record::id(user) AS github_id, user.login AS login, \
                     user.avatar_url AS avatar_url \
@@ -568,7 +631,6 @@ impl Db {
         Ok(Some(MutableShareRow {
             notebook_json: share.notebook_json,
             manifest_json: share.manifest_json,
-            pushed_at: share.pushed_at,
             // Pre-PRD-0061 rows carry no field value; absent means public.
             private: share.private.unwrap_or(false),
             owner,
@@ -640,15 +702,14 @@ impl Db {
     pub async fn get_share_for_edit(&self, id: &str) -> Result<Option<ShareEditRow>> {
         #[derive(SurrealValue)]
         struct Row {
-            notebook_json: String,
+            notebook_json: Option<String>,
             draft_json: Option<String>,
-            pushed_at: String,
             private: Option<bool>,
         }
         let row: Option<Row> = self
             .inner
             .query(
-                "SELECT notebook_json, draft_json, pushed_at, private \
+                "SELECT notebook_json, draft_json, private \
                  FROM ONLY type::record('mutable_share', $id)",
             )
             .bind(("id", id.to_string()))
@@ -656,28 +717,51 @@ impl Db {
             .context("edit fetch failed")?
             .take(0)
             .context("edit row malformed")?;
-        Ok(row.map(|r| ShareEditRow {
-            dirty: r.draft_json.is_some(),
-            notebook_json: r.draft_json.unwrap_or(r.notebook_json),
-            pushed_at: r.pushed_at,
+        let Some(r) = row else { return Ok(None) };
+        let published = r.notebook_json.is_some();
+        let dirty = r.draft_json.is_some();
+        let notebook_json = resolve_content(r.draft_json, r.notebook_json).ok_or_else(|| {
+            anyhow::anyhow!("share {id} has neither a published copy nor a draft")
+        })?;
+        Ok(Some(ShareEditRow {
+            notebook_json,
+            dirty,
+            published,
             private: r.private.unwrap_or(false),
         }))
     }
 
     /// Clear the draft slot without promoting (Discard draft).
+    ///
+    /// Guarded on a published copy existing: discarding the draft of an
+    /// unpublished account notebook would delete its only content, and both
+    /// slots empty is corruption rather than a state (PRD-0064). Such a row
+    /// has nothing to revert TO, so the discard is a no-op there.
+    ///
+    /// Returns whether a row actually matched, so a caller can tell a real
+    /// discard from that no-op. Reporting success for a write the WHERE
+    /// clause declined would have the editor announce "back to the published
+    /// copy" and reload over content nothing touched.
     #[tracing::instrument(name = "db_discard_draft", level = "info", skip_all, fields(id = %id))]
-    pub async fn discard_draft(&self, id: &str) -> Result<()> {
-        self.inner
+    pub async fn discard_draft(&self, id: &str) -> Result<bool> {
+        #[derive(SurrealValue)]
+        struct Row {
+            id: String,
+        }
+        let rows: Vec<Row> = self
+            .inner
             .query(
                 "UPDATE type::record('mutable_share', $id) \
-                 SET draft_json = NONE, draft_bytes = NONE",
+                 SET draft_json = NONE, draft_bytes = NONE \
+                 WHERE notebook_json != NONE \
+                 RETURN record::id(id) AS id",
             )
             .bind(("id", id.to_string()))
             .await
             .context("draft discard failed")?
-            .check()
+            .take(0)
             .context("draft discard returned an error")?;
-        Ok(())
+        Ok(!rows.is_empty())
     }
 
     /// Promote the draft to published (a Push): published := draft, manifest
@@ -688,6 +772,11 @@ impl Db {
     /// The WHERE guard makes this promote-or-nothing; the caller decides "was
     /// there anything to push" via [`get_share_for_edit`](Self::get_share_for_edit)
     /// beforehand (a benign race, last-write-wins by design, PRD-0054).
+    ///
+    /// A FIRST publish (PRD-0064: `notebook_json` and `pushed_at` still NONE
+    /// on an account notebook) is the same statement, not a special case:
+    /// `draft_json ?? notebook_json` takes the draft, and `pushed_at` moves
+    /// from NONE to now.
     ///
     /// `published_bytes` is the BYTE length of the draft the caller read
     /// (every other path stores Rust `.len()` bytes; the in-DB
@@ -721,6 +810,63 @@ impl Db {
             .context("draft promote failed")?
             .check()
             .context("draft promote returned an error")?;
+        Ok(())
+    }
+
+    /// Test-only: make every subsequent PUBLISH fail, and nothing else.
+    ///
+    /// Constrains `bytes` to the zero an unpublished row already holds, so a
+    /// save still lands and [`promote_draft`](Self::promote_draft) — the only
+    /// statement that writes a nonzero `bytes` — is rejected by the database.
+    /// Narrow on purpose rather than a general "run this SQL" hatch: the one
+    /// thing it can do is fail a publish, which is the half of Share Mutable
+    /// that has to roll back the half before it.
+    #[cfg(test)]
+    pub(crate) async fn break_publish_for_tests(&self) -> Result<()> {
+        self.inner
+            .query("DEFINE FIELD OVERWRITE bytes ON mutable_share TYPE int ASSERT $value = 0")
+            .await
+            .context("publish-breaking DDL failed")?
+            .check()
+            .context("publish-breaking DDL returned an error")?;
+        Ok(())
+    }
+
+    /// Unpublish in place (PRD-0064): drop the published copy and keep the
+    /// notebook in the owner's account as an editable draft.
+    ///
+    /// A clean share's published copy is its ONLY copy, so it moves into the
+    /// draft slot rather than being cleared: a row with no content anywhere is
+    /// corruption, not a state. That is also what lets this replace the old
+    /// delete-and-write-to-IndexedDB dance — no moment exists where the
+    /// browser holds the only copy.
+    ///
+    /// The assignment order reads as if it mattered; it does not. `SurrealDB`
+    /// evaluates every right-hand side against the PRE-update document, so
+    /// `draft_json = draft_json ?? notebook_json` sees the published content
+    /// whether it is written above or below `notebook_json = NONE` (measured:
+    /// swapping them leaves the regression test green). What the test
+    /// actually gates is that the move is there at all.
+    ///
+    /// Idempotent: unpublishing an already-unpublished notebook leaves the
+    /// draft alone.
+    #[tracing::instrument(name = "db_unpublish_share", level = "info", skip_all, fields(id = %id))]
+    pub async fn unpublish_share(&self, id: &str) -> Result<()> {
+        self.inner
+            .query(
+                "UPDATE type::record('mutable_share', $id) SET \
+                    draft_json = draft_json ?? notebook_json, \
+                    draft_bytes = draft_bytes ?? bytes, \
+                    notebook_json = NONE, \
+                    manifest_json = NONE, \
+                    pushed_at = NONE, \
+                    bytes = 0",
+            )
+            .bind(("id", id.to_string()))
+            .await
+            .context("share unpublish failed")?
+            .check()
+            .context("share unpublish returned an error")?;
         Ok(())
     }
 
@@ -897,9 +1043,10 @@ impl Db {
         Ok(!rows.is_empty())
     }
 
-    /// All shares a user owns, newest push first.
-    #[tracing::instrument(name = "db_list_owned_shares", level = "info", skip_all)]
-    pub async fn list_shares_owned_by(&self, github_id: &str) -> Result<Vec<OwnedShareRow>> {
+    /// The ids of every share a user holds the OWNER grant on. The one place
+    /// "which notebooks are mine" is expressed, so the listing and the
+    /// per-user byte total cannot drift apart.
+    async fn owned_share_ids(&self, github_id: &str) -> Result<Vec<String>> {
         #[derive(SurrealValue)]
         struct GrantRow {
             resource_id: String,
@@ -918,20 +1065,60 @@ impl Db {
             .context("grant listing failed")?
             .take(0)
             .context("grant rows malformed")?;
+        Ok(grants.into_iter().map(|g| g.resource_id).collect())
+    }
 
-        // N+1 by design: the owned-share count is tiny (single-digit), and the
-        // per-id fetch avoids gymnastics joining across the JSON payload.
-        let mut out = Vec::with_capacity(grants.len());
-        for grant in grants {
-            if let Some(share) = self.get_mutable_share(&grant.resource_id).await? {
-                out.push(OwnedShareRow {
-                    id: grant.resource_id,
-                    notebook_json: share.notebook_json,
-                    pushed_at: share.pushed_at,
-                });
-            }
+    /// Every share a user owns, published or not (PRD-0064), newest activity
+    /// first. Content is draft-or-published, so an unpublished notebook
+    /// carries the copy that actually exists.
+    #[tracing::instrument(name = "db_list_owned_shares", level = "info", skip_all)]
+    pub async fn list_shares_owned_by(&self, github_id: &str) -> Result<Vec<OwnedShareRow>> {
+        #[derive(SurrealValue)]
+        struct Row {
+            id: String,
+            notebook_json: Option<String>,
+            draft_json: Option<String>,
+            pushed_at: Option<String>,
+            created_at: String,
         }
-        out.sort_by(|a, b| b.pushed_at.cmp(&a.pushed_at));
+        let ids = self.owned_share_ids(github_id).await?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<Row> = self
+            .inner
+            .query(
+                "SELECT record::id(id) AS id, notebook_json, draft_json, \
+                    pushed_at, created_at \
+                 FROM mutable_share WHERE record::id(id) IN $ids",
+            )
+            .bind(("ids", ids))
+            .await
+            .context("owned share listing failed")?
+            .take(0)
+            .context("owned share rows malformed")?;
+
+        let mut out: Vec<OwnedShareRow> = rows
+            .into_iter()
+            .filter_map(|r| {
+                let published = r.notebook_json.is_some();
+                let Some(notebook_json) = resolve_content(r.draft_json, r.notebook_json) else {
+                    // Corruption, not a state. Drop the row rather than
+                    // failing the call: one unreadable notebook must not hide
+                    // every other notebook the user owns.
+                    tracing::warn!(id = %r.id, "share has neither a published copy nor a draft");
+                    return None;
+                };
+                Some(OwnedShareRow {
+                    id: r.id,
+                    notebook_json,
+                    pushed_at: r.pushed_at,
+                    created_at: r.created_at,
+                    published,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| b.last_activity().cmp(a.last_activity()));
         Ok(out)
     }
 
@@ -957,9 +1144,51 @@ impl Db {
             .context("byte total row malformed")?;
         Ok(row.map_or(0, |r| u64::try_from(r.total).unwrap_or(0)))
     }
+
+    /// The same total, narrowed to the shares ONE user owns (PRD-0064): the
+    /// per-user cap input. Storing notebooks is the point of an account, so
+    /// the instance-wide cap alone would let one account consume everyone
+    /// else's room.
+    #[tracing::instrument(name = "db_user_bytes", level = "debug", skip_all)]
+    pub async fn total_mutable_bytes_for_user(&self, github_id: &str) -> Result<u64> {
+        #[derive(SurrealValue)]
+        struct Row {
+            total: i64,
+        }
+        let ids = self.owned_share_ids(github_id).await?;
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let row: Option<Row> = self
+            .inner
+            .query(
+                "SELECT math::sum(bytes + (draft_bytes ?? 0)) AS total \
+                 FROM mutable_share WHERE record::id(id) IN $ids GROUP ALL",
+            )
+            .bind(("ids", ids))
+            .await
+            .context("per-user byte total failed")?
+            .take(0)
+            .context("per-user byte total row malformed")?;
+        Ok(row.map_or(0, |r| u64::try_from(r.total).unwrap_or(0)))
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Content resolution (PRD-0064): the draft when one exists, else the
+/// published copy. The ONE place the rule is written, so the editor view and
+/// the account listing cannot disagree about what a notebook's content is.
+///
+/// `None` means the row carries neither, which the account invariant forbids.
+fn resolve_content(draft_json: Option<String>, notebook_json: Option<String>) -> Option<String> {
+    draft_json.or(notebook_json)
+}
+
+/// A fresh share id: the `/mutable/{id}` path segment.
+fn random_share_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..16].to_string()
+}
 
 /// A fresh 256-bit session token as lowercase hex — the cookie value.
 fn random_token() -> String {
@@ -999,6 +1228,28 @@ fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PUBLISHED share, minted the only way production mints one: an
+    /// account notebook, promoted by a push. Returns the id the server
+    /// chose. Fixtures that wrote a published row directly used to set
+    /// `bytes`/`pushed_at` at create time, which no code path does any more —
+    /// so tests could stay green against a row shape production cannot
+    /// produce.
+    async fn published_share(
+        db: &Db,
+        owner_github_id: &str,
+        notebook_json: &str,
+        manifest_json: Option<String>,
+    ) -> String {
+        let id = db
+            .create_account_notebook(owner_github_id, notebook_json)
+            .await
+            .unwrap();
+        db.promote_draft(&id, manifest_json, notebook_json.len() as u64)
+            .await
+            .unwrap();
+        id
+    }
 
     async fn test_db() -> (tempfile::TempDir, Db) {
         let dir = tempfile::tempdir().unwrap();
@@ -1042,9 +1293,7 @@ mod tests {
 
         let _t1 = db.create_session("1").await.unwrap();
         let _t2 = db.create_session("1").await.unwrap();
-        db.create_mutable_share("s1", "1", "{}", None)
-            .await
-            .unwrap();
+        published_share(&db, "1", "{}", None).await;
 
         let users = db.list_users_for_admin().await.unwrap();
         assert_eq!(users.len(), 2);
@@ -1187,70 +1436,67 @@ mod tests {
             .await
             .unwrap();
 
-        db.create_mutable_share("abcd1234abcd1234", "1", "{\"title\":\"nb\"}", None)
-            .await
-            .unwrap();
+        let id = published_share(&db, "1", "{\"title\":\"nb\"}", None).await;
 
-        assert!(db.mutable_share_exists("abcd1234abcd1234").await.unwrap());
+        assert!(db.mutable_share_exists(&id).await.unwrap());
         assert!(!db.mutable_share_exists("ffffffffffffffff").await.unwrap());
 
         // Owner attribution is resolved with the share.
         let row = db
-            .get_mutable_share("abcd1234abcd1234")
+            .get_mutable_share(&id)
             .await
             .unwrap()
             .expect("share exists");
-        assert_eq!(row.notebook_json, "{\"title\":\"nb\"}");
+        assert_eq!(row.notebook_json.as_deref(), Some("{\"title\":\"nb\"}"));
         assert!(row.manifest_json.is_none());
         let owner = row.owner.expect("owner grant resolved");
         assert_eq!(owner.login, "author");
         assert_eq!(owner.github_id, "1");
 
         // RBAC: the author owns it; the rando does not.
-        assert!(db.user_owns_share("1", "abcd1234abcd1234").await.unwrap());
-        assert!(!db.user_owns_share("2", "abcd1234abcd1234").await.unwrap());
+        assert!(db.user_owns_share("1", &id).await.unwrap());
+        assert!(!db.user_owns_share("2", &id).await.unwrap());
 
-        // Push updates content + manifest + pushed_at.
+        // Push updates content + manifest.
         db.update_mutable_share(
-            "abcd1234abcd1234",
+            &id,
             "{\"title\":\"nb2\"}",
             Some("{\"version\":1}".to_string()),
         )
         .await
         .unwrap();
-        let row = db
-            .get_mutable_share("abcd1234abcd1234")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.notebook_json, "{\"title\":\"nb2\"}");
+        let row = db.get_mutable_share(&id).await.unwrap().unwrap();
+        assert_eq!(row.notebook_json.as_deref(), Some("{\"title\":\"nb2\"}"));
         assert_eq!(row.manifest_json.as_deref(), Some("{\"version\":1}"));
 
         // Delete removes the share AND its grant.
-        db.delete_mutable_share("abcd1234abcd1234").await.unwrap();
-        assert!(db
-            .get_mutable_share("abcd1234abcd1234")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(!db.user_owns_share("1", "abcd1234abcd1234").await.unwrap());
+        db.delete_mutable_share(&id).await.unwrap();
+        assert!(db.get_mutable_share(&id).await.unwrap().is_none());
+        assert!(!db.user_owns_share("1", &id).await.unwrap());
     }
 
     #[tokio::test]
-    async fn create_share_rejects_duplicate_id() {
+    async fn saving_twice_mints_two_rows_rather_than_overwriting_one() {
+        // The id is server-minted now, so "reject a duplicate id" is no
+        // longer a caller-visible contract; what replaced it is that a second
+        // save of identical bytes cannot land on top of the first.
         let (_dir, db) = test_db().await;
         db.upsert_user("1", "author", "https://a/a.png")
             .await
             .unwrap();
-        db.create_mutable_share("aaaaaaaaaaaaaaaa", "1", "{}", None)
-            .await
-            .unwrap();
-        assert!(
-            db.create_mutable_share("aaaaaaaaaaaaaaaa", "1", "{}", None)
+        let first = db.create_account_notebook("1", "{\"v\":1}").await.unwrap();
+        let second = db.create_account_notebook("1", "{\"v\":2}").await.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            db.get_share_for_edit(&first)
                 .await
-                .is_err(),
-            "CREATE on an existing record id must fail"
+                .unwrap()
+                .unwrap()
+                .notebook_json,
+            "{\"v\":1}",
+            "the first notebook must survive the second save"
         );
+        assert_eq!(db.list_shares_owned_by("1").await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -1263,21 +1509,16 @@ mod tests {
             .await
             .unwrap();
 
-        db.create_mutable_share("aaaaaaaaaaaaaaaa", "1", "{\"a\":1}", None)
-            .await
-            .unwrap();
-        db.create_mutable_share("bbbbbbbbbbbbbbbb", "1", "{\"b\":2}", None)
-            .await
-            .unwrap();
-        db.create_mutable_share("cccccccccccccccc", "2", "{\"c\":3}", None)
-            .await
-            .unwrap();
+        published_share(&db, "1", "{\"a\":1}", None).await;
+        published_share(&db, "1", "{\"b\":2}", None).await;
+        let theirs = published_share(&db, "2", "{\"c\":3}", None).await;
 
         let mine = db.list_shares_owned_by("1").await.unwrap();
         assert_eq!(mine.len(), 2);
-        assert!(mine.iter().all(|s| s.id != "cccccccccccccccc"));
+        assert!(mine.iter().all(|s| s.id != theirs));
         // Newest push first (b was created after a).
-        assert!(mine[0].pushed_at >= mine[1].pushed_at);
+        assert!(mine[0].last_activity() >= mine[1].last_activity());
+        assert!(mine.iter().all(|s| s.published), "both were published");
 
         assert!(db.list_shares_owned_by("999").await.unwrap().is_empty());
     }
@@ -1290,37 +1531,29 @@ mod tests {
             .unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 0);
 
-        db.create_mutable_share("aaaaaaaaaaaaaaaa", "1", "12345", None)
-            .await
-            .unwrap();
-        db.create_mutable_share("bbbbbbbbbbbbbbbb", "1", "1234567890", None)
-            .await
-            .unwrap();
+        let a = published_share(&db, "1", "12345", None).await;
+        let b = published_share(&db, "1", "1234567890", None).await;
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 15);
 
         // A draft counts toward the total (it is owner-drivable storage)...
-        db.save_draft("aaaaaaaaaaaaaaaa", "123456789012345678901234567890")
+        db.save_draft(&a, "123456789012345678901234567890")
             .await
             .unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 45);
         // ...an overwrite replaces rather than accumulates...
-        db.save_draft("aaaaaaaaaaaaaaaa", "12345678901234567890")
-            .await
-            .unwrap();
+        db.save_draft(&a, "12345678901234567890").await.unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 35);
         // ...and both promote and discard return it to published-only.
-        db.promote_draft("aaaaaaaaaaaaaaaa", None, 20)
-            .await
-            .unwrap();
+        db.promote_draft(&a, None, 20).await.unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 30);
-        db.save_draft("bbbbbbbbbbbbbbbb", "xx").await.unwrap();
-        db.discard_draft("bbbbbbbbbbbbbbbb").await.unwrap();
+        db.save_draft(&b, "xx").await.unwrap();
+        assert!(db.discard_draft(&b).await.unwrap());
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 30);
 
         // A multibyte draft counts BYTES, not chars: "日本語" is 3 chars but
         // 9 bytes. The old SurrealQL string::len returned 3, undercounting
         // the cap 3x for CJK/emoji drafts.
-        db.save_draft("bbbbbbbbbbbbbbbb", "日本語").await.unwrap();
+        db.save_draft(&b, "日本語").await.unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 30 + 9);
     }
 
@@ -1328,13 +1561,11 @@ mod tests {
     async fn draft_lifecycle_save_promote_discard() {
         let (_dir, db) = test_db().await;
         db.upsert_user("1", "author", "").await.unwrap();
-        db.create_mutable_share("aaaaaaaaaaaaaaaa", "1", "{\"v\":1}", None)
-            .await
-            .unwrap();
+        let id = published_share(&db, "1", "{\"v\":1}", None).await;
 
         // Fresh share: clean, and the edit view serves the published copy.
         let edit = db
-            .get_share_for_edit("aaaaaaaaaaaaaaaa")
+            .get_share_for_edit(&id)
             .await
             .unwrap()
             .expect("share exists");
@@ -1348,64 +1579,39 @@ mod tests {
             .is_none());
 
         // An autosave lands in the draft slot; readers keep seeing published.
-        db.save_draft("aaaaaaaaaaaaaaaa", "{\"v\":2}")
-            .await
-            .unwrap();
-        let edit = db
-            .get_share_for_edit("aaaaaaaaaaaaaaaa")
-            .await
-            .unwrap()
-            .unwrap();
+        db.save_draft(&id, "{\"v\":2}").await.unwrap();
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
         assert!(edit.dirty);
         assert_eq!(edit.notebook_json, "{\"v\":2}");
-        let reader = db
-            .get_mutable_share("aaaaaaaaaaaaaaaa")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(reader.notebook_json, "{\"v\":1}", "readers see published");
-
-        // Promote: published := draft, manifest replaced, clean again.
-        let before = reader.pushed_at.clone();
-        db.promote_draft("aaaaaaaaaaaaaaaa", Some("{\"m\":1}".into()), 7)
-            .await
-            .unwrap();
-        let reader = db
-            .get_mutable_share("aaaaaaaaaaaaaaaa")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(reader.notebook_json, "{\"v\":2}");
-        assert_eq!(reader.manifest_json.as_deref(), Some("{\"m\":1}"));
-        assert!(reader.pushed_at >= before);
-        assert!(
-            !db.get_share_for_edit("aaaaaaaaaaaaaaaa")
-                .await
-                .unwrap()
-                .unwrap()
-                .dirty
+        let reader = db.get_mutable_share(&id).await.unwrap().unwrap();
+        assert_eq!(
+            reader.notebook_json.as_deref(),
+            Some("{\"v\":1}"),
+            "readers see published"
         );
 
-        // Promote with no draft: a no-op (published and manifest untouched).
-        db.promote_draft("aaaaaaaaaaaaaaaa", None, 0).await.unwrap();
-        let reader = db
-            .get_mutable_share("aaaaaaaaaaaaaaaa")
+        // Promote: published := draft, manifest replaced, clean again.
+        db.promote_draft(&id, Some("{\"m\":1}".into()), 7)
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(reader.notebook_json, "{\"v\":2}");
+        let reader = db.get_mutable_share(&id).await.unwrap().unwrap();
+        assert_eq!(reader.notebook_json.as_deref(), Some("{\"v\":2}"));
+        assert_eq!(reader.manifest_json.as_deref(), Some("{\"m\":1}"));
+        assert!(!db.get_share_for_edit(&id).await.unwrap().unwrap().dirty);
+
+        // Promote with no draft: a no-op (published and manifest untouched).
+        db.promote_draft(&id, None, 0).await.unwrap();
+        let reader = db.get_mutable_share(&id).await.unwrap().unwrap();
+        assert_eq!(reader.notebook_json.as_deref(), Some("{\"v\":2}"));
         assert_eq!(reader.manifest_json.as_deref(), Some("{\"m\":1}"));
 
         // Discard: the draft evaporates; published is untouched.
-        db.save_draft("aaaaaaaaaaaaaaaa", "{\"v\":3}")
-            .await
-            .unwrap();
-        db.discard_draft("aaaaaaaaaaaaaaaa").await.unwrap();
-        let edit = db
-            .get_share_for_edit("aaaaaaaaaaaaaaaa")
-            .await
-            .unwrap()
-            .unwrap();
+        db.save_draft(&id, "{\"v\":3}").await.unwrap();
+        assert!(
+            db.discard_draft(&id).await.unwrap(),
+            "a published share's draft is a real discard"
+        );
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
         assert!(!edit.dirty);
         assert_eq!(edit.notebook_json, "{\"v\":2}");
     }
@@ -1419,6 +1625,506 @@ mod tests {
             hash_token(&a),
             a,
             "the stored key must not be the cookie value"
+        );
+    }
+
+    // ── PRD-0064 T-002: account notebooks ───────────────────────────────
+
+    #[tokio::test]
+    async fn an_account_notebook_is_created_unpublished_with_its_content_in_the_draft() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+
+        let id = db.create_account_notebook("1", "{\"v\":1}").await.unwrap();
+        assert_eq!(id.len(), 16, "the id is the /mutable/{{id}} path segment");
+        assert_ne!(
+            id,
+            db.create_account_notebook("1", "{\"v\":1}").await.unwrap(),
+            "each save mints its own id"
+        );
+
+        // The row exists but publishes nothing.
+        let row = db
+            .get_mutable_share(&id)
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(row.notebook_json, None, "nothing published yet");
+        assert_eq!(row.manifest_json, None, "no blob snapshot without a push");
+        assert_eq!(row.owner.map(|o| o.login), Some("author".to_string()));
+
+        // The owner's editing view resolves the draft as the content.
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert_eq!(edit.notebook_json, "{\"v\":1}");
+        assert!(!edit.published, "no published copy exists");
+        assert!(
+            edit.dirty,
+            "an unpublished notebook is permanently dirty, which is what arms Push"
+        );
+
+        // The OWNER grant rode the same transaction: a share nobody owns is
+        // unopenable and undeletable.
+        assert!(db.user_owns_share("1", &id).await.unwrap());
+        assert!(!db.user_owns_share("2", &id).await.unwrap());
+
+        // The id-collision probe must see it. It used to SELECT a content
+        // field, which an unpublished row would have failed to deserialize —
+        // in the one check that decides whether a fresh id is free.
+        assert!(db.mutable_share_exists(&id).await.unwrap());
+
+        // Metered like any other stored notebook.
+        assert_eq!(db.total_mutable_bytes_for_user("1").await.unwrap(), 14);
+
+        // The listing (the one surviving consumer of pushed_at) dates it by
+        // creation, because it has never been pushed.
+        let listed = db.list_shares_owned_by("1").await.unwrap();
+        let mine = listed.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(mine.pushed_at, None, "never pushed");
+        assert_eq!(mine.last_activity(), mine.created_at);
+    }
+
+    #[tokio::test]
+    async fn unpublish_moves_the_published_copy_into_an_empty_draft_slot() {
+        // The case that could destroy a notebook: a clean share's published
+        // copy is its ONLY copy, so clearing notebook_json without moving it
+        // first loses the content outright.
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        let id = published_share(&db, "1", "{\"v\":1}", Some("{\"m\":1}".to_string())).await;
+        assert!(
+            !db.get_share_for_edit(&id).await.unwrap().unwrap().dirty,
+            "the fixture must be CLEAN: with a draft present this test proves nothing"
+        );
+
+        db.unpublish_share(&id).await.unwrap();
+
+        let row = db
+            .get_mutable_share(&id)
+            .await
+            .unwrap()
+            .expect("the row stays in the account");
+        assert_eq!(row.notebook_json, None, "readers see nothing");
+        assert_eq!(
+            row.manifest_json, None,
+            "a kept manifest would advertise blobs for content nobody can fetch"
+        );
+        assert_eq!(
+            db.list_shares_owned_by("1").await.unwrap()[0].pushed_at,
+            None,
+            "the listing stops dating it by a publish that no longer stands"
+        );
+
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert_eq!(edit.notebook_json, "{\"v\":1}", "the content survived");
+        assert!(!edit.published);
+        assert!(edit.dirty);
+        // The bytes moved with the content: neither lost nor double-counted.
+        assert_eq!(db.total_mutable_bytes().await.unwrap(), 7);
+        assert_eq!(db.total_mutable_bytes_for_user("1").await.unwrap(), 7);
+
+        // The owner keeps it, and the id does not move.
+        assert!(db.user_owns_share("1", &id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn unpublish_keeps_the_newer_draft_and_is_idempotent() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        let id = published_share(&db, "1", "{\"v\":1}", None).await;
+        db.save_draft(&id, "{\"version\":2}").await.unwrap();
+
+        db.unpublish_share(&id).await.unwrap();
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert_eq!(
+            edit.notebook_json, "{\"version\":2}",
+            "unpublishing must not restore the older published copy over pending edits"
+        );
+        assert_eq!(db.total_mutable_bytes().await.unwrap(), 13, "draft only");
+
+        // Unpublishing an already-unpublished notebook changes nothing.
+        db.unpublish_share(&id).await.unwrap();
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert_eq!(edit.notebook_json, "{\"version\":2}");
+        assert!(!edit.published);
+    }
+
+    #[tokio::test]
+    async fn first_publish_promotes_the_draft_and_sets_pushed_at_from_none() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        let id = db.create_account_notebook("1", "{\"v\":1}").await.unwrap();
+
+        db.promote_draft(&id, Some("{\"m\":1}".to_string()), 7)
+            .await
+            .unwrap();
+
+        let row = db.get_mutable_share(&id).await.unwrap().unwrap();
+        assert_eq!(row.notebook_json.as_deref(), Some("{\"v\":1}"));
+        assert_eq!(row.manifest_json.as_deref(), Some("{\"m\":1}"));
+        assert!(
+            db.list_shares_owned_by("1").await.unwrap()[0]
+                .pushed_at
+                .is_some(),
+            "the first publish is what mints pushed_at"
+        );
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(edit.published);
+        assert!(!edit.dirty, "promote clears the draft");
+        assert_eq!(db.total_mutable_bytes_for_user("1").await.unwrap(), 7);
+
+        // ...and the same id round-trips back out of published and in again.
+        db.unpublish_share(&id).await.unwrap();
+        assert!(!db.get_share_for_edit(&id).await.unwrap().unwrap().published);
+        db.promote_draft(&id, None, 7).await.unwrap();
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(edit.published);
+        assert_eq!(edit.notebook_json, "{\"v\":1}");
+    }
+
+    #[tokio::test]
+    async fn discarding_the_draft_of_an_unpublished_notebook_cannot_empty_it() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        let id = db.create_account_notebook("1", "{\"v\":1}").await.unwrap();
+
+        // There is nothing to revert TO: the draft is the notebook.
+        assert!(
+            !db.discard_draft(&id).await.unwrap(),
+            "a declined discard must SAY it declined: reporting success has \
+             the editor announce a revert and reload over untouched content"
+        );
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert_eq!(
+            edit.notebook_json, "{\"v\":1}",
+            "content survives a discard"
+        );
+
+        // A published share still discards exactly as before.
+        let published = published_share(&db, "1", "{\"v\":9}", None).await;
+        db.save_draft(&published, "{\"v\":10}").await.unwrap();
+        assert!(db.discard_draft(&published).await.unwrap());
+        let edit = db.get_share_for_edit(&published).await.unwrap().unwrap();
+        assert!(!edit.dirty);
+        assert_eq!(edit.notebook_json, "{\"v\":9}");
+
+        // ...and a discard against an id that does not exist at all is a
+        // decline too, not a success.
+        assert!(!db.discard_draft("ffffffffffffffff").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_owned_listing_carries_unpublished_notebooks_and_flags_the_published_ones() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        db.upsert_user("2", "other", "").await.unwrap();
+
+        published_share(&db, "1", "{\"a\":1}", None).await;
+        let dirty_id = published_share(&db, "1", "{\"b\":1}", None).await;
+        db.save_draft(&dirty_id, "{\"b\":2}").await.unwrap();
+        let account = db.create_account_notebook("1", "{\"c\":1}").await.unwrap();
+        let theirs = published_share(&db, "2", "{\"d\":1}", None).await;
+
+        let mine = db.list_shares_owned_by("1").await.unwrap();
+        assert_eq!(mine.len(), 3, "the unpublished notebook is listed too");
+        assert!(mine.iter().all(|s| s.id != theirs));
+
+        // Newest activity first: the account notebook was saved last and has
+        // no pushed_at at all, which must not sink it below the published rows.
+        assert_eq!(mine[0].id, account);
+        assert!(!mine[0].published);
+        assert_eq!(
+            mine[0].notebook_json, "{\"c\":1}",
+            "an unpublished row is titled from its draft"
+        );
+        assert_eq!(mine[0].last_activity(), mine[0].created_at);
+
+        let dirty = mine.iter().find(|s| s.id == dirty_id).unwrap();
+        assert!(dirty.published);
+        assert_eq!(
+            dirty.notebook_json, "{\"b\":2}",
+            "content resolution is draft-first, published or not"
+        );
+        assert_eq!(dirty.last_activity(), dirty.pushed_at.as_deref().unwrap());
+
+        assert!(db.list_shares_owned_by("999").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn per_user_byte_totals_are_scoped_to_the_owner() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        db.upsert_user("2", "other", "").await.unwrap();
+        assert_eq!(db.total_mutable_bytes_for_user("1").await.unwrap(), 0);
+
+        let mine = published_share(&db, "1", "12345", None).await;
+        db.save_draft(&mine, "1234567890").await.unwrap();
+        db.create_account_notebook("2", "abc").await.unwrap();
+
+        assert_eq!(
+            db.total_mutable_bytes_for_user("1").await.unwrap(),
+            15,
+            "published plus draft, same expression as the global cap"
+        );
+        assert_eq!(db.total_mutable_bytes_for_user("2").await.unwrap(), 3);
+        assert_eq!(
+            db.total_mutable_bytes().await.unwrap(),
+            18,
+            "the instance-wide total still sees both"
+        );
+        // One account filling its allowance must not charge anyone else.
+        assert_eq!(db.total_mutable_bytes_for_user("999").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_row_with_no_content_anywhere_is_reported_rather_than_read_as_empty() {
+        // Both slots NONE is corruption, not a state. No code path produces
+        // it; if one ever does, the editor must refuse rather than open an
+        // empty notebook over the top of it.
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        let id = db.create_account_notebook("1", "{\"v\":1}").await.unwrap();
+        db.inner
+            .query(
+                "UPDATE type::record('mutable_share', $id) \
+                 SET draft_json = NONE, draft_bytes = NONE",
+            )
+            .bind(("id", id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        assert!(
+            db.get_share_for_edit(&id).await.is_err(),
+            "the editing view must report it"
+        );
+        // The listing drops the bad row instead of failing wholesale: one
+        // unreadable notebook must not hide every other one the user owns.
+        let ok = published_share(&db, "1", "{\"ok\":1}", None).await;
+        let mine = db.list_shares_owned_by("1").await.unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].id, ok);
+    }
+
+    // ── PRD-0064 T-001: widening a live SCHEMAFULL field ────────────────
+
+    /// The `mutable_share` schema exactly as it shipped before PRD-0064:
+    /// `notebook_json` and `pushed_at` are required `string`s, and every field
+    /// carries `IF NOT EXISTS`.
+    ///
+    /// Kept verbatim here rather than reused from `define_schema`, because the
+    /// premise is a database that predates the widening. A test that started
+    /// from the current DDL would open a database that already has the new
+    /// definition and could never fail.
+    const PRE_0064_DDL: &str = "
+        DEFINE TABLE IF NOT EXISTS user SCHEMAFULL;
+        DEFINE FIELD IF NOT EXISTS login ON user TYPE string;
+        DEFINE FIELD IF NOT EXISTS avatar_url ON user TYPE string;
+        DEFINE FIELD IF NOT EXISTS created_at ON user TYPE string;
+
+        DEFINE TABLE IF NOT EXISTS mutable_share SCHEMAFULL;
+        DEFINE FIELD IF NOT EXISTS notebook_json ON mutable_share TYPE string;
+        DEFINE FIELD IF NOT EXISTS manifest_json ON mutable_share TYPE option<string>;
+        DEFINE FIELD IF NOT EXISTS draft_json ON mutable_share TYPE option<string>;
+        DEFINE FIELD IF NOT EXISTS draft_bytes ON mutable_share TYPE option<int>;
+        DEFINE FIELD IF NOT EXISTS private ON mutable_share TYPE bool DEFAULT false;
+        DEFINE FIELD IF NOT EXISTS bytes ON mutable_share TYPE int;
+        DEFINE FIELD IF NOT EXISTS pushed_at ON mutable_share TYPE string;
+        DEFINE FIELD IF NOT EXISTS created_at ON mutable_share TYPE string;
+
+        DEFINE TABLE IF NOT EXISTS rbac_grant SCHEMAFULL;
+        DEFINE FIELD IF NOT EXISTS user ON rbac_grant TYPE record<user>;
+        DEFINE FIELD IF NOT EXISTS resource_kind ON rbac_grant TYPE string;
+        DEFINE FIELD IF NOT EXISTS resource_id ON rbac_grant TYPE string;
+        DEFINE FIELD IF NOT EXISTS role ON rbac_grant TYPE string;
+    ";
+
+    /// The same widening written the way every other field in `define_schema`
+    /// is written. This is the trap PRD-0064 names, not a straw man: it is
+    /// what the file would have said if the widening had been added by
+    /// copying the line above it.
+    const WIDEN_WITH_IF_NOT_EXISTS: &str = "
+        DEFINE FIELD IF NOT EXISTS notebook_json ON mutable_share TYPE option<string>;
+        DEFINE FIELD IF NOT EXISTS pushed_at ON mutable_share TYPE option<string>;
+    ";
+
+    /// Open the file WITHOUT `Db::open`'s schema pass, so the test alone
+    /// decides which DDL this database has ever seen.
+    async fn bare_db(dir: &tempfile::TempDir) -> Db {
+        let inner = Surreal::new::<SurrealKv>(dir.path().join("test.db"))
+            .await
+            .unwrap();
+        inner.use_ns("ironpad").use_db("ironpad").await.unwrap();
+        Db { inner }
+    }
+
+    async fn run_sql(db: &Db, sql: &str) -> Result<()> {
+        db.inner.query(sql).await?.check()?;
+        Ok(())
+    }
+
+    /// The id of the pre-0064 published row every migration test starts from.
+    const PRE_0064_ID: &str = "aaaaaaaaaaaaaaaa";
+
+    /// A pre-0064 database holding one published share, written as the OLD
+    /// code wrote it: `notebook_json` and `pushed_at` populated at CREATE
+    /// time. Spelled out here rather than routed through a `Db` method,
+    /// because the premise is a row shape today's code cannot produce — the
+    /// only way to make one is to write it by hand.
+    async fn pre_0064_db_with_a_published_share(dir: &tempfile::TempDir) -> Db {
+        let db = bare_db(dir).await;
+        run_sql(&db, PRE_0064_DDL).await.unwrap();
+        db.upsert_user("1", "author", "https://a/a.png")
+            .await
+            .unwrap();
+        db.inner
+            .query(
+                "BEGIN;
+                 CREATE type::record('mutable_share', $id) SET \
+                    notebook_json = $nb, manifest_json = $mf, \
+                    bytes = 7, pushed_at = $now, created_at = $now;
+                 CREATE rbac_grant SET \
+                    user = type::record('user', '1'), \
+                    resource_kind = $kind, resource_id = $id, role = $role;
+                 COMMIT;",
+            )
+            .bind(("id", PRE_0064_ID))
+            .bind(("nb", "{\"v\":1}"))
+            .bind(("mf", "{\"m\":1}"))
+            .bind(("now", now_rfc3339()))
+            .bind(("kind", KIND_MUTABLE_SHARE))
+            .bind(("role", ROLE_OWNER))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        db
+    }
+
+    /// Write the row shape PRD-0064 introduces: an account notebook with no
+    /// published copy, so `notebook_json` and `pushed_at` are both `NONE` and
+    /// the content lives in `draft_json`.
+    async fn write_unpublished_row(db: &Db, id: &str) -> Result<()> {
+        db.inner
+            .query(
+                "CREATE type::record('mutable_share', $id) SET \
+                    notebook_json = NONE, manifest_json = NONE, \
+                    draft_json = $draft, draft_bytes = 7, bytes = 0, \
+                    pushed_at = NONE, created_at = $now",
+            )
+            .bind(("id", id.to_string()))
+            .bind(("draft", "{\"d\":1}".to_string()))
+            .bind(("now", now_rfc3339()))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    #[derive(SurrealValue)]
+    struct WidenedRow {
+        notebook_json: Option<String>,
+        draft_json: Option<String>,
+        pushed_at: Option<String>,
+    }
+
+    async fn read_widened(db: &Db, id: &str) -> Option<WidenedRow> {
+        db.inner
+            .query(
+                "SELECT notebook_json, draft_json, pushed_at \
+                 FROM ONLY type::record('mutable_share', $id)",
+            )
+            .bind(("id", id.to_string()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn overwrite_widens_notebook_json_on_a_database_that_already_has_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = pre_0064_db_with_a_published_share(&dir).await;
+        let before = read_widened(&db, PRE_0064_ID)
+            .await
+            .expect("the fixture must have written a row under the old schema");
+
+        // The REAL boot-time schema pass, against a database that predates
+        // the widening — which is the only shape of this test that can fail.
+        db.define_schema()
+            .await
+            .expect("define_schema must apply to a table that already holds rows");
+
+        // The pre-existing published row survives the redefinition, and the
+        // read path that still types these fields as `String` still works.
+        let row = db
+            .get_mutable_share(PRE_0064_ID)
+            .await
+            .unwrap()
+            .expect("the row written under the old schema must still read back");
+        assert_eq!(row.notebook_json.as_deref(), Some("{\"v\":1}"));
+        assert_eq!(row.manifest_json.as_deref(), Some("{\"m\":1}"));
+        assert_eq!(row.owner.map(|o| o.login), Some("author".to_string()));
+        assert_eq!(
+            read_widened(&db, PRE_0064_ID).await.unwrap().pushed_at,
+            before.pushed_at,
+            "pushed_at not clobbered"
+        );
+
+        // ...and the new shape is now accepted.
+        write_unpublished_row(&db, "bbbbbbbbbbbbbbbb")
+            .await
+            .expect("a NONE notebook_json must be accepted after the widening");
+        let row = read_widened(&db, "bbbbbbbbbbbbbbbb").await.unwrap();
+        assert_eq!(row.notebook_json, None);
+        assert_eq!(row.pushed_at, None);
+        assert_eq!(row.draft_json.as_deref(), Some("{\"d\":1}"));
+
+        // `define_schema` runs on every boot, so the OVERWRITE has to be
+        // harmless the second time, with both row shapes already present.
+        db.define_schema()
+            .await
+            .expect("the OVERWRITE must be re-runnable: it runs on every boot");
+        assert_eq!(
+            db.get_mutable_share(PRE_0064_ID)
+                .await
+                .unwrap()
+                .unwrap()
+                .notebook_json
+                .as_deref(),
+            Some("{\"v\":1}")
+        );
+        assert_eq!(
+            read_widened(&db, "bbbbbbbbbbbbbbbb")
+                .await
+                .unwrap()
+                .notebook_json,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn if_not_exists_declines_to_widen_an_existing_field() {
+        // Guard the guard. If this arm ever accepts the NONE write, the trap
+        // PRD-0064 is built around does not exist and `IF NOT EXISTS` would
+        // have been fine.
+        let dir = tempfile::tempdir().unwrap();
+        let db = pre_0064_db_with_a_published_share(&dir).await;
+
+        run_sql(&db, WIDEN_WITH_IF_NOT_EXISTS)
+            .await
+            .expect("IF NOT EXISTS is not an error against an existing field, just a no-op");
+
+        let err = write_unpublished_row(&db, "bbbbbbbbbbbbbbbb")
+            .await
+            .expect_err("IF NOT EXISTS must leave the old TYPE string in force");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("notebook_json"),
+            "the rejection must name the field that is still `string`: {msg}"
+        );
+        assert!(
+            read_widened(&db, "bbbbbbbbbbbbbbbb").await.is_none(),
+            "the rejected write must not have landed"
         );
     }
 }

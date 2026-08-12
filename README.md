@@ -167,7 +167,7 @@ crates/
 
 **Backend**: Axum 0.8 with Tokio, WebSocket relay for real-time collaboration.
 
-**Storage**: private notebooks in browser IndexedDB; shared notebooks via content-addressed blake3 hashes on the server.
+**Storage**: **local** notebooks live in browser IndexedDB and never reach the server. **Account** notebooks (GitHub sign-in) are stored server-side at `/mutable/{id}`, editable from any browser you're signed in on, and invisible to everyone else until you publish them; publishing is a flag on the same notebook, so the URL never changes. **Unpublish** clears the published copy in place and keeps the notebook in your account. It no longer hands you back a local copy; Download `.ironpad` is how you get one. **Shared** notebooks are immutable, content-addressed by blake3 hash.
 
 ## Development
 

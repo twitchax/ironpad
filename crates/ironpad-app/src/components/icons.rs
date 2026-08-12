@@ -124,6 +124,12 @@ pub const SHARE: IconData = icondata_lu::LuShare;
 pub const EXPORT: IconData = icondata_lu::LuFileDown;
 /// A mutable/published notebook. Replaces `⟳` on the home page badges.
 pub const PUBLISHED: IconData = icondata_lu::LuGlobe;
+/// Server-stored notebooks owned by the signed-in user (PRD-0064), for the
+/// home page's Account filter chip. Deliberately NOT [`PUBLISHED`]: that
+/// group holds published and unpublished notebooks at once, so a globe
+/// would contradict every card inside it wearing [`LOCKED`]. Names where
+/// the notebook LIVES, which is the axis the chips sort on.
+pub const ACCOUNT: IconData = icondata_lu::LuCloud;
 /// Version history. Replaces `🕘` — the glyph that started this migration.
 pub const HISTORY: IconData = icondata_lu::LuHistory;
 /// Restore a snapshot. Replaces `⎌`.
@@ -158,6 +164,7 @@ pub(crate) const ALL: &[(&str, IconData)] = &[
     ("SHARE", SHARE),
     ("EXPORT", EXPORT),
     ("PUBLISHED", PUBLISHED),
+    ("ACCOUNT", ACCOUNT),
     ("STOP", STOP),
     ("PAUSE", PAUSE),
     ("STEP", STEP),

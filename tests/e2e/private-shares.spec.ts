@@ -1,5 +1,6 @@
 import { test, expect, Page } from "@playwright/test";
 import { loginTestUser } from "./helpers/auth";
+import { openMetadataPanel } from "./helpers/metadata";
 import { shareMutable } from "./helpers/mutable";
 import { createNotebook } from "./helpers/session";
 
@@ -16,9 +17,7 @@ const BASE = "http://localhost:3111";
 
 /** Expand the metadata section and its Access controls. */
 async function openAccessControls(page: Page): Promise<void> {
-  await page
-    .locator(".view-only-shared-header", { hasText: "Notebook Metadata" })
-    .click();
+  await openMetadataPanel(page);
   await expect(page.locator(".ironpad-access-toggle")).toBeVisible({
     timeout: 15_000,
   });

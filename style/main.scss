@@ -624,6 +624,13 @@ a:focus-visible {
     color: var(--ip-shared);
 }
 
+// An account notebook with no published copy is 404 to everyone but its
+// owner (PRD-0064), so it must not wear the published colour: same group,
+// muted, with a lock rather than a globe.
+.ironpad-notebook-badge.mutable.unpublished {
+    color: var(--ip-text-muted);
+}
+
 .ironpad-notebook-card-mutable-hint {
     color: var(--ip-shared);
     font-size: 0.72rem;
