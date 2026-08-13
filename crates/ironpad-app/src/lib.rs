@@ -3,6 +3,34 @@
 // single deep tachys type and tripped the default limit: "queries overflow
 // the depth limit!" when computing the hydrate_async layout.
 #![recursion_limit = "512"]
+// `--features ssr` ALONE is a diagnostic configuration, not a shipping one.
+// Both things that build this crate for real unify `hydrate` in beside `ssr`:
+// the workspace gate (`cargo clippy --all-targets`) because `ironpad-frontend`
+// depends on `ironpad-app/hydrate`, and cargo-leptos because it builds both
+// halves. Compiled ssr-alone, every hydrate-only import, binding, variant and
+// method reads as dead, which is 32 diagnostics of pure noise for anyone
+// iterating on this crate with `-p`.
+//
+// This costs no coverage, which is the only reason it is acceptable: the lints
+// stay fully armed in the configuration that ships. An item that is genuinely
+// unused is unused in the unified build too, and the gate is the unified build,
+// so it still fails there. What is silenced here is exactly the set of items
+// whose only consumer was compiled out by the flag that turned this attribute
+// on. Scoped with `not(feature = "hydrate")` rather than applied outright for
+// that reason: with `hydrate` present, none of this applies.
+#![cfg_attr(
+    not(feature = "hydrate"),
+    allow(
+        dead_code,
+        unused_imports,
+        unused_variables,
+        unused_mut,
+        clippy::needless_return,
+        clippy::unused_self,
+        clippy::unused_async,
+        clippy::needless_pass_by_value
+    )
+)]
 
 #[cfg(feature = "ssr")]
 pub mod auth;
