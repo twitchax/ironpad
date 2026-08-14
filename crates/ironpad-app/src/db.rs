@@ -132,6 +132,56 @@ pub struct Db {
     inner: Surreal<LocalDb>,
 }
 
+/// Is this a retryable optimistic-concurrency conflict?
+///
+/// Matched on the message because the engine's error arrives wrapped in
+/// `anyhow` context by the time callers see it, and `SurrealDB` reports the
+/// conflict as a generic query error rather than a distinct variant. The
+/// engine writes the retry advice into the text itself ("This transaction
+/// can be retried"), so the string IS the contract here.
+fn is_write_conflict(e: &anyhow::Error) -> bool {
+    let msg = format!("{e:#}");
+    msg.contains("Transaction conflict") || msg.contains("can be retried")
+}
+
+/// Run a write, retrying while the engine reports a retryable conflict.
+///
+/// `SurrealKV` is optimistically concurrent: two writers touching ONE record
+/// race, one commits, and the losers get a conflict. Nothing retried it.
+/// Measured before this existed: 7 of 8 parallel `save_draft` calls against
+/// a single share failed, which is two browser tabs autosaving one account
+/// notebook (PRD-0064 made server drafts the primary storage path), and 7 of
+/// 8 concurrent sign-ins as one user returned 500 over HTTP.
+///
+/// Bounded rather than unbounded: a conflict that survives five attempts is
+/// not contention any more, and burying it would turn a fast error into a
+/// hung request. Backoff carries jitter because retries that resynchronise
+/// collide again on the next attempt.
+async fn with_conflict_retry<F, Fut, T>(op: F) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    const ATTEMPTS: u32 = 5;
+    for attempt in 1..=ATTEMPTS {
+        match op().await {
+            Err(e) if attempt < ATTEMPTS && is_write_conflict(&e) => {
+                let jitter = u64::from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos() % 4)
+                        .unwrap_or(0),
+                );
+                let backoff = (1u64 << (attempt - 1)) + jitter;
+                tracing::debug!(attempt, backoff_ms = backoff, "write conflict; retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+            }
+            other => return other,
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
 impl Db {
     /// Open (creating if needed) the database file and apply the schema.
     #[tracing::instrument(name = "db_open", level = "info", skip_all)]
@@ -223,22 +273,25 @@ impl Db {
     /// preserved on refresh.
     #[tracing::instrument(name = "db_upsert_user", level = "info", skip_all, fields(github_id = %github_id))]
     pub async fn upsert_user(&self, github_id: &str, login: &str, avatar_url: &str) -> Result<()> {
-        self.inner
-            .query(
-                "UPSERT type::record('user', $id) SET \
-                    login = $login, \
-                    avatar_url = $avatar_url, \
-                    created_at = created_at ?? $now",
-            )
-            .bind(("id", github_id.to_string()))
-            .bind(("login", login.to_string()))
-            .bind(("avatar_url", avatar_url.to_string()))
-            .bind(("now", now_rfc3339()))
-            .await
-            .context("user upsert failed")?
-            .check()
-            .context("user upsert returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query(
+                    "UPSERT type::record('user', $id) SET \
+                        login = $login, \
+                        avatar_url = $avatar_url, \
+                        created_at = created_at ?? $now",
+                )
+                .bind(("id", github_id.to_string()))
+                .bind(("login", login.to_string()))
+                .bind(("avatar_url", avatar_url.to_string()))
+                .bind(("now", now_rfc3339()))
+                .await
+                .context("user upsert failed")?
+                .check()
+                .context("user upsert returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     /// The `github_id` pinned as this instance's administrator, if one has
@@ -263,17 +316,20 @@ impl Db {
     /// Returns the pin in force after the call, which is the existing one when
     /// there already was one.
     pub async fn pin_admin(&self, github_id: &str) -> Result<String> {
-        if let Some(existing) = self.admin_pin().await? {
-            return Ok(existing);
-        }
-        self.inner
-            .query("UPSERT meta:admin_github_id SET value = $id")
-            .bind(("id", github_id.to_string()))
-            .await
-            .context("admin pin write failed")?
-            .check()
-            .context("admin pin write returned an error")?;
-        Ok(github_id.to_string())
+        with_conflict_retry(|| async {
+            if let Some(existing) = self.admin_pin().await? {
+                return Ok(existing);
+            }
+            self.inner
+                .query("UPSERT meta:admin_github_id SET value = $id")
+                .bind(("id", github_id.to_string()))
+                .await
+                .context("admin pin write failed")?
+                .check()
+                .context("admin pin write returned an error")?;
+            Ok(github_id.to_string())
+        })
+        .await
     }
 
     /// Row counts for the admin overview (PRD-0063).
@@ -385,19 +441,22 @@ impl Db {
     /// user deletion: their notebooks and grants are untouched, and they can
     /// sign back in.
     pub async fn revoke_user_sessions(&self, github_id: &str) -> Result<u64> {
-        #[derive(SurrealValue)]
-        struct Deleted {
-            #[allow(dead_code)]
-            expires_at: i64,
-        }
-        let mut res = self
-            .inner
-            .query("DELETE session WHERE user = type::record('user', $id) RETURN BEFORE")
-            .bind(("id", github_id.to_string()))
-            .await
-            .context("session revoke failed")?;
-        let gone: Vec<Deleted> = res.take(0).context("session revoke rows malformed")?;
-        Ok(gone.len() as u64)
+        with_conflict_retry(|| async {
+            #[derive(SurrealValue)]
+            struct Deleted {
+                #[allow(dead_code)]
+                expires_at: i64,
+            }
+            let mut res = self
+                .inner
+                .query("DELETE session WHERE user = type::record('user', $id) RETURN BEFORE")
+                .bind(("id", github_id.to_string()))
+                .await
+                .context("session revoke failed")?;
+            let gone: Vec<Deleted> = res.take(0).context("session revoke rows malformed")?;
+            Ok(gone.len() as u64)
+        })
+        .await
     }
 
     // ── Sessions ────────────────────────────────────────────────────────
@@ -406,21 +465,24 @@ impl Db {
     /// the cookie. Only its hash is stored.
     #[tracing::instrument(name = "db_create_session", level = "info", skip_all)]
     pub async fn create_session(&self, github_id: &str) -> Result<String> {
-        let token = random_token();
-        self.inner
-            .query(
-                "CREATE type::record('session', $key) SET \
-                    user = type::record('user', $uid), \
-                    expires_at = $exp",
-            )
-            .bind(("key", hash_token(&token)))
-            .bind(("uid", github_id.to_string()))
-            .bind(("exp", now_secs() + SESSION_TTL_SECS))
-            .await
-            .context("session create failed")?
-            .check()
-            .context("session create returned an error")?;
-        Ok(token)
+        with_conflict_retry(|| async {
+            let token = random_token();
+            self.inner
+                .query(
+                    "CREATE type::record('session', $key) SET \
+                        user = type::record('user', $uid), \
+                        expires_at = $exp",
+                )
+                .bind(("key", hash_token(&token)))
+                .bind(("uid", github_id.to_string()))
+                .bind(("exp", now_secs() + SESSION_TTL_SECS))
+                .await
+                .context("session create failed")?
+                .check()
+                .context("session create returned an error")?;
+            Ok(token)
+        })
+        .await
     }
 
     /// Resolve a session token to its user, or `None` for unknown/expired
@@ -493,14 +555,17 @@ impl Db {
     /// Delete a session (logout). Unknown tokens are a no-op.
     #[tracing::instrument(name = "db_delete_session", level = "info", skip_all)]
     pub async fn delete_session(&self, token: &str) -> Result<()> {
-        self.inner
-            .query("DELETE type::record('session', $key)")
-            .bind(("key", hash_token(token)))
-            .await
-            .context("session delete failed")?
-            .check()
-            .context("session delete returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query("DELETE type::record('session', $key)")
+                .bind(("key", hash_token(token)))
+                .await
+                .context("session delete failed")?
+                .check()
+                .context("session delete returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     // ── Mutable shares + grants ─────────────────────────────────────────
@@ -524,34 +589,37 @@ impl Db {
         owner_github_id: &str,
         notebook_json: &str,
     ) -> Result<String> {
-        let id = self.mint_share_id().await?;
-        self.inner
-            .query(
-                "BEGIN;
-                 CREATE type::record('mutable_share', $id) SET \
-                    notebook_json = NONE, manifest_json = NONE, \
-                    draft_json = $nb, draft_bytes = $bytes, \
-                    bytes = 0, pushed_at = NONE, created_at = $now;
-                 CREATE rbac_grant SET \
-                    user = type::record('user', $uid), \
-                    resource_kind = $kind, resource_id = $id, role = $role;
-                 COMMIT;",
-            )
-            .bind(("id", id.clone()))
-            .bind(("nb", notebook_json.to_string()))
-            .bind((
-                "bytes",
-                i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
-            ))
-            .bind(("now", now_rfc3339()))
-            .bind(("uid", owner_github_id.to_string()))
-            .bind(("kind", KIND_MUTABLE_SHARE))
-            .bind(("role", ROLE_OWNER))
-            .await
-            .context("account notebook create failed")?
-            .check()
-            .context("account notebook create returned an error")?;
-        Ok(id)
+        with_conflict_retry(|| async {
+            let id = self.mint_share_id().await?;
+            self.inner
+                .query(
+                    "BEGIN;
+                     CREATE type::record('mutable_share', $id) SET \
+                        notebook_json = NONE, manifest_json = NONE, \
+                        draft_json = $nb, draft_bytes = $bytes, \
+                        bytes = 0, pushed_at = NONE, created_at = $now;
+                     CREATE rbac_grant SET \
+                        user = type::record('user', $uid), \
+                        resource_kind = $kind, resource_id = $id, role = $role;
+                     COMMIT;",
+                )
+                .bind(("id", id.clone()))
+                .bind(("nb", notebook_json.to_string()))
+                .bind((
+                    "bytes",
+                    i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
+                ))
+                .bind(("now", now_rfc3339()))
+                .bind(("uid", owner_github_id.to_string()))
+                .bind(("kind", KIND_MUTABLE_SHARE))
+                .bind(("role", ROLE_OWNER))
+                .await
+                .context("account notebook create failed")?
+                .check()
+                .context("account notebook create returned an error")?;
+            Ok(id)
+        })
+        .await
     }
 
     /// Mint a share id that is not already taken (the `/mutable/{id}` path
@@ -646,25 +714,28 @@ impl Db {
         notebook_json: &str,
         manifest_json: Option<String>,
     ) -> Result<()> {
-        self.inner
-            .query(
-                "UPDATE type::record('mutable_share', $id) SET \
-                    notebook_json = $nb, manifest_json = $mf, \
-                    bytes = $bytes, pushed_at = $now",
-            )
-            .bind(("id", id.to_string()))
-            .bind(("nb", notebook_json.to_string()))
-            .bind(("mf", manifest_json))
-            .bind((
-                "bytes",
-                i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
-            ))
-            .bind(("now", now_rfc3339()))
-            .await
-            .context("share update failed")?
-            .check()
-            .context("share update returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query(
+                    "UPDATE type::record('mutable_share', $id) SET \
+                        notebook_json = $nb, manifest_json = $mf, \
+                        bytes = $bytes, pushed_at = $now",
+                )
+                .bind(("id", id.to_string()))
+                .bind(("nb", notebook_json.to_string()))
+                .bind(("mf", manifest_json.clone()))
+                .bind((
+                    "bytes",
+                    i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
+                ))
+                .bind(("now", now_rfc3339()))
+                .await
+                .context("share update failed")?
+                .check()
+                .context("share update returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     // ── Draft slot (PRD-0054) ───────────────────────────────────────────
@@ -679,22 +750,25 @@ impl Db {
         // running SurrealQL string::len over draft_json, which counts CHARS
         // and undercounts multibyte drafts 3-4x — the exact bug promote_draft
         // already fixed for the published `bytes` field.
-        self.inner
-            .query(
-                "UPDATE type::record('mutable_share', $id) \
-                 SET draft_json = $nb, draft_bytes = $bytes",
-            )
-            .bind(("id", id.to_string()))
-            .bind(("nb", notebook_json.to_string()))
-            .bind((
-                "bytes",
-                i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
-            ))
-            .await
-            .context("draft save failed")?
-            .check()
-            .context("draft save returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query(
+                    "UPDATE type::record('mutable_share', $id) \
+                     SET draft_json = $nb, draft_bytes = $bytes",
+                )
+                .bind(("id", id.to_string()))
+                .bind(("nb", notebook_json.to_string()))
+                .bind((
+                    "bytes",
+                    i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
+                ))
+                .await
+                .context("draft save failed")?
+                .check()
+                .context("draft save returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     /// The owner's editing view: the draft when one exists, else published.
@@ -744,24 +818,27 @@ impl Db {
     /// copy" and reload over content nothing touched.
     #[tracing::instrument(name = "db_discard_draft", level = "info", skip_all, fields(id = %id))]
     pub async fn discard_draft(&self, id: &str) -> Result<bool> {
-        #[derive(SurrealValue)]
-        struct Row {
-            id: String,
-        }
-        let rows: Vec<Row> = self
-            .inner
-            .query(
-                "UPDATE type::record('mutable_share', $id) \
-                 SET draft_json = NONE, draft_bytes = NONE \
-                 WHERE notebook_json != NONE \
-                 RETURN record::id(id) AS id",
-            )
-            .bind(("id", id.to_string()))
-            .await
-            .context("draft discard failed")?
-            .take(0)
-            .context("draft discard returned an error")?;
-        Ok(!rows.is_empty())
+        with_conflict_retry(|| async {
+            #[derive(SurrealValue)]
+            struct Row {
+                id: String,
+            }
+            let rows: Vec<Row> = self
+                .inner
+                .query(
+                    "UPDATE type::record('mutable_share', $id) \
+                     SET draft_json = NONE, draft_bytes = NONE \
+                     WHERE notebook_json != NONE \
+                     RETURN record::id(id) AS id",
+                )
+                .bind(("id", id.to_string()))
+                .await
+                .context("draft discard failed")?
+                .take(0)
+                .context("draft discard returned an error")?;
+            Ok(!rows.is_empty())
+        })
+        .await
     }
 
     /// Promote the draft to published (a Push): published := draft, manifest
@@ -791,26 +868,29 @@ impl Db {
         manifest_json: Option<String>,
         published_bytes: u64,
     ) -> Result<()> {
-        self.inner
-            .query(
-                "UPDATE type::record('mutable_share', $id) SET \
-                    notebook_json = draft_json ?? notebook_json, \
-                    manifest_json = $mf, \
-                    bytes = $bytes, \
-                    pushed_at = $now, \
-                    draft_json = NONE, \
-                    draft_bytes = NONE \
-                 WHERE draft_json != NONE",
-            )
-            .bind(("id", id.to_string()))
-            .bind(("mf", manifest_json))
-            .bind(("bytes", i64::try_from(published_bytes).unwrap_or(i64::MAX)))
-            .bind(("now", now_rfc3339()))
-            .await
-            .context("draft promote failed")?
-            .check()
-            .context("draft promote returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query(
+                    "UPDATE type::record('mutable_share', $id) SET \
+                        notebook_json = draft_json ?? notebook_json, \
+                        manifest_json = $mf, \
+                        bytes = $bytes, \
+                        pushed_at = $now, \
+                        draft_json = NONE, \
+                        draft_bytes = NONE \
+                     WHERE draft_json != NONE",
+                )
+                .bind(("id", id.to_string()))
+                .bind(("mf", manifest_json.clone()))
+                .bind(("bytes", i64::try_from(published_bytes).unwrap_or(i64::MAX)))
+                .bind(("now", now_rfc3339()))
+                .await
+                .context("draft promote failed")?
+                .check()
+                .context("draft promote returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     /// Test-only: make every subsequent PUBLISH fail, and nothing else.
@@ -852,41 +932,47 @@ impl Db {
     /// draft alone.
     #[tracing::instrument(name = "db_unpublish_share", level = "info", skip_all, fields(id = %id))]
     pub async fn unpublish_share(&self, id: &str) -> Result<()> {
-        self.inner
-            .query(
-                "UPDATE type::record('mutable_share', $id) SET \
-                    draft_json = draft_json ?? notebook_json, \
-                    draft_bytes = draft_bytes ?? bytes, \
-                    notebook_json = NONE, \
-                    manifest_json = NONE, \
-                    pushed_at = NONE, \
-                    bytes = 0",
-            )
-            .bind(("id", id.to_string()))
-            .await
-            .context("share unpublish failed")?
-            .check()
-            .context("share unpublish returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query(
+                    "UPDATE type::record('mutable_share', $id) SET \
+                        draft_json = draft_json ?? notebook_json, \
+                        draft_bytes = draft_bytes ?? bytes, \
+                        notebook_json = NONE, \
+                        manifest_json = NONE, \
+                        pushed_at = NONE, \
+                        bytes = 0",
+                )
+                .bind(("id", id.to_string()))
+                .await
+                .context("share unpublish failed")?
+                .check()
+                .context("share unpublish returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     /// Delete a share and every grant on it, in one transaction.
     #[tracing::instrument(name = "db_delete_share", level = "info", skip_all, fields(id = %id))]
     pub async fn delete_mutable_share(&self, id: &str) -> Result<()> {
-        self.inner
-            .query(
-                "BEGIN;
-                 DELETE type::record('mutable_share', $id);
-                 DELETE rbac_grant WHERE resource_kind = $kind AND resource_id = $id;
-                 COMMIT;",
-            )
-            .bind(("id", id.to_string()))
-            .bind(("kind", KIND_MUTABLE_SHARE))
-            .await
-            .context("share delete failed")?
-            .check()
-            .context("share delete returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query(
+                    "BEGIN;
+                     DELETE type::record('mutable_share', $id);
+                     DELETE rbac_grant WHERE resource_kind = $kind AND resource_id = $id;
+                     COMMIT;",
+                )
+                .bind(("id", id.to_string()))
+                .bind(("kind", KIND_MUTABLE_SHARE))
+                .await
+                .context("share delete failed")?
+                .check()
+                .context("share delete returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     /// Whether `github_id` holds the OWNER grant on a share.
@@ -919,15 +1005,18 @@ impl Db {
     /// Flip a share's privacy flag. Ownership is checked by the caller.
     #[tracing::instrument(name = "db_set_share_private", level = "info", skip_all, fields(id = %id, private = private))]
     pub async fn set_share_private(&self, id: &str, private: bool) -> Result<()> {
-        self.inner
-            .query("UPDATE type::record('mutable_share', $id) SET private = $private")
-            .bind(("id", id.to_string()))
-            .bind(("private", private))
-            .await
-            .context("privacy update failed")?
-            .check()
-            .context("privacy update returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query("UPDATE type::record('mutable_share', $id) SET private = $private")
+                .bind(("id", id.to_string()))
+                .bind(("private", private))
+                .await
+                .context("privacy update failed")?
+                .check()
+                .context("privacy update returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     /// Resolve a GitHub login to a user who has signed in to ironpad.
@@ -952,46 +1041,52 @@ impl Db {
     /// duplicates, which this treats as success.
     #[tracing::instrument(name = "db_grant_read", level = "info", skip_all, fields(id = %id))]
     pub async fn grant_read(&self, id: &str, github_id: &str) -> Result<()> {
-        let result = self
-            .inner
-            .query(
-                "CREATE rbac_grant SET \
-                    user = type::record('user', $uid), \
-                    resource_kind = $kind, resource_id = $id, role = $role",
-            )
-            .bind(("uid", github_id.to_string()))
-            .bind(("kind", KIND_MUTABLE_SHARE))
-            .bind(("id", id.to_string()))
-            .bind(("role", ROLE_READ))
-            .await
-            .context("grant create failed")?
-            .check();
-        match result {
-            Ok(_) => Ok(()),
-            // A duplicate grant is the caller clicking twice, not an error.
-            Err(e) if e.to_string().contains("grant_unique") => Ok(()),
-            Err(e) => Err(e).context("grant create returned an error"),
-        }
+        with_conflict_retry(|| async {
+            let result = self
+                .inner
+                .query(
+                    "CREATE rbac_grant SET \
+                        user = type::record('user', $uid), \
+                        resource_kind = $kind, resource_id = $id, role = $role",
+                )
+                .bind(("uid", github_id.to_string()))
+                .bind(("kind", KIND_MUTABLE_SHARE))
+                .bind(("id", id.to_string()))
+                .bind(("role", ROLE_READ))
+                .await
+                .context("grant create failed")?
+                .check();
+            match result {
+                Ok(_) => Ok(()),
+                // A duplicate grant is the caller clicking twice, not an error.
+                Err(e) if e.to_string().contains("grant_unique") => Ok(()),
+                Err(e) => Err(e).context("grant create returned an error"),
+            }
+        })
+        .await
     }
 
     /// Remove a READ grant (never the OWNER's).
     #[tracing::instrument(name = "db_revoke_read", level = "info", skip_all, fields(id = %id))]
     pub async fn revoke_read(&self, id: &str, github_id: &str) -> Result<()> {
-        self.inner
-            .query(
-                "DELETE rbac_grant \
-                 WHERE user = type::record('user', $uid) \
-                    AND resource_kind = $kind AND resource_id = $id AND role = $role",
-            )
-            .bind(("uid", github_id.to_string()))
-            .bind(("kind", KIND_MUTABLE_SHARE))
-            .bind(("id", id.to_string()))
-            .bind(("role", ROLE_READ))
-            .await
-            .context("grant revoke failed")?
-            .check()
-            .context("grant revoke returned an error")?;
-        Ok(())
+        with_conflict_retry(|| async {
+            self.inner
+                .query(
+                    "DELETE rbac_grant \
+                     WHERE user = type::record('user', $uid) \
+                        AND resource_kind = $kind AND resource_id = $id AND role = $role",
+                )
+                .bind(("uid", github_id.to_string()))
+                .bind(("kind", KIND_MUTABLE_SHARE))
+                .bind(("id", id.to_string()))
+                .bind(("role", ROLE_READ))
+                .await
+                .context("grant revoke failed")?
+                .check()
+                .context("grant revoke returned an error")?;
+            Ok(())
+        })
+        .await
     }
 
     /// Everyone holding a READ grant on a share, for the owner's Access UI.
@@ -2125,6 +2220,78 @@ mod tests {
         assert!(
             read_widened(&db, "bbbbbbbbbbbbbbbb").await.is_none(),
             "the rejected write must not have landed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+
+    /// Concurrent writers to ONE record must all land.
+    ///
+    /// `SurrealKV` is optimistically concurrent, so the losers of a race get a
+    /// conflict the engine itself marks retryable. Before `with_conflict_retry`
+    /// this failed 7 of 8: two browser tabs autosaving one account notebook
+    /// (PRD-0064 made the server draft the primary storage path) and one user
+    /// signing in from two devices both take this shape.
+    ///
+    /// `multi_thread` is load-bearing. `#[tokio::test]` defaults to a
+    /// current-thread runtime where these tasks interleave at await points
+    /// instead of running in parallel, and the conflict never opens: this same
+    /// test passed 8/8 against the UNFIXED code until the flavor was set.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_writers_to_one_record_all_succeed() {
+        const WRITERS: usize = 8;
+
+        let dir = tempfile::tempdir().expect("tmp");
+        let db = Db::open(&dir.path().join("c.db")).await.expect("open");
+        db.upsert_user("1", "owner", "").await.expect("seed user");
+        let share = db
+            .create_account_notebook("1", r#"{"title":"t","cells":[]}"#)
+            .await
+            .expect("seed share");
+
+        let mut set = tokio::task::JoinSet::new();
+        for i in 0..WRITERS {
+            let (db, share) = (db.clone(), share.clone());
+            set.spawn(async move {
+                db.save_draft(&share, &format!(r#"{{"title":"t{i}","cells":[]}}"#))
+                    .await
+            });
+        }
+        let mut errors = Vec::new();
+        while let Some(res) = set.join_next().await {
+            if let Err(e) = res.expect("join") {
+                errors.push(format!("{e:#}"));
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "{} of {WRITERS} concurrent draft saves failed: {errors:?}",
+            errors.len()
+        );
+
+        // The record is still readable and holds one of the writes, rather
+        // than a torn value from the losing attempts.
+        let edit = db.get_share_for_edit(&share).await.expect("read back");
+        assert!(edit.is_some(), "the contended share must survive the race");
+
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..WRITERS {
+            let db = db.clone();
+            set.spawn(async move { db.upsert_user("1", "owner", "").await });
+        }
+        let mut errors = Vec::new();
+        while let Some(res) = set.join_next().await {
+            if let Err(e) = res.expect("join") {
+                errors.push(format!("{e:#}"));
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "{} of {WRITERS} concurrent sign-ins failed: {errors:?}",
+            errors.len()
         );
     }
 }
