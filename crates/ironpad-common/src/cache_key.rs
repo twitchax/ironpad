@@ -78,7 +78,16 @@ const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
 /// alias use was in `..last` form under-cascaded and omitted the binding.
 /// Fixing detection changes which cells depend-on-all, so cached blobs keyed
 /// on the old verdict must invalidate.
-pub const CACHE_EPOCH: u32 = 10;
+///
+/// Bumped 10 -> 11 (PRD-0065): `Plot` stopped baking a dark palette into its
+/// SVG and now emits `var(--ip-plot-*)` for the page to resolve. **The cell
+/// runtime's own source is not part of this hash** — only cell source, its
+/// manifest, the shared context and the toolchain fingerprint are — so a
+/// change inside `ironpad-cell` is invisible here by construction, and a
+/// cached blob would keep running the old renderer and keep emitting text at
+/// 1.11:1 contrast in light theme. This epoch is the only lever that
+/// invalidates them.
+pub const CACHE_EPOCH: u32 = 11;
 
 // ── Content hash ─────────────────────────────────────────────────────────────
 

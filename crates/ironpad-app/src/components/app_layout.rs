@@ -477,17 +477,21 @@ fn StatusBar(ctx: LayoutContext) -> impl IntoView {
         });
     }
 
+    // Studio status bar (PRD-0065 T-009). The `|` separators are gone: the
+    // row's 14px gap does that job, and the handoff's line reads as data
+    // rather than as a sentence — a green dot, the toolchain, the cell count,
+    // then anything situational pushed to the right edge.
     view! {
         <div class="ironpad-status-bar-inner">
-            <span class="ironpad-status-item">
-                "Status: Ready"
+            <span class="ironpad-status-item ironpad-status-ready">
+                <span class="ironpad-status-dot"><Icon icon=icons::IDLE/></span>
+                "Ready"
             </span>
-            <span class="ironpad-status-separator">"|"</span>
-            <span class="ironpad-status-item">
-                "Compiler: "
+            // The label is dropped per the handoff, so the tooltip carries it:
+            // a bare `nightly-2026-07-14` is legible but not self-describing.
+            <span class="ironpad-status-item" title="Cell compiler toolchain">
                 {move || ctx.compiler_version.get()}
             </span>
-            <span class="ironpad-status-separator">"|"</span>
             <span class="ironpad-status-item">
                 "Cells: "
                 {move || ctx.cell_count.get().to_string()}
@@ -503,8 +507,9 @@ fn StatusBar(ctx: LayoutContext) -> impl IntoView {
                         { let _ = epoch_ms; "just now".to_string() }
                     };
                     view! {
-                        <span class="ironpad-status-separator">"|"</span>
-                        <span class="ironpad-status-item">"Saved: " {relative}</span>
+                        <span class="ironpad-status-item ironpad-status-item--end">
+                            "Saved: " {relative}
+                        </span>
                     }
                 })
             }}

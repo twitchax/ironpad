@@ -58,6 +58,44 @@
     // Neutral hover overlay — white-alpha on dark surfaces. Overridden to
     // black-alpha in light theme so hover feedback stays visible in both.
     --ip-hover-overlay: rgba(255, 255, 255, 0.08);
+
+    // Plot palette (PRD-0065). A `Plot` cell renders in a Web Worker and its
+    // SVG is persisted into `saved_output`, so it cannot know the theme at
+    // render time; it names the properties below and the page resolves them
+    // here, which is also what lets a snapshot captured in one theme re-theme
+    // in the other with no recapture. See `crates/ironpad-cell/src/plot.rs`.
+    //
+    // The aliases carry no light override on purpose: a custom property that
+    // reads another one resolves at USE time against the active theme, and the
+    // token it names is already overridden below. Restating them would be two
+    // places to change the accent. Only the three values with no counterpart in
+    // the UI palette are literals, and those are overridden.
+    --ip-plot-text: var(--ip-text-primary);
+    // Tick labels. The handoff calls this "muted" and --ip-text-muted is the
+    // token of that name, but measured on a rendered chart it lands at 3.33:1
+    // (light) / 3.24:1 (dark) against the code surface, and tick labels are the
+    // numbers a reader is here to read. --ip-text-tertiary is the next step up
+    // and clears AA at 5.35:1 / 4.93:1 while still reading lighter than the
+    // axis titles beside it. The whole point of this palette is a contrast fix;
+    // shipping the tick labels under 4.5:1 would ship a smaller version of it.
+    // The naming is CROSSED against the handoff, which is not a typo in either
+    // table: its `muted` #8888aa is --ip-text-muted in light and
+    // --ip-text-tertiary in dark.
+    --ip-plot-muted: var(--ip-text-tertiary);
+    --ip-plot-axis: var(--ip-border);
+    --ip-plot-series-1: var(--ip-accent);
+    // series-2..4 are RESERVED, not dead: `ChartKind` draws one data set per
+    // plot today, so plot.rs sentinels only series-1. They pin the handoff's
+    // series ORDER (accent, violet, green, amber) so multi-series support is a
+    // plot.rs change that does not also have to relitigate colour. Do not sweep
+    // them as unused.
+    --ip-plot-series-2: var(--ip-purple);
+    --ip-plot-series-3: var(--ip-success);
+    // Chart amber. Neither --ip-warning (#f0c040 here) nor --ip-shared
+    // (#a87018 in light) matches the handoff in both themes.
+    --ip-plot-series-4: #f0a840;
+    --ip-plot-grid: #233a63;
+    --ip-plot-zero: #2d4470;
 }
 
 /* ── Light theme overrides ─────────────────────────────────────────────── */
@@ -108,6 +146,13 @@
     --ip-neutral-dim: #555566;
     --ip-neutral-dimmer: #888899;
     --ip-hover-overlay: rgba(0, 0, 0, 0.06);
+
+    // Plot palette (PRD-0065) — see the notes in :root. Only the tokens with no
+    // counterpart in the UI palette need a light value; the aliases follow the
+    // tokens they name.
+    --ip-plot-series-4: #c09030;
+    --ip-plot-grid: #e8ebf2;
+    --ip-plot-zero: #d8dde8;
 }
 
 /* ── Base reset & typography ────────────────────────────────────────────── */
@@ -513,33 +558,60 @@ a:focus-visible {
 
 /* ── Status bar ──────────────────────────────────────────────────────────── */
 
+// Studio status bar (PRD-0065 T-009). The geometry was already the handoff's
+// (28px, top border, panel background); this is the type and rhythm.
 .ironpad-status-bar {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    padding: 0 16px;
+    padding: 0 14px;
     height: 28px;
     min-height: 28px;
     background: var(--ip-bg-surface);
     border-top: 1px solid var(--ip-border);
-    font-size: 0.75rem;
-    color: var(--ip-text-tertiary);
+    font-family: var(--ip-font-mono);
+    font-size: 0.625rem;
+    font-weight: 400;
+    color: var(--ip-text-muted);
     z-index: 100;
 }
 
 .ironpad-status-bar-inner {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 14px;
     width: 100%;
 }
 
 .ironpad-status-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     white-space: nowrap;
 }
 
-.ironpad-status-separator {
-    color: var(--ip-text-secondary);
+// Situational items sit at the right edge. `margin-left: auto` on the FIRST
+// of them, so a second one added later trails it rather than starting a
+// second gap.
+.ironpad-status-item--end {
+    margin-left: auto;
+}
+
+.ironpad-status-ready {
+    color: var(--ip-success);
+}
+
+// `icons::IDLE` is an outline circle, and the handoff's `●` is filled. The
+// fill lives here rather than in a variant icon, which is the same mechanism
+// the private-notebook badge needs — and the same one it shipped without,
+// leaving two storage classes rendering identically.
+.ironpad-status-dot {
+    display: inline-flex;
+    font-size: 0.5rem;
+
+    svg {
+        fill: currentColor;
+    }
 }
 
 /* ── Accounts + mutable shares (PRD-0049/PRD-0053) ─────────────────────── */
@@ -2297,13 +2369,16 @@ code[class*="language-"] {
         min-height: 60px;
     }
 
+    // No font-size override any more. It existed to bring a 0.75rem bar down
+    // to 0.7rem; against the 0.625rem Studio base it would make the bar
+    // LARGER on a phone than on a desktop. The gap is what actually needs to
+    // give at this width.
     .ironpad-status-bar {
-        font-size: 0.7rem;
         padding: 0 10px;
     }
 
     .ironpad-status-bar-inner {
-        gap: 4px;
+        gap: 10px;
     }
 }
 
@@ -2632,6 +2707,26 @@ code[class*="language-"] {
     height: 100%;
 }
 
+// Rail beside the cell list (PRD-0065 T-006). `min-height: 0` is load-bearing,
+// not tidiness: a flex item's default `min-height: auto` refuses to shrink
+// below its content, so without it `.view-only-cells` grows to its full
+// content height and the PAGE scrolls instead of the list — which also breaks
+// the rail's IntersectionObserver, since its root would never scroll.
+.view-only-body {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+}
+
+// The rail's own breakpoint is 1024px (this stylesheet's existing layout
+// breakpoint); it goes full-width there, so the row has to become a column to
+// match or it would sit beside a zero-width list.
+@media (max-width: 1024px) {
+    .view-only-body {
+        flex-direction: column;
+    }
+}
+
 .view-only-toolbar {
     // Title row, then a controls row below it: blog-length titles plus
     // per-item flex wrapping used to strand buttons on ragged rows.
@@ -2646,10 +2741,61 @@ code[class*="language-"] {
     border-bottom: 1px solid var(--ip-border);
 }
 
+// Breadcrumb row (PRD-0065 T-009): storage class, title, read-only pill.
+// The wordmark the handoff draws here is deliberately absent — the global
+// header already carries it, along with the auth surface PRD-0053 put there.
+.view-only-title-row {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.view-only-breadcrumb-crumb {
+    font-family: var(--ip-font-mono);
+    font-size: 0.75rem;
+    color: var(--ip-text-muted);
+}
+
+.view-only-breadcrumb-sep {
+    font-family: var(--ip-font-mono);
+    font-size: 0.75rem;
+    color: var(--ip-outline-dashed);
+}
+
 .view-only-title {
     margin: 0;
     font-size: 1.5rem;
     color: var(--ip-text-primary);
+}
+
+// Small uppercase status pill, shared by the top-bar `read-only` marker and
+// the per-cell state slot. Handoff: mono 500 9.5px, letter-spacing .09em,
+// 3px radius, 2px 6px padding.
+.view-only-pill {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: var(--ip-font-mono);
+    font-size: 0.6rem;
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.view-only-pill--readonly {
+    color: var(--ip-shared);
+    background: var(--ip-shared-tint);
+}
+
+.view-only-pill--busy {
+    color: var(--ip-info);
+    background: rgba(var(--ip-info-rgb), 0.12);
 }
 
 .view-only-toolbar-controls {
@@ -2683,47 +2829,125 @@ code[class*="language-"] {
     }
 }
 
+// ── Studio cell frame (PRD-0065 T-005) ──────────────────────────────────────
+//
+// The handoff's surface tokens map onto the existing `--ip-*` set rather than
+// adding a parallel one: `bg-panel` is `--ip-bg-surface`, `bg-subtle` is
+// `--ip-bg-elevated`, `bg-code` is `--ip-bg-primary`. In light theme those
+// three resolve to #ffffff / #eef0f5 / #f5f6fa, which is the handoff's palette
+// almost exactly; in dark they keep the same relationships one step over.
+//
+// Type follows the handoff's sizes, weights and spacing. The FAMILIES do not:
+// `--ip-font-sans` and `--ip-font-mono` name Inter and Fira Code but load
+// neither, and self-hosting them would put ~150KB back on the critical path
+// that v0.19.5 just cleared.
 .view-only-cells {
     flex: 1;
     overflow-y: auto;
-    padding: 0.5rem 0;
+    // Frames are separated by the handoff's 18px gap; they used to share a
+    // full-width bottom border, which the frame's own border replaces.
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 18px 1rem 26px;
+
+    // This container is a scroller with a definite height, so its flex items
+    // are shrinkable by default — and flex sizing runs BEFORE overflow, so
+    // every frame got squashed to fit rather than scrolling. Measured at
+    // 1240px: the last frame lost 26px off its bottom and `overflow: hidden`
+    // ate the reveal button whole.
+    > * {
+        flex-shrink: 0;
+    }
 }
 
+// Alignment box, shared by frames and prose so both measure the same and line
+// up under the toolbar (1060px cap minus the toolbar's 1rem inset).
 .view-only-cell {
-    max-width: 1060px;
+    width: 100%;
+    max-width: 1028px;
     margin: 0 auto;
-    padding: 1rem;
-    border-bottom: 1px solid var(--ip-border);
+}
+
+.view-only-cell--frame {
+    background: var(--ip-bg-surface);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-lg);
+    // Monaco and the output surface both run to the frame's edge; without
+    // this they square off the corners.
+    overflow: hidden;
 }
 
 .view-only-cell-header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--ip-bg-elevated);
+    border-bottom: 1px solid var(--ip-border);
+}
+
+// Shared cells (PRD-0044) keep their amber chrome inside the frame, and it
+// takes two rules to survive it. The frame's `border` shorthand comes later
+// in this file than `.view-only-cell--shared`'s `border-left`, so it wins on
+// source order and the amber edge disappears; and the header paints its own
+// background over the tint, which on a COLLAPSED shared cell is the only
+// thing there is to tint. Both were measured on a rendered frame, not read
+// off the rules.
+.view-only-cell--frame.view-only-cell--shared {
+    border-left: 3px solid var(--ip-shared);
+}
+
+.view-only-cell--shared .view-only-cell-header {
+    box-shadow: inset 0 0 0 9999px var(--ip-shared-tint);
+}
+
+.view-only-cell-index {
+    font-family: var(--ip-font-mono);
+    font-size: 0.625rem;
+    font-weight: 500;
+    color: var(--ip-text-muted);
+    flex-shrink: 0;
 }
 
 .view-only-cell-label {
-    font-weight: 600;
-    color: var(--ip-text-secondary);
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--ip-text-primary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+// Right-hand metadata group. Renders even when empty: it is what pushes the
+// run glyph to the frame's right edge, so the glyph must not move as timings
+// appear.
+.view-only-cell-meta {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--ip-font-mono);
+    font-size: 0.625rem;
+    color: var(--ip-text-muted);
 }
 
 .view-only-run-button {
-    padding: 0.25rem 0.75rem;
-    background: var(--ip-accent);
-    color: var(--ip-text-on-accent);
-    border: none;
-    border-radius: var(--ip-radius-sm);
-    cursor: pointer;
-    font-size: 0.85rem;
+    // Square glyph rather than a filled pill: the handoff makes this a state
+    // indicator as much as a control, and `ip-icon-button-shape` carries the
+    // coarse-pointer growth that a 22px box needs on a phone.
+    @include ip-icon-button-shape($size: 22px, $font: 0.7rem, $radius: var(--ip-radius-sm));
 
-    // Hand-rolled rather than built from `ip-button-shape`, so it needs its own
-    // touch bump. It is also the single most important control on a shared
-    // notebook, and it measured 25px tall on a phone.
-    @include ip-touch-target;
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--ip-text-muted);
 
-    &:hover {
-        background: var(--ip-accent-hover);
+    &:hover:not(:disabled) {
+        background: var(--ip-hover-overlay);
+        border-color: var(--ip-border);
+        color: var(--ip-text-primary);
     }
 
     &:disabled {
@@ -2732,18 +2956,42 @@ code[class*="language-"] {
     }
 }
 
+// Ran clean in THIS browser. A saved snapshot is the author's run, not the
+// reader's, so it deliberately does not turn the glyph green.
+.view-only-run-button--ran {
+    color: var(--ip-success);
+}
+
+.view-only-run-button--error {
+    color: var(--ip-error);
+}
+
 .view-only-timing-badge {
-    @extend %timing-pill;
-    font-size: 0.75rem;
+    font-family: var(--ip-font-mono);
+    font-size: 0.625rem;
+    color: var(--ip-text-muted);
     white-space: nowrap;
 }
 
+// Source pane. No padding: Monaco paints its own background edge to edge, so
+// an inset here would draw a frame-coloured gutter around it rather than the
+// handoff's `bg-code` margin.
+.view-only-cell--frame .ironpad-cell-body {
+    border-bottom: 1px solid var(--ip-border);
+}
+
+.view-only-cell--frame .ironpad-cell-body--collapsed {
+    border-bottom: none;
+}
+
+// Prose sits on the same left edge as the frames rather than inside its own
+// inset, so the column reads as one grid.
 .view-only-markdown {
-    padding: 1rem 1.5rem;
+    padding: 0.25rem 0;
 }
 
 .view-only-error {
-    margin-top: 0.5rem;
+    margin: 14px;
     padding: 0.5rem 0.75rem;
     background: rgba(var(--ip-error-rgb), 0.1);
     border: 1px solid rgba(var(--ip-error-rgb), 0.3);
@@ -2810,7 +3058,7 @@ code[class*="language-"] {
 // Skipped-dependent notice (PRD-0060): a run-queue failure drops this cell
 // and says why, instead of stranding it silently.
 .view-only-blocked {
-    margin-top: 0.5rem;
+    margin: 14px;
     padding: 0.5rem 0.75rem;
     background: rgba(var(--ip-warning-rgb), 0.08);
     border: 1px dashed rgba(var(--ip-warning-rgb), 0.4);
@@ -2819,11 +3067,23 @@ code[class*="language-"] {
     color: var(--ip-warning);
 }
 
+// Output pane (PRD-0065 T-005): a 14px inset inside the frame, holding a
+// caption row over the output surface. The pane itself is unbordered — the
+// frame owns the outer border now, and the surface below owns the inner one.
 .view-only-output {
-    margin-top: 0.5rem;
-    border: 1px solid var(--ip-border);
-    border-radius: 4px;
-    overflow: hidden;
+    padding: 14px;
+}
+
+// The collapsed-output reveal is a sibling of the output pane, so it takes
+// the same inset rather than running to the frame's edge.
+.view-only-cell--frame .view-only-output-reveal {
+    margin: 14px;
+    width: auto;
+
+    // It measured 29.8px on a Pixel 5. The sweep in `responsive.spec.ts`
+    // never caught it because it only renders for a cell whose output was
+    // saved collapsed, and no notebook under test has one.
+    @include ip-touch-target;
 }
 
 // Version history (PRD-0058): overlay + snapshot list for /local notebooks.
@@ -2931,7 +3191,62 @@ code[class*="language-"] {
 // Saved output (PRD-0056): the author's last-run snapshot, shown before any
 // live execution. The dashed border and badge distinguish it from a live
 // result at a glance.
-.view-only-output--saved {
+// Output caption row (PRD-0065 T-008): title slot on the left, short note on
+// the right, baseline-aligned above the surface.
+.view-only-output-caption {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 6px;
+}
+
+.view-only-output-caption--clickable {
+    cursor: pointer;
+}
+
+.view-only-output-caption-lead {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+
+// The title seam. Styled but empty: `Plot` still draws its title inside the
+// SVG, so rendering one here as well would show it twice. Sized so filling it
+// in is a Rust-only change.
+.view-only-output-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--ip-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.view-only-output-note {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-shrink: 0;
+    font-family: var(--ip-font-mono);
+    font-size: 0.625rem;
+    color: var(--ip-text-muted);
+}
+
+// Output surfaces: `bg-code` behind a 1px inner border at 6px radius.
+.view-only-output-body,
+.view-only-output-panels {
+    background: var(--ip-bg-primary);
+    border: 1px solid var(--ip-border);
+    border-radius: var(--ip-radius-md);
+    overflow: hidden;
+}
+
+// A snapshot keeps the dashed treatment that tells it apart from a live run.
+// The badge strip runs full-bleed inside it; each panel brings its own
+// padding (`.view-only-output-display`), so the surface adds none.
+.view-only-output--saved .view-only-output-panels {
     border-style: dashed;
 }
 
@@ -2950,22 +3265,8 @@ code[class*="language-"] {
     opacity: 0.7;
 }
 
-.view-only-output--saved .view-only-output-panels {
-    padding: 0.6rem;
-}
-
 .view-only-output--collapsed .view-only-output-body {
     display: none;
-}
-
-.view-only-output-meta {
-    display: flex;
-    gap: 1rem;
-    padding: 0.25rem 0.75rem;
-    font-size: 0.75rem;
-    color: var(--ip-text-tertiary);
-    background: var(--ip-bg-elevated);
-    border-bottom: 1px solid var(--ip-border);
 }
 
 .view-only-output-display {
@@ -3896,6 +4197,295 @@ code[class*="language-"] {
 //
 // The 150ms colour and border transitions elsewhere stay: this preference is
 // about vestibular motion, not about paint.
+// ── Cell outline rail (PRD-0065 T-006/T-007) ────────────────────────────────
+//
+// Values come from `design_mock/design_handoff_notebook_chrome/README.md`,
+// stated in rem against the 16px root (9.5px = 0.594rem, 10.5px = 0.656rem,
+// 11px = 0.688rem, 12px = 0.75rem) so a reader who scales their root font
+// scales the rail with it.
+//
+// The handoff's token names map onto the existing `--ip-*` set exactly for
+// every value the rail uses: bg-subtle -> --ip-bg-elevated, bg-panel ->
+// --ip-bg-surface, border -> --ip-border, text -> --ip-text-primary, text-2 ->
+// --ip-text-secondary, muted -> --ip-text-muted, green -> --ip-success. The
+// families deliberately do NOT match: the handoff names Inter + Fira Code,
+// which the app names but does not load, and self-hosting them would put
+// ~150KB of woff2 back on the critical path v0.19.5 just cleared. Sizes,
+// weights and spacing are adopted; the stacks are not.
+
+.ip-rail {
+    // Sized for both layout models so the frame around it can use either.
+    flex: 0 0 212px;
+    width: 212px;
+    align-self: stretch;
+    // The rail scrolls independently of the cells: a 28-cell notebook
+    // (`cannon`) is taller than the outline column.
+    min-height: 0;
+    overflow-y: auto;
+    padding: 14px 12px;
+    background: var(--ip-bg-elevated);
+    border-right: 1px solid var(--ip-border);
+    // Anchor for the narrow-viewport dropdown.
+    position: relative;
+}
+
+// Exists only below the breakpoint, where the rail becomes a dropdown.
+.ip-rail-toggle {
+    display: none;
+}
+
+.ip-rail-group + .ip-rail-group {
+    margin-top: 18px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ip-border);
+}
+
+.ip-rail-group-header {
+    padding: 0 6px 8px;
+    font-family: var(--ip-font-mono);
+    font-size: 0.594rem;
+    font-weight: 500;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ip-text-muted);
+}
+
+.ip-rail-rows {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.ip-rail-row {
+    @include ip-button-shape($height: 26px, $pad: 7px 8px, $font: 0.688rem, $radius: 5px);
+
+    // The shape mixin centres an inline pill; a rail row is a full-width
+    // record whose three columns must line up down the list.
+    display: flex;
+    width: 100%;
+    justify-content: flex-start;
+    gap: 8px;
+    font-weight: 500;
+    text-align: left;
+    background: transparent;
+    color: var(--ip-text-secondary);
+    // Transparent rather than absent: the selected row gains a border, and
+    // without the reservation every row below it would shift 2px on selection.
+    border: 1px solid transparent;
+
+    &:hover {
+        // The handoff asks for bg-panel at 50%. This is the app's one
+        // neutral-lift token, already defined for both themes (white-alpha on
+        // dark, black-alpha on light), and it lands in the same place without
+        // a color-mix() this stylesheet does not otherwise use.
+        background: var(--ip-hover-overlay);
+    }
+}
+
+.ip-rail-row--selected {
+    background: var(--ip-bg-surface);
+    border-color: var(--ip-border);
+    color: var(--ip-text-primary);
+}
+
+.ip-rail-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    // Not run. `--ip-outline-dashed` is this codebase's dim-structure token
+    // and sits within a shade of the handoff's `dim` in both themes.
+    background: var(--ip-outline-dashed);
+}
+
+.ip-rail-dot--ran {
+    background: var(--ip-success);
+}
+
+.ip-rail-dot--running {
+    background: var(--ip-info);
+}
+
+.ip-rail-dot--stale {
+    background: var(--ip-stale-indicator);
+}
+
+.ip-rail-dot--failed {
+    background: var(--ip-error);
+}
+
+// Dropped because a dependency failed. The same amber as `.view-only-blocked`,
+// the inline notice the reader sees on the cell itself: a muted grey here read
+// as "has not run yet" against the dim dot two rows above it.
+.ip-rail-dot--blocked {
+    background: var(--ip-warning);
+}
+
+// A shared cell (PRD-0044) never runs, so a filled status dot would promise a
+// state it cannot have. The amber ring is the language the shared-cell chrome
+// already speaks.
+.ip-rail-dot--shared {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--ip-shared);
+}
+
+// Prose. A rule rather than a dot: "this cell has no run state" has to read
+// differently from "this cell has not run yet", and 51% of the cells across
+// public/notebooks/ are markdown.
+.ip-rail-dot--prose {
+    height: 2px;
+    border-radius: 1px;
+    background: var(--ip-text-muted);
+    opacity: 0.55;
+}
+
+.ip-rail-row-name {
+    // The p99 cell label is 41 characters, which does not fit 212px at any
+    // size worth reading, so the name takes the slack and ellipsises.
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ip-rail-row-timing {
+    flex: 0 0 auto;
+    font-family: var(--ip-font-mono);
+    font-size: 0.594rem;
+    font-weight: 400;
+    // A column of timings must not jitter as the digits change.
+    font-variant-numeric: tabular-nums;
+    color: var(--ip-text-muted);
+}
+
+.ip-rail-row-timing--stale {
+    color: var(--ip-stale-indicator);
+}
+
+.ip-rail-row-timing--running {
+    color: var(--ip-info);
+}
+
+.ip-rail-row-timing--failed {
+    color: var(--ip-error);
+}
+
+.ip-rail-row-timing--blocked {
+    color: var(--ip-warning);
+}
+
+.ip-rail-row--selected .ip-rail-row-timing {
+    color: var(--ip-text-secondary);
+}
+
+.ip-rail-line {
+    margin: 0;
+    padding: 0 6px;
+    font-family: var(--ip-font-mono);
+    font-size: 0.688rem;
+    line-height: 1.6;
+    color: var(--ip-text-secondary);
+    // Toolchain pins are long and unbreakable at 188px of content width.
+    overflow-wrap: anywhere;
+}
+
+.ip-rail-line--dep {
+    line-height: 1.7;
+}
+
+.ip-rail-dep-version {
+    margin-left: 6px;
+    color: var(--ip-text-muted);
+}
+
+.ip-rail-stats {
+    margin-top: 6px;
+}
+
+.ip-rail-stat {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 6px;
+    font-family: var(--ip-font-mono);
+    font-size: 0.656rem;
+    line-height: 1.7;
+}
+
+.ip-rail-stat-label {
+    color: var(--ip-text-muted);
+}
+
+.ip-rail-stat-value {
+    color: var(--ip-text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+// Under the handoff's ~1000px rule the rail collapses to a dropdown above the
+// cells. 1024px rather than 1000px because that is this stylesheet's existing
+// layout breakpoint, and a second one 24px away would be two rules to keep in
+// step for no visible gain.
+@media (max-width: 1024px) {
+    .ip-rail {
+        flex: 0 0 auto;
+        width: 100%;
+        // `flex-start`, not `auto`: the dropdown is absolutely positioned at
+        // `top: 100%` of this box, so a rail still stretching to the frame's
+        // full height would open the menu below the fold. `auto` inherits the
+        // container's `align-items`, which is exactly the case that fails.
+        align-self: flex-start;
+        overflow: visible;
+        padding: 8px 12px;
+        border-right: none;
+        border-bottom: 1px solid var(--ip-border);
+    }
+
+    .ip-rail-toggle {
+        @include ip-button-shape($height: 34px, $pad: 6px 10px, $font: 0.75rem, $radius: 5px);
+
+        display: flex;
+        width: 100%;
+        justify-content: flex-start;
+        gap: 8px;
+        font-weight: 500;
+        text-align: left;
+        background: transparent;
+        color: var(--ip-text-secondary);
+        border: 1px solid transparent;
+
+        &:hover {
+            background: var(--ip-hover-overlay);
+        }
+    }
+
+    .ip-rail-toggle-count {
+        margin-left: auto;
+        font-family: var(--ip-font-mono);
+        font-size: 0.594rem;
+        color: var(--ip-text-muted);
+    }
+
+    .ip-rail-body {
+        display: none;
+    }
+
+    .ip-rail-body--open {
+        display: block;
+        position: absolute;
+        z-index: 30;
+        top: 100%;
+        left: 12px;
+        right: 12px;
+        max-height: 60vh;
+        overflow-y: auto;
+        padding: 12px;
+        background: var(--ip-bg-surface);
+        border: 1px solid var(--ip-border);
+        border-radius: var(--ip-radius-md);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
 
     // The infinite loops: one travelling gradient, four opacity pulses.

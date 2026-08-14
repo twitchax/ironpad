@@ -2,15 +2,64 @@
 
 use std::fmt::Write as _;
 
+use plotters::chart::MeshStyle;
+use plotters::coord::types::RangedCoordf64;
 use plotters::prelude::*;
+use plotters::style::text_anchor::{HPos, Pos, VPos};
 
 use crate::{CellOutput, DisplayPanel, IntoPanels, TypeTag};
 
-// ── Dark-theme palette ───────────────────────────────────────────────────────
+// ── Themed palette ──────────────────────────────────────────────────────────
+//
+// A cell renders in a Web Worker and its SVG is persisted into `saved_output`,
+// so it cannot know the page theme at render time, and a snapshot captured
+// under one theme must not stay that way forever. Nothing here bakes a theme
+// colour. Every colour below is a *sentinel*: plotters draws with it, then
+// `themify` rewrites it to `var(--ip-plot-NAME, <sentinel>)` and the page
+// resolves it against whichever theme is active (the `--ip-plot-*` block in
+// `style/main.scss`).
+//
+// Each sentinel doubles as the `var()` fallback, and each fallback is the
+// channel-wise midpoint of that token's light and dark values. The fallback is
+// load-bearing rather than decoration: every output panel carries a copy button
+// and `Download .ironpad` embeds the SVG, and outside ironpad's stylesheet an
+// unresolved `var()` with no fallback drops the whole attribute. A midpoint is
+// the one value that reads on both grounds: measured across every text element
+// of a rendered chart with no stylesheet at all, the worst case is 3.7:1 over
+// the light code surface (#fbfcfe) and 4.0:1 over the dark one (#161c33), where
+// the best ANY single colour can do across that pair is 4.03:1. Inside ironpad
+// the tokens win and both themes clear WCAG AA outright — that is the point of
+// the whole arrangement, and the fallback is only the lifeboat.
+//
+// Sentinels must stay pairwise distinct: `themify` keys on the emitted hex, so
+// two roles sharing a value would silently collapse into one token.
 
-const COLOR_TEXT: RGBColor = RGBColor(0xEA, 0xEA, 0xEA);
-const COLOR_ACCENT: RGBColor = RGBColor(0xE9, 0x45, 0x60);
+const COLOR_TEXT: RGBColor = RGBColor(0x82, 0x82, 0x8C);
+const COLOR_MUTED: RGBColor = RGBColor(0x79, 0x79, 0x9A);
+const COLOR_GRID: RGBColor = RGBColor(0x86, 0x93, 0xAB);
+const COLOR_ZERO: RGBColor = RGBColor(0x83, 0x91, 0xAC);
+const COLOR_AXIS: RGBColor = RGBColor(0x70, 0x85, 0xA0);
+const COLOR_SERIES_1: RGBColor = RGBColor(0xE0, 0x3F, 0x59);
 const COLOR_TRANSPARENT: RGBColor = RGBColor(0, 0, 0);
+
+/// Sentinel to token-name map, consumed by [`themify`]. The name is the
+/// `--ip-plot-*` suffix declared in `style/main.scss`.
+const PALETTE: &[(&str, RGBColor)] = &[
+    ("text", COLOR_TEXT),
+    ("muted", COLOR_MUTED),
+    ("grid", COLOR_GRID),
+    ("zero", COLOR_ZERO),
+    ("axis", COLOR_AXIS),
+    ("series-1", COLOR_SERIES_1),
+];
+
+/// Bar opacity by rank, tallest first (design handoff). Bars past the fourth
+/// rank all sit at the floor.
+const BAR_RANK_OPACITY: [f64; 4] = [1.0, 0.78, 0.62, 0.46];
+
+/// Ticks per axis. The handoff caps this at 5-6; plotters treats it as a hint
+/// and picks round numbers at or below it.
+const MAX_TICKS: usize = 6;
 
 // ── Plot builder ─────────────────────────────────────────────────────────────
 
@@ -129,6 +178,10 @@ impl Plot {
     }
 
     /// Show data values as text labels on each data point.
+    ///
+    /// Line and scatter charts only. Bar charts always label the end of each
+    /// bar, which is what the design handoff asks for in place of a dense value
+    /// axis, so this flag would have nothing left to turn on for them.
     #[must_use]
     pub fn point_labels(mut self, enabled: bool) -> Self {
         self.point_labels = enabled;
@@ -159,8 +212,10 @@ impl Plot {
             root.present().expect("presenting SVG drawing cannot fail");
         }
 
-        // Make the background truly transparent by replacing the initial rect fill.
-        let svg = buf.replace("fill=\"#000000\"", "fill=\"transparent\"");
+        // Post-process: the background rect is drawn black because plotters has
+        // no transparent fill, and every palette sentinel becomes a themed
+        // `var()` here (see the palette comment at the top of the module).
+        let svg = themify(&buf.replace("fill=\"#000000\"", "fill=\"transparent\""));
 
         if self.tooltips && !tooltip_points.is_empty() {
             inject_tooltips(&svg, &tooltip_points)
@@ -184,7 +239,7 @@ impl Plot {
         chart
             .draw_series(LineSeries::new(
                 data.iter().copied(),
-                COLOR_ACCENT.stroke_width(2),
+                COLOR_SERIES_1.stroke_width(2),
             ))
             .expect("drawing line series cannot fail");
 
@@ -243,41 +298,54 @@ impl Plot {
             .build_cartesian_2d(0.0..n, 0.0..y_top)
             .expect("building bar chart context cannot fail");
 
-        chart
-            .configure_mesh()
-            .disable_x_mesh()
-            .x_label_formatter(&|x| {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let idx = *x as usize;
-                data.get(idx).map_or_else(String::new, |(l, _)| l.clone())
-            })
-            .x_labels(data.len())
-            .label_style(("sans-serif", 12).into_font().color(&COLOR_TEXT))
-            .axis_style(COLOR_TEXT)
-            .draw()
-            .expect("drawing bar chart mesh cannot fail");
+        let category = |x: &f64| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let idx = *x as usize;
+            data.get(idx).map_or_else(String::new, |(l, _)| l.clone())
+        };
+
+        {
+            let mut mesh = chart.configure_mesh();
+            apply_mesh_theme(&mut mesh);
+            // One tick per category — the bar labels are the axis here, so the
+            // MAX_TICKS cap does not apply to x.
+            mesh.x_label_formatter(&category)
+                .x_labels(data.len())
+                .draw()
+                .expect("drawing bar chart mesh cannot fail");
+        }
+
+        let ranks = value_ranks(data);
 
         chart
             .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
                 let x0 = i as f64 + 0.1;
                 let x1 = (i + 1) as f64 - 0.1;
-                let mut bar = Rectangle::new([(x0, 0.0), (x1, *val)], COLOR_ACCENT.filled());
+                let opacity = BAR_RANK_OPACITY[ranks[i].min(BAR_RANK_OPACITY.len() - 1)];
+                let mut bar = Rectangle::new(
+                    [(x0, 0.0), (x1, *val)],
+                    COLOR_SERIES_1.mix(opacity).filled(),
+                );
                 bar.set_margin(0, 0, 2, 2);
                 bar
             }))
             .expect("drawing bar series cannot fail");
 
-        if self.point_labels {
-            chart
-                .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
-                    Text::new(
-                        format!("{val:.1}"),
-                        (i as f64 + 0.5, *val),
-                        ("sans-serif", 10).into_font().color(&COLOR_TEXT),
-                    )
-                }))
-                .expect("drawing bar point labels cannot fail");
-        }
+        // Value labels at the bar end, always: the handoff trades a dense value
+        // axis for these, so there is nothing for `point_labels` to toggle.
+        let end_label = ("sans-serif", 11)
+            .into_font()
+            .color(&COLOR_TEXT)
+            .pos(Pos::new(HPos::Center, VPos::Bottom));
+        chart
+            .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
+                Text::new(
+                    format!("{val:.1}"),
+                    (i as f64 + 0.5, *val),
+                    end_label.clone(),
+                )
+            }))
+            .expect("drawing bar value labels cannot fail");
 
         if self.tooltips {
             for (i, (label, val)) in data.iter().enumerate() {
@@ -300,7 +368,7 @@ impl Plot {
         chart
             .draw_series(
                 data.iter()
-                    .map(|(x, y)| Circle::new((*x, *y), 4, COLOR_ACCENT.filled())),
+                    .map(|(x, y)| Circle::new((*x, *y), 4, COLOR_SERIES_1.filled())),
             )
             .expect("drawing scatter series cannot fail");
 
@@ -351,21 +419,35 @@ impl Plot {
         }
 
         let mut chart = builder
-            .build_cartesian_2d(x_range, y_range)
+            .build_cartesian_2d(x_range.clone(), y_range.clone())
             .expect("building chart context cannot fail");
 
-        let mut mesh = chart.configure_mesh();
-        mesh.label_style(("sans-serif", 12).into_font().color(&COLOR_TEXT))
-            .axis_style(COLOR_TEXT);
+        {
+            let mut mesh = chart.configure_mesh();
+            apply_mesh_theme(&mut mesh);
 
-        if let Some(lbl) = &self.x_label {
-            mesh.x_desc(lbl.as_str());
-        }
-        if let Some(lbl) = &self.y_label {
-            mesh.y_desc(lbl.as_str());
+            if let Some(lbl) = &self.x_label {
+                mesh.x_desc(lbl.as_str());
+            }
+            if let Some(lbl) = &self.y_label {
+                mesh.y_desc(lbl.as_str());
+            }
+
+            mesh.draw().expect("drawing chart mesh cannot fail");
         }
 
-        mesh.draw().expect("drawing chart mesh cannot fail");
+        // A solid baseline in the zero token, per the handoff. Only when zero is
+        // inside the plotted range: on a chart that never crosses it the axis
+        // line already sits there and a second line on top of it just doubles
+        // the stroke.
+        if y_range.start < 0.0 && y_range.end > 0.0 {
+            chart
+                .draw_series(LineSeries::new(
+                    [(x_range.start, 0.0), (x_range.end, 0.0)],
+                    COLOR_ZERO.stroke_width(1),
+                ))
+                .expect("drawing baseline cannot fail");
+        }
 
         chart
     }
@@ -392,6 +474,80 @@ impl TypeTag for Plot {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Shared mesh theme: horizontal gridlines only, dashed, few ticks, no chart-area
+/// box, tick labels muted and axis descriptions in the text token.
+///
+/// The vertical mesh is off because verticals are noise on a continuous x axis,
+/// and the light (subdivision) lines are drawn fully transparent, which the SVG
+/// backend skips emitting altogether, so what is left is one gridline per tick.
+fn apply_mesh_theme(mesh: &mut MeshStyle<'_, '_, RangedCoordf64, RangedCoordf64, SVGBackend<'_>>) {
+    mesh.disable_x_mesh()
+        .x_labels(MAX_TICKS)
+        .y_labels(MAX_TICKS)
+        .bold_line_style(COLOR_GRID)
+        .light_line_style(TRANSPARENT)
+        .axis_style(COLOR_AXIS)
+        .label_style(("sans-serif", 12).into_font().color(&COLOR_MUTED))
+        .axis_desc_style(("sans-serif", 12).into_font().color(&COLOR_TEXT));
+}
+
+/// Rank each bar by value, tallest first, so [`BAR_RANK_OPACITY`] can step down
+/// the ordering rather than the input order.
+fn value_ranks(data: &[(String, f64)]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..data.len()).collect();
+    order.sort_by(|&a, &b| data[b].1.total_cmp(&data[a].1));
+
+    let mut ranks = vec![0; data.len()];
+    for (rank, &idx) in order.iter().enumerate() {
+        ranks[idx] = rank;
+    }
+    ranks
+}
+
+/// The hex literal plotters' SVG backend emits for a colour.
+fn hex(color: RGBColor) -> String {
+    format!("#{:02X}{:02X}{:02X}", color.0, color.1, color.2)
+}
+
+/// Rewrite every palette sentinel into the themed custom property that carries
+/// it as a fallback.
+///
+/// Two roles also pick up a presentation attribute the SVG backend has no way to
+/// emit, so they are rewritten in their attribute-qualified form first; the
+/// generic pass below then only finds the remaining (fill) occurrences. The
+/// rewritten text never contains `"#RRGGBB"` in quoted form, so a later
+/// substitution cannot re-enter an earlier one.
+fn themify(svg: &str) -> String {
+    let mut out = svg.replace(
+        &format!("stroke=\"{}\"", hex(COLOR_GRID)),
+        &format!(
+            "stroke=\"{}\" stroke-dasharray=\"2 5\"",
+            themed("grid", COLOR_GRID)
+        ),
+    );
+    out = out.replace(
+        &format!("stroke=\"{}\"", hex(COLOR_SERIES_1)),
+        &format!(
+            "stroke=\"{}\" stroke-linecap=\"round\"",
+            themed("series-1", COLOR_SERIES_1)
+        ),
+    );
+
+    for (name, color) in PALETTE {
+        out = out.replace(
+            &format!("\"{}\"", hex(*color)),
+            &format!("\"{}\"", themed(name, *color)),
+        );
+    }
+    out
+}
+
+/// `var(--ip-plot-NAME, #RRGGBB)`. The fallback is never optional — see the
+/// palette comment at the top of the module.
+fn themed(name: &str, color: RGBColor) -> String {
+    format!("var(--ip-plot-{name}, {})", hex(color))
+}
 
 /// Compute x/y ranges from `(x, y)` data with a small margin so points aren't
 /// clipped against the axes.
@@ -603,5 +759,182 @@ mod tests {
             !svg.contains("2.7"),
             "default plot should not have point label text"
         );
+    }
+
+    // ── Theming ──────────────────────────────────────────────────────────
+
+    /// Every `var(--ip-plot-…)` occurrence in `svg`, closing paren included.
+    fn theme_vars(svg: &str) -> Vec<&str> {
+        svg.match_indices("var(--ip-plot-")
+            .map(|(at, _)| {
+                let rest = &svg[at..];
+                let end = rest.find(')').expect("a var() must be closed");
+                &rest[..=end]
+            })
+            .collect()
+    }
+
+    /// Value of `name="…"` inside a single SVG tag.
+    fn attr<'a>(tag: &'a str, name: &str) -> &'a str {
+        let key = format!("{name}=\"");
+        let at = tag
+            .find(&key)
+            .unwrap_or_else(|| panic!("{name} missing from {tag}"))
+            + key.len();
+        let rest = &tag[at..];
+        &rest[..rest.find('"').expect("attribute must be closed")]
+    }
+
+    fn themed_chart() -> String {
+        Plot::line(&[(0.0, -1.0), (1.0, 1.0), (2.0, 4.0)])
+            .title("Themed")
+            .x_label("x")
+            .y_label("y")
+            .render_svg()
+    }
+
+    #[test]
+    fn text_and_series_render_as_theme_variables() {
+        let svg = themed_chart();
+        for token in [
+            "var(--ip-plot-text,",
+            "var(--ip-plot-muted,",
+            "var(--ip-plot-grid,",
+            "var(--ip-plot-zero,",
+            "var(--ip-plot-axis,",
+            "var(--ip-plot-series-1,",
+        ] {
+            assert!(svg.contains(token), "{token} missing from rendered SVG");
+        }
+    }
+
+    #[test]
+    fn every_theme_var_carries_a_fallback() {
+        // Outside ironpad's stylesheet — the clipboard, a downloaded notebook —
+        // an unresolved var() with no fallback drops the attribute entirely.
+        let svg = themed_chart();
+        let vars = theme_vars(&svg);
+        assert!(!vars.is_empty(), "expected themed colours in the SVG");
+        for v in vars {
+            assert!(v.contains(", #"), "{v} has no fallback colour");
+        }
+    }
+
+    #[test]
+    fn no_palette_hex_survives_the_post_process() {
+        let svg = themed_chart();
+        for (name, color) in PALETTE {
+            let bare = format!("\"{}\"", hex(*color));
+            assert!(
+                !svg.contains(&bare),
+                "{name} still emitted as a bare {bare} attribute value"
+            );
+        }
+        // The pre-PRD-0065 dark palette, in case a call site is ever missed.
+        assert!(
+            !svg.contains("#EAEAEA"),
+            "the old baked text colour survives"
+        );
+        assert!(
+            !svg.contains("#E94560"),
+            "the old baked accent colour survives"
+        );
+
+        // Nothing at all may reach the page as a raw literal. plotters supplies
+        // its own defaults the moment a style is left unset (black at low alpha
+        // for the subdivision gridlines, for one), and those are invisible in
+        // one theme and wrong in the other while carrying no palette hex to
+        // search for.
+        for svg in [svg, Plot::bar(&[("A", 1.0)]).tooltips(true).render_svg()] {
+            assert!(
+                !svg.contains("=\"#"),
+                "an unthemed colour literal reaches the page"
+            );
+        }
+    }
+
+    #[test]
+    fn sentinels_are_pairwise_distinct() {
+        // themify keys on the emitted hex, so a duplicate would silently merge
+        // two roles into one token.
+        for (i, (name_a, a)) in PALETTE.iter().enumerate() {
+            for (name_b, b) in &PALETTE[i + 1..] {
+                assert_ne!(hex(*a), hex(*b), "{name_a} and {name_b} share a sentinel");
+            }
+        }
+    }
+
+    #[test]
+    fn gridlines_are_horizontal_dashed_and_capped() {
+        let svg = themed_chart();
+        let grid: Vec<&str> = svg
+            .lines()
+            .filter(|l| l.contains("var(--ip-plot-grid,"))
+            .collect();
+
+        assert!(!grid.is_empty(), "expected gridlines");
+        const { assert!(MAX_TICKS <= 6, "the handoff caps an axis at 5-6 ticks") };
+        assert!(
+            grid.len() <= MAX_TICKS,
+            "{} gridlines exceeds the {MAX_TICKS}-tick cap",
+            grid.len()
+        );
+        for line in grid {
+            assert!(
+                line.contains("stroke-dasharray=\"2 5\""),
+                "gridline is not dashed: {line}"
+            );
+            assert_eq!(
+                attr(line, "y1"),
+                attr(line, "y2"),
+                "vertical gridlines are off by default: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn series_stroke_is_round_capped() {
+        let svg = themed_chart();
+        let series = svg
+            .lines()
+            .find(|l| l.contains("var(--ip-plot-series-1,") && l.contains("stroke="))
+            .expect("expected a stroked series");
+        assert!(
+            series.contains("stroke-linecap=\"round\""),
+            "series stroke is not round-capped: {series}"
+        );
+    }
+
+    #[test]
+    fn baseline_drawn_only_when_zero_is_inside_the_range() {
+        let crossing = Plot::line(&[(0.0, -1.0), (1.0, 1.0)]).render_svg();
+        assert!(
+            crossing.contains("var(--ip-plot-zero,"),
+            "a chart crossing zero should carry a baseline"
+        );
+
+        let above = Plot::line(&[(0.0, 1.0), (1.0, 4.0)]).render_svg();
+        assert!(
+            !above.contains("var(--ip-plot-zero,"),
+            "a chart that never crosses zero already has the axis there"
+        );
+    }
+
+    #[test]
+    fn bars_label_their_ends_and_ramp_opacity_by_rank() {
+        let svg = Plot::bar(&[("A", 3.7), ("B", 9.1), ("C", 5.3), ("D", 1.2)]).render_svg();
+
+        // Labels are unconditional for bars — no `.point_labels(true)` above.
+        for value in ["3.7", "9.1", "5.3", "1.2"] {
+            assert!(svg.contains(value), "bar end label {value} missing");
+        }
+
+        let opacities: Vec<&str> = svg
+            .lines()
+            .filter(|l| l.starts_with("<rect") && l.contains("var(--ip-plot-series-1,"))
+            .map(|l| attr(l, "opacity"))
+            .collect();
+        // Input order A, B, C, D against ranks 2, 0, 1, 3 by value.
+        assert_eq!(opacities, ["0.62", "1", "0.78", "0.46"]);
     }
 }

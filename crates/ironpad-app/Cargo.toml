@@ -19,7 +19,7 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement", "HtmlAnchorElement", "HtmlInputElement", "HtmlSelectElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "Window", "Navigator", "Clipboard", "Blob", "BlobPropertyBag", "Url", "EventTarget", "Storage", "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "Location", "File", "FileList", "FileReader", "Response"] }
+web-sys = { workspace = true, optional = true, features = ["HtmlElement", "HtmlDivElement", "HtmlAnchorElement", "HtmlInputElement", "HtmlSelectElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "Window", "Navigator", "Clipboard", "Blob", "BlobPropertyBag", "Url", "EventTarget", "Storage", "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "Location", "File", "FileList", "FileReader", "Response", "IntersectionObserver", "IntersectionObserverEntry", "IntersectionObserverInit", "DomRect", "DomRectReadOnly", "MediaQueryList", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition"] }
 
 http.workspace = true
 thiserror.workspace = true

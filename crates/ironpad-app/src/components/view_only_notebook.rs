@@ -15,6 +15,9 @@ use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 use crate::components::copy_button::CopyButton;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
+use crate::components::notebook_rail::{
+    cell_anchor_id, rail_cells, rail_deps, NotebookRail, RailRunState,
+};
 use crate::components::output_render::{
     render_display_panel, CellOutputData, DisplayPanel, PanelMode, WidgetSink,
     VIEW_ONLY_PANEL_CLASSES,
@@ -131,6 +134,10 @@ pub(crate) fn ViewOnlyNotebook(
     // cells) — the caller's map when provided (editor view mode), else local.
     let cell_outputs: RwSignal<HashMap<String, CellOutputData>> =
         cell_outputs.unwrap_or_else(|| RwSignal::new(HashMap::new()));
+    // Rail run state (PRD-0065 T-006). Caller-owned so the rail only reads it;
+    // enrichment rather than a prerequisite, since every row falls back to a
+    // not-run default when nothing writes here.
+    let rail_run = RailRunState::new();
 
     // Run-all sequential execution queue (cell IDs in order).
     let run_all_queue: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
@@ -299,10 +306,37 @@ pub(crate) fn ViewOnlyNotebook(
             .unwrap_or_else(|| "/".to_string())
     });
 
+    // Breadcrumb crumb (PRD-0065 T-009): the storage class this notebook is
+    // being read from, taken from the source spec's route prefix so the crumb
+    // always agrees with the URL (`public/foo` -> "public"). Embeds are
+    // chrome-less by contract and the editor's preview has no spec, so both
+    // render nothing.
+    let breadcrumb_crumb = (!embed)
+        .then(|| embed_spec.as_deref().and_then(|s| s.split('/').next()))
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
     view! {
         <div class="view-only-notebook">
             <div class="view-only-toolbar">
-                <h1 class="view-only-title">{notebook.with_value(|nb| nb.title.clone())}</h1>
+                // Title row: optional breadcrumb crumb, the title itself, and
+                // the read-only pill. Named for the ROW, not the crumb: it
+                // always renders because it owns the `<h1>`, and only its
+                // children are conditional. Calling it `--breadcrumb` cost one
+                // wrong e2e assertion within an hour of it being written. The
+                // wordmark stays in the global header (PRD-0053 put the auth
+                // surface there deliberately) rather than being repeated here.
+                <div class="view-only-title-row">
+                    {breadcrumb_crumb.map(|crumb| view! {
+                        <span class="view-only-breadcrumb-crumb">{crumb}</span>
+                        <span class="view-only-breadcrumb-sep" aria-hidden="true">"/"</span>
+                    })}
+                    <h1 class="view-only-title">{notebook.with_value(|nb| nb.title.clone())}</h1>
+                    {(!embed).then(|| view! {
+                        <span class="view-only-pill view-only-pill--readonly">"read-only"</span>
+                    })}
+                </div>
                 // Controls live in their own row below the title: a long title
                 // plus per-item flex wrapping used to strand buttons on ragged
                 // rows (and Run All's width changes while running reflowed them
@@ -406,6 +440,16 @@ pub(crate) fn ViewOnlyNotebook(
                     "This notebook uses threaded (rayon) cells, which need a cross-origin-isolated page and can't run inside an embed. Plain and async cells run fine; use the badge below to open the full notebook."
                 </div>
             })}
+            <div class="view-only-body">
+            <NotebookRail
+                cells=notebook.with_value(|nb| rail_cells(&nb.cells))
+                run=rail_run
+                toolchain=crate::CELL_TOOLCHAIN
+                deps=notebook.with_value(|nb| {
+                    rail_deps(nb.shared_cargo_toml.as_deref(), &nb.cells)
+                })
+                embed=embed
+            />
             <div class="view-only-cells">
                 {notebook.with_value(|nb| {
                     let cells = nb.cells.clone();
@@ -415,8 +459,30 @@ pub(crate) fn ViewOnlyNotebook(
                     let shared_source = nb.effective_shared_source();
                     let notebook_id = nb.id.to_string();
 
-                    cells.iter().map(|cell| {
+                    // Frame numbering (PRD-0065 T-005) counts only the cells
+                    // that draw a frame, so the `[1] [2] [3]` a reader sees
+                    // has no gaps. Markdown is prose, not a numbered step,
+                    // and 51% of the cells in `public/notebooks/` are
+                    // markdown — numbering by notebook position would show
+                    // `[2] [5] [9]`.
+                    let frame_indices: Vec<Option<usize>> = {
+                        let mut next = 0usize;
+                        cells
+                            .iter()
+                            .map(|c| {
+                                // Mirrors ViewOnlyCell's dispatch: a shared
+                                // cell frames whatever its type says.
+                                (c.shared || c.cell_type == CellType::Code).then(|| {
+                                    next += 1;
+                                    next
+                                })
+                            })
+                            .collect()
+                    };
+
+                    cells.iter().zip(frame_indices).map(|(cell, index)| {
                         let cell = cell.clone();
+                        let anchor_id = cell_anchor_id(&cell.id);
                         let all_cells = cells.clone();
                         let shared = shared_cargo_toml.clone();
                         let shared_src = shared_source.clone();
@@ -430,6 +496,8 @@ pub(crate) fn ViewOnlyNotebook(
                         view! {
                             <ViewOnlyCell
                                 cell=cell
+                                anchor_id=anchor_id
+                                index=index
                                 all_cells=all_cells
                                 shared_cargo_toml=shared
                                 shared_source=shared_src
@@ -466,6 +534,7 @@ pub(crate) fn ViewOnlyNotebook(
                         })}
                     </div>
                 }.into_any())}
+            </div>
             </div>
             {embed_badge_href.map(|href| view! {
                 <a class="ironpad-embed-badge" href=href target="_blank" rel="noopener">
@@ -519,6 +588,15 @@ fn SharedAppendixSection(
 #[component]
 fn ViewOnlyCell(
     cell: IronpadCell,
+    /// DOM `id` stamped on this cell's root, so the rail can resolve it with
+    /// `getElementById` (PRD-0065 T-007). Without it the scroll-spy and
+    /// click-to-scroll both die silently, which is why `NotebookRail` warns
+    /// at first render when anchors are missing.
+    anchor_id: String,
+    /// 1-based position among the cells that draw a Studio frame, shown as
+    /// `[n]` in the cell header. `None` for markdown, which renders as bare
+    /// prose.
+    index: Option<usize>,
     all_cells: Vec<IronpadCell>,
     shared_cargo_toml: Option<String>,
     shared_source: Option<String>,
@@ -533,7 +611,7 @@ fn ViewOnlyCell(
         // Shared cells never execute: their source rides in every other
         // cell's shared.rs. Render read-only with the shared chrome.
         return view! {
-            <ViewOnlySharedCell cell=cell />
+            <ViewOnlySharedCell cell=cell index=index anchor_id=anchor_id />
         }
         .into_any();
     }
@@ -541,6 +619,8 @@ fn ViewOnlyCell(
         CellType::Code => view! {
             <ViewOnlyCodeCell
                 cell=cell
+                index=index
+                anchor_id=anchor_id
                 all_cells=all_cells
                 shared_cargo_toml=shared_cargo_toml
                 shared_source=shared_source
@@ -554,7 +634,7 @@ fn ViewOnlyCell(
         }
         .into_any(),
         CellType::Markdown => view! {
-            <ViewOnlyMarkdownCell source=cell.source.clone() />
+            <ViewOnlyMarkdownCell source=cell.source.clone() anchor_id=anchor_id />
         }
         .into_any(),
     }
@@ -568,6 +648,8 @@ fn ViewOnlyCell(
 #[component]
 fn ViewOnlyCodeCell(
     cell: IronpadCell,
+    index: Option<usize>,
+    anchor_id: String,
     all_cells: Vec<IronpadCell>,
     shared_cargo_toml: Option<String>,
     shared_source: Option<String>,
@@ -811,10 +893,33 @@ fn ViewOnlyCodeCell(
         }
     });
 
-    // Button text depends on compiling/queued state.
+    // Run affordance state (PRD-0065 T-005): the header glyph is green once
+    // this browser has run the cell clean, red once it has failed, and muted
+    // until then. A saved snapshot deliberately does NOT count as green — it
+    // is the author's run, not the reader's.
+    let run_button_class = Signal::derive(move || {
+        if error_message.get().is_some() {
+            "view-only-run-button view-only-run-button--error"
+        } else if execution_result.get().is_some() {
+            "view-only-run-button view-only-run-button--ran"
+        } else {
+            "view-only-run-button"
+        }
+    });
+    // An icon-only control carries its wording in the tooltip and the
+    // accessible name (the svg itself is aria-hidden).
+    let run_button_label = Signal::derive(move || {
+        if compiling.get() {
+            "Compiling…"
+        } else if queued.get() {
+            "Queued"
+        } else {
+            "Run this cell"
+        }
+    });
 
     view! {
-        <div class="view-only-cell">
+        <div class="view-only-cell view-only-cell--frame" id=anchor_id>
             <div class="view-only-cell-header">
                 <button
                     class="ironpad-cell-collapse-btn"
@@ -822,24 +927,27 @@ fn ViewOnlyCodeCell(
                 >
                     <Chevron expanded=Signal::derive(move || !collapsed.get())/>
                 </button>
+                {index.map(|n| view! {
+                    <span class="view-only-cell-index">{format!("[{n}]")}</span>
+                })}
                 <span class="view-only-cell-label">{cell.with_value(|c| c.label.clone())}</span>
-                <button
-                    class="view-only-run-button"
-                    on:click=run_cell
-                    disabled=move || compiling.get() || queued.get()
-                >
-                    {move || if compiling.get() {
-                        view! { <IconLabel icon=icons::BUSY label="Compiling…"/> }
+                // State pill — the header's optional slot. Compiling and
+                // queued are the only states a read-only page can reach
+                // (the handoff's "stale" needs an editable source).
+                {move || {
+                    if compiling.get() {
+                        Some(view! { <span class="view-only-pill view-only-pill--busy">"compiling"</span> })
                     } else if queued.get() {
-                        view! { <IconLabel icon=icons::BUSY label="Queued"/> }
+                        Some(view! { <span class="view-only-pill view-only-pill--busy">"queued"</span> })
                     } else {
-                        view! { <IconLabel icon=icons::RUN label="Run"/> }
-                    }}
-                </button>
+                        None
+                    }
+                }}
+                <span class="view-only-cell-meta">
                 {move || {
                     // compile_time_ms is set even when the compile returns an empty
                     // blob (a failed compile with diagnostics), so gate the success
-                    // (✓) badge on there being no error — the error panel shows instead.
+                    // badge on there being no error — the error panel shows instead.
                     if error_message.get().is_some() {
                         return view! { <span /> }.into_any();
                     }
@@ -847,14 +955,28 @@ fn ViewOnlyCodeCell(
                     let runtime = execution_result.get().map(|r| r.execution_time_ms);
                     match (compile, runtime) {
                         (Some(c), Some(r)) => view! {
-                            <span class="view-only-timing-badge"><Icon icon=icons::SUCCESS/>{format!(" {c:.0}+{r:.0}ms")}</span>
+                            <span class="view-only-timing-badge">{format!("{c:.0}ms compile · {r:.0}ms run")}</span>
                         }.into_any(),
                         (Some(c), None) => view! {
-                            <span class="view-only-timing-badge"><Icon icon=icons::SUCCESS/>{format!(" {c:.0}ms")}</span>
+                            <span class="view-only-timing-badge">{format!("{c:.0}ms compile")}</span>
                         }.into_any(),
                         _ => view! { <span /> }.into_any(),
                     }
                 }}
+                </span>
+                <button
+                    class=run_button_class
+                    on:click=run_cell
+                    disabled=move || compiling.get() || queued.get()
+                    title=run_button_label
+                    aria-label=run_button_label
+                >
+                    {move || if compiling.get() {
+                        view! { <Icon icon=icons::BUSY/> }.into_any()
+                    } else {
+                        view! { <Icon icon=icons::RUN/> }.into_any()
+                    }}
+                </button>
             </div>
             <div class=body_class>
                 <MonacoEditor
@@ -900,15 +1022,20 @@ fn ViewOnlyCodeCell(
                 let panels: Vec<DisplayPanel> = serde_json::from_str(&saved)
                     .unwrap_or_else(|_| vec![DisplayPanel::Text(saved)]);
                 let preview_cell_id = cell.with_value(|c| c.id.clone());
+                let panel_note = match panels.len() {
+                    1 => "1 panel".to_string(),
+                    n => format!("{n} panels"),
+                };
                 Some(view! {
                     <div class="view-only-output view-only-output--saved">
-                        <div class="view-only-saved-badge">
-                            <span class="view-only-saved-badge-icon"><Icon icon=icons::SAVED_OUTPUT/></span>
-                            <span>
-                                "Saved output from the author's last run. Press Run to execute live in your browser."
-                            </span>
-                        </div>
+                        <ViewOnlyOutputCaption note=panel_note />
                         <div class="view-only-output-panels">
+                            <div class="view-only-saved-badge">
+                                <span class="view-only-saved-badge-icon"><Icon icon=icons::SAVED_OUTPUT/></span>
+                                <span>
+                                    "Saved output from the author's last run. Press Run to execute live in your browser."
+                                </span>
+                            </div>
                             {panels
                                 .into_iter()
                                 .map(|panel| {
@@ -953,7 +1080,7 @@ fn ViewOnlyCodeCell(
 /// chrome, no run button and no output — the code compiles as part of every
 /// other cell's `shared.rs`, never on its own.
 #[component]
-fn ViewOnlySharedCell(cell: IronpadCell) -> impl IntoView {
+fn ViewOnlySharedCell(cell: IronpadCell, index: Option<usize>, anchor_id: String) -> impl IntoView {
     let collapsed = RwSignal::new(cell.collapsed);
     let body_class = Signal::derive(move || {
         if collapsed.get() {
@@ -964,7 +1091,7 @@ fn ViewOnlySharedCell(cell: IronpadCell) -> impl IntoView {
     });
 
     view! {
-        <div class="view-only-cell view-only-cell--shared">
+        <div class="view-only-cell view-only-cell--frame view-only-cell--shared" id=anchor_id>
             <div class="view-only-cell-header">
                 <button
                     class="ironpad-cell-collapse-btn"
@@ -972,10 +1099,16 @@ fn ViewOnlySharedCell(cell: IronpadCell) -> impl IntoView {
                 >
                     <Chevron expanded=Signal::derive(move || !collapsed.get())/>
                 </button>
+                {index.map(|n| view! {
+                    <span class="view-only-cell-index">{format!("[{n}]")}</span>
+                })}
                 <span class="view-only-cell-label">{cell.label.clone()}</span>
                 <span class="ironpad-cell-type-badge ironpad-cell-type-badge--shared">
                     <IconLabel icon=icons::SHARED label="shared"/>
                 </span>
+                // No meta group and no run glyph: a shared cell never
+                // executes on its own, so it has no timing to report and
+                // nothing to run.
             </div>
             <div class=body_class>
                 <MonacoEditor
@@ -992,21 +1125,75 @@ fn ViewOnlySharedCell(cell: IronpadCell) -> impl IntoView {
 
 /// Renders markdown as HTML in preview-only mode (no edit toggle).
 #[component]
-fn ViewOnlyMarkdownCell(#[prop(into)] source: String) -> impl IntoView {
+fn ViewOnlyMarkdownCell(#[prop(into)] source: String, anchor_id: String) -> impl IntoView {
     let html = render_markdown(&source);
 
     if html.trim().is_empty() {
         view! {
-            <div class="view-only-cell view-only-markdown">
+            <div class="view-only-cell view-only-markdown" id=anchor_id>
                 <p class="ironpad-placeholder">"(empty markdown cell)"</p>
             </div>
         }
         .into_any()
     } else {
         view! {
-            <div class="view-only-cell view-only-markdown ironpad-markdown-cell-preview" inner_html=html></div>
+            <div class="view-only-cell view-only-markdown ironpad-markdown-cell-preview" id=anchor_id inner_html=html></div>
         }
         .into_any()
+    }
+}
+
+// ── Output caption row ──────────────────────────────────────────────────────
+
+/// Caption row above an output surface (PRD-0065 T-008): a title on the left,
+/// baseline-aligned with a short note on the right.
+///
+/// The title slot renders **nothing** today. `Plot` still draws its title
+/// inside the SVG, so filling this in now would show every chart's title
+/// twice; it becomes the title's home once the SVG stops drawing one. This is
+/// the one place that swap has to happen — both the saved-snapshot and the
+/// live-result paths render their caption through here.
+#[component]
+fn ViewOnlyOutputCaption(
+    /// Right-hand note: panel count on a snapshot, size and runtime on a live
+    /// result.
+    #[prop(into)]
+    note: String,
+    /// Collapse toggle, when the caption doubles as the output's disclosure
+    /// control (the live path). `None` renders a plain, inert caption.
+    #[prop(optional)]
+    on_click: Option<Callback<()>>,
+    /// Chevron state, paired with `on_click`.
+    #[prop(optional)]
+    toggle: Option<Signal<bool>>,
+    /// Extra right-hand content after the note (the main-thread badge).
+    #[prop(default = None)]
+    extra: Option<AnyView>,
+) -> impl IntoView {
+    let clickable = on_click.is_some();
+
+    view! {
+        <div
+            class="view-only-output-caption"
+            class:view-only-output-caption--clickable=clickable
+            on:click=move |_| {
+                if let Some(cb) = on_click {
+                    cb.run(());
+                }
+            }
+        >
+            <span class="view-only-output-caption-lead">
+                {toggle.map(|expanded| view! {
+                    <span class="ironpad-output-toggle"><Chevron expanded=expanded/></span>
+                })}
+                // The seam. Empty on purpose — see the doc comment.
+                <span class="view-only-output-title"></span>
+            </span>
+            <span class="view-only-output-note">
+                <span>{note}</span>
+                {extra}
+            </span>
+        </div>
     }
 }
 
@@ -1059,27 +1246,23 @@ fn ViewOnlyOutput(
 
     view! {
         <div class=outer_class>
-            <div
-                class="view-only-output-meta"
-                style="cursor: pointer;"
-                on:click=move |_| collapsed.update(|c| *c = !*c)
-            >
-                <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !collapsed.get())/></span>
-                <span>{format!("{output_len} bytes")}</span>
-                <span>{format!("{exec_time:.1} ms")}</span>
-                {if ran_on_main_thread {
-                    view! {
+            <ViewOnlyOutputCaption
+                note=format!("{output_len} bytes · {exec_time:.1} ms")
+                on_click=Callback::new(move |()| collapsed.update(|c| *c = !*c))
+                toggle=Signal::derive(move || !collapsed.get())
+                extra={if ran_on_main_thread {
+                    Some(view! {
                         <span
                             class="ironpad-output-fallback-badge"
                             title="This cell was re-executed on the main thread because it requires DOM access (e.g. plotters font measurement)"
                         >
                             <IconLabel icon=icons::WARNING label="main thread"/>
                         </span>
-                    }.into_any()
+                    }.into_any())
                 } else {
-                    view! { <span /> }.into_any()
+                    None
                 }}
-            </div>
+            />
             <div class="view-only-output-body" style:display=move || {
                 if collapsed.get() { "none" } else { "block" }
             }>

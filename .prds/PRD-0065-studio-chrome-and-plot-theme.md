@@ -39,7 +39,7 @@ acceptance_tests:
   command: cargo make test
   uat_status: unverified
 - id: uat-004
-  name: "Saved outputs captured before this change re-theme on toggle without recapture"
+  name: "A saved-output snapshot re-themes on toggle with no re-execution"
   command: cargo make playwright -- plot-theme
   uat_status: unverified
 - id: uat-005
@@ -63,48 +63,48 @@ tasks:
 - id: T-001
   title: "Emit CSS custom properties from the Plot SVG instead of baked hex"
   priority: 1
-  status: todo
+  status: done
   notes: "plot.rs already post-processes its own output (the transparent-background replace in render_svg). Extend that seam: render with sentinel RGB constants, then map them to var(--ip-plot-*, <fallback>). Fallbacks are REQUIRED: the CopyButton hands this SVG to the clipboard and it must render standalone."
 - id: T-002
   title: "Define the --ip-plot-* token block in both themes"
   priority: 1
-  status: todo
+  status: done
   notes: "text, muted, grid, zero, axis, series-1..4. Reuse existing --ip-* values where they already match the handoff; light bg-app is already exactly #f5f6fa. Must pass tools/css-vars-check.py."
 - id: T-003
   title: "Apply the handoff's chart style: no chart-area frame, horizontal dashed gridlines only, 5-6 ticks per axis"
   priority: 2
-  status: todo
+  status: done
   notes: "Handoff 'Chart style guidance'. Titles move out of the SVG into the cell output caption (T-008), so the plot gets its full height. Bars get end labels and the rank opacity ramp."
 - id: T-004
   title: "Bump CACHE_EPOCH and recapture every saved output"
   priority: 1
-  status: todo
-  notes: "ironpad-cell source is NOT part of the cache key, so a plot change is invisible to it by construction. CACHE_EPOCH 10 -> 11, then cargo make capture-outputs. capture-outputs-check is in ci and will fail until this runs."
+  status: done
+  notes: "Recaptured 6 notebooks / 30 cells in 122s (the only ones reaching Plot, checked against shared source and per-cell manifests, not just cell bodies); the other 40 carry no plot colours. The capture manifest was already fresh, since it keys on code source and no code changed. ironpad-cell source is NOT part of the cache key, so a plot change is invisible to it by construction. CACHE_EPOCH 10 -> 11, then cargo make capture-outputs. capture-outputs-check is in ci and will fail until this runs."
 - id: T-005
   title: "Studio visual language: cell frame, header row, output surface"
   priority: 2
-  status: todo
+  status: done
   notes: "Bordered frame with header (index, title, state pill, meta, run glyph) over an output surface on bg-code. Stacked source-above-output, NOT the mock's two columns (see Constraints). Honor the existing per-cell collapsed flag."
 - id: T-006
   title: "Left rail: cell outline with status dots, timings, runtime and deps groups"
   priority: 2
-  status: todo
+  status: done
   notes: "New component. Suppressed in embed mode. Collapses to a top dropdown under ~1000px per the handoff's responsive rule."
 - id: T-007
   title: "Rail scroll-spy and click-to-scroll"
   priority: 2
-  status: todo
+  status: done
   notes: "Selected row follows the cell nearest the top of the viewport. Use IntersectionObserver, owned page-scoped and detached on cleanup (see the leaked-Closure rule in DEVELOPMENT.md)."
 - id: T-008
-  title: "Cell output caption row (chart title + right-side note)"
+  title: "Cell output caption row (right-side note; title seam left empty)"
   priority: 2
-  status: todo
-  notes: "Owns the title that T-003 removes from the SVG. Falls back to no caption when a cell has no title."
+  status: done
+  notes: "Caption row built; the title span exists, is styled, and is deliberately EMPTY. The in-SVG title STAYS. The migration this task originally described is not implementable as specified — see 'The title migration is blocked' below. One seam (ViewOnlyOutputCaption) serves both the snapshot and live paths, so wiring it later is a one-prop change."
 - id: T-009
   title: "Top bar: breadcrumb, read-only pill, richer status bar"
   priority: 3
-  status: todo
-  notes: "Must NOT displace the global header's auth surface (PRD-0053 put sign-in there deliberately). Resolve per Constraints: extend the existing toolbar rather than introducing a second full-width bar."
+  status: done
+  notes: "Must NOT displace the global header's auth surface (PRD-0053 put sign-in there deliberately). Breadcrumb + read-only pill extend the existing .view-only-toolbar. The status bar is the APP-WIDE StatusBar in app_layout.rs:449 (footer on every route except / and /embed/*), not a notebook-local one: it stays single, so the editor and /admin inherit the restyle. Reconcile the responsive override at main.scss:2300-2308, which would otherwise render mobile larger than desktop."
 - id: T-010
   title: "Regression tests: contrast in both themes, sanitizer var() survival, rail behavior, embed chrome-less, no webfont"
   priority: 1
@@ -158,8 +158,11 @@ glance, and no runtime or dependency summary.
 # Goals
 
 1. Chart text meets WCAG AA in both themes, on every surface that renders a plot.
-2. A theme toggle re-themes charts, **including saved-output snapshots captured
-   before this change**, with no recapture and no re-execution.
+2. A theme toggle re-themes charts, **including saved-output snapshots**, with
+   no re-execution. Snapshots are frozen bytes, so they carry `var()` rather
+   than a resolved color and the reader's stylesheet paints them. Snapshots
+   captured *before* this change still hold baked hex and are fixed by the
+   one-time recapture in T-004, not by CSS.
 3. A plot SVG copied to the clipboard still renders standalone.
 4. The read-only notebook gains an outline rail, a cell frame, and a status bar
    matching the handoff, on a layout that fits the notebooks that exist.
@@ -295,6 +298,79 @@ spacing from the handoff are adopted; the families are not.
 - `crates/ironpad-common/src/cache_key.rs:81` — `CACHE_EPOCH`.
 - `style/main.scss` — `--ip-*` block at 51, `.view-only-*` rules from 2629.
 - `tools/capture-outputs.mjs`, `tools/css-vars-check.py`.
+
+## Known issue, pre-existing and NOT fixed here: bar category labels
+
+`render_bar` builds a continuous `0.0..n` axis and maps `x as usize` to a
+category label, but plotters picks round key points, so roughly half the
+categories are never labelled. Measured directly against unmodified code:
+
+| bars | labelled | which |
+| --- | --- | --- |
+| 3 | 2 | alpha, gamma |
+| 4 | 2 | alpha, gamma |
+| 5 | 3 | alpha, gamma, eps |
+| 6 | 3 | alpha, gamma, eps |
+
+Always the even indices. A fix needs `into_segmented()` plus new `Rectangle`
+coordinates and a `backend_coord` correction for tooltips, which is a rewrite of
+`render_bar` rather than theming. T-003's bar end-labels make it easier to
+notice but do not cause it. Left alone deliberately; worth its own task.
+
+## Deviation from the handoff: the `muted` token
+
+The handoff's `muted` (`#8888aa` light / `#6a6a8a` dark) puts tick labels at
+**3.33:1 and 3.24:1**, which still fails AA, and tick labels are the numbers a
+reader came for. `--ip-plot-muted` points at `--ip-text-tertiary` instead:
+**5.35:1 and 4.93:1**, still visibly lighter than the axis titles beside it.
+Everything else matches the handoff table exactly.
+
+This is a deliberate refusal of an available token, not a mapping gap:
+`--ip-text-muted` **is** the handoff's `muted` exactly, in both themes
+(`#8888aa` light, `#6a6a8a` dark). It was rejected because it fails AA, not
+because it was missing.
+
+The naming is separately **crossed**, which is a trap when reconciling the two
+tables: the literal `#8888aa` is `--ip-text-muted` in light but
+`--ip-text-tertiary` in dark. Neither table has a typo.
+
+## Cells that use plotters directly are out of reach, by design
+
+`themify` themes the `Plot` helper. A cell that reaches past it to plotters owns
+its own colours, and one public notebook does: `autodiff` cell 7
+(`f vs f' across the packet`) builds its chart from `plotters::prelude::*` and
+paints a self-contained dark card, background fill included. Its text sits on
+its own dark ground at high contrast, so it stays readable; it just reads as a
+dark card on a light page.
+
+Left alone. Retheming it means editing notebook content, and the general fix
+(a themed palette exported for direct plotters use) is a feature, not this PRD.
+
+## The title migration is blocked, and the plan was wrong
+
+T-003 and T-008 were written as a pair: the SVG stops drawing its own title, the
+caption row takes it over, and the plot gets its full height. **The second half
+is not implementable as specified**, and the PRD should have caught it.
+
+The chart title is set inside the cell (`Plot::title("Sine Wave")`) and reaches
+the page only as `<text>` inside the rendered SVG. `DisplayPanel::Svg(String)`
+carries markup and nothing else, so the app has no channel to learn it. Deleting
+it from the SVG would destroy the information rather than move it.
+
+The cell label is NOT a substitute. In the handoff's own screens the two differ
+throughout: cell `[1]` is labelled `Line Chart` and its chart is titled `Sine
+Wave`; `[5]` is `Plot + Data` against `Monthly Temperatures`.
+
+So the in-SVG title stays, themed. The caption's title span is built, styled and
+empty. Three ways forward, none taken here:
+
+1. **Leave it.** Costs the plot some height and leaves a visible seam unused.
+2. **Widen the panel** to `Svg { svg, title: Option<String> }`. Clean, and the
+   recapture this PRD already performs would absorb the `saved_output` format
+   change — but it is a wire change to a serialized enum and wants its own
+   `PROTOCOL_VERSION` review.
+3. **Parse the title out of the SVG** app-side. Rejected: string-matching
+   generated markup to recover data the producer already had.
 
 # Non-Goals (MVP)
 

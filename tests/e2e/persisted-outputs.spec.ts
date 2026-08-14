@@ -75,12 +75,18 @@ test.describe("Persisted cell outputs (PRD-0056)", () => {
       // badge goes away and the normal output block (with timing meta)
       // appears. The share carries a blob snapshot, so this is fast.
       await reader.waitForTimeout(3_000); // hydration (suite convention)
-      await reader.locator(".view-only-cell button", { hasText: "Run" }).first().click();
+      // PRD-0065 made the run control icon-only, so `hasText: "Run"` no longer
+      // matches. Select it by role, which is what an icon-only button needs
+      // anyway and what the accessible name is bound to.
+      await reader
+        .getByRole("button", { name: "Run this cell" })
+        .first()
+        .click();
       await expect(reader.locator(".view-only-output--saved")).toHaveCount(0, {
         timeout: 120_000,
       });
       await expect(
-        reader.locator(".view-only-output .view-only-output-meta").first(),
+        reader.locator(".view-only-output .view-only-output-caption").first(),
       ).toBeVisible({ timeout: 15_000 });
       await expect(reader.locator(".view-only-output").first()).toContainText(
         "42",

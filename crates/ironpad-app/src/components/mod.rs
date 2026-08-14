@@ -10,6 +10,7 @@ pub mod icons;
 pub mod live_view_panel;
 pub mod markdown_cell;
 pub mod monaco_editor;
+pub mod notebook_rail;
 pub(crate) mod output_render;
 pub(crate) mod run_flow;
 pub mod session_panel;
