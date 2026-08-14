@@ -47,7 +47,7 @@ blake3 = "1"
 rand = "0.9"
 
 # Accounts database (embedded, SurrealKV file backend on the data mount)
-surrealdb = { version = "3", default-features = false, features = ["kv-surrealkv"] }
+surrealdb = { version = "3.2", default-features = false, features = ["kv-surrealkv"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
