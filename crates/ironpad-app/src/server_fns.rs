@@ -15,6 +15,15 @@ use ironpad_common::{
 };
 use leptos::prelude::*;
 
+// The compile target is DERIVED from the request's cell type (PRD-0066),
+// never assumed. `CellTarget::from` is the one mapping, and the browser's
+// local blob cache (`blob_cache::request_hash`) must derive it the same way
+// from the same field: a Linux cell that probed the local store under an
+// ordinary cell's key could be handed a `cell_main` cdylib, which a pod
+// cannot exec.
+#[cfg(feature = "ssr")]
+use ironpad_common::cache_key::CellTarget;
+
 // ── Compilation ──────────────────────────────────────────────────────────────
 
 /// Replace known server filesystem paths in raw compiler output with
@@ -84,6 +93,12 @@ async fn compile_cell_core(
     client_ip: &str,
     request: CompileRequest,
 ) -> Result<CompileResponse, ServerFnError> {
+    // The one place the request's cell type becomes a compile target, via
+    // `CellTarget::from`. Derived once and threaded through hashing, scaffold
+    // and build so those three can never disagree about what is being built
+    // (a cache key computed for one target and a binary produced for another
+    // is a blob that silently serves the wrong artifact).
+    let target = CellTarget::from(request.cell_type);
     use crate::compiler::{
         build::{build_micro_crate, BuildResult},
         cache::{content_hash, store_blob, try_cache_hit},
@@ -136,6 +151,7 @@ async fn compile_cell_core(
         needs_atomics,
         needs_autodiff,
         needs_simd,
+        target,
     );
     tracing::info!(cell_id = %request.cell_id, hash = %hash, needs_atomics, needs_autodiff, needs_simd, "compile_cell started");
 
@@ -190,6 +206,7 @@ async fn compile_cell_core(
         &request.previous_cell_types,
         request.shared_cargo_toml.as_deref(),
         request.shared_source.as_deref(),
+        target,
     )
     .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
 
@@ -201,6 +218,7 @@ async fn compile_cell_core(
         session_id,
         &request.cell_id,
         config.compilation_proxy.as_deref(),
+        target,
         needs_atomics,
         needs_autodiff,
         needs_simd,
@@ -222,13 +240,25 @@ async fn compile_cell_core(
                 .map_err(|e| ServerFnError::new(format!("failed to read wasm blob: {e}")))?;
 
             // Best-effort optimization (runs on the wasm-bindgen _bg.wasm).
-
-            let wasm_blob = optimize_wasm(
-                &wasm_bytes,
-                crate_dir.parent().unwrap_or(&crate_dir),
-                needs_atomics,
-            )
-            .await;
+            //
+            // Skipped for a Linux cell: that artifact is a process image the
+            // pod's kernel loads by its exports (`_start`, `__startThread`)
+            // against imported shared memory, and wasm-opt is being asked to
+            // rewrite it with none of the features its target spec enables.
+            // Today it errors and `optimize_wasm` falls back to the original
+            // bytes, so this costs a wasted subprocess rather than a broken
+            // binary — but "it happens to fail" is not a reason to keep
+            // handing it the one artifact we cannot afford it to succeed on.
+            let wasm_blob = if target.is_linux() {
+                wasm_bytes
+            } else {
+                optimize_wasm(
+                    &wasm_bytes,
+                    crate_dir.parent().unwrap_or(&crate_dir),
+                    needs_atomics,
+                )
+                .await
+            };
 
             // Cache the result (WASM blob + JS glue).
 
@@ -236,7 +266,7 @@ async fn compile_cell_core(
                 &config.cache_dir,
                 &hash,
                 &wasm_blob,
-                Some(&js_glue),
+                js_glue.as_deref(),
                 &diagnostics,
             ) {
                 tracing::warn!(error = %e, "failed to cache compiled blob");
@@ -254,7 +284,7 @@ async fn compile_cell_core(
                 diagnostics,
                 cached: false,
                 preamble_lines,
-                js_glue: Some(js_glue),
+                js_glue,
             })
         }
 
@@ -378,6 +408,12 @@ async fn check_cell_core(
     admission: &crate::compiler::admission::BuildAdmission,
     request: CompileRequest,
 ) -> Result<CheckResponse, ServerFnError> {
+    // The one place the request's cell type becomes a compile target, via
+    // `CellTarget::from`. Derived once and threaded through hashing, scaffold
+    // and build so those three can never disagree about what is being built
+    // (a cache key computed for one target and a binary produced for another
+    // is a blob that silently serves the wrong artifact).
+    let target = CellTarget::from(request.cell_type);
     use crate::compiler::{
         build::{check_micro_crate, CheckResult, CheckTimedOut},
         diagnostics::{parse_diagnostics, parse_shared_range_diagnostics},
@@ -433,6 +469,7 @@ async fn check_cell_core(
         &request.previous_cell_types,
         request.shared_cargo_toml.as_deref(),
         request.shared_source.as_deref(),
+        target,
     )
     .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
 
@@ -442,6 +479,7 @@ async fn check_cell_core(
         session_id,
         &request.cell_id,
         config.compilation_proxy.as_deref(),
+        target,
         needs_atomics,
         needs_autodiff,
         needs_simd,
@@ -807,6 +845,29 @@ pub async fn get_toolchain_fingerprint() -> Result<String, ServerFnError> {
     Ok(crate::compiler::toolchain::toolchain_fingerprint().to_string())
 }
 
+// ── BrowserPod key (PRD-0066) ────────────────────────────────────────────────
+
+/// This instance's `BrowserPod` API key, or `None` when it has none.
+///
+/// The key is unavoidably client-visible: a pod boots in the browser and the
+/// SDK takes it as a boot argument, so this is deployment identity rather than
+/// a secret in the auth sense. It is fetched here, at the moment a reader
+/// clicks Run on a Linux cell, rather than stamped into the shell — for the
+/// same reason `browserpod-runtime.js` is loaded on demand, which is that a
+/// notebook with no Linux cell must carry no trace of BrowserPod at all.
+///
+/// `None` is a first-class answer, not a failure: every contributor checkout
+/// and CI run has no key, and the cell says so rather than booting a pod
+/// against nothing.
+#[server]
+#[allow(clippy::unused_async)] // `#[server]` requires an async fn.
+pub async fn get_browserpod_key() -> Result<Option<String>, ServerFnError> {
+    use ironpad_common::AppConfig;
+
+    let config = expect_context::<AppConfig>();
+    Ok(config.browserpod_key.clone())
+}
+
 // ── Share blob snapshots (PRD-0047) ──────────────────────────────────────────
 
 /// Aggregate cap on the share blob snapshot directory. Compiled blobs are
@@ -966,6 +1027,11 @@ async fn write_cell_blobs_capped(
             needs_atomics,
             needs_autodiff,
             needs_simd,
+            // From the cell, not assumed. `is_runnable()` excludes Linux
+            // cells today so this arm cannot see one — but the day Run All
+            // includes them, an assumed target here would snapshot every
+            // Linux cell under an ordinary cell's key.
+            CellTarget::from(cell.cell_type),
         );
 
         let Some(hit) = try_cache_hit(cache_dir, &hash) else {
@@ -2097,6 +2163,7 @@ pub async fn get_auth_info() -> Result<ironpad_common::AuthInfo, ServerFnError> 
 #[cfg(all(test, feature = "ssr"))]
 mod tests {
     use super::*;
+    use ironpad_common::CellType;
 
     /// Every `admin_*` server fn must call the gate, and this scans the source
     /// rather than trusting a list someone remembers to update.
@@ -2159,6 +2226,112 @@ mod tests {
         );
     }
 
+    // ── compile_cell_core (target selection, PRD-0066) ───────────────────
+
+    /// Two cells with byte-identical source and different types must resolve
+    /// to different cached blobs.
+    ///
+    /// This is the failure the cache-key change exists to prevent, asserted
+    /// where it would actually happen rather than at the hash function: a
+    /// Linux cell served an ordinary cell's `cell_main` cdylib is a binary a
+    /// pod cannot exec, and a Code cell served a Linux binary is a module the
+    /// executor cannot instantiate. Both directions are seeded so neither
+    /// call compiles anything — if the request's cell type were ignored, both
+    /// would resolve to whichever blob was stored last and one assertion here
+    /// fails.
+    #[tokio::test]
+    async fn a_linux_request_and_a_code_request_resolve_to_different_blobs() {
+        use crate::compiler::cache::{content_hash, store_blob};
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let cache = tempfile::tempdir().unwrap();
+        // Source that is plausible as either kind of cell, which is precisely
+        // when a shared key would go unnoticed.
+        let source = "    40 + 2";
+        let cargo_toml = "[dependencies]";
+
+        let seed = |target, blob: &[u8]| {
+            let hash = content_hash(
+                source,
+                cargo_toml,
+                &[],
+                None,
+                None,
+                false,
+                false,
+                false,
+                target,
+            );
+            store_blob(cache.path(), &hash, blob, None, &[]).unwrap();
+            hash
+        };
+        let executor_blob = b"\x00asm\x01\x00\x00\x00executor".as_slice();
+        let linux_blob = b"\x00asm\x01\x00\x00\x00linux".as_slice();
+        let executor_hash = seed(CellTarget::Executor, executor_blob);
+        let linux_hash = seed(CellTarget::Linux, linux_blob);
+        assert_ne!(
+            executor_hash, linux_hash,
+            "identical source must not share a cache key across targets"
+        );
+
+        let config = AppConfig {
+            data_dir: cache.path().to_path_buf(),
+            cache_dir: cache.path().to_path_buf(),
+            port: 0,
+            // Both requests must resolve from cache; reaching the scaffold
+            // with this path would fail loudly.
+            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
+            compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
+            admin_login: None,
+            browserpod_key: None,
+        };
+        let request_for = |cell_type, cell_id: &str| CompileRequest {
+            cell_type,
+            notebook_id: "nb".to_string(),
+            cell_id: cell_id.to_string(),
+            source: source.to_string(),
+            cargo_toml: cargo_toml.to_string(),
+            previous_cell_types: vec![],
+            shared_cargo_toml: None,
+            shared_source: None,
+            force: false,
+            shared_check: None,
+        };
+
+        let locks = CompileLocks::default();
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            1,
+            0.0,
+            0.0,
+            std::time::Duration::from_millis(50),
+        );
+
+        let code = compile_cell_core(
+            &config,
+            &locks,
+            &admission,
+            "test",
+            request_for(CellType::Code, "code-cell"),
+        )
+        .await
+        .unwrap();
+        let linux = compile_cell_core(
+            &config,
+            &locks,
+            &admission,
+            "test",
+            request_for(CellType::Linux, "linux-cell"),
+        )
+        .await
+        .unwrap();
+
+        assert!(code.cached && linux.cached, "both must be cache hits");
+        assert_eq!(code.wasm_blob, executor_blob, "Code got the Linux blob");
+        assert_eq!(linux.wasm_blob, linux_blob, "Linux got the Code blob");
+    }
+
     // ── compile_cell_core (cache-hit path) ───────────────────────────────
 
     #[tokio::test]
@@ -2185,6 +2358,7 @@ mod tests {
             needs_atomics,
             false,
             false,
+            CellTarget::Executor,
         );
         let fake_wasm = b"\x00asm\x01\x00\x00\x00cache-hit";
         store_blob(
@@ -2206,8 +2380,10 @@ mod tests {
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
             admin_login: None,
+            browserpod_key: None,
         };
         let request = CompileRequest {
+            cell_type: CellType::Code,
             notebook_id: "nb".to_string(),
             cell_id: cell_id.to_string(),
             source: source.to_string(),
@@ -2289,7 +2465,17 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let source = "    CellOutput::empty()";
         let cargo_toml = "[dependencies]";
-        let hash = content_hash(source, cargo_toml, &[], None, None, false, false, false);
+        let hash = content_hash(
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            CellTarget::Executor,
+        );
         store_blob(
             cache.path(),
             &hash,
@@ -2307,8 +2493,10 @@ mod tests {
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
             admin_login: None,
+            browserpod_key: None,
         };
         let request = CompileRequest {
+            cell_type: CellType::Code,
             notebook_id: "nb".to_string(),
             cell_id: "span-cell".to_string(),
             source: source.to_string(),
@@ -2344,6 +2532,7 @@ mod tests {
 
     fn admission_test_request(cell_id: &str) -> CompileRequest {
         CompileRequest {
+            cell_type: CellType::Code,
             notebook_id: "nb".to_string(),
             cell_id: cell_id.to_string(),
             source: "    CellOutput::empty()".to_string(),
@@ -2373,6 +2562,7 @@ mod tests {
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
             admin_login: None,
+            browserpod_key: None,
         };
         let admission = crate::compiler::admission::BuildAdmission::new(
             1,
@@ -2414,6 +2604,7 @@ mod tests {
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
             admin_login: None,
+            browserpod_key: None,
         };
         let admission = crate::compiler::admission::BuildAdmission::new(
             1,
@@ -2640,6 +2831,7 @@ mod tests {
             false,
             false,
             false,
+            CellTarget::Executor,
         );
         store_blob(cache_dir, &hash, blob, glue, &[]).unwrap();
         hash

@@ -619,6 +619,7 @@ mod tests {
                 compilation_proxy: None,
                 public_url: "http://localhost".to_string(),
                 admin_login: None,
+                browserpod_key: None,
             },
             ws: WsState::default(),
         }

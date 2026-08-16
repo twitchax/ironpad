@@ -9,9 +9,58 @@
 //! fetched once per session (PRD-0047), so both sides compute identical keys
 //! from one recipe instead of two drifting reimplementations.
 
-/// The compilation target baked into the cache key so that a future target
-/// change automatically invalidates existing entries.
-const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
+/// The compilation target a cell builds for.
+///
+/// Baked into the cache key, which is the point: a Code cell and a Linux cell
+/// with byte-identical source compile to artifacts that are not
+/// interchangeable in any way — a `cell_main` cdylib for our executor versus a
+/// `_start` Linux binary for a pod — so they must never resolve to the same
+/// cached blob. Made an enum rather than a `&str` parameter so no caller can
+/// invent a triple, and so the compile pipeline reads the triple from the same
+/// value the cache key was computed from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CellTarget {
+    /// Regular cells: a fragment wrapped in `cell_main`, run by our own
+    /// executor in a Web Worker.
+    #[default]
+    Executor,
+    /// Linux cells (PRD-0066): a whole Rust program run as a real process
+    /// under an in-browser Linux kernel.
+    Linux,
+}
+
+impl CellTarget {
+    /// The rustc target triple this cell builds for.
+    #[must_use]
+    pub const fn triple(self) -> &'static str {
+        match self {
+            Self::Executor => "wasm32-unknown-unknown",
+            Self::Linux => "wasm32-browserpod-linux-musl",
+        }
+    }
+
+    /// Whether this target is the Linux one, for the handful of places that
+    /// branch on it (toolchain pin, scaffold shape, artifact path).
+    #[must_use]
+    pub const fn is_linux(self) -> bool {
+        matches!(self, Self::Linux)
+    }
+}
+
+impl From<crate::types::CellType> for CellTarget {
+    /// The one mapping from what a cell IS to what it compiles for.
+    ///
+    /// `Markdown` and `Unsupported` never reach a compile (see
+    /// [`CellType::compiles`](crate::types::CellType::compiles)); they map to
+    /// the ordinary target so this conversion is total.
+    fn from(cell_type: crate::types::CellType) -> Self {
+        if cell_type.is_linux() {
+            Self::Linux
+        } else {
+            Self::Executor
+        }
+    }
+}
 
 /// Monotonic epoch counter baked into the cache key.
 ///
@@ -94,8 +143,9 @@ pub const CACHE_EPOCH: u32 = 11;
 /// Compute the deterministic blake3 cache key for a cell, given an explicit
 /// toolchain fingerprint.
 ///
-/// The hash includes the fixed target triple so any future target change
-/// naturally invalidates the cache. Every variable-length field is
+/// The hash includes the [`CellTarget`]'s triple, so cells that differ only in
+/// what they compile for can never serve each other's blobs (and any future
+/// target change naturally invalidates the cache). Every variable-length field is
 /// length-prefixed (framed) so field boundaries are unambiguous — otherwise
 /// distinct inputs whose bytes concatenate identically would collide (e.g.
 /// `("ab", "c")` and `("a", "bc")`) and serve each other's compiled WASM.
@@ -113,6 +163,7 @@ pub fn content_hash_with_fingerprint(
     needs_atomics: bool,
     needs_autodiff: bool,
     needs_simd: bool,
+    target: CellTarget,
     toolchain: &str,
 ) -> String {
     // Every variable-length field is length-prefixed so its boundary with the
@@ -130,7 +181,7 @@ pub fn content_hash_with_fingerprint(
     let mut hasher = blake3::Hasher::new();
     update_framed(&mut hasher, source.as_bytes());
     update_framed(&mut hasher, cargo_toml.as_bytes());
-    update_framed(&mut hasher, TARGET_TRIPLE.as_bytes());
+    update_framed(&mut hasher, target.triple().as_bytes());
     update_framed(&mut hasher, &(previous_types.len() as u64).to_le_bytes());
     for t in &previous_types {
         update_framed(&mut hasher, t.as_bytes());
@@ -562,6 +613,7 @@ mod tests {
             false,
             false,
             false,
+            CellTarget::Executor,
             "toolchain-a",
         );
         let b = content_hash_with_fingerprint(
@@ -573,6 +625,7 @@ mod tests {
             false,
             false,
             false,
+            CellTarget::Executor,
             "toolchain-b",
         );
         assert_ne!(a, b);
@@ -589,6 +642,7 @@ mod tests {
             false,
             false,
             false,
+            CellTarget::Executor,
             "toolchain-a",
         );
         let b = content_hash_with_fingerprint(
@@ -600,6 +654,7 @@ mod tests {
             false,
             false,
             false,
+            CellTarget::Executor,
             "toolchain-a",
         );
         assert_eq!(a, b);
@@ -613,7 +668,16 @@ mod tests {
         // upstream cells produced — or where in the notebook it sits.
         let key = |types: &[String]| {
             content_hash_with_fingerprint(
-                "40 + 2", "", types, None, None, false, false, false, "tc",
+                "40 + 2",
+                "",
+                types,
+                None,
+                None,
+                false,
+                false,
+                false,
+                CellTarget::Executor,
+                "tc",
             )
         };
         let a = key(&[]);
@@ -634,6 +698,7 @@ mod tests {
                 false,
                 false,
                 false,
+                CellTarget::Executor,
                 "tc",
             )
         };
@@ -646,8 +711,75 @@ mod tests {
     }
 
     #[test]
+    fn target_forks_the_key_so_a_code_cell_cannot_serve_a_linux_blob() {
+        // The whole point of making the triple a parameter: identical source,
+        // identical everything else, two incompatible artifacts (a `cell_main`
+        // cdylib vs a `_start` Linux binary). A shared key would hand one to
+        // the runtime expecting the other.
+        let key = |target| {
+            content_hash_with_fingerprint(
+                "fn main() {}",
+                "",
+                &[],
+                None,
+                None,
+                false,
+                false,
+                false,
+                target,
+                "tc",
+            )
+        };
+        assert_ne!(key(CellTarget::Executor), key(CellTarget::Linux));
+
+        // The two triples differ in length as well as content, and every
+        // field is framed, so no neighbouring field can absorb the difference.
+        assert_ne!(
+            CellTarget::Executor.triple().len(),
+            CellTarget::Linux.triple().len()
+        );
+
+        // The mapping from cell type to target is total and has exactly one
+        // Linux arm.
+        assert_eq!(
+            CellTarget::from(crate::types::CellType::Linux),
+            CellTarget::Linux
+        );
+        for other in [
+            crate::types::CellType::Code,
+            crate::types::CellType::Markdown,
+            crate::types::CellType::Unsupported,
+        ] {
+            // `CellType` is not `Copy`; clone so the assertion can still name
+            // the variant it failed on.
+            let target = CellTarget::from(other);
+            assert_eq!(target, CellTarget::Executor, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn the_ordinary_target_keeps_the_triple_cached_blobs_were_built_with() {
+        // The recipe used to bake this string as a constant, in this same
+        // framed position. Keeping it byte-identical is what lets every blob
+        // compiled before Linux cells existed stay valid without a
+        // `CACHE_EPOCH` bump — changing it invalidates the whole cache.
+        assert_eq!(CellTarget::Executor.triple(), "wasm32-unknown-unknown");
+    }
+
+    #[test]
     fn hash_is_64_hex_chars() {
-        let h = content_hash_with_fingerprint("x", "y", &[], None, None, false, false, false, "tc");
+        let h = content_hash_with_fingerprint(
+            "x",
+            "y",
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            CellTarget::Executor,
+            "tc",
+        );
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }

@@ -4509,6 +4509,148 @@ code[class*="language-"] {
     color: var(--ip-text-tertiary);
 }
 
+// ── Linux cells (PRD-0066) ──────────────────────────────────────────────────
+//
+// A Linux cell borrows the Studio frame wholesale and adds three things: a
+// badge, the BrowserPod attribution its licence requires, and a terminal.
+//
+// Deliberately no animation anywhere in here. A streaming panel is the obvious
+// place to reach for a blinking cursor or a pulsing "running" dot, and both
+// would need an entry in the reduced-motion block below — which sits at the
+// end of this file precisely because a media query adds no specificity, so
+// anything declared after it wins. A state pill that says the word is clearer
+// than a dot that implies it, and costs nothing to a reader who asked for less
+// motion.
+
+// The third add-cell button (T-010). Its markup lives in the editor's
+// skeleton, which another agent owns; the colour lives here with the rest of
+// the Linux-cell identity so the two cannot drift apart. Purple for the same
+// reason the cell frame's left edge is: this cell runs somewhere else.
+.ironpad-add-cell-btn--linux:hover {
+    border-color: var(--ip-purple);
+}
+
+.view-only-cell--frame.view-only-cell--linux {
+    // Distinct from the amber shared-cell edge (PRD-0044) and from the plain
+    // frame: this cell runs somewhere else entirely, and the edge is the only
+    // hint of that visible while it is collapsed.
+    border-left: 3px solid var(--ip-purple);
+}
+
+.ironpad-cell-type-badge--linux {
+    color: var(--ip-purple);
+    border: 1px solid rgba(var(--ip-purple-rgb), 0.4);
+    background: rgba(var(--ip-purple-rgb), 0.1);
+}
+
+// The editor's "this runs somewhere else" notice. Markup lives in
+// cell_item.rs; the colour lives here with the rest of the Linux-cell
+// identity, same arrangement as the add-cell button above.
+//
+// A sibling of `.ironpad-cell-body`, so it survives the collapse — hence no
+// side padding matching the body's, and a top border that reads as part of
+// the card rather than as a floating box. Informational, not a warning: the
+// cell is fine, it just runs in Preview.
+.ironpad-cell-linux-notice {
+    padding: 0.5rem 0.75rem;
+    border-top: 1px solid rgba(var(--ip-purple-rgb), 0.25);
+    background: rgba(var(--ip-purple-rgb), 0.06);
+    font-size: 0.75rem;
+    color: var(--ip-text-secondary);
+}
+
+// Attribution: BrowserPod's free tier requires a visible link and logo, so
+// this renders in every Linux cell header and in no other cell.
+.ironpad-linux-attribution {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-shrink: 0;
+    font-size: 0.625rem;
+    color: var(--ip-text-muted);
+    text-decoration: none;
+    transition: color var(--ip-transition-fast);
+
+    &:hover,
+    &:focus-visible {
+        color: var(--ip-text-secondary);
+    }
+}
+
+// Their mark, vendored at `public/browserpod-mark.svg` and painted through a
+// mask so it takes the page theme. The asset ships white-on-transparent (their
+// own light-theme variant is a separate file), which would be invisible on a
+// light background; a mask keeps the geometry exactly and lets `currentColor`
+// do what a second file would otherwise have to.
+.ironpad-linux-attribution-mark {
+    width: 0.75rem;
+    height: 0.82rem; // 340x373, the mark's own aspect ratio.
+    flex-shrink: 0;
+    background-color: currentColor;
+    mask: url("/browserpod-mark.svg") no-repeat center / contain;
+    -webkit-mask: url("/browserpod-mark.svg") no-repeat center / contain;
+}
+
+.ironpad-linux-attribution-name {
+    // Room is tight in the header on a phone, and the mark alone still
+    // satisfies "logo" while the link stays tappable.
+    @media (max-width: 520px) {
+        display: none;
+    }
+}
+
+// The terminal. A transcript rather than a value: it grows while the program
+// runs, it scrolls, and it follows its own tail.
+.ironpad-linux-terminal {
+    position: relative;
+    max-height: 22rem;
+    overflow: auto;
+    padding: 0.6rem 0.75rem;
+}
+
+.ironpad-linux-terminal-text {
+    margin: 0;
+    font-family: var(--ip-font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--ip-text-primary);
+    // A pty emits long lines and ironpad must not answer with a horizontal
+    // scrollbar nested inside a vertical one, which is the trap the mobile
+    // pass caught on plot SVGs.
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.ironpad-linux-terminal-empty {
+    font-family: var(--ip-font-mono);
+    font-size: 0.7rem;
+    color: var(--ip-text-muted);
+}
+
+// Terminate is destructive but it is not a failure, and painting it with the
+// error colour would say the run went wrong when the reader is the one ending
+// it. It also does more than its icon suggests — there is no `kill` in the SDK,
+// so stopping a program means dropping the machine — which is what the
+// tooltip, not the colour, has to carry.
+.ironpad-linux-terminate {
+    color: var(--ip-warning);
+}
+
+// The terminal is focusable so it can be scrolled from the keyboard; give the
+// focus ring somewhere to sit.
+.ironpad-linux-terminal:focus-visible {
+    outline: 2px solid var(--ip-accent);
+    outline-offset: -2px;
+}
+
+.ironpad-linux-status {
+    font-family: var(--ip-font-mono);
+}
+
+.ironpad-linux-status--error {
+    color: var(--ip-error);
+}
+
 @media (prefers-reduced-motion: reduce) {
 
     // The infinite loops: one travelling gradient, four opacity pulses.

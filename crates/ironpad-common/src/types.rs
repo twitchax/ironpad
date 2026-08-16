@@ -23,6 +23,16 @@ pub struct CompileRequest {
     /// Notebook-level shared Rust source included as `src/shared.rs` in every cell micro-crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_source: Option<String>,
+    /// What kind of cell this is (PRD-0066). The server derives the compile
+    /// target from it through `CellTarget::from`, which is the one mapping
+    /// from what a cell IS to what it builds for.
+    ///
+    /// `#[serde(default)]` is load-bearing for wire compatibility: a request
+    /// from a client that predates this field still deserializes, as `Code`,
+    /// which is exactly what such a client meant. Without it every older
+    /// browser tab would start failing to compile anything at all.
+    #[serde(default)]
+    pub cell_type: CellType,
     /// When `true`, bypass the compilation cache and force a fresh build.
     #[serde(default)]
     pub force: bool,
@@ -177,7 +187,7 @@ pub fn manifest_has_custom_deps(shared_cargo_toml: Option<&str>, cell_cargo_toml
 /// compile a whole program to the wrong target and fail incomprehensibly.
 /// Deserializing to `Unsupported` also keeps ONE unknown cell from failing the
 /// whole notebook parse, so the rest of the document still opens.
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub enum CellType {
     #[default]
     Code,
@@ -777,6 +787,71 @@ pub struct MutableEditResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Compile-request wire contract (PRD-0066) ────────────────────────
+
+    /// A compile request from a client that predates `cell_type` must still
+    /// deserialize, as `Code`.
+    ///
+    /// The pkg bundle is content-hashed and served immutable, so a browser
+    /// tab loaded before a deploy keeps posting the old JSON shape for as
+    /// long as it stays open. Without the `#[serde(default)]` that tab stops
+    /// compiling anything at all — and PRD-0047 already shipped one live bug
+    /// of exactly this family (a stale client silently mis-handling a newer
+    /// notebook field).
+    #[test]
+    fn a_compile_request_without_a_cell_type_is_a_code_cell() {
+        let json = r#"{
+            "notebook_id": "nb",
+            "cell_id": "c1",
+            "source": "40 + 2",
+            "cargo_toml": "[dependencies]"
+        }"#;
+        let request: CompileRequest =
+            serde_json::from_str(json).expect("a pre-0066 request must still parse");
+        assert_eq!(request.cell_type, CellType::Code);
+
+        // And the target that request selects is the ordinary one, which is
+        // what makes every cached blob from before this field still valid.
+        assert_eq!(
+            crate::cache_key::CellTarget::from(request.cell_type),
+            crate::cache_key::CellTarget::Executor,
+        );
+    }
+
+    /// A Linux cell round-trips as `Linux`, and an unknown cell type from a
+    /// FUTURE release lands on `Unsupported` rather than being guessed at.
+    #[test]
+    fn a_compile_request_carries_its_cell_type_over_the_wire() {
+        let request = CompileRequest {
+            notebook_id: "nb".to_string(),
+            cell_id: "c1".to_string(),
+            source: "fn main() {}".to_string(),
+            cargo_toml: String::new(),
+            cell_type: CellType::Linux,
+            previous_cell_types: vec![],
+            shared_cargo_toml: None,
+            shared_source: None,
+            force: false,
+            shared_check: None,
+        };
+        let round_tripped: CompileRequest =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert_eq!(round_tripped.cell_type, CellType::Linux);
+        assert_eq!(
+            crate::cache_key::CellTarget::from(round_tripped.cell_type),
+            crate::cache_key::CellTarget::Linux,
+        );
+
+        // A type this build has never heard of must not be compiled as if it
+        // were `Code`: it deserializes inert.
+        let future = serde_json::to_string(&request)
+            .unwrap()
+            .replace("\"Linux\"", "\"Quantum\"");
+        let future: CompileRequest = serde_json::from_str(&future).unwrap();
+        assert_eq!(future.cell_type, CellType::Unsupported);
+        assert!(!future.cell_type.compiles());
+    }
 
     // ── Account-notebook listing wire contract (PRD-0064) ───────────────
 

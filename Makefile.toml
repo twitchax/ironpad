@@ -6,6 +6,8 @@
 #   cargo make ci            — fmt-check + gen-completions-check + clippy + test
 #   cargo make uat           — ci + playwright (the one true gate)
 #   cargo make test          — Run unit/integration tests via cargo nextest
+#   cargo make test-linux-cells — Pod-booting e2e specs (opt-in; costs metered
+#                                 BrowserPod allowance, never run by ci/uat)
 #   cargo make fmt           — Auto-format all code
 #   cargo make clippy        — Run clippy lints
 
@@ -242,7 +244,7 @@ npx playwright install --with-deps chromium
 '''
 
 [tasks.playwright]
-description = "Run Playwright end-to-end tests"
+description = "Run Playwright end-to-end tests (args after -- are passed through, e.g. a name filter)"
 dependencies = ["build-cli"]
 script = '''
 #!/usr/bin/env bash
@@ -259,13 +261,49 @@ if [ ! -d tests/e2e ] || [ -z "$(find tests/e2e -name '*.spec.*' -o -name '*.tes
     exit 0
 fi
 
-npx playwright test
+# cargo-make hands the task's own `--` through as a positional arg; drop it
+# so `cargo make playwright -- embed` reads as a Playwright name filter. `$@`
+# stays quoted, or a filter with a space in it arrives as two arguments.
+if [ "$#" -gt 0 ] && [ "$1" = "--" ]; then shift; fi
+
+# The `chromium` project only. It ignores tests/e2e/linux-pod/ AND launches
+# with rt.browserpod.io unresolvable, so this task — and therefore `uat` and
+# CI — can never spend a metered BrowserPod boot (PRD-0066 T-014).
+npx playwright test --project=chromium "$@"
+'''
+
+[tasks.test-linux-cells]
+description = "Run the pod-booting Linux-cell e2e specs (OPT-IN: each boot spends metered BrowserPod allowance)"
+dependencies = ["build-cli"]
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Deliberately NOT part of `ci` or `uat`, for the same reason
+# `test-integration` is separated for being slow — except the cost here is
+# money rather than minutes. A boot is 10 tokens of a ~1,000-boot monthly
+# allowance, flat and duration-independent, so the bill tracks how many times
+# these specs run and nothing else. See tests/e2e/linux-pod/README.md.
+echo "==> Linux-cell e2e: these specs BOOT REAL PODS (~10 tokens each)."
+echo "    Not run by \`cargo make uat\` or CI. See tests/e2e/linux-pod/README.md."
+
+if [ -z "$(find tests/e2e/linux-pod -name '*.spec.*' 2>/dev/null)" ]; then
+    echo "    No pod-booting specs yet — nothing to run."
+    exit 0
+fi
+
+if [ "$#" -gt 0 ] && [ "$1" = "--" ]; then shift; fi
+
+# IRONPAD_LINUX_POD_TESTS is what brings the `linux-pod` project into
+# existence at all; without it the config does not define it, which is why a
+# stray `npx playwright test` cannot reach these.
+IRONPAD_LINUX_POD_TESTS=1 npx playwright test --project=linux-pod "$@"
 '''
 
 # ── UAT (the one true gate) ─────────────────────────────────────────────────
 
 [tasks.uat]
-description = "UAT: ci + integration tests + playwright (the one true gate)"
+description = "UAT: ci + integration tests + playwright (the one true gate; never boots a BrowserPod pod)"
 dependencies = ["ci", "test-integration", "playwright"]
 
 # ── Coverage ─────────────────────────────────────────────────────────────────
@@ -288,8 +326,17 @@ echo "==> Coverage report written to coverage.lcov"
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 
+[tasks.vendor-browserpod]
+description = "Fetch + verify the BrowserPod toolchain tarball into docker/vendor/ (38MB, gitignored)"
+command = "bash"
+args = ["docker/vendor-browserpod.sh"]
+
 [tasks.docker-build]
 description = "Build the Docker image"
+# Vendors the BrowserPod toolchain first so the image build itself never talks
+# to rt.browserpod.io (PRD-0066 T-012). Idempotent — a verified tarball already
+# on disk is a no-op.
+dependencies = ["vendor-browserpod"]
 script = '''
 #!/usr/bin/env bash
 set -euo pipefail

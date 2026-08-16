@@ -261,7 +261,7 @@ impl NotebookModel {
                         id: c.id.clone(),
                         order: c.order,
                         label: c.label.clone(),
-                        cell_type: c.cell_type.clone(),
+                        cell_type: c.cell_type,
                         shared: c.shared,
                         collapsed: c.collapsed,
                         output_collapsed: c.output_collapsed,

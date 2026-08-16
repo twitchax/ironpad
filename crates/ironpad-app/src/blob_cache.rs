@@ -117,6 +117,11 @@ pub async fn request_hash(request: &CompileRequest) -> Option<String> {
         needs_atomics,
         needs_autodiff,
         needs_simd,
+        // Must keep matching the target `compile_cell_core` hashes with, or a
+        // local hit serves an artifact built for the other target. Both sides
+        // derive it from the request's cell type through the same `From` impl
+        // rather than deciding independently.
+        cache_key::CellTarget::from(request.cell_type),
         &fingerprint,
     ))
 }

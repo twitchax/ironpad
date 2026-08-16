@@ -35,3 +35,9 @@ coverage.lcov
 *.lcov
 .playwright-mcp/
 __pycache__/
+
+# Vendored Docker build inputs (fetched by `cargo make vendor-browserpod`).
+# The BrowserPod toolchain tarball is 38MB and checksum-pinned in
+# docker/browserpod.env, so fetching beats committing it.
+docker/vendor/*
+!docker/vendor/.gitkeep

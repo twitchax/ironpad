@@ -97,7 +97,7 @@ use pages::{
 /// but keep the same URL; without a cache-buster a heuristically-cached copy
 /// can outlive several releases (the pkg bundle itself is content-hashed via
 /// cargo-leptos `hash-files` instead).
-fn versioned(path: &str) -> String {
+pub(crate) fn versioned(path: &str) -> String {
     format!("{path}?v={}", env!("CARGO_PKG_VERSION"))
 }
 

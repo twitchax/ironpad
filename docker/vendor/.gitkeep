@@ -1,0 +1,7 @@
+Vendored build inputs, fetched by `cargo make vendor-browserpod` and NOT
+committed (the BrowserPod toolchain tarball is 38MB).
+
+This file exists so the directory does, because `COPY docker/vendor/` in
+docker/Dockerfile fails on a missing path — and failing there, with the
+Dockerfile's own message naming the vendor task, is a better error than an
+absent directory.

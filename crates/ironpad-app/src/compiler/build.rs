@@ -1,9 +1,17 @@
 //! WASM compilation via `cargo build` for scaffolded micro-crates.
 //!
 //! Given a scaffolded micro-crate directory (produced by [`super::scaffold`]),
-//! this module invokes `cargo build --target wasm32-unknown-unknown --release`,
-//! then post-processes the output with `wasm-bindgen` to produce JS glue and a
-//! transformed WASM blob suitable for browser `import()`.
+//! this module invokes `cargo build --target {triple} --release`, where the
+//! triple comes from the cell's [`CellTarget`] — the same value its cache key
+//! was computed from, so the artifact on disk and the key it is stored under
+//! can never describe different targets.
+//!
+//! Ordinary cells build a `cdylib` for `wasm32-unknown-unknown` and are
+//! post-processed with `wasm-bindgen` into JS glue plus a transformed blob for
+//! browser `import()`. Linux cells (PRD-0066) build a whole program for
+//! `wasm32-browserpod-linux-musl`, whose artifact is an executable exporting
+//! `_start`; there is no wasm-bindgen stage for them, because nothing about
+//! that binary crosses a JS boundary — a pod loads it as a process image.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,6 +19,8 @@ use std::time::Duration;
 use anyhow::Context;
 use tokio::process::Command;
 use tracing::Instrument as _;
+
+use ironpad_common::cache_key::CellTarget;
 
 use crate::CELL_TOOLCHAIN;
 
@@ -115,11 +125,32 @@ const AUTODIFF_TOOLCHAIN: &str = "nightly-2026-06-01";
 /// RUSTFLAGS enabling Enzyme autodiff (`std::autodiff`) for a cell build.
 const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 
-/// Pick the pinned toolchain for a cell build from its feature flags.
+/// Toolchain for Linux cells (PRD-0066), which target
+/// `wasm32-browserpod-linux-musl`.
 ///
-/// Three separate pins, each held at a nightly known-good for its feature so the
-/// common case can track a fresh [`crate::CELL_TOOLCHAIN`] without dragging the
-/// finicky ones along:
+/// Unlike the other three pins this is not a nightly date: it is a vendor
+/// toolchain (`BrowserPod` 3.0.0, pinning `nightly-2026-05-19` beneath) that
+/// installs as an ordinary rustup toolchain and carries the target spec, a
+/// musl sysroot, a prebuilt std, and cargo/rustc wrappers that inject its
+/// `[patch]` set and `RUST_TARGET_PATH`. Invoking it as `cargo
+/// +browserpod-3.0.0` is therefore all the setup a Linux cell build needs —
+/// no RUSTFLAGS, no `-Zbuild-std`, no target JSON to locate.
+///
+/// Like [`ATOMICS_TOOLCHAIN`] and [`AUTODIFF_TOOLCHAIN`], this pin is NOT part
+/// of the cache fingerprint (which tracks only `CELL_TOOLCHAIN`), so bumping
+/// it needs a `CACHE_EPOCH` bump to invalidate stale Linux blobs.
+const BROWSERPOD_TOOLCHAIN: &str = "browserpod-3.0.0";
+
+/// Pick the pinned toolchain for a cell build from its target and feature
+/// flags.
+///
+/// Four separate pins, each held where it is known-good so the common case can
+/// track a fresh [`crate::CELL_TOOLCHAIN`] without dragging the finicky ones
+/// along:
+/// - Linux cells → [`BROWSERPOD_TOOLCHAIN`], **first**: the other three flags
+///   describe how to build for `wasm32-unknown-unknown`, and no nightly but
+///   this one can build for `wasm32-browserpod-linux-musl` at all, so the
+///   target decides before any feature does,
 /// - autodiff → [`AUTODIFF_TOOLCHAIN`] (has `enzyme`; wins over atomics because
 ///   it also carries `rust-src` for the autodiff+rayon `-Zbuild-std` combo),
 /// - rayon/atomics without autodiff → [`ATOMICS_TOOLCHAIN`],
@@ -128,14 +159,46 @@ const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 /// Autodiff and normal cells therefore build on different rustc versions; they
 /// share the `targets/default` dir but cargo fingerprints them apart (autodiff
 /// also carries distinct RUSTFLAGS and a fat-LTO profile), so both stay warm
-/// side by side without churn.
-fn cell_toolchain(needs_atomics: bool, needs_autodiff: bool) -> &'static str {
-    if needs_autodiff {
+/// side by side without churn. Linux cells share it too and collide with
+/// nothing: their artifacts land under a target-triple subdirectory of their
+/// own.
+fn cell_toolchain(target: CellTarget, needs_atomics: bool, needs_autodiff: bool) -> &'static str {
+    if target.is_linux() {
+        BROWSERPOD_TOOLCHAIN
+    } else if needs_autodiff {
         AUTODIFF_TOOLCHAIN
     } else if needs_atomics {
         ATOMICS_TOOLCHAIN
     } else {
         CELL_TOOLCHAIN
+    }
+}
+
+/// The feature flags as a build for `target` actually applies them.
+///
+/// Every one of atomics, autodiff and SIMD is a statement about building for
+/// `wasm32-unknown-unknown`: a `-C target-feature` set, wasm-bindgen-rayon's
+/// shared-memory link args, Enzyme's fat-LTO profile. None of them mean
+/// anything on `wasm32-browserpod-linux-musl`, whose target spec already
+/// carries `+atomics`, shared memory and its export set, and which has no
+/// Enzyme component. So the target wins over all three — in ONE place, rather
+/// than at each of the four consumers (toolchain, target dir, RUSTFLAGS,
+/// `-Zbuild-std`) where three of them would eventually be remembered and one
+/// forgotten.
+///
+/// Note this does not change the cache key: the flags are pure functions of
+/// the source and are hashed as such, so a Linux cell that merely *mentions*
+/// `std::simd` keys consistently whether or not the flag is applied.
+const fn effective_features(
+    target: CellTarget,
+    needs_atomics: bool,
+    needs_autodiff: bool,
+    needs_simd: bool,
+) -> (bool, bool, bool) {
+    if target.is_linux() {
+        (false, false, false)
+    } else {
+        (needs_atomics, needs_autodiff, needs_simd)
     }
 }
 
@@ -163,13 +226,19 @@ pub(crate) fn build_timeout() -> Duration {
 /// [`build_micro_crate`].  Compilation success vs. failure is represented here
 /// so the caller can inspect stdout (JSON diagnostics) in both cases.
 pub enum BuildResult {
-    /// Compilation succeeded; WASM blob and JS glue are on disk.
+    /// Compilation succeeded; WASM blob (and JS glue, when there is one) are
+    /// on disk.
     Success {
         wasm_path: PathBuf,
         stdout: String,
         stderr: String,
         /// JS glue module generated by `wasm-bindgen` (`--target web`).
-        js_glue: String,
+        ///
+        /// `None` for a Linux cell: its artifact is a process image, not a
+        /// module the browser imports, so no wasm-bindgen stage runs. Modelled
+        /// as an `Option` rather than an empty string so a caller cannot cache
+        /// or hand out glue that does not exist.
+        js_glue: Option<String>,
     },
     /// Compilation failed (non-zero exit); stdout contains JSON diagnostics.
     Failure { stdout: String, stderr: String },
@@ -179,19 +248,21 @@ pub enum BuildResult {
 
 /// Build a scaffolded micro-crate to WASM.
 ///
-/// Runs `cargo build --target wasm32-unknown-unknown --release
-/// --message-format=json` in `crate_dir`, with:
+/// Runs `cargo build --target {triple} --release --message-format=json` in
+/// `crate_dir` for the cell's [`CellTarget`], with:
 ///
 /// * `CARGO_HOME` → shared registry cache under `cache_dir`
 /// * `CARGO_TARGET_DIR` → per-session directory for incremental reuse
 ///
-/// Returns [`BuildResult::Success`] with the `.wasm` blob path on success,
-/// or [`BuildResult::Failure`] with raw cargo output on compilation failure.
+/// Returns [`BuildResult::Success`] with the artifact path on success, or
+/// [`BuildResult::Failure`] with raw cargo output on compilation failure.
+/// Ordinary cells additionally carry wasm-bindgen JS glue; Linux cells carry
+/// none, and their artifact is the linked executable itself.
 ///
 /// # Errors
 ///
 /// Returns `Err` for infrastructure problems: failed to spawn cargo, build
-/// timeout exceeded, or missing `.wasm` artifact after a successful exit code.
+/// timeout exceeded, or a missing artifact after a successful exit code.
 #[allow(clippy::too_many_arguments)]
 pub async fn build_micro_crate(
     crate_dir: &Path,
@@ -199,10 +270,17 @@ pub async fn build_micro_crate(
     session_id: &str,
     cell_id: &str,
     compilation_proxy: Option<&str>,
+    target: CellTarget,
     needs_atomics: bool,
     needs_autodiff: bool,
     needs_simd: bool,
 ) -> anyhow::Result<BuildResult> {
+    // The target decides which feature flags survive, once, before anything
+    // reads them: the target dir below, the log line, and the cargo
+    // invocation must all describe the same build.
+    let (needs_atomics, needs_autodiff, needs_simd) =
+        effective_features(target, needs_atomics, needs_autodiff, needs_simd);
+
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = if needs_atomics {
         atomics_target_dir(cache_dir)
@@ -222,6 +300,7 @@ pub async fn build_micro_crate(
         crate_dir = %crate_dir.display(),
         cargo_home = %cargo_home.display(),
         target_dir = %target_dir.display(),
+        target = %target.triple(),
         needs_atomics = needs_atomics,
         needs_autodiff = needs_autodiff,
         needs_simd = needs_simd,
@@ -239,6 +318,7 @@ pub async fn build_micro_crate(
         &cargo_home,
         &target_dir,
         compilation_proxy,
+        target,
         needs_atomics,
         needs_autodiff,
         needs_simd,
@@ -278,13 +358,30 @@ pub async fn build_micro_crate(
         return Ok(BuildResult::Failure { stdout, stderr });
     }
 
-    let wasm_path = expected_wasm_path(&target_dir, cell_id);
+    let wasm_path = expected_wasm_path(&target_dir, cell_id, target);
 
     anyhow::ensure!(
         wasm_path.exists(),
         "WASM blob not found at expected path: {}",
         wasm_path.display(),
     );
+
+    if target.is_linux() {
+        // A Linux cell's artifact is already what the pod runs: a linked
+        // executable exporting `_start`. wasm-bindgen has nothing to do here
+        // (there are no `#[wasm_bindgen]` items and no JS boundary) and would
+        // only rewrite a binary whose shape the kernel depends on.
+        tracing::info!(
+            wasm_path = %wasm_path.display(),
+            "Linux build succeeded (no wasm-bindgen stage)",
+        );
+        return Ok(BuildResult::Success {
+            wasm_path,
+            stdout,
+            stderr,
+            js_glue: None,
+        });
+    }
 
     tracing::info!(wasm_path = %wasm_path.display(), "WASM build succeeded, running wasm-bindgen");
 
@@ -346,13 +443,13 @@ pub async fn build_micro_crate(
         wasm_path: bg_wasm_path,
         stdout,
         stderr,
-        js_glue,
+        js_glue: Some(js_glue),
     })
 }
 
 /// Apply the cargo invocation shared by [`build_micro_crate`] and
 /// [`check_micro_crate`]: toolchain selection, the `{subcommand} --target
-/// wasm32-unknown-unknown --release --message-format=json` args,
+/// {triple} --release --message-format=json` args,
 /// `CARGO_HOME`/`CARGO_TARGET_DIR`, host-flag scrubbing, the optional compile
 /// proxy, and the atomics/shared-memory flags for rayon cells.
 ///
@@ -361,6 +458,10 @@ pub async fn build_micro_crate(
 /// production build and the `cargo check` guard behind
 /// `all_public_notebook_cells_compile`. Stdio/process-group setup stays with the
 /// caller since only the real build needs it.
+///
+/// The feature flags must already have passed through [`effective_features`]
+/// (both entry points apply it first), so what is set here is what the build
+/// actually gets.
 #[allow(clippy::too_many_arguments)]
 fn configure_cargo_cmd(
     cmd: &mut Command,
@@ -369,6 +470,7 @@ fn configure_cargo_cmd(
     cargo_home: &Path,
     target_dir: &Path,
     compilation_proxy: Option<&str>,
+    target: CellTarget,
     needs_atomics: bool,
     needs_autodiff: bool,
     needs_simd: bool,
@@ -376,7 +478,7 @@ fn configure_cargo_cmd(
     // Every cell build pins its toolchain explicitly — never the host default,
     // which differs between dev (nightly) and the deploy image, and once let
     // nightly-only cells validate green locally and fail on prod.
-    let toolchain = cell_toolchain(needs_atomics, needs_autodiff);
+    let toolchain = cell_toolchain(target, needs_atomics, needs_autodiff);
     cmd.arg(format!("+{toolchain}"));
     // Ensure the rustup shim respects our +toolchain over any inherited
     // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
@@ -384,7 +486,7 @@ fn configure_cargo_cmd(
 
     cmd.arg(subcommand)
         .arg("--target")
-        .arg("wasm32-unknown-unknown")
+        .arg(target.triple())
         .arg("--release")
         .arg("--message-format=json")
         .current_dir(crate_dir)
@@ -470,11 +572,16 @@ pub async fn check_micro_crate(
     session_id: &str,
     cell_id: &str,
     compilation_proxy: Option<&str>,
+    target: CellTarget,
     needs_atomics: bool,
     needs_autodiff: bool,
     needs_simd: bool,
     timeout: Duration,
 ) -> anyhow::Result<CheckResult> {
+    // Same rule as the build path, applied before anything reads the flags.
+    let (needs_atomics, needs_autodiff, needs_simd) =
+        effective_features(target, needs_atomics, needs_autodiff, needs_simd);
+
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = if needs_atomics {
         atomics_target_dir(cache_dir)
@@ -492,6 +599,7 @@ pub async fn check_micro_crate(
 
     tracing::debug!(
         cell_id = %cell_id,
+        target = %target.triple(),
         needs_atomics,
         needs_autodiff,
         needs_simd,
@@ -506,6 +614,7 @@ pub async fn check_micro_crate(
         &cargo_home,
         &target_dir,
         compilation_proxy,
+        target,
         needs_atomics,
         needs_autodiff,
         needs_simd,
@@ -563,18 +672,31 @@ pub fn atomics_target_dir(cache_dir: &Path) -> PathBuf {
     cache_dir.join("targets").join("atomics-shared")
 }
 
-/// Compute the expected path to the compiled `.wasm` blob.
+/// Compute the expected path to the compiled artifact.
 ///
-/// Cargo converts crate-name hyphens to underscores in artifact filenames.
-/// The scaffolded crate name is `cell-{cell_id}` (see [`super::scaffold`]).
-pub fn expected_wasm_path(target_dir: &Path, cell_id: &str) -> PathBuf {
+/// The scaffolded crate is `cell-{cell_id}` (see [`super::scaffold`]) and the
+/// two targets name their output differently, because they build different
+/// kinds of crate:
+///
+/// * ordinary cells build a **lib** (`cdylib`), and cargo uplifts lib
+///   artifacts with hyphens converted to underscores plus a `.wasm`
+///   extension — `cell_a_b.wasm`;
+/// * Linux cells build a **bin**, whose artifact keeps the target name
+///   verbatim and carries no extension — `cell-a-b`. (Verified against the
+///   toolchain rather than assumed: bins do not get the hyphen conversion
+///   libs do.)
+pub fn expected_wasm_path(target_dir: &Path, cell_id: &str, target: CellTarget) -> PathBuf {
     let crate_name = format!("cell-{cell_id}");
-    let wasm_filename = format!("{}.wasm", crate_name.replace('-', "_"));
+    let artifact = if target.is_linux() {
+        crate_name
+    } else {
+        format!("{}.wasm", crate_name.replace('-', "_"))
+    };
 
     target_dir
-        .join("wasm32-unknown-unknown")
+        .join(target.triple())
         .join("release")
-        .join(wasm_filename)
+        .join(artifact)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -623,8 +745,14 @@ mod tests {
         assert!(flags.contains("-Zautodiff=Enable"));
     }
 
-    /// The toolchain `+arg` (or its absence) for each feature combination.
-    fn selected_toolchain_arg(atomics: bool, autodiff: bool, simd: bool) -> Option<String> {
+    /// Every arg of the configured cargo invocation, for a target and feature
+    /// combination.
+    fn configured_args(
+        target: CellTarget,
+        atomics: bool,
+        autodiff: bool,
+        simd: bool,
+    ) -> Vec<String> {
         let mut cmd = Command::new("cargo");
         configure_cargo_cmd(
             &mut cmd,
@@ -633,14 +761,22 @@ mod tests {
             Path::new("/cargo-home"),
             Path::new("/target"),
             None,
+            target,
             atomics,
             autodiff,
             simd,
         );
         cmd.as_std()
             .get_args()
-            .next()
             .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The toolchain `+arg` (or its absence) for each feature combination.
+    fn selected_toolchain_arg(atomics: bool, autodiff: bool, simd: bool) -> Option<String> {
+        configured_args(CellTarget::Executor, atomics, autodiff, simd)
+            .into_iter()
+            .next()
             .filter(|a| a.starts_with('+'))
     }
 
@@ -713,12 +849,72 @@ mod tests {
 
     #[test]
     fn cell_toolchain_routing() {
-        assert_eq!(cell_toolchain(false, false), CELL_TOOLCHAIN);
-        assert_eq!(cell_toolchain(false, true), AUTODIFF_TOOLCHAIN);
-        assert_eq!(cell_toolchain(true, false), ATOMICS_TOOLCHAIN);
-        assert_eq!(cell_toolchain(true, true), AUTODIFF_TOOLCHAIN); // autodiff wins
+        let wasm = CellTarget::Executor;
+        assert_eq!(cell_toolchain(wasm, false, false), CELL_TOOLCHAIN);
+        assert_eq!(cell_toolchain(wasm, false, true), AUTODIFF_TOOLCHAIN);
+        assert_eq!(cell_toolchain(wasm, true, false), ATOMICS_TOOLCHAIN);
+        assert_eq!(cell_toolchain(wasm, true, true), AUTODIFF_TOOLCHAIN); // autodiff wins
         assert_ne!(CELL_TOOLCHAIN, AUTODIFF_TOOLCHAIN);
         assert_ne!(CELL_TOOLCHAIN, ATOMICS_TOOLCHAIN);
+    }
+
+    #[test]
+    fn the_linux_target_wins_over_every_feature_flag() {
+        // The other three pins are nightlies that cannot build for
+        // `wasm32-browserpod-linux-musl` at all, so a Linux cell that happens
+        // to declare rayon (or mention `std::autodiff` in a comment) must
+        // still get the browserpod toolchain — the target is not a feature.
+        for (atomics, autodiff) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(
+                cell_toolchain(CellTarget::Linux, atomics, autodiff),
+                BROWSERPOD_TOOLCHAIN,
+                "({atomics}, {autodiff})",
+            );
+        }
+        assert_ne!(BROWSERPOD_TOOLCHAIN, CELL_TOOLCHAIN);
+    }
+
+    #[test]
+    fn linux_builds_carry_no_wasm32_unknown_feature_flags() {
+        // atomics/simd/autodiff describe a different architecture: applying
+        // them here would fight the target spec's own atomics + shared-memory
+        // link args, and `-Zbuild-std` would try to rebuild a std the vendor
+        // toolchain already ships.
+        assert_eq!(
+            effective_features(CellTarget::Linux, true, true, true),
+            (false, false, false)
+        );
+        assert_eq!(
+            effective_features(CellTarget::Executor, true, true, true),
+            (true, true, true)
+        );
+        assert_eq!(compose_rustflags(false, false, false), None);
+    }
+
+    #[test]
+    fn the_target_triple_reaches_the_cargo_invocation() {
+        let linux = configured_args(CellTarget::Linux, false, false, false);
+        // The pin itself is checked against reality by the integration test,
+        // which actually builds with it; here it only has to be the one this
+        // module selected.
+        let browserpod = format!("+{BROWSERPOD_TOOLCHAIN}");
+        assert_eq!(linux.first(), Some(&browserpod));
+        let target_pos = linux
+            .iter()
+            .position(|a| a == "--target")
+            .expect("--target");
+        assert_eq!(
+            linux.get(target_pos + 1).map(String::as_str),
+            Some("wasm32-browserpod-linux-musl"),
+        );
+        assert!(!linux.iter().any(|a| a.starts_with("-Zbuild-std")));
+
+        let wasm = configured_args(CellTarget::Executor, false, false, false);
+        let target_pos = wasm.iter().position(|a| a == "--target").expect("--target");
+        assert_eq!(
+            wasm.get(target_pos + 1).map(String::as_str),
+            Some("wasm32-unknown-unknown"),
+        );
     }
 
     // ── cargo_home_dir ──────────────────────────────────────────────────
@@ -756,7 +952,7 @@ mod tests {
 
     #[test]
     fn wasm_path_simple_id() {
-        let path = expected_wasm_path(Path::new("/t"), "abc123");
+        let path = expected_wasm_path(Path::new("/t"), "abc123", CellTarget::Executor);
         assert_eq!(
             path,
             PathBuf::from("/t/wasm32-unknown-unknown/release/cell_abc123.wasm"),
@@ -765,7 +961,7 @@ mod tests {
 
     #[test]
     fn wasm_path_hyphenated_id() {
-        let path = expected_wasm_path(Path::new("/t"), "cell-0");
+        let path = expected_wasm_path(Path::new("/t"), "cell-0", CellTarget::Executor);
         assert_eq!(
             path,
             PathBuf::from("/t/wasm32-unknown-unknown/release/cell_cell_0.wasm"),
@@ -774,7 +970,7 @@ mod tests {
 
     #[test]
     fn wasm_path_nested_hyphens() {
-        let path = expected_wasm_path(Path::new("/t"), "a-b-c");
+        let path = expected_wasm_path(Path::new("/t"), "a-b-c", CellTarget::Executor);
         assert_eq!(
             path,
             PathBuf::from("/t/wasm32-unknown-unknown/release/cell_a_b_c.wasm"),
@@ -783,10 +979,28 @@ mod tests {
 
     #[test]
     fn wasm_path_underscore_id() {
-        let path = expected_wasm_path(Path::new("/t"), "my_cell");
+        let path = expected_wasm_path(Path::new("/t"), "my_cell", CellTarget::Executor);
         assert_eq!(
             path,
             PathBuf::from("/t/wasm32-unknown-unknown/release/cell_my_cell.wasm"),
+        );
+    }
+
+    #[test]
+    fn linux_artifact_is_a_bin_under_its_own_triple() {
+        // A bin artifact keeps the package name verbatim: no `-`→`_` uplift
+        // (that is a lib-only rule) and no `.wasm` extension. Reading the
+        // wrong path here fails the build with "WASM blob not found" AFTER a
+        // successful compile, which reads like an infrastructure fault.
+        let path = expected_wasm_path(Path::new("/t"), "a-b-c", CellTarget::Linux);
+        assert_eq!(
+            path,
+            PathBuf::from("/t/wasm32-browserpod-linux-musl/release/cell-a-b-c"),
+        );
+        // The two targets never write to the same file, whatever the id.
+        assert_ne!(
+            expected_wasm_path(Path::new("/t"), "x", CellTarget::Linux),
+            expected_wasm_path(Path::new("/t"), "x", CellTarget::Executor),
         );
     }
 
@@ -879,9 +1093,39 @@ mod tests {
             "rust-toolchain.toml channel must match ATOMICS_TOOLCHAIN"
         );
 
-        // No FOURTH pin hiding anywhere: every nightly date literal in the
-        // install environments must be one of the three constants.
-        let known = [CELL_TOOLCHAIN, AUTODIFF_TOOLCHAIN, ATOMICS_TOOLCHAIN];
+        // The fourth pin installs from a vendored tarball rather than
+        // `rustup toolchain install`, so it is not in the loop above — but it
+        // has the same failure mode (constant bumped in Rust, image left
+        // behind) and `docker/browserpod.env` is the ONE place its version,
+        // sha256 and underlying nightly live. Derive from that file rather
+        // than re-literalling the version here, which is what having one
+        // source of truth is for.
+        let env_file = std::fs::read_to_string(root.join("docker/browserpod.env"))
+            .expect("docker/browserpod.env defines the vendored BrowserPod toolchain");
+        let version = env_file
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("BROWSERPOD_VERSION="))
+            .expect("browserpod.env must define BROWSERPOD_VERSION");
+        assert_eq!(
+            BROWSERPOD_TOOLCHAIN,
+            format!("browserpod-{version}"),
+            "BROWSERPOD_TOOLCHAIN must name the toolchain docker/browserpod.env installs"
+        );
+
+        // No unknown pin hiding anywhere: every nightly date literal in the
+        // install environments must be one of the three nightly constants.
+        // The browserpod pack pulls its own nightly, recorded in that same
+        // env file, so it is a known one too.
+        let browserpod_nightly = env_file
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("BROWSERPOD_NIGHTLY="))
+            .expect("browserpod.env must record the nightly the pack pins");
+        let known = [
+            CELL_TOOLCHAIN,
+            AUTODIFF_TOOLCHAIN,
+            ATOMICS_TOOLCHAIN,
+            browserpod_nightly,
+        ];
         for (file, text) in [("docker/Dockerfile", &dockerfile), ("build.yml", &ci)] {
             for (idx, _) in text.match_indices("nightly-20") {
                 let pin = &text[idx..(idx + "nightly-2026-07-14".len()).min(text.len())];

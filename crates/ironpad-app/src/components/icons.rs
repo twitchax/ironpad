@@ -56,6 +56,14 @@ pub const MORE: IconData = icondata_lu::LuEllipsis;
 pub const SETTINGS: IconData = icondata_lu::LuSettings;
 /// Shared-cell marker. Replaces `⬡` — Lucide keeps the hexagon language.
 pub const SHARED: IconData = icondata_lu::LuHexagon;
+/// Linux-cell marker (PRD-0066): a cell that is a whole program run as a real
+/// Linux process under an in-browser kernel. Deliberately NOT a terminal —
+/// [`OUTPUT_PANEL`] already holds `LuTerminal`, and a second terminal here
+/// would read as "this cell's output" rather than "this cell is a machine".
+/// A container is what the cell actually is: an isolated Linux box with a
+/// filesystem, subprocesses and threads. Replaces a bare text badge; the
+/// shared-cell badge beside it is the shape this mirrors.
+pub const LINUX: IconData = icondata_lu::LuContainer;
 /// "Code loads collapsed" default toggle. Replaces the abstract `▤`.
 pub const CODE_PANEL: IconData = icondata_lu::LuCode;
 /// "Output loads collapsed" default toggle. Replaces the abstract `⊡`.
@@ -181,6 +189,7 @@ pub(crate) const ALL: &[(&str, IconData)] = &[
     ("MORE", MORE),
     ("SETTINGS", SETTINGS),
     ("SHARED", SHARED),
+    ("LINUX", LINUX),
     ("CODE_PANEL", CODE_PANEL),
     ("OUTPUT_PANEL", OUTPUT_PANEL),
     ("DRAG", DRAG),

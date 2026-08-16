@@ -5,7 +5,7 @@
 //!
 //! Span line numbers are adjusted by subtracting the wrapper preamble offset
 //! so that diagnostics reference the user's original source lines rather than
-//! the generated `lib.rs`.
+//! the generated `lib.rs` (or, for a Linux cell, the generated `main.rs`).
 
 use ironpad_common::{Diagnostic, Severity, Span};
 use serde::Deserialize;
@@ -101,8 +101,12 @@ pub fn parse_shared_range_diagnostics(
 
 /// Which spans a parse keeps, and how their lines map back to an editor.
 enum SpanPolicy {
-    /// Ordinary cell mode: `src/lib.rs` spans shifted by the wrapper
-    /// preamble; shared-source errors surface as message-only notes.
+    /// Ordinary cell mode: cell-body spans shifted by the wrapper preamble;
+    /// shared-source errors surface as message-only notes.
+    ///
+    /// The body is `src/lib.rs` for a cell scaffolded around `cell_main` and
+    /// `src/main.rs` for a Linux cell, which is a whole program (PRD-0066).
+    /// Both are the file the user typed into; anything else is a dependency.
     CellBody { preamble_lines: u32 },
     /// Shared-cell live-check mode: only `src/shared.rs` spans inside the
     /// target cell's slice, remapped to cell-local lines (PRD-0046).
@@ -141,7 +145,7 @@ fn parse_single_line(line: &str, policy: &SpanPolicy) -> Option<Diagnostic> {
             continue;
         }
         match (policy, span.file_name.as_str()) {
-            (SpanPolicy::CellBody { preamble_lines }, "src/lib.rs") => {
+            (SpanPolicy::CellBody { preamble_lines }, "src/lib.rs" | "src/main.rs") => {
                 if let Some(adjusted) = adjust_span(span, *preamble_lines) {
                     spans.push(adjusted);
                 }
@@ -393,6 +397,28 @@ mod tests {
         assert_eq!(diags.len(), 1);
         // Span at line 3 is within the 5-line preamble, so it should be filtered out.
         assert!(diags[0].spans.is_empty());
+    }
+
+    /// A Linux cell's body is `src/main.rs`; same shape as the type error
+    /// above, one line into the file, with the one-line `mod shared;`
+    /// preamble a shared-source notebook adds.
+    const LINUX_MAIN_SPAN_JSON: &str = r#"{"reason":"compiler-message","package_id":"cell-test 0.1.0","manifest_path":"/tmp/cell/Cargo.toml","target":{"kind":["bin"],"crate_types":["bin"],"name":"cell-test","src_path":"/tmp/cell/src/main.rs","edition":"2024","doc":false,"doctest":false,"test":false},"message":{"rendered":"error[E0425]: cannot find value `nope`\n","children":[],"code":{"code":"E0425","explanation":null},"level":"error","message":"cannot find value `nope` in this scope","spans":[{"byte_end":40,"byte_start":36,"column_end":19,"column_start":15,"expansion":null,"file_name":"src/main.rs","is_primary":true,"label":"not found in this scope","line_end":3,"line_start":3,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}]}}"#;
+
+    #[test]
+    fn keeps_linux_cell_spans_from_main_rs() {
+        // A Linux cell compiles `src/main.rs`, so matching only `src/lib.rs`
+        // would classify every one of its errors as a dependency span and
+        // DROP it: the author would see a failed compile with no markers and
+        // no message pointing at their code.
+        let diags = parse_diagnostics(LINUX_MAIN_SPAN_JSON, 1);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.as_deref(), Some("E0425"));
+        assert_eq!(diags[0].spans.len(), 1, "the main.rs span must survive");
+        // Line 3 in the generated file, minus the one-line `mod shared;`
+        // preamble, is line 2 of what the author wrote.
+        assert_eq!(diags[0].spans[0].line_start, 2);
+        assert_eq!(diags[0].spans[0].col_start, 15);
     }
 
     #[test]

@@ -195,6 +195,8 @@ mod compile_locks_tests {
 mod pipeline_tests {
     use std::path::PathBuf;
 
+    use ironpad_common::cache_key::CellTarget;
+
     use super::cache::content_hash;
     use super::diagnostics::parse_diagnostics;
     use super::scaffold::{generate_lib_rs, scaffold_micro_crate};
@@ -218,6 +220,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
@@ -262,8 +265,28 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]\nrand = \"0.8\"";
 
         // Hashes must match.
-        let hash_a = content_hash(source, cargo_toml, &[], None, None, false, false, false);
-        let hash_b = content_hash(source, cargo_toml, &[], None, None, false, false, false);
+        let hash_a = content_hash(
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            CellTarget::Executor,
+        );
+        let hash_b = content_hash(
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            CellTarget::Executor,
+        );
         assert_eq!(hash_a, hash_b, "same inputs must produce identical hashes");
 
         // Scaffolded content must be identical for the same inputs.
@@ -281,6 +304,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
         let (dir_b, ..) = scaffold_micro_crate(
@@ -293,6 +317,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -317,6 +342,7 @@ mod pipeline_tests {
             false,
             false,
             false,
+            CellTarget::Executor,
         );
         let hash_v2 = content_hash(
             "    let x = 2;",
@@ -327,6 +353,7 @@ mod pipeline_tests {
             false,
             false,
             false,
+            CellTarget::Executor,
         );
         assert_ne!(
             hash_v1, hash_v2,
@@ -346,6 +373,7 @@ mod pipeline_tests {
             false,
             false,
             false,
+            CellTarget::Executor,
         );
         let hash_b = content_hash(
             source,
@@ -356,6 +384,7 @@ mod pipeline_tests {
             false,
             false,
             false,
+            CellTarget::Executor,
         );
         assert_ne!(
             hash_a, hash_b,
@@ -371,9 +400,19 @@ mod pipeline_tests {
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (dir, preamble_lines, ..) =
-            scaffold_micro_crate(&tmp, &cell_path, "s", "c", user_code, "", &[], None, None)
-                .unwrap();
+        let (dir, preamble_lines, ..) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "s",
+            "c",
+            user_code,
+            "",
+            &[],
+            None,
+            None,
+            CellTarget::Executor,
+        )
+        .unwrap();
         let lib = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
 
         // User code must start at exactly line preamble_lines + 1 (1-indexed).
@@ -411,7 +450,17 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input.
-        let hash = content_hash(source, cargo_toml, &[], None, None, false, false, false);
+        let hash = content_hash(
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            CellTarget::Executor,
+        );
         assert_eq!(hash.len(), 64, "blake3 hash should be 64 hex chars");
         assert!(
             hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -431,6 +480,7 @@ mod pipeline_tests {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -497,7 +547,17 @@ mod pipeline_tests {
 
         let source = "    CellOutput::text(\"cached\")";
         let cargo = "[dependencies]";
-        let hash = content_hash(source, cargo, &[], None, None, false, false, false);
+        let hash = content_hash(
+            source,
+            cargo,
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            CellTarget::Executor,
+        );
 
         let cache_dir = tempdir();
         let fake_wasm = b"\x00asm\x01\x00\x00\x00fake-wasm-bytes";
@@ -522,6 +582,7 @@ mod pipeline_tests {
             false,
             false,
             false,
+            CellTarget::Executor,
         );
         assert!(try_cache_hit(&cache_dir, &different_hash).is_none());
     }
@@ -542,6 +603,8 @@ mod pipeline_tests {
 mod e2e_tests {
     use std::path::PathBuf;
 
+    use ironpad_common::cache_key::CellTarget;
+
     use super::build::{build_micro_crate, check_micro_crate, BuildResult, CheckResult};
     use super::cache::{content_hash, store_blob, try_cache_hit};
     use super::diagnostics::parse_diagnostics;
@@ -559,6 +622,51 @@ mod e2e_tests {
         let dir = std::env::temp_dir().join(format!("ironpad-e2e-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The names in a WASM module's export section (section id 7).
+    ///
+    /// Hand-rolled rather than adding a parser dependency for one assertion:
+    /// this is the section table plus one LEB128-length-prefixed vector. A
+    /// substring scan of the whole binary would be a weaker claim — the name
+    /// section and the string data carry `_start` too.
+    fn wasm_export_names(bytes: &[u8]) -> Vec<String> {
+        fn leb128(bytes: &[u8], cursor: &mut usize) -> usize {
+            let (mut value, mut shift) = (0usize, 0u32);
+            loop {
+                let byte = bytes[*cursor];
+                *cursor += 1;
+                value |= usize::from(byte & 0x7f) << shift;
+                if byte & 0x80 == 0 {
+                    return value;
+                }
+                shift += 7;
+            }
+        }
+
+        assert_eq!(&bytes[..4], b"\0asm", "not a wasm module");
+        let mut cursor = 8; // magic + version
+        while cursor < bytes.len() {
+            let section_id = bytes[cursor];
+            cursor += 1;
+            let section_len = leb128(bytes, &mut cursor);
+            let section_end = cursor + section_len;
+            if section_id != 7 {
+                cursor = section_end;
+                continue;
+            }
+            let count = leb128(bytes, &mut cursor);
+            let mut names = Vec::with_capacity(count);
+            for _ in 0..count {
+                let name_len = leb128(bytes, &mut cursor);
+                names.push(String::from_utf8_lossy(&bytes[cursor..cursor + name_len]).into_owned());
+                cursor += name_len;
+                cursor += 1; // export kind
+                leb128(bytes, &mut cursor); // export index
+            }
+            return names;
+        }
+        Vec::new()
     }
 
     // ── Successful compilation ──────────────────────────────────────────
@@ -583,6 +691,7 @@ mod e2e_tests {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
@@ -591,7 +700,15 @@ mod e2e_tests {
 
         // Build to WASM.
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -616,6 +733,7 @@ mod e2e_tests {
                 );
 
                 // wasm-bindgen should have produced JS glue.
+                let js_glue = js_glue.expect("an ordinary cell carries wasm-bindgen glue");
                 assert!(!js_glue.is_empty(), "JS glue should not be empty");
                 assert!(
                     js_glue.contains("export"),
@@ -698,6 +816,7 @@ pub fn range(angle: f64) -> f64 {
             &[],
             None,
             Some(shared_source),
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
@@ -707,7 +826,15 @@ pub fn range(angle: f64) -> f64 {
         assert!(preamble >= 1);
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, true, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            true,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -751,11 +878,20 @@ pub fn range(angle: f64) -> f64 {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -801,6 +937,7 @@ pub fn range(angle: f64) -> f64 {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
@@ -810,7 +947,15 @@ pub fn range(angle: f64) -> f64 {
         assert!(preamble >= 1);
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, true,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            true,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -856,6 +1001,7 @@ pub fn range(angle: f64) -> f64 {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
@@ -865,7 +1011,15 @@ pub fn range(angle: f64) -> f64 {
         assert!(manifest.contains("edition = \"2024\""));
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -908,11 +1062,20 @@ pub fn range(angle: f64) -> f64 {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -958,11 +1121,20 @@ pub fn range(angle: f64) -> f64 {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1028,11 +1200,20 @@ pub struct AlsoUnusedHere {
             &[],
             None,
             Some(shared_source),
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1094,11 +1275,20 @@ pub struct AlsoUnusedHere {
             &previous_cell_types,
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1138,7 +1328,17 @@ pub struct AlsoUnusedHere {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input (should be a cache miss).
-        let hash = content_hash(source, cargo_toml, &[], None, None, false, false, false);
+        let hash = content_hash(
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            CellTarget::Executor,
+        );
         assert!(
             try_cache_hit(&cache_dir, &hash).is_none(),
             "should be a cache miss before compilation",
@@ -1155,11 +1355,20 @@ pub struct AlsoUnusedHere {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build should not return an infra error");
@@ -1169,7 +1378,10 @@ pub struct AlsoUnusedHere {
                 wasm_path, js_glue, ..
             } => {
                 let wasm = std::fs::read(&wasm_path).expect("should read WASM blob");
-                (wasm, js_glue)
+                (
+                    wasm,
+                    js_glue.expect("an ordinary cell carries wasm-bindgen glue"),
+                )
             }
             BuildResult::Failure { stdout, stderr } => {
                 panic!("expected success but got failure.\nstdout: {stdout}\nstderr: {stderr}");
@@ -1202,6 +1414,7 @@ pub struct AlsoUnusedHere {
             false,
             false,
             false,
+            CellTarget::Executor,
         );
         assert!(
             try_cache_hit(&cache_dir, &different_hash).is_none(),
@@ -1258,11 +1471,20 @@ impl Simulation for BusSim {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1352,6 +1574,7 @@ impl LiveView for Counter {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
@@ -1375,7 +1598,15 @@ impl LiveView for Counter {
         );
 
         let result = build_micro_crate(
-            &crate_dir, &cache_dir, session_id, cell_id, None, false, false, false,
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            false,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1516,6 +1747,7 @@ impl LiveView for Counter {
                     &previous_cell_types,
                     shared_cargo_toml,
                     shared_source,
+                    CellTarget::Executor,
                 );
 
                 let (crate_dir, ..) = match scaffold_result {
@@ -1547,6 +1779,7 @@ impl LiveView for Counter {
                     session_id,
                     &unique_id,
                     None,
+                    CellTarget::Executor,
                     needs_atomics,
                     needs_autodiff,
                     needs_simd,
@@ -1617,5 +1850,149 @@ impl LiveView for Counter {
             total_cells >= 20,
             "expected at least 20 standalone code cells across all notebooks, got {total_cells}"
         );
+    }
+
+    // ── Linux cells (PRD-0066) ──────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-browserpod-linux-musl"]
+    async fn compile_linux_cell_produces_a_program_exporting_start() {
+        // The whole T-003/T-004 claim in one pass: a cell that is a complete
+        // Rust program compiles on the browserpod pin, to the browserpod
+        // triple, into an executable a pod can start — with no `cell_main`,
+        // no `ironpad-cell`, and no wasm-bindgen stage anywhere in it.
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "linux-trivial";
+        // Uses std::fs and std::thread: things a wasm32-unknown-unknown cell
+        // cannot do, so a build that quietly took the ordinary path fails
+        // here rather than passing.
+        let source = "use std::fs;\n\nfn main() {\n    fs::write(\"/tmp/ironpad-linux-cell\", b\"ok\").unwrap();\n    let t = std::thread::spawn(|| 40 + 2);\n    println!(\"{}\", t.join().unwrap());\n}";
+
+        let (crate_dir, preamble_lines, is_async, is_sim) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            "[dependencies]",
+            &[],
+            None,
+            None,
+            CellTarget::Linux,
+        )
+        .expect("scaffold should succeed");
+        assert_eq!(preamble_lines, 0);
+        assert!(!is_async && !is_sim);
+
+        let result = build_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Linux,
+            false,
+            false,
+            false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success {
+                wasm_path, js_glue, ..
+            } => {
+                assert!(
+                    js_glue.is_none(),
+                    "a Linux cell has no JS boundary and so no wasm-bindgen glue"
+                );
+                assert!(
+                    wasm_path
+                        .to_string_lossy()
+                        .contains("wasm32-browserpod-linux-musl"),
+                    "artifact should live under its own target triple: {}",
+                    wasm_path.display(),
+                );
+
+                let bytes = std::fs::read(&wasm_path).expect("artifact should exist on disk");
+                let exports = wasm_export_names(&bytes);
+                assert!(
+                    exports.iter().any(|e| e == "_start"),
+                    "a pod starts the program at `_start`; exports were {exports:?}",
+                );
+                // `__startThread` is how their kernel enters a spawned thread
+                // in a fresh Worker, and memory is IMPORTED (shared), not
+                // exported — both are properties of the target spec that this
+                // build must not have lost.
+                assert!(
+                    exports.iter().any(|e| e == "__startThread"),
+                    "exports were {exports:?}",
+                );
+                assert!(
+                    !exports.iter().any(|e| e == "memory"),
+                    "memory is imported from the kernel, not exported: {exports:?}",
+                );
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!("Linux cell failed to compile.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-browserpod-linux-musl"]
+    async fn linux_cell_compiles_against_the_notebook_shared_module() {
+        // The unit tests can see that `mod shared;` was written; only a real
+        // build can see that cargo accepts the generated manifest (bin target
+        // plus forwarded `[profile.release]`) and that rustc resolves the
+        // module from a whole program rather than from the `cell_main`
+        // wrapper it does not have.
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "linux-shared";
+        let source = "fn main() {\n    println!(\"{}\", shared::doubled(21));\n}";
+        let shared = "pub fn doubled(n: u32) -> u32 { n * 2 }";
+
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            "[profile.release]\nopt-level = 1\n",
+            &[],
+            None,
+            Some(shared),
+            CellTarget::Linux,
+        )
+        .expect("scaffold should succeed");
+        assert_eq!(preamble_lines, 1, "one injected line: `mod shared;`");
+
+        let result = build_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Linux,
+            false,
+            false,
+            false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                let bytes = std::fs::read(&wasm_path).expect("artifact should exist");
+                assert!(wasm_export_names(&bytes).iter().any(|e| e == "_start"));
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!("shared-source Linux cell failed.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+        }
     }
 }

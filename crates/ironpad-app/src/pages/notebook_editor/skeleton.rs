@@ -6,8 +6,15 @@ use crate::components::icons;
 
 // ── Add cell button ─────────────────────────────────────────────────────────
 
-/// "Add Cell" buttons (Code / Markdown), rendered between cells and at the end
-/// of the list.
+/// "Add Cell" buttons (Code / Markdown / Linux), rendered between cells and at
+/// the end of the list.
+///
+/// Every button carries its own `--<kind>` modifier class, including Code.
+/// The e2e suite selects these by class rather than by label (the prose moved
+/// once already and took 52 specs with it), and Code used to be "the one
+/// without `--markdown`" — a negation that a third kind silently broadens
+/// into "Code or Linux". A positive class per kind cannot be widened by
+/// adding a fourth.
 #[component]
 #[allow(clippy::needless_pass_by_value)]
 pub(super) fn AddCellButton(
@@ -16,20 +23,31 @@ pub(super) fn AddCellButton(
 ) -> impl IntoView {
     let after_code = after_cell_id.clone();
     let after_md = after_cell_id.clone();
+    let after_linux = after_cell_id.clone();
     let on_add_code = move |_| {
         on_add.run((after_code.clone(), CellType::Code));
     };
     let on_add_markdown = move |_| {
         on_add.run((after_md.clone(), CellType::Markdown));
     };
+    let on_add_linux = move |_| {
+        on_add.run((after_linux.clone(), CellType::Linux));
+    };
 
     view! {
         <div class="ironpad-add-cell-row">
-            <button class="ironpad-add-cell-btn" on:click=on_add_code>
+            <button class="ironpad-add-cell-btn ironpad-add-cell-btn--code" on:click=on_add_code>
                 <IconLabel icon=icons::ADD label="Code"/>
             </button>
             <button class="ironpad-add-cell-btn ironpad-add-cell-btn--markdown" on:click=on_add_markdown>
                 <IconLabel icon=icons::ADD label="Markdown"/>
+            </button>
+            <button
+                class="ironpad-add-cell-btn ironpad-add-cell-btn--linux"
+                title="A whole Rust program run as a Linux process in the browser"
+                on:click=on_add_linux
+            >
+                <IconLabel icon=icons::ADD label="Linux"/>
             </button>
         </div>
     }

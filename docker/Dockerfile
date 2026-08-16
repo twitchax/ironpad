@@ -69,9 +69,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Cell compilation runs on three pinned toolchains — never the host default
+# Cell compilation runs on four pinned toolchains — never the host default
 # (keep in sync with `cell_toolchain` in crates/ironpad-app/src/compiler/build.rs:
-# CELL_TOOLCHAIN in lib.rs, AUTODIFF_TOOLCHAIN + ATOMICS_TOOLCHAIN in build.rs):
+# CELL_TOOLCHAIN in lib.rs, AUTODIFF_TOOLCHAIN + ATOMICS_TOOLCHAIN in build.rs,
+# BROWSERPOD_TOOLCHAIN pinned in docker/browserpod.env and installed below):
 #
 #   nightly-2026-07-14  normal + SIMD cells (CELL_TOOLCHAIN). The common case,
 #                       tracked fresh. Needs rust-src + the wasm32 target. Also
@@ -102,6 +103,47 @@ RUN rustup toolchain install nightly-2026-07-14 --profile minimal \
 # drop the base image's stable toolchain — nothing uses it after the default
 # switch, and it costs ~1 GB.
 RUN rustup toolchain uninstall stable 1.93.0 || true
+
+# ── The fourth toolchain: BrowserPod (PRD-0066 Linux cells) ──────────────
+#
+# Installed from a VENDORED tarball, never `curl | sh` at image-build time.
+# The upstream installer is a two-stage script that downloads from
+# rt.browserpod.io, and a production build that can be stopped twenty minutes
+# in by somebody else's CDN is a dependency worth spending 38MB of build
+# context to remove. `cargo make vendor-browserpod` fetches and verifies it
+# beforehand (a cheap, retryable, mirror-redirectable step), and
+# `cargo make docker-build` runs that first. The RUNTIME still depends on that
+# CDN — nothing here changes that, and nothing can.
+#
+# The digest is checked AGAIN here rather than trusted from the fetch: the
+# whole point of vendoring is that this layer stops believing the network, and
+# a build context is not a trust boundary.
+#
+# The pack installs as an ordinary rustup toolchain by being copied into
+# $RUSTUP_HOME/toolchains (rustup discovers it by directory listing), and pulls
+# its own pinned nightly underneath from static.rust-lang.org — the one
+# registry this image already depends on. Its rustc wrapper bakes in
+# RUST_TARGET_PATH, so `--target wasm32-browserpod-linux-musl` resolves by name
+# with no `rustup target add`.
+#
+# NOT installed: clang. The pack ships a C-compiler wrapper that shells out to
+# the system clang, so a Linux cell whose dependency tree runs a `cc` build
+# script for the pod target will fail with "clang: not found". Pure-Rust cells
+# (the MVP case) never invoke it, and llvm is ~350MB, so this is left out
+# deliberately and noted rather than paid for speculatively.
+COPY docker/browserpod.env docker/vendor/ /tmp/browserpod/
+RUN set -eu; \
+    . /tmp/browserpod/browserpod.env; \
+    tarball="/tmp/browserpod/browserpod-rust-${BROWSERPOD_VERSION}.tar.gz"; \
+    if [ ! -f "$tarball" ]; then \
+        echo "ERROR: $tarball missing. Run: cargo make vendor-browserpod" >&2; \
+        exit 1; \
+    fi; \
+    echo "${BROWSERPOD_SHA256}  $tarball" | sha256sum -c -; \
+    tar -xzf "$tarball" -C /tmp/browserpod; \
+    sh "/tmp/browserpod/browserpod-rust-${BROWSERPOD_VERSION}/install.sh"; \
+    rustup toolchain list | grep -q "browserpod-${BROWSERPOD_VERSION}"; \
+    rm -rf /tmp/browserpod
 
 # Copy tool binaries from builder (avoids recompiling / reinstalling in runtime).
 COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-bindgen

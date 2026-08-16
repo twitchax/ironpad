@@ -414,10 +414,14 @@ fn NotebookContent() -> impl IntoView {
     // ── Add cell callback ───────────────────────────────────────────────
 
     let add_cell_cb = Callback::new(move |(after, cell_type): (Option<String>, CellType)| {
-        let default_source = if cell_type == CellType::Markdown {
-            "# New Section\n\nAdd your notes here.".to_string()
-        } else {
-            "42".to_string()
+        // A Linux cell is a whole program, not an expression: it is compiled
+        // and run as `_start`, so the `42` that seeds a Code cell would not
+        // even build. Seeding the shape the author has to write is the
+        // cheapest place to teach the difference (PRD-0066 T-004).
+        let default_source = match cell_type {
+            CellType::Markdown => "# New Section\n\nAdd your notes here.".to_string(),
+            CellType::Linux => "fn main() {\n    println!(\"Hello from Linux.\");\n}".to_string(),
+            CellType::Code | CellType::Unsupported => "42".to_string(),
         };
         if let Ok((result, _event)) = model.apply(
             ironpad_common::protocol::Mutation::CellAdd {

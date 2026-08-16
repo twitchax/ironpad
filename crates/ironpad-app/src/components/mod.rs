@@ -7,6 +7,7 @@ pub mod error_panel;
 pub mod executor;
 pub mod icon;
 pub mod icons;
+pub(crate) mod linux_cell;
 pub mod live_view_panel;
 pub mod markdown_cell;
 pub mod monaco_editor;

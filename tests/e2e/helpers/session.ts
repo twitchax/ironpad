@@ -11,10 +11,17 @@ import { Page, expect } from "@playwright/test";
  * `createNotebook` alone). Text is presentation and it will keep changing;
  * the class is the contract. `hasText: "Code"` is doubly wrong now, since the
  * cell's own Code/Cargo.toml tab would also match it.
+ *
+ * ADD_CODE was `:not(.ironpad-add-cell-btn--markdown)` until PRD-0066 added a
+ * third kind, which that negation would have silently widened to "Code or
+ * Linux" — `.last()` in editor-ux.spec.ts would have started clicking Linux
+ * and, once the runtime lands, spending a metered pod boot per call. Each
+ * button now carries a positive modifier class, which a fourth kind cannot
+ * broaden.
  */
-export const ADD_CODE =
-  "button.ironpad-add-cell-btn:not(.ironpad-add-cell-btn--markdown)";
+export const ADD_CODE = "button.ironpad-add-cell-btn--code";
 export const ADD_MARKDOWN = "button.ironpad-add-cell-btn--markdown";
+export const ADD_LINUX = "button.ironpad-add-cell-btn--linux";
 
 /**
  * Navigate home and create a fresh notebook, robustly under full-suite load:

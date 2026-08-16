@@ -18,6 +18,14 @@ capture ran them, and their text is part of what the snapshot set is honest
 against. Notebooks with no runnable cells still get an entry (empty `cells`
 map) so a markdown-only notebook cannot read as permanently stale.
 
+Linux cells (PRD-0066) are outside the manifest by the same "Code only" rule
+that excludes markdown and shared cells, and that exclusion is only half the
+invariant: running one boots a metered BrowserPod pod, so `capture-outputs`
+never clicks Run on one and a Linux cell must therefore never carry a
+`saved_output`. A snapshot on one could only have arrived by hand or by a
+regression in the capture tool, and nothing downstream would say so — hence
+the explicit check below rather than a comment.
+
 Fix: `cargo make capture-outputs -- <name>` against a dev server, then
 commit the refreshed notebook + manifest.
 """
@@ -53,6 +61,16 @@ def notebook_entry(path: pathlib.Path) -> dict:
     return {"cells": cells, "shared": digest("\x00".join(shared_parts))}
 
 
+def linux_snapshots(path: pathlib.Path) -> list[str]:
+    """Ids of Linux cells carrying a `saved_output`, which must be none."""
+    nb = json.loads(path.read_text())
+    return [
+        cell["id"]
+        for cell in nb.get("cells", [])
+        if cell.get("cell_type") == "Linux" and cell.get("saved_output")
+    ]
+
+
 def main() -> int:
     if not MANIFEST.is_file():
         print(f"missing {MANIFEST}: run `cargo make capture-outputs` to create it")
@@ -60,24 +78,32 @@ def main() -> int:
     manifest = json.loads(MANIFEST.read_text())
 
     stale: list[str] = []
+    pods: list[str] = []
     for path in sorted(DIR.glob("*.ironpad")):
         name = path.stem
         current = notebook_entry(path)
         recorded = manifest.get(name)
         if recorded != current:
             stale.append(name)
+        pods += [f"{name}:{cell_id}" for cell_id in linux_snapshots(path)]
 
     orphans = sorted(set(manifest) - {p.stem for p in DIR.glob("*.ironpad")})
 
-    if stale or orphans:
+    if stale or orphans or pods:
         for name in stale:
             print(f"stale saved outputs: {name} (compiled text changed since last capture)")
         for name in orphans:
             print(f"manifest entry for deleted notebook: {name}")
-        print(
-            "\nrun `cargo make capture-outputs -- <name> ...` against a dev "
-            "server, then commit the notebook + manifest"
-        )
+        for ref in pods:
+            print(
+                f"Linux cell carries a saved_output: {ref} — Linux cells are "
+                "never captured (running one boots a metered pod); delete it"
+            )
+        if stale or orphans:
+            print(
+                "\nrun `cargo make capture-outputs -- <name> ...` against a dev "
+                "server, then commit the notebook + manifest"
+            )
         return 1
 
     print(f"capture manifest is fresh ({len(manifest)} notebooks)")

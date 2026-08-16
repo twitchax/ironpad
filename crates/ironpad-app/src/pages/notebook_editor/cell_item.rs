@@ -50,6 +50,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     });
 
     let is_markdown = cell.cell_type == CellType::Markdown;
+    // The other question `is_markdown` used to answer by accident. Only `Code`
+    // executes through the editor's own executor: markdown has no code, shared
+    // cells compile into every OTHER cell, `Linux` cells run in a pod on the
+    // viewer, and `Unsupported` must never be guessed at. Stated positively so
+    // a new cell type is excluded until someone deliberately includes it.
+    let runs_in_editor = cell.cell_type == CellType::Code;
+    let cell_type = cell.cell_type;
 
     // Shared flag, looked up live from the manifest list (like `order_display`)
     // so the toggle below re-renders this cell without a rebuild.
@@ -387,7 +394,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // Markdown and shared cells skip compilation — advance the
                 // queue immediately (shared cells compile as part of every
                 // OTHER cell's shared.rs, never on their own).
-                if is_markdown || is_shared.get_untracked() {
+                if !runs_in_editor || is_shared.get_untracked() {
                     crate::components::run_flow::advance_queue(state.run_all_queue, &cid);
                     return;
                 }
@@ -402,7 +409,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             }
             Some(_) => {
                 // Waiting in queue — show queued indicator.
-                if !is_markdown
+                if runs_in_editor
                     && !matches!(
                         cell_status.get_untracked(),
                         CellStatus::Compiling | CellStatus::Running | CellStatus::Queued
@@ -492,7 +499,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         state,
         model,
         cell_id: cell_id_for_run,
-        is_markdown,
+        cell_type,
         is_shared,
         cell_status,
         last_compile,
@@ -823,7 +830,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 pipeline::dispatch_live_check(
                     &state,
                     cid_check.clone(),
-                    is_markdown,
+                    cell_type,
                     is_shared,
                     cell_status,
                     source,
@@ -1132,7 +1139,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     />
 
                     {move || {
-                        if is_markdown || is_shared.get() {
+                        if !runs_in_editor || is_shared.get() {
                             return view! { <span /> }.into_any();
                         }
                         let is_stale = state.cell_stale.get()
@@ -1148,7 +1155,20 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         }
                     }}
 
-                    {if is_markdown {
+                    {if cell_type == CellType::Linux {
+                        // Identity only. The "where does it run" sentence used
+                        // to live in this tooltip, which is invisible to anyone
+                        // who does not think to hover — and the question it
+                        // answers ("why has this cell no Run button?") is asked
+                        // by people who are not hovering. It is now the visible
+                        // notice below. Shaped like the shared-cell badge
+                        // beside it, icon and all.
+                        view! {
+                            <span class="ironpad-tag ironpad-cell-type-badge ironpad-cell-type-badge--linux">
+                                <IconLabel icon=icons::LINUX label="linux"/>
+                            </span>
+                        }.into_any()
+                    } else if is_markdown {
                         view! {
                             <span class="ironpad-tag ironpad-cell-type-badge ironpad-cell-type-badge--markdown">
                                 "¶ markdown"
@@ -1241,6 +1261,27 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 </div>
             </div>
 
+            // ── Linux cell: where it actually runs ──────────────────────
+            //
+            // `runs_in_editor` takes the Run button away from a Linux cell,
+            // which is correct and leaves an author staring at a cell with no
+            // way to run it and nothing saying why. This is that sentence.
+            //
+            // A SIBLING of the body rather than a child, so a collapsed cell
+            // still explains itself — the collapse is exactly the state in
+            // which the missing button is most confusing, since there is
+            // nothing else to look at.
+            //
+            // Keyed on `Linux` specifically, not on `!runs_in_editor`: shared
+            // cells carry their own chrome and an `Unsupported` cell needs a
+            // different sentence (nobody can say where THAT one runs).
+            {(cell_type == CellType::Linux).then(|| view! {
+                <div class="ironpad-cell-linux-notice">
+                    "This cell runs as a Linux process, which the editor cannot host. \
+                     Switch to Preview, bottom left, to run it."
+                </div>
+            })}
+
             {if is_markdown {
                 // ── Markdown cell body ──────────────────────────────────
                 view! {
@@ -1328,7 +1369,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     <Icon icon=icons::DRAG/>
                 </div>
             })}
-            {move || if is_markdown || is_shared.get() {
+            // Was `is_markdown || is_shared`, which handed a Linux cell a Run
+            // button that compiled it through the Code scaffold and reported
+            // success with no output (PRD-0066).
+            {move || if !runs_in_editor || is_shared.get() {
                 view! { <span /> }.into_any()
             } else {
                 view! {
@@ -1439,9 +1483,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                             >
                                 <IconLabel icon=icons::COPY label="Duplicate"/>
                             </button>
-                            {if is_markdown {
-                                view! { <span /> }.into_any()
-                            } else {
+                            // Both items below are wrong for a cell that does
+                            // not run here: "Run All Below" is a run
+                            // affordance, and shared source is a Rust fragment
+                            // appended to every other cell, which a whole
+                            // program cannot be.
+                            {if runs_in_editor {
                                 view! {
                                     {move || if is_shared.get() {
                                         view! { <span /> }.into_any()
@@ -1466,6 +1513,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                                         }}
                                     </button>
                                 }.into_any()
+                            } else {
+                                view! { <span /> }.into_any()
                             }}
                             <div class="ironpad-cell-menu-divider" />
                             <button

@@ -35,6 +35,16 @@ pub struct AppConfig {
     /// admin surface does not exist on this instance, which is the default and
     /// what every contributor and CI run gets.
     pub admin_login: Option<String>,
+    /// `BrowserPod` API key backing Linux cells (PRD-0066), from
+    /// `BROWSERPOD_KEY`.
+    ///
+    /// Unavoidably client-visible — a pod boots in the browser and the SDK
+    /// takes the key as a boot argument — so this is deployment identity
+    /// rather than a secret in the auth sense. `None` means this instance
+    /// runs no Linux cells, which is what every contributor checkout and CI
+    /// run gets, and what the cell says on its face instead of failing
+    /// somewhere inside a vendor SDK.
+    pub browserpod_key: Option<String>,
 }
 
 impl AppConfig {
@@ -74,6 +84,7 @@ mod tests {
             compilation_proxy: None,
             public_url: public_url.to_string(),
             admin_login: None,
+            browserpod_key: None,
         }
     }
 

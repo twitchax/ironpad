@@ -13,6 +13,7 @@ use ironpad_common::CompileRequest;
 use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 
 use crate::components::copy_button::CopyButton;
+use crate::components::linux_cell::ViewOnlyLinuxCell;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
 use crate::components::notebook_rail::{
@@ -637,16 +638,21 @@ fn ViewOnlyCell(
             <ViewOnlyMarkdownCell source=cell.source.clone() anchor_id=anchor_id />
         }
         .into_any(),
-        // PRD-0066. The pod runtime is T-005; until it lands a Linux cell
-        // renders read-only and says so, rather than falling through to the
-        // code path and compiling a whole program to the wrong target.
+        // PRD-0066: a whole Rust program, run as a real process in a
+        // BrowserPod pod shared by the notebook. Its own component rather
+        // than an arm of the code path — it compiles to a different target,
+        // runs on a different runtime, pipes through a filesystem instead of
+        // typed slots, and must never be reachable from the run-all queue.
         CellType::Linux => view! {
-            <ViewOnlyInertCell
+            <ViewOnlyLinuxCell
                 cell=cell
                 index=index
                 anchor_id=anchor_id
-                badge="linux"
-                notice="This cell runs as a Linux process. Support is not enabled in this build."
+                shared_cargo_toml=shared_cargo_toml
+                shared_source=shared_source
+                notebook_id=notebook_id
+                force_recompile=force_recompile
+                share_blob=share_blob
             />
         }
         .into_any(),
@@ -786,6 +792,9 @@ fn ViewOnlyCodeCell(
                     crate::components::executor::assemble_cell_inputs(&cells, my_idx, &outputs);
 
                 let request = CompileRequest {
+                    // Code-only by construction: the viewer dispatches Linux cells to
+                    // their own component, and this one only ever receives Code.
+                    cell_type: CellType::Code,
                     notebook_id: stored_notebook_id.get_value(),
                     cell_id: cell_data.id.clone(),
                     source: cell_data.source.clone(),
@@ -1100,8 +1109,8 @@ fn ViewOnlyCodeCell(
 
 // ── ViewOnlySharedCell ──────────────────────────────────────────────────────
 
-/// A cell this build can display but must not execute: a `Linux` cell before
-/// the pod runtime exists, or a cell type from a newer release.
+/// A cell this build can display but must not execute: a cell type from a
+/// newer release.
 ///
 /// It deliberately shows the source. A viewer that hid the cell entirely would
 /// make the notebook silently shorter than the document, which is the failure

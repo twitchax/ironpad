@@ -38,8 +38,11 @@ test.describe("Notebook", () => {
       cells.first().locator(".monaco-editor").first()
     ).toBeVisible({ timeout: 15_000 });
 
-    // Click "Add Cell" again to add a second cell.
-    await page.locator(".ironpad-add-cell-btn").last().click();
+    // Click "Add Cell" again to add a second cell. Named explicitly rather
+    // than `.last()`: PRD-0066 put a third button (Linux) in every add row,
+    // so the last one stopped being Markdown and started being a cell with a
+    // different execution model entirely.
+    await page.locator(ADD_CODE).last().click();
 
     // Verify two cells now exist.
     await expect(cells).toHaveCount(2);

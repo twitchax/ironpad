@@ -6,7 +6,7 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use ironpad_common::cache_key::merge_dependencies;
+use ironpad_common::cache_key::{merge_dependencies, CellTarget};
 
 // Re-exported so in-crate callers (`server_fns.rs`, `compiler/mod.rs`) and the
 // tests below keep their `compiler::scaffold::*` paths; the definitions moved
@@ -39,7 +39,7 @@ pub fn is_valid_cell_id(cell_id: &str) -> bool {
 /// {cache_dir}/workspaces/{session_id}/{cell_id}/
 ///   Cargo.toml
 ///   src/
-///     lib.rs
+///     lib.rs      (ordinary cells)  or  main.rs (Linux cells)
 /// ```
 ///
 /// Returns `(crate_dir, preamble_lines, is_async, is_simulation)`. Feature
@@ -63,11 +63,24 @@ pub fn scaffold_micro_crate(
     previous_cell_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
+    target: CellTarget,
 ) -> anyhow::Result<(PathBuf, u32, bool, bool)> {
     let crate_dir = cache_dir.join("workspaces").join(session_id).join(cell_id);
 
     let src_dir = crate_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
+
+    if target.is_linux() {
+        return scaffold_linux_crate(
+            &crate_dir,
+            &src_dir,
+            cell_id,
+            source,
+            cargo_toml,
+            shared_cargo_toml,
+            shared_source,
+        );
+    }
 
     // Resolve ironpad-cell path to absolute so the micro-crate can find it
     // regardless of the working directory used by `cargo build`.
@@ -122,6 +135,11 @@ pub fn scaffold_micro_crate(
         lib_rs.insert_str(0, "#![feature(gen_blocks)]\n");
         preamble_lines += 1;
     }
+    // Mirror of the Linux path's cleanup: a `src/main.rs` left by a previous
+    // compile of this cell as a Linux cell would be auto-discovered as a
+    // second (bin) target and compiled too, reporting the old program's
+    // errors against this one.
+    let _ = std::fs::remove_file(src_dir.join("main.rs"));
     std::fs::write(src_dir.join("lib.rs"), lib_rs)?;
 
     if let Some(shared) = shared_source {
@@ -129,6 +147,49 @@ pub fn scaffold_micro_crate(
     }
 
     Ok((crate_dir, preamble_lines, is_async, is_simulation))
+}
+
+/// Scaffold a Linux cell (PRD-0066): a whole Rust program, not a fragment.
+///
+/// The author writes `fn main()`, so ironpad supplies almost nothing — no
+/// `cell_main` wrapper, no `cellN` input bindings, no trampoline, and no
+/// `ironpad-cell` dependency (its host imports are `env` functions OUR
+/// executor provides; inside a pod they would be undefined symbols with no
+/// possible implementation). What it does supply is the notebook's shared
+/// source as a plain `mod shared`, exactly as an ordinary cell gets it, and
+/// the merged dependency set.
+///
+/// Returns the same tuple shape as [`scaffold_micro_crate`]; `is_async` and
+/// `is_simulation` are always false, since both describe the executor ABI a
+/// Linux cell does not use.
+fn scaffold_linux_crate(
+    crate_dir: &Path,
+    src_dir: &Path,
+    cell_id: &str,
+    source: &str,
+    cargo_toml: &str,
+    shared_cargo_toml: Option<&str>,
+    shared_source: Option<&str>,
+) -> anyhow::Result<(PathBuf, u32, bool, bool)> {
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        generate_linux_cargo_toml(cell_id, cargo_toml, shared_cargo_toml),
+    )?;
+
+    // A bin target, so the entry point is `src/main.rs` — and `src/lib.rs`
+    // must not survive from a previous compile of this cell under another
+    // type, or cargo builds both and the stale lib's `cell_main` fails to
+    // resolve `ironpad_cell`. The scaffold dir is keyed by cell id and reused.
+    let _ = std::fs::remove_file(src_dir.join("lib.rs"));
+
+    let (main_rs, preamble_lines) = generate_main_rs(source, shared_source.is_some());
+    std::fs::write(src_dir.join("main.rs"), main_rs)?;
+
+    if let Some(shared) = shared_source {
+        std::fs::write(src_dir.join("shared.rs"), shared)?;
+    }
+
+    Ok((crate_dir.to_path_buf(), preamble_lines, false, false))
 }
 
 // ── Cargo.toml Generation ────────────────────────────────────────────────────
@@ -190,6 +251,59 @@ crate-type = ["cdylib"]
 [dependencies]
 {cell_dep}
 {wasm_bindgen_dep}
+"#
+    );
+
+    if !merged_deps.is_empty() {
+        toml.push_str(&merged_deps);
+        if !merged_deps.ends_with('\n') {
+            toml.push('\n');
+        }
+    }
+
+    if !extra_sections.is_empty() {
+        toml.push('\n');
+        toml.push_str(&extra_sections);
+        if !extra_sections.ends_with('\n') {
+            toml.push('\n');
+        }
+    }
+
+    toml
+}
+
+/// Build the `Cargo.toml` for a Linux cell's micro-crate.
+///
+/// Deliberately thinner than [`generate_cargo_toml`]: a bin target instead of
+/// a `cdylib`, and neither `ironpad-cell` nor `wasm-bindgen`, because nothing
+/// in a Linux cell crosses a JS boundary. The user's and notebook's
+/// dependencies and extra sections (e.g. `[profile.release]`) are merged
+/// exactly as they are for an ordinary cell — a Linux cell is still a cell.
+///
+/// The `[[bin]]` section is explicit rather than left to autodiscovery so the
+/// artifact name the build stage looks for is written down in the manifest
+/// that produces it.
+fn generate_linux_cargo_toml(
+    cell_id: &str,
+    user_cargo_toml: &str,
+    shared_cargo_toml: Option<&str>,
+) -> String {
+    let merged_deps = merge_dependencies(shared_cargo_toml, user_cargo_toml);
+    let extra_sections = extract_extra_sections(shared_cargo_toml, user_cargo_toml);
+
+    let mut toml = format!(
+        r#"[package]
+name = "cell-{cell_id}"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cell-{cell_id}"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
 "#
     );
 
@@ -580,6 +694,24 @@ Box::into_raw(Box::new(result)) as u32
         + u32::from(refs.last && has_bindings);
 
     (code, preamble_lines, is_async, false)
+}
+
+/// Generate `main.rs` for a Linux cell: the user's program, verbatim.
+///
+/// The only thing prepended is `mod shared;` when the notebook has shared
+/// source, so a Linux cell reaches the notebook's helpers through the same
+/// `shared::` path every other cell uses. Returns `(code, preamble_lines)`.
+///
+/// `preamble_lines` is therefore **0 or 1**, against 7 or more for an ordinary
+/// cell (use, shared line, attribute, trampoline, inner-fn header, panic hook,
+/// output-block open, plus a line per injected `cellN` binding and per
+/// crate-root feature gate). Diagnostics are mapped by subtracting it, so
+/// getting it wrong shifts every error the author sees — and the shift is
+/// invisible in a passing compile.
+pub fn generate_main_rs(source: &str, has_shared_source: bool) -> (String, u32) {
+    let shared_mod = shared_mod_decl(has_shared_source);
+    let code = format!("{shared_mod}{source}");
+    (code, u32::from(has_shared_source))
 }
 
 /// Generate the `lib.rs` wrapper for simulation cells.
@@ -1039,6 +1171,7 @@ serde = "1"
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("scaffold should succeed");
 
@@ -1063,6 +1196,176 @@ serde = "1"
         assert!(lib_content.contains("CellOutput::empty()"));
     }
 
+    // ── Linux cells (PRD-0066) ──────────────────────────────────────────
+
+    /// The source a Linux cell author writes: a whole program.
+    const LINUX_SOURCE: &str =
+        "use std::fs;\n\nfn main() {\n    fs::write(\"/tmp/a\", \"hi\").unwrap();\n}";
+
+    #[test]
+    fn linux_cell_scaffolds_a_whole_program_not_a_fragment() {
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+
+        let (crate_dir, preamble_lines, is_async, is_sim) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "session-1",
+            "cell-0",
+            LINUX_SOURCE,
+            "[dependencies]\nserde = \"1\"\n",
+            &[],
+            None,
+            None,
+            CellTarget::Linux,
+        )
+        .expect("scaffold should succeed");
+
+        // No preamble at all without shared source: the file IS the user's
+        // program, so a diagnostic's line number needs no adjustment.
+        assert_eq!(preamble_lines, 0);
+        assert!(!is_async, "the executor's async ABI does not apply");
+        assert!(!is_sim, "nor the tick ABI");
+
+        // A bin, not a cdylib.
+        assert!(crate_dir.join("src/main.rs").is_file());
+        assert!(
+            !crate_dir.join("src/lib.rs").exists(),
+            "a Linux cell has no lib target"
+        );
+
+        let main = std::fs::read_to_string(crate_dir.join("src/main.rs")).unwrap();
+        assert_eq!(main, LINUX_SOURCE, "the program is passed through verbatim");
+        for injected in [
+            "cell_main",
+            "ironpad_cell",
+            "__ironpad_user__",
+            "CellInputs",
+            "wasm_bindgen",
+        ] {
+            assert!(
+                !main.contains(injected),
+                "the executor scaffold leaked into a Linux cell: {injected}"
+            );
+        }
+
+        let cargo = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains(r#"name = "cell-cell-0""#));
+        assert!(cargo.contains("[[bin]]"), "the artifact name is declared");
+        assert!(cargo.contains(r#"path = "src/main.rs""#));
+        assert!(cargo.contains("serde"), "user dependencies still merge");
+        assert!(
+            !cargo.contains("cdylib"),
+            "a cdylib has no `_start` for a pod to call"
+        );
+        // `ironpad-cell`'s host imports are `env` functions OUR executor
+        // provides; in a pod they would be undefined symbols with no possible
+        // implementation, so it must not be injected.
+        assert!(!cargo.contains("ironpad-cell"));
+        assert!(!cargo.contains("wasm-bindgen"));
+    }
+
+    #[test]
+    fn linux_cell_gets_the_notebook_shared_source_as_a_module() {
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let shared = "pub fn greeting() -> &'static str { \"hi\" }";
+
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "session-1",
+            "cell-0",
+            LINUX_SOURCE,
+            "",
+            &[],
+            Some("[dependencies]\nrand = \"0.8\"\n"),
+            Some(shared),
+            CellTarget::Linux,
+        )
+        .expect("scaffold should succeed");
+
+        assert_eq!(
+            std::fs::read_to_string(crate_dir.join("src/shared.rs")).unwrap(),
+            shared
+        );
+        let main = std::fs::read_to_string(crate_dir.join("src/main.rs")).unwrap();
+        assert!(main.starts_with("#[allow(dead_code)] mod shared;\n"));
+        assert!(main.ends_with(LINUX_SOURCE), "user code follows the module");
+        // Exactly one injected line, so a diagnostic on the author's first
+        // line arrives as line 1 and not line 0 or 2.
+        assert_eq!(preamble_lines, 1);
+        assert_eq!(main.lines().count(), LINUX_SOURCE.lines().count() + 1);
+
+        let cargo = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("rand"), "shared dependencies still merge");
+    }
+
+    #[test]
+    fn linux_cell_never_binds_upstream_slots() {
+        // There is no typed piping into a Linux cell (the pod's filesystem is
+        // the model), and a `cellN` binding would drag in `ironpad_cell`.
+        // A source that merely MENTIONS the names must not conjure bindings.
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "session-1",
+            "cell-0",
+            "fn main() { let cell0 = 1; let last = cell0; println!(\"{last}\"); }",
+            "",
+            &["u32".to_string(), "String".to_string()],
+            None,
+            None,
+            CellTarget::Linux,
+        )
+        .expect("scaffold should succeed");
+
+        let main = std::fs::read_to_string(crate_dir.join("src/main.rs")).unwrap();
+        assert!(!main.contains("let cell0: u32"));
+        assert!(!main.contains("__ironpad_inputs__"));
+        assert_eq!(preamble_lines, 0);
+    }
+
+    #[test]
+    fn switching_a_cell_between_targets_leaves_no_stale_entry_point() {
+        // The scaffold dir is keyed by cell id and reused. A leftover
+        // `lib.rs`/`main.rs` from the other target is auto-discovered by cargo
+        // as a SECOND target and compiled too — reporting the previous
+        // program's errors against this one.
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let scaffold = |source: &str, target| {
+            scaffold_micro_crate(
+                &tmp,
+                &cell_path,
+                "session-1",
+                "cell-0",
+                source,
+                "",
+                &[],
+                None,
+                None,
+                target,
+            )
+            .expect("scaffold should succeed")
+            .0
+        };
+
+        let dir = scaffold("    CellOutput::empty()", CellTarget::Executor);
+        assert!(dir.join("src/lib.rs").is_file());
+
+        let dir = scaffold(LINUX_SOURCE, CellTarget::Linux);
+        assert!(dir.join("src/main.rs").is_file());
+        assert!(!dir.join("src/lib.rs").exists(), "stale lib.rs survived");
+
+        let dir = scaffold("    CellOutput::empty()", CellTarget::Executor);
+        assert!(dir.join("src/lib.rs").is_file());
+        assert!(!dir.join("src/main.rs").exists(), "stale main.rs survived");
+    }
+
     #[test]
     fn overwrites_existing_scaffold() {
         let tmp = tempdir();
@@ -1079,6 +1382,7 @@ serde = "1"
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("first scaffold");
 
@@ -1093,6 +1397,7 @@ serde = "1"
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .expect("second scaffold");
 
@@ -1180,6 +1485,7 @@ serde = "1"
             &[],
             Some(shared),
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -1265,6 +1571,7 @@ serde = "1"
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
         assert!(!is_async);
@@ -1279,6 +1586,7 @@ serde = "1"
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
         assert!(is_async);
@@ -1586,6 +1894,7 @@ serde = \"1\"
             &[],
             None,
             Some(shared_src),
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -1617,6 +1926,7 @@ serde = \"1\"
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -1929,6 +2239,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -1942,6 +2253,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -1971,6 +2283,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -1984,6 +2297,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -2010,6 +2324,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -2023,6 +2338,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             None,
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -2055,6 +2371,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             Some("pub fn f() {}"),
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -2068,6 +2385,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             Some(shared),
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -2121,6 +2439,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             Some("pub fn f() {}"),
+            CellTarget::Executor,
         )
         .unwrap();
 
@@ -2134,6 +2453,7 @@ impl LiveView for Dashboard {
             &[],
             None,
             Some(shared),
+            CellTarget::Executor,
         )
         .unwrap();
 

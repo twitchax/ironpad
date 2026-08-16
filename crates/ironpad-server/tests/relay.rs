@@ -39,6 +39,7 @@ fn state_with_ws(ws: WsState) -> AppState {
             compilation_proxy: None,
             public_url: "http://localhost".to_string(),
             admin_login: None,
+            browserpod_key: None,
         },
         ws,
     }

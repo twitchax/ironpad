@@ -145,10 +145,31 @@ for (const file of files) {
     // cascade correctly aborts the queue there — which would leave every
     // later cell in the notebook without a snapshot. A per-cell run still
     // cascades that cell's own prerequisites.
-    const runButtons = page.locator('button[title="Run cell"]');
-    const count = await runButtons.count();
-    for (let i = 0; i < count; i += 1) {
-      await runButtons.nth(i).click();
+    //
+    // Iterate ROWS, not run buttons. `.ironpad-cell-row` is one per cell in
+    // notebook order, so row i is cell i whatever that cell renders inside
+    // it; a flat `button[title="Run cell"]` list is only the SUBSET of cells
+    // that offer one, and its indices say nothing about which cell they
+    // belong to. That distinction is now load-bearing: clicking Run on a
+    // Linux cell (PRD-0066) boots a metered BrowserPod pod, which is exactly
+    // what capture must never do — Linux cells carry no `saved_output`, and
+    // capturing one would need the API key to exist in CI. The alignment is
+    // asserted rather than assumed, so a future change to the cell list
+    // fails this tool loudly instead of clicking blind.
+    const rows = page.locator(".ironpad-cell-row");
+    const rowCount = await rows.count();
+    if (rowCount !== source.cells.length) {
+      throw new Error(
+        `cell rows (${rowCount}) do not match cells (${source.cells.length}); ` +
+          "the row-to-cell mapping this tool clicks through is broken",
+      );
+    }
+    for (let i = 0; i < rowCount; i += 1) {
+      const cell = source.cells[i];
+      if ((cell.cell_type ?? "Code") !== "Code" || cell.shared) continue;
+      const runButton = rows.nth(i).locator('button[title="Run cell"]');
+      if ((await runButton.count()) === 0) continue;
+      await runButton.click();
       const deadline = Date.now() + CELL_BUDGET_MS;
       for (;;) {
         const busy = await page.evaluate(

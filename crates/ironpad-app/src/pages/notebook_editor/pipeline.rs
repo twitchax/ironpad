@@ -33,7 +33,12 @@ pub(super) struct CellRunCtx {
     pub(super) state: NotebookState,
     pub(super) model: NotebookModel,
     pub(super) cell_id: StoredValue<String>,
-    pub(super) is_markdown: bool,
+    /// What the cell IS. Was `is_markdown: bool`, which silently conflated
+    /// three different questions — "render as prose", "cannot run here", and
+    /// "different chrome" — and answered the second one wrong for `Linux`
+    /// cells, which are not markdown and so were handed a Run button that
+    /// compiled them through the Code scaffold (PRD-0066).
+    pub(super) cell_type: CellType,
     pub(super) is_shared: Signal<bool>,
     pub(super) cell_status: RwSignal<CellStatus>,
     pub(super) last_compile: RwSignal<Option<CompileResponse>>,
@@ -143,7 +148,7 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
     let CellRunCtx {
         state,
         cell_id,
-        is_markdown,
+        cell_type,
         is_shared,
         cell_status,
         last_compile,
@@ -167,7 +172,10 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
 
         // Markdown cells skip compilation entirely; shared cells compile as
         // part of every other cell's shared.rs, never on their own.
-        if is_markdown || is_shared.get_untracked() {
+        // Not "is prose": "does not execute here". Markdown has no code,
+        // shared cells compile into every OTHER cell, and Linux cells run in
+        // the viewer's pod rather than the editor's executor.
+        if cell_type != CellType::Code || is_shared.get_untracked() {
             return;
         }
 
@@ -274,6 +282,12 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
 
             let request_cargo_toml_for_warmth = current_cargo_toml.clone();
             let request = CompileRequest {
+                // Derived, never named: a constant here compiles whatever the
+                // author wrote through the Code scaffold, and for a Linux cell
+                // that succeeds silently (its `fn main` becomes a nested fn
+                // that is never called). Gating the Run button is the other
+                // half; this is the half that survives a new caller.
+                cell_type,
                 notebook_id: state.notebook_id.get_untracked(),
                 cell_id: cid,
                 source: current_source,
@@ -614,7 +628,7 @@ pub(super) fn diagnostics_to_markers(diagnostics: &[Diagnostic]) -> js_sys::Arra
 pub(super) fn dispatch_live_check(
     state: &NotebookState,
     cid: String,
-    is_markdown: bool,
+    cell_type: CellType,
     is_shared: Signal<bool>,
     cell_status: RwSignal<CellStatus>,
     source: RwSignal<String>,
@@ -625,7 +639,7 @@ pub(super) fn dispatch_live_check(
     dispatch_live_check_with_retries(
         state,
         cid,
-        is_markdown,
+        cell_type,
         is_shared,
         cell_status,
         source,
@@ -652,7 +666,7 @@ const CHECK_SKIP_RETRY_MS: i32 = 3_000;
 fn dispatch_live_check_with_retries(
     state: &NotebookState,
     cid: String,
-    is_markdown: bool,
+    cell_type: CellType,
     is_shared: Signal<bool>,
     cell_status: RwSignal<CellStatus>,
     source: RwSignal<String>,
@@ -667,7 +681,9 @@ fn dispatch_live_check_with_retries(
     /// rides in `shared_source`, but the scaffold still needs a valid cell.
     const SHARED_CHECK_BODY: &str = "String::new()";
 
-    if is_markdown {
+    // Nothing to check without code. `Unsupported` is included: this build
+    // cannot know what that cell meant, so it must not compile it to guess.
+    if !cell_type.compiles() {
         return;
     }
     if matches!(
@@ -759,6 +775,19 @@ fn dispatch_live_check_with_retries(
     let state_for_retry = *state;
 
     let request = CompileRequest {
+        // Correct only while the editor's Run affordance excludes Linux
+        // cells (`cell_item.rs`). It is NOT true by the type system: the
+        // per-cell Run button is gated on `is_markdown || is_shared`, so a
+        // Linux cell sails through and gets compiled with the Code scaffold,
+        // which wraps the author's `fn main` inside `cell_main` where it is
+        // legal, never called, and reports SUCCESS WITH NO OUTPUT. Verified:
+        // it compiles with only a "never used" warning, so the author gets a
+        // green run that did nothing. If Linux cells ever become runnable
+        // from the editor, this must become `cell.cell_type`.
+        // A shared cell's check compiles SHARED_CHECK_BODY through the Code
+        // scaffold regardless of the cell's own type, so it reports Code; any
+        // other cell reports what it is, and the server derives the target.
+        cell_type: if shared { CellType::Code } else { cell_type },
         notebook_id: state.notebook_id.get_untracked(),
         cell_id: cid.clone(),
         source: if shared {
@@ -810,7 +839,7 @@ fn dispatch_live_check_with_retries(
                     dispatch_live_check_with_retries(
                         &state_for_retry,
                         cid,
-                        is_markdown,
+                        cell_type,
                         is_shared,
                         cell_status,
                         source,

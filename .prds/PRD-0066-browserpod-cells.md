@@ -30,11 +30,11 @@ acceptance_tests:
   uat_status: unverified
 - id: uat-002
   name: "A Linux cell runs in a pod and streams stdout into its panel"
-  command: cargo make playwright -- linux-cells
+  command: cargo make test-linux-cells
   uat_status: unverified
 - id: uat-003
   name: "Two Linux cells in one notebook share a filesystem: cell 1 writes, cell 2 reads"
-  command: cargo make playwright -- linux-cells
+  command: cargo make test-linux-cells
   uat_status: unverified
 - id: uat-004
   name: "A notebook with no Linux cell requests nothing from rt.browserpod.io and boots no pod"
@@ -46,7 +46,7 @@ acceptance_tests:
   uat_status: unverified
 - id: uat-006
   name: "Attribution renders in every Linux cell frame and in no other cell"
-  command: cargo make playwright -- linux-cells
+  command: cargo make test-linux-cells
   uat_status: unverified
 - id: uat-007
   name: "A CDN failure degrades to an inline notice, not a broken page or a hung notebook"
@@ -307,6 +307,15 @@ At 10/boot, a pod-dependent spec run costs ~40 tokens; ten gate runs a day is
 400/day and the monthly allowance is gone in under four weeks of ordinary
 development, with no users involved. Holding pods cannot amortize this because
 the cost is entirely in the create. Hence T-014.
+
+## Known gap: uat-002 and uat-003 have no automated coverage
+
+`tests/e2e/linux-pod/` contains only a README. Output streaming and the
+shared filesystem between two cells were both verified **by hand against a live
+pod**, which is evidence but not a regression test. The guard rails around
+pod-booting specs are in place and correct; there is nothing behind them yet.
+`cargo make test-linux-cells` reports the empty case rather than passing
+vacuously, so this cannot be mistaken for coverage.
 
 # Open Questions
 

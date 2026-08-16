@@ -82,6 +82,16 @@ pub struct CliArgs {
     #[arg(long, env = "IRONPAD_ADMIN_LOGIN")]
     pub admin_login: Option<String>,
 
+    /// `BrowserPod` API key, from `BROWSERPOD_KEY` (PRD-0066).
+    ///
+    /// Unset (the default) means Linux cells cannot run on this instance and
+    /// say so on the cell, rather than booting a pod against nothing. Every
+    /// contributor checkout and CI run gets that: a pod boot spends a metered
+    /// token on the owner's allowance, so an automated suite must never hold
+    /// a key by accident.
+    #[arg(long, env = "BROWSERPOD_KEY")]
+    pub browserpod_key: Option<String>,
+
     /// Global cap on concurrent WebSocket guest (agent) connections.
     #[arg(
         long,
@@ -115,6 +125,7 @@ impl From<CliArgs> for AppConfig {
             compilation_proxy: args.compilation_proxy,
             public_url,
             admin_login: args.admin_login,
+            browserpod_key: args.browserpod_key,
         }
     }
 }
@@ -137,6 +148,29 @@ mod tests {
         let config: AppConfig =
             CliArgs::parse_from(["ironpad", "--admin-login", "twitchax"]).into();
         assert_eq!(config.admin_login.as_deref(), Some("twitchax"));
+    }
+
+    #[test]
+    fn browserpod_key_defaults_to_absent() {
+        // The invariant that protects the owner's metered allowance. A pod
+        // boot costs a token off ~1,000 a month, and the test suite is the
+        // dominant consumer if it can boot at all (PRD-0066 T-014), so every
+        // contributor checkout and every CI run must come up with no key and
+        // therefore no way to reach BrowserPod.
+        //
+        // Reads the real environment, like the `admin_login` test above it: a
+        // shell that has sourced `.hidden/dev.env` will fail this locally, and
+        // that is the honest answer rather than a flake, because such a shell
+        // really can boot pods.
+        let config: AppConfig = CliArgs::parse_from(["ironpad"]).into();
+        assert_eq!(config.browserpod_key, None);
+    }
+
+    #[test]
+    fn browserpod_key_flows_through_to_app_config() {
+        let config: AppConfig =
+            CliArgs::parse_from(["ironpad", "--browserpod-key", "bp-test"]).into();
+        assert_eq!(config.browserpod_key.as_deref(), Some("bp-test"));
     }
 
     #[test]

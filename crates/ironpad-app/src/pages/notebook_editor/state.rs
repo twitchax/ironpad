@@ -296,15 +296,25 @@ impl NotebookState {
             ));
         }
 
-        let runnable = self
+        let cells = self
             .cells
             .try_get_untracked()
-            .ok_or("editor is shutting down")?
-            .iter()
-            .any(|c| c.id == cell_id && c.cell_type == CellType::Code && !c.shared);
-        if !runnable {
+            .ok_or("editor is shutting down")?;
+        let Some(cell) = cells.iter().find(|c| c.id == cell_id) else {
+            return Err(format!("cell {cell_id} not found"));
+        };
+        // Linux cells are refused for a different reason than markdown, and an
+        // agent told its Linux cell "cannot run on its own" learns nothing
+        // (PRD-0066 T-008). Refused deliberately rather than incidentally: a
+        // run boots a metered pod, and a CLI run has no human watching it.
+        if cell.cell_type == CellType::Linux {
             return Err(format!(
-                "cell {cell_id} not found or not runnable (markdown and shared cells cannot run on their own)"
+                "cell {cell_id} is a Linux cell, which an agent cannot run: every run boots a metered pod and a CLI run has nobody watching it. Run it from the notebook in a browser."
+            ));
+        }
+        if !cell.is_runnable() {
+            return Err(format!(
+                "cell {cell_id} is not runnable (markdown and shared cells cannot run on their own)"
             ));
         }
 
