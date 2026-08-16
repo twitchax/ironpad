@@ -421,7 +421,7 @@ fn NotebookContent() -> impl IntoView {
         let default_source = match cell_type {
             CellType::Markdown => "# New Section\n\nAdd your notes here.".to_string(),
             CellType::Linux => "fn main() {\n    println!(\"Hello from Linux.\");\n}".to_string(),
-            CellType::Code | CellType::Unsupported => "42".to_string(),
+            CellType::Code | CellType::Unsupported(_) => "42".to_string(),
         };
         if let Ok((result, _event)) = model.apply(
             ironpad_common::protocol::Mutation::CellAdd {

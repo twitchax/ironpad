@@ -696,22 +696,46 @@ Box::into_raw(Box::new(result)) as u32
     (code, preamble_lines, is_async, false)
 }
 
-/// Generate `main.rs` for a Linux cell: the user's program, verbatim.
+/// Generate `main.rs` for a Linux cell: the user's program, verbatim, first.
 ///
-/// The only thing prepended is `mod shared;` when the notebook has shared
-/// source, so a Linux cell reaches the notebook's helpers through the same
-/// `shared::` path every other cell uses. Returns `(code, preamble_lines)`.
+/// The only thing added is `mod shared;` when the notebook has shared source,
+/// so a Linux cell reaches the notebook's helpers through the same `shared::`
+/// path every other cell uses. It goes **after** the program, and that is the
+/// whole point of this function.
 ///
-/// `preamble_lines` is therefore **0 or 1**, against 7 or more for an ordinary
-/// cell (use, shared line, attribute, trampoline, inner-fn header, panic hook,
-/// output-block open, plus a line per injected `cellN` binding and per
-/// crate-root feature gate). Diagnostics are mapped by subtracting it, so
-/// getting it wrong shifts every error the author sees — and the shift is
-/// invisible in a passing compile.
+/// A Linux cell is a whole program on a nightly, so `#![feature(…)]`,
+/// `#![allow(…)]` and `//!` doc comments are ordinary things to write — and an
+/// inner attribute must lead the file. Prepending `mod shared;` made every one
+/// of them a hard error (*"an inner attribute is not permitted in this
+/// context"*) the moment a notebook had any shared source, with **no
+/// workaround available to the author**, since the attribute is illegal in
+/// every position they can write it. An ordinary `Code` cell never hit this
+/// because its source is a fragment inside a function body. Items are
+/// order-independent in Rust, so a trailing `mod shared;` resolves exactly the
+/// same for `shared::` paths anywhere above it.
+///
+/// Trailing also keeps `preamble_lines` at **0, unconditionally** — nothing is
+/// inserted above the author's first line, so every diagnostic maps to the line
+/// it came from with no arithmetic at all. Hoisting the attributes above the
+/// module instead would split the file into two regions with different offsets
+/// (0 for the attribute block, 1 below it), which a single scalar cannot
+/// express; the shift is invisible in a passing compile and lands every error
+/// on the wrong line once one appears.
+///
+/// Returns `(code, preamble_lines)`. For contrast, an ordinary cell's preamble
+/// is 7 or more (use, shared line, attribute, trampoline, inner-fn header,
+/// panic hook, output-block open, plus a line per injected `cellN` binding and
+/// per crate-root feature gate).
 pub fn generate_main_rs(source: &str, has_shared_source: bool) -> (String, u32) {
     let shared_mod = shared_mod_decl(has_shared_source);
-    let code = format!("{shared_mod}{source}");
-    (code, u32::from(has_shared_source))
+    // The newline is load-bearing when the program ends in a line comment (or
+    // no trailing newline at all), which would otherwise swallow the module.
+    let code = if shared_mod.is_empty() {
+        source.to_string()
+    } else {
+        format!("{source}\n{shared_mod}")
+    };
+    (code, 0)
 }
 
 /// Generate the `lib.rs` wrapper for simulation cells.
@@ -1290,15 +1314,73 @@ serde = "1"
             shared
         );
         let main = std::fs::read_to_string(crate_dir.join("src/main.rs")).unwrap();
-        assert!(main.starts_with("#[allow(dead_code)] mod shared;\n"));
-        assert!(main.ends_with(LINUX_SOURCE), "user code follows the module");
-        // Exactly one injected line, so a diagnostic on the author's first
-        // line arrives as line 1 and not line 0 or 2.
-        assert_eq!(preamble_lines, 1);
-        assert_eq!(main.lines().count(), LINUX_SOURCE.lines().count() + 1);
+        assert!(
+            main.starts_with(LINUX_SOURCE),
+            "the program still leads the file"
+        );
+        assert!(
+            main.ends_with("#[allow(dead_code)] mod shared;\n"),
+            "the module follows the program: {main}"
+        );
+        // Nothing is inserted above the author's first line, so a diagnostic
+        // needs no adjustment whether or not the notebook has shared source.
+        assert_eq!(preamble_lines, 0);
 
         let cargo = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
         assert!(cargo.contains("rand"), "shared dependencies still merge");
+    }
+
+    #[test]
+    fn a_linux_cell_can_declare_crate_attributes_alongside_shared_source() {
+        // Inner attributes must LEAD the file, so anything above them is a
+        // hard error — verified against rustc: "an inner attribute is not
+        // permitted in this context". A Linux cell is a whole program on a
+        // nightly, so `#![feature(…)]` is an ordinary reach, and the author
+        // has no workaround: the attribute is illegal in every position they
+        // can write it. Prepending `mod shared;` made every such cell
+        // uncompilable the moment the notebook had any shared source.
+        let tmp = tempdir();
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let source = "#![feature(portable_simd)]\n#![allow(dead_code)]\n//! A program.\n\nfn main() {\n    println!(\"{}\", shared::doubled(21));\n}";
+
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+            &tmp,
+            &cell_path,
+            "session-1",
+            "cell-0",
+            source,
+            "",
+            &[],
+            None,
+            Some("pub fn doubled(n: u32) -> u32 { n * 2 }"),
+            CellTarget::Linux,
+        )
+        .expect("scaffold should succeed");
+
+        let main = std::fs::read_to_string(crate_dir.join("src/main.rs")).unwrap();
+        assert_eq!(
+            main.lines().next(),
+            Some("#![feature(portable_simd)]"),
+            "an inner attribute must be the first line of the file: {main}"
+        );
+        assert!(main.contains("mod shared;"), "and it still gets the module");
+        // The author's line 1 is the file's line 1, so diagnostics on the
+        // attribute block map to themselves rather than off the top.
+        assert_eq!(preamble_lines, 0);
+    }
+
+    #[test]
+    fn a_trailing_line_comment_cannot_swallow_the_shared_module() {
+        // `format!("{source}{mod}")` with no separator would comment the
+        // module out and produce "failed to resolve: use of unresolved module
+        // `shared`" pointing at code the author never wrote.
+        let (main, preamble_lines) = generate_main_rs("fn main() {} // done", true);
+        assert!(
+            main.lines()
+                .any(|l| l.trim() == "#[allow(dead_code)] mod shared;"),
+            "the module needs a line of its own: {main}"
+        );
+        assert_eq!(preamble_lines, 0);
     }
 
     #[test]

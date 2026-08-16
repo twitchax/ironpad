@@ -497,6 +497,7 @@ pub(crate) fn ViewOnlyNotebook(
                         view! {
                             <ViewOnlyCell
                                 cell=cell
+                                embed=embed
                                 anchor_id=anchor_id
                                 index=index
                                 all_cells=all_cells
@@ -589,6 +590,9 @@ fn SharedAppendixSection(
 #[component]
 fn ViewOnlyCell(
     cell: IronpadCell,
+    /// Rendered inside an `/embed/*` iframe. Threaded rather than detected:
+    /// the Linux cell's refusal is SSR markup, and hydration cannot revise it.
+    embed: bool,
     /// DOM `id` stamped on this cell's root, so the rail can resolve it with
     /// `getElementById` (PRD-0065 T-007). Without it the scroll-spy and
     /// click-to-scroll both die silently, which is why `NotebookRail` warns
@@ -653,11 +657,12 @@ fn ViewOnlyCell(
                 notebook_id=notebook_id
                 force_recompile=force_recompile
                 share_blob=share_blob
+                embed=embed
             />
         }
         .into_any(),
         // A cell type from a newer release. Show the source, refuse to guess.
-        CellType::Unsupported => view! {
+        CellType::Unsupported(_) => view! {
             <ViewOnlyInertCell
                 cell=cell
                 index=index

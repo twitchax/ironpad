@@ -196,7 +196,7 @@ pub fn rail_cells(cells: &[IronpadCell]) -> Vec<RailCell> {
                     // release. Different reasons, same outline treatment: both
                     // are listed so the rail still matches the document, and
                     // neither can carry run state or a timing.
-                    CellType::Markdown | CellType::Unsupported => RailCellKind::Markdown,
+                    CellType::Markdown | CellType::Unsupported(_) => RailCellKind::Markdown,
                 }
             },
         })

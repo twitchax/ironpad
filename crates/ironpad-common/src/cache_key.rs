@@ -748,10 +748,8 @@ mod tests {
         for other in [
             crate::types::CellType::Code,
             crate::types::CellType::Markdown,
-            crate::types::CellType::Unsupported,
+            crate::types::CellType::from_wire_tag("Wasi"),
         ] {
-            // `CellType` is not `Copy`; clone so the assertion can still name
-            // the variant it failed on.
             let target = CellTarget::from(other);
             assert_eq!(target, CellTarget::Executor, "{other:?}");
         }

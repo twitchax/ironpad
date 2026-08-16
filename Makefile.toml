@@ -169,8 +169,23 @@ args = ["nextest", "run", "--run-ignored=ignored-only", "--no-tests=pass"]
 
 # ── CI (fmt-check + clippy + test) ───────────────────────────────────────────
 
+# The pod runtime is JavaScript, so its logic is unreachable from `cargo
+# test`. These drive the real `public/browserpod-runtime.js` against a fake
+# SDK — no browser, no network, and **no metered pod boot** (the single
+# dynamic `import()` is patched at a site the harness asserts it matched, so
+# a moved line fails loudly instead of silently testing nothing).
+#
+# In `ci` deliberately: six of these fail against the pre-fix runtime and
+# cover terminate-during-boot, terminate-during-write, the stale-boot race,
+# the reporting horizon and the teardown grace. Left out of the gate they
+# would be a file rather than coverage.
+[tasks.test-js]
+description = "Run the JS unit tests for the pod runtime (no browser, no pod boots)"
+command = "node"
+args = ["--test", "tests/js/*.test.mjs"]
+
 [tasks.ci]
-description = "Full CI check: fmt-check → gen-completions-check → capture-outputs-check → glyph-check → css-vars-check → clippy → test"
+description = "Full CI check: fmt-check → gen-completions-check → capture-outputs-check → glyph-check → css-vars-check → clippy → test → test-js"
 dependencies = [
     "fmt-check",
     "gen-completions-check",
@@ -179,6 +194,7 @@ dependencies = [
     "css-vars-check",
     "clippy",
     "test",
+    "test-js",
 ]
 
 # ── CLI Build ───────────────────────────────────────────────────────────

@@ -53,6 +53,44 @@ fn redact_server_paths(
     out
 }
 
+/// Refuse a cell type this build cannot compile, before anything derives a
+/// target from it.
+///
+/// [`CellTarget::from`] is deliberately total — `Markdown` and `Unsupported`
+/// both map to the ordinary executor target — so by the time a request reaches
+/// hashing, scaffold and build, nothing downstream can tell that it was
+/// nonsense. It would wrap the source in the `cell_main` scaffold and report a
+/// green compile that produces no output, which is the exact silent failure
+/// [`CellType::Unsupported`](ironpad_common::types::CellType) exists to prevent.
+///
+/// The client checks [`CellType::compiles`] before dispatching, and the client
+/// is the half of this seam that can be a release behind: a tab holding a newer
+/// bundle can post a cell type this server has never heard of (a machine
+/// cycling mid-deploy is enough), where the unknown-tag arm lands it on
+/// `Unsupported` and the source scan cannot see any of it. So the gate is
+/// stated on both sides, and this is the authoritative one.
+#[cfg(feature = "ssr")]
+fn reject_uncompilable_cell_type(
+    cell_type: ironpad_common::types::CellType,
+) -> Result<(), ServerFnError> {
+    use ironpad_common::types::CellType;
+
+    if cell_type.compiles() {
+        return Ok(());
+    }
+    let reason = if matches!(cell_type, CellType::Markdown) {
+        "a Markdown cell has no Rust source to build"
+    } else {
+        "this build does not know that cell type, so it cannot know what to \
+         build it as; it likely comes from a newer release of ironpad, and \
+         reloading the page picks up the current one"
+    };
+    Err(ServerFnError::new(format!(
+        "cannot compile cell type {:?}: {reason}",
+        cell_type.wire_tag()
+    )))
+}
+
 /// Compile a single cell's Rust source into a WASM blob.
 ///
 /// Ties together the full compilation pipeline: cache check → scaffold →
@@ -93,6 +131,10 @@ async fn compile_cell_core(
     client_ip: &str,
     request: CompileRequest,
 ) -> Result<CompileResponse, ServerFnError> {
+    // Reject what this build cannot compile BEFORE deriving a target: the
+    // mapping below is total, so nothing after this line can tell a cell type
+    // it does not understand from an ordinary one.
+    reject_uncompilable_cell_type(request.cell_type)?;
     // The one place the request's cell type becomes a compile target, via
     // `CellTarget::from`. Derived once and threaded through hashing, scaffold
     // and build so those three can never disagree about what is being built
@@ -408,6 +450,10 @@ async fn check_cell_core(
     admission: &crate::compiler::admission::BuildAdmission,
     request: CompileRequest,
 ) -> Result<CheckResponse, ServerFnError> {
+    // Reject what this build cannot compile BEFORE deriving a target: the
+    // mapping below is total, so nothing after this line can tell a cell type
+    // it does not understand from an ordinary one.
+    reject_uncompilable_cell_type(request.cell_type)?;
     // The one place the request's cell type becomes a compile target, via
     // `CellTarget::from`. Derived once and threaded through hashing, scaffold
     // and build so those three can never disagree about what is being built
@@ -2330,6 +2376,99 @@ mod tests {
         assert!(code.cached && linux.cached, "both must be cache hits");
         assert_eq!(code.wasm_blob, executor_blob, "Code got the Linux blob");
         assert_eq!(linux.wasm_blob, linux_blob, "Linux got the Code blob");
+    }
+
+    // ── compile_cell_core / check_cell_core (type gate, PRD-0066) ────────
+
+    /// A cell type the server does not understand must be refused, not built.
+    ///
+    /// The forward-compatibility scenario, which the client-side
+    /// `CellType::compiles` check structurally cannot cover: a tab holding a
+    /// newer bundle posts `cell_type: "Wasi"` to an older server (a machine
+    /// cycling mid-deploy is enough). The unknown-tag arm lands it on
+    /// `Unsupported`, `CellTarget::from` maps that to the ordinary target, and
+    /// a whole program would compile through the `cell_main` scaffold: green,
+    /// no output, no error. `Markdown` rides the same path for the same reason.
+    #[tokio::test]
+    async fn an_uncompilable_cell_type_is_refused_before_it_becomes_a_target() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let cache = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_dir: cache.path().to_path_buf(),
+            cache_dir: cache.path().to_path_buf(),
+            port: 0,
+            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
+            compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
+            admin_login: None,
+            browserpod_key: None,
+        };
+        let request_for = |cell_type| CompileRequest {
+            cell_type,
+            notebook_id: "nb".to_string(),
+            cell_id: "cell-0".to_string(),
+            source: "fn main() {}".to_string(),
+            cargo_toml: "[dependencies]".to_string(),
+            previous_cell_types: vec![],
+            shared_cargo_toml: None,
+            shared_source: None,
+            force: false,
+            shared_check: None,
+        };
+        let locks = CompileLocks::default();
+        // Generous limits on purpose: the gate under test must be the ONLY
+        // thing between this request and a cargo build, so that removing it
+        // makes the request proceed rather than trip a rate limiter.
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            4,
+            100.0,
+            100.0,
+            std::time::Duration::from_millis(50),
+        );
+
+        let future_type = CellType::from_wire_tag("Wasi");
+        let error = compile_cell_core(
+            &config,
+            &locks,
+            &admission,
+            "test",
+            request_for(future_type),
+        )
+        .await
+        .expect_err("a cell type this build cannot compile must be an error, not a build");
+        // The tag it actually sent, so the message is diagnosable from a log
+        // line without the notebook in hand.
+        assert!(
+            error.to_string().contains("Wasi"),
+            "the error must name the tag: {error}"
+        );
+
+        // Live check runs the same pipeline with the same target derivation,
+        // so it needs the same gate — not a mention of it in the compile path.
+        let error = check_cell_core(&config, &locks, &admission, request_for(future_type))
+            .await
+            .expect_err("check_cell must refuse it too");
+        assert!(error.to_string().contains("Wasi"), "{error}");
+
+        for markdown in [
+            compile_cell_core(
+                &config,
+                &locks,
+                &admission,
+                "test",
+                request_for(CellType::Markdown),
+            )
+            .await
+            .err(),
+            check_cell_core(&config, &locks, &admission, request_for(CellType::Markdown))
+                .await
+                .err(),
+        ] {
+            let error = markdown.expect("Markdown has no Rust to build either");
+            assert!(error.to_string().contains("Markdown"), "{error}");
+        }
     }
 
     // ── compile_cell_core (cache-hit path) ───────────────────────────────

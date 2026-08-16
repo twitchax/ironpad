@@ -87,6 +87,15 @@ export default defineConfig({
       // is covered by unit tests in compiler/admission.rs.
       IRONPAD_BUILD_RATE_BURST: "100000",
       IRONPAD_BUILD_RATE_PER_MIN: "100000",
+      // A DELIBERATELY FAKE BrowserPod key (PRD-0066). Without one the Linux
+      // cell path short-circuits on "no key configured" and never reaches the
+      // code uat-007 tests, so an outage could not be exercised at all.
+      //
+      // It cannot spend anything: the default Chromium project launches with
+      // rt.browserpod.io mapped to `~NOTFOUND`, so no boot can leave the
+      // machine, and a boot is the only billable event. The value is not a
+      // real key and would be rejected on arrival even if it escaped.
+      BROWSERPOD_KEY: "bp1_playwright_not_a_real_key_00000000000000000000000000",
       // Registers /auth/test-login (PRD-0053) so specs can mint real
       // sessions without GitHub. Production never sets this.
       IRONPAD_TEST_AUTH: "1",

@@ -134,7 +134,7 @@ pub(super) fn build_export_html(
             // renders its source rather than vanishing: an export that
             // silently drops a cell is worse than one that shows text it
             // cannot label (PRD-0066).
-            CellType::Code | CellType::Linux | CellType::Unsupported => {
+            CellType::Code | CellType::Linux | CellType::Unsupported(_) => {
                 let _ = writeln!(
                     html,
                     "<pre class=\"code-block\"><code>{}</code></pre>",

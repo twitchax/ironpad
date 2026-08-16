@@ -84,10 +84,10 @@ if (!window.IronpadPod) {
     // mechanism.
     var QUIET_MS = 1200;
 
-    // Nothing here kills a process, so this is not a timeout in the usual
-    // sense: it is the point at which the UI stops claiming to know what the
-    // program is doing. Output keeps streaming afterwards, and Terminate
-    // stays the only way to actually stop it.
+    // Nothing here kills a process, so this is not a timeout in any sense: it
+    // is the point at which the UI stops claiming to know what the program is
+    // doing. The run stays open, output keeps streaming, and Terminate stays
+    // the only way to actually stop it.
     var UNKNOWN_AFTER_MS = 300000;
 
     // Output buffer caps. A runaway program can print faster than any UI can
@@ -106,11 +106,28 @@ if (!window.IronpadPod) {
     // cross the wasm boundary and re-render.
     var FLUSH_MS = 80;
 
-    // A remount (Leptos re-rendering the cell list) releases and re-retains
-    // within the same tick. Tearing down on the release would charge a fresh
-    // token to boot the identical pod back up, so the teardown waits long
-    // enough for a remount to claim it.
-    var TEARDOWN_GRACE_MS = 250;
+    // Writing a half-megabyte binary into a healthy pod is instant, so this is
+    // not a performance bound either: it is the difference between a wedged
+    // filesystem call showing up as a notice and showing up as a cell stuck on
+    // "starting machine" forever.
+    var WRITE_TIMEOUT_MS = 30000;
+
+    // How long the pod outlives the last Linux cell that unmounted.
+    //
+    // Sized by the metering, not by the framework: a boot costs 10 tokens of
+    // roughly a thousand a month and HOLDING one costs nothing, so the only
+    // thing worth minimising is how often a pod is created. The number that
+    // matters is the authoring loop — the editor tells authors to switch to
+    // Preview to run a cell, and that toggle disposes the whole subtree — so a
+    // grace sized for a same-tick remount (it was 250ms) charged 10 tokens
+    // per edit and wiped the shared filesystem between them, exhausting a
+    // month's allowance in about a hundred round trips with no readers at all.
+    //
+    // Minutes rather than never: a reader who navigates to a different page in
+    // the SPA leaves Workers and a shared memory behind, and nothing else in
+    // this file would ever collect them. Opening a different notebook still
+    // tears down immediately (`claimNotebook`), and so does Terminate.
+    var TEARDOWN_GRACE_MS = 300000;
 
     // ── Completion, inferred ────────────────────────────────────────────────
     //
@@ -138,9 +155,16 @@ if (!window.IronpadPod) {
     var state = {
       apiKey: null,
       pod: null,
-      // The in-flight boot. Never cancelled, even when a caller gives up
-      // waiting: a boot has already been paid for, so a late arrival is kept
-      // for the next click rather than thrown away.
+      // The in-flight boot, and ONLY ever the current one: a boot is never
+      // cancelled (the CDN work is already in flight and the token already
+      // spent), so a slow first attempt can land after a teardown has started
+      // a second. Whoever clears this handle must therefore check that it is
+      // still theirs, or a stale boot nulls a live one and the next click
+      // boots a third pod on top of two orphans.
+      //
+      // A boot that lands after a teardown is DISCARDED, not adopted: the
+      // machine the user dropped must not come back, and its 10 tokens are
+      // gone either way.
       booting: null,
       notebookId: null,
       // Bumped by every teardown. An in-flight run compares against it and
@@ -157,10 +181,12 @@ if (!window.IronpadPod) {
       // SDK, so identity is the only way to keep a rerun from accumulating
       // half-megabyte files.
       written: {},
-      // In-flight runs, each as the function that settles it. Teardown calls
-      // them: nothing here can kill a process, and without this a run whose
-      // pod was dropped would sit unresolved until the cap timer, holding a
-      // disposed component's future open for five minutes.
+      // Everything a teardown has to settle, each as the function that settles
+      // it. Nothing here can kill a process, so a run whose pod was dropped
+      // would otherwise sit unresolved with the cell busy and its Stop button
+      // dead. Covers the WHOLE run, not just the part under `execute`: the
+      // boot and the binary write are precisely the phases where the pod can
+      // be pulled and there is no process yet to report anything.
       pending: [],
       // Set false permanently for a pod whose `/bin/sh` cannot exec our
       // binaries; every later run in it skips straight to the direct path.
@@ -180,6 +206,34 @@ if (!window.IronpadPod) {
       if (!err) return "unknown error";
       if (err.ironpad) return err.message;
       return String((err && err.message) || err);
+    }
+
+    /**
+     * What a phase awaits alongside its real work so a teardown can settle it.
+     *
+     * Resolving with this object rather than rejecting keeps a cancelled run
+     * out of the error path: the pod going away is an outcome (`terminated`),
+     * not a failure to report to the reader.
+     */
+    var CANCELLED = { cancelled: true };
+
+    function makeCancelToken() {
+      var fire;
+      var promise = new Promise(function (resolve) {
+        fire = function () {
+          resolve(CANCELLED);
+        };
+      });
+      return { promise: promise, fire: fire };
+    }
+
+    function removePending(fn) {
+      var at = state.pending.indexOf(fn);
+      if (at !== -1) state.pending.splice(at, 1);
+    }
+
+    function terminatedResult() {
+      return { status: "terminated", exitCode: null, inferred: false };
     }
 
     /**
@@ -273,36 +327,55 @@ if (!window.IronpadPod) {
     }
 
     /**
-     * The notebook's pod, booting it on first use.
+     * Claim the notebook, dropping another notebook's machine if one is up.
      *
-     * A different notebook id means a different machine, which is the one
-     * place a teardown happens without a user asking for it.
+     * The one teardown that happens without a user asking for it, and the one
+     * a run must perform BEFORE sampling the generation it will check itself
+     * against: it is part of that run's setup rather than an interruption of
+     * it, and a run that tore down its predecessor and then noticed the bump
+     * would report itself terminated without ever starting.
      */
-    function ensurePod(notebookId) {
+    function claimNotebook(notebookId) {
       if (state.notebookId !== null && state.notebookId !== notebookId) {
         teardown();
       }
       state.notebookId = notebookId;
+    }
+
+    /**
+     * The notebook's pod, booting it on first use.
+     */
+    function ensurePod(notebookId) {
+      claimNotebook(notebookId);
       cancelPendingTeardown();
       if (state.pod) return Promise.resolve(state.pod);
       if (!state.booting) {
         var generation = state.generation;
-        state.booting = bootPod().then(
+        // `attempt` is compared before either handler clears the handle: a
+        // teardown mid-boot starts a fresh one, and an unconditional clear
+        // would null the LIVE boot from the stale boot's own callback.
+        var attempt = bootPod().then(
           function (pod) {
-            state.booting = null;
-            // Torn down while booting: keep nothing, but the token is spent
-            // either way.
-            if (state.generation !== generation) return pod;
+            if (state.booting === attempt) state.booting = null;
+            if (state.generation !== generation) {
+              // Torn down while booting. The token is spent either way, but
+              // the machine is not kept: the user asked for it to go, and
+              // nothing else will ever hold a reference to it again, so this
+              // is the only chance to drop its Workers.
+              disposePod(pod);
+              return pod;
+            }
             state.pod = pod;
             state.shellExec = true;
             state.written = {};
             return pod;
           },
           function (e) {
-            state.booting = null;
+            if (state.booting === attempt) state.booting = null;
             throw e;
           },
         );
+        state.booting = attempt;
       }
       return state.booting;
     }
@@ -466,6 +539,19 @@ if (!window.IronpadPod) {
           schedule();
         },
         close: function () {
+          // Whatever a chunk boundary cut in half is ordinary text now, since
+          // nothing further is coming to complete it. Held back and never fed,
+          // it was simply lost: `a\x1eb\n` followed by the sentinel rendered
+          // `a` and dropped the rest, because the sentinel scanner holds back
+          // everything from a record separator onwards.
+          //
+          // The first character says which of the four incomplete shapes it
+          // is, and that is the whole decision: a partial escape sequence is
+          // control bytes a log view drops anyway, while a partial sentinel is
+          // one separator in front of real program output.
+          var tail = pending.charAt(0) === "\x1e" ? pending.slice(1) : "";
+          pending = "";
+          if (tail) feed(tail);
           closed = false;
           if (timer) {
             clearTimeout(timer);
@@ -579,49 +665,87 @@ if (!window.IronpadPod) {
      * @param {string} opts.cellId      Names the binary in the pod.
      * @param {Uint8Array} opts.bytes   The compiled program.
      * @param {(text: string) => void} opts.onText   Full output snapshot, throttled.
-     * @param {(stage: string) => void} [opts.onStage]  "booting" then "running".
+     * @param {(stage: string) => void} [opts.onStage]  "booting", "running", then
+     *   possibly "unknown" — see {@link UNKNOWN_AFTER_MS}.
      * @returns {Promise<{status: string, exitCode: number|null, inferred: boolean}>}
      *
      * `status` is one of `exited` (the sentinel reported, `exitCode` is real),
-     * `finished` (inferred from a quiet terminal, `exitCode` null),
-     * `unknown` (still producing nothing after {@link UNKNOWN_AFTER_MS};
-     * output keeps streaming), or `terminated` (the pod went away under it).
+     * `finished` (inferred from a quiet terminal, `exitCode` null), or
+     * `terminated` (the pod went away under it).
+     *
+     * Passing the reporting horizon is deliberately NOT one of them: the run
+     * is still running, so it stays open and keeps streaming, and the horizon
+     * arrives through `onStage` instead.
      */
     async function run(opts) {
       var notebookId = opts.notebookId;
       var stage = opts.onStage || function () {};
       var sink = makeSink(opts.onText);
 
-      stage("booting");
-      var pod = await withTimeout(
-        ensurePod(notebookId),
-        BOOT_TIMEOUT_MS,
-        "The Linux machine did not start within " +
-          Math.round(BOOT_TIMEOUT_MS / 1000) +
-          "s. rt.browserpod.io may be unreachable.",
-      );
+      // Switching notebooks drops the previous machine, and that is this
+      // run's own doing — so it happens first, and the generation below is
+      // sampled after it.
+      claimNotebook(notebookId);
+
+      // Sampled BEFORE the boot, not after it. A teardown during the boot
+      // bumps the generation first, so a sample taken afterwards compares
+      // equal to it for the rest of the run: every later check passed, and the
+      // program went on to run on a pod `state.pod` no longer pointed at,
+      // unreachable by any future teardown.
       var generation = state.generation;
 
-      var binPath = await writeBinary(pod, opts.cellId, opts.bytes);
-      if (state.generation !== generation) {
-        return { status: "terminated", exitCode: null, inferred: false };
-      }
+      // The boot and the write are the two phases with no process to report
+      // anything, so a teardown in either had nothing to settle and left this
+      // promise pending for good — the cell wedged on "starting machine" with
+      // a dead Stop button, recoverable only by reloading the page. This is
+      // what teardown settles for them.
+      var token = makeCancelToken();
+      state.pending.push(token.fire);
 
-      stage("running");
-      state.running += 1;
       try {
-        var result = await execute(pod, sink, binPath, generation, state.shellExec);
-        // A pod whose shell cannot exec our binaries says so once and is
-        // believed for the rest of its life; the retry re-runs the program,
-        // which is a side effect worth paying exactly once.
-        if (result.noExec) {
-          state.shellExec = false;
-          sink.reset();
-          result = await execute(pod, sink, binPath, generation, false);
+        stage("booting");
+        var pod = await Promise.race([
+          token.promise,
+          withTimeout(
+            ensurePod(notebookId),
+            BOOT_TIMEOUT_MS,
+            "The Linux machine did not start within " +
+              Math.round(BOOT_TIMEOUT_MS / 1000) +
+              "s. rt.browserpod.io may be unreachable.",
+          ),
+        ]);
+        if (pod === CANCELLED || state.generation !== generation) return terminatedResult();
+
+        var binPath = await Promise.race([
+          token.promise,
+          withTimeout(
+            writeBinary(pod, opts.cellId, opts.bytes),
+            WRITE_TIMEOUT_MS,
+            "The program did not reach the Linux machine within " +
+              Math.round(WRITE_TIMEOUT_MS / 1000) +
+              "s.",
+          ),
+        ]);
+        if (binPath === CANCELLED || state.generation !== generation) return terminatedResult();
+
+        stage("running");
+        state.running += 1;
+        try {
+          var result = await execute(pod, sink, binPath, generation, state.shellExec, stage);
+          // A pod whose shell cannot exec our binaries says so once and is
+          // believed for the rest of its life; the retry re-runs the program,
+          // which is a side effect worth paying exactly once.
+          if (result.noExec) {
+            state.shellExec = false;
+            sink.reset();
+            result = await execute(pod, sink, binPath, generation, false, stage);
+          }
+          return { status: result.status, exitCode: result.exitCode, inferred: result.inferred };
+        } finally {
+          state.running -= 1;
         }
-        return { status: result.status, exitCode: result.exitCode, inferred: result.inferred };
       } finally {
-        state.running -= 1;
+        removePending(token.fire);
         sink.close();
       }
     }
@@ -630,7 +754,7 @@ if (!window.IronpadPod) {
      * One attempt, either under the shell (sentinel completion, real exit
      * code) or directly (quiet-timeout inference, no exit code).
      */
-    function execute(pod, sink, binPath, generation, useShell) {
+    function execute(pod, sink, binPath, generation, useShell, stage) {
       return new Promise(function (resolve, reject) {
         var settled = false;
         var quietTimer = null;
@@ -640,8 +764,7 @@ if (!window.IronpadPod) {
         function finish(status, exitCode, inferred, noExec) {
           if (settled) return;
           settled = true;
-          var at = state.pending.indexOf(finish);
-          if (at !== -1) state.pending.splice(at, 1);
+          removePending(finish);
           if (quietTimer) clearTimeout(quietTimer);
           if (capTimer) clearTimeout(capTimer);
           resolve({
@@ -690,10 +813,21 @@ if (!window.IronpadPod) {
         };
 
         capTimer = setTimeout(function () {
-          // Nothing here can kill a process, so this reports rather than
-          // stops: the panel says it no longer knows, output keeps arriving,
-          // and Terminate stays available.
-          finish("unknown", null, true, false);
+          // Nothing here can kill a process, so this REPORTS rather than
+          // settles. Settling was a promise the code could not keep: `run`'s
+          // `finally` closes the sink the moment this resolves, so the panel
+          // said "output keeps arriving" while the sink was already writing
+          // into a buffer nobody would ever flush, and the cell went idle so
+          // the only control that could stop the program disappeared with it.
+          //
+          // Leaving the run open keeps all three true at once: the sink lives,
+          // the caller's future lives (and with it the callbacks output flows
+          // through), and Terminate stays the one lever there is.
+          try {
+            stage("unknown");
+          } catch (e) {
+            /* the component went away; the run is unaffected */
+          }
         }, UNKNOWN_AFTER_MS);
 
         pod
@@ -720,8 +854,7 @@ if (!window.IronpadPod) {
               return finish("exited", 127, false, true);
             }
             settled = true;
-            var at = state.pending.indexOf(finish);
-            if (at !== -1) state.pending.splice(at, 1);
+            removePending(finish);
             if (quietTimer) clearTimeout(quietTimer);
             if (capTimer) clearTimeout(capTimer);
             reject(podError("The program could not be started: " + describe(e)));
@@ -739,16 +872,34 @@ if (!window.IronpadPod) {
     }
 
     /**
+     * Best-effort disposal of a pod nothing will ever reference again.
+     *
+     * The SDK's type definitions expose no disposal method. This probe costs
+     * nothing and starts working the day they add one; until then a dropped
+     * pod's Workers live until the page unloads, and the generation bump is
+     * what stops it from reporting into live UI in the meantime.
+     */
+    function disposePod(pod) {
+      if (!pod) return;
+      var names = ["destroy", "dispose", "shutdown", "close", "exit", "kill"];
+      for (var i = 0; i < names.length; i++) {
+        if (typeof pod[names[i]] === "function") {
+          try {
+            pod[names[i]]();
+          } catch (e) {
+            /* best effort */
+          }
+          return;
+        }
+      }
+    }
+
+    /**
      * Drop the pod.
      *
      * `run()` gives back a PID with no `kill`, so this is the only lever there
      * is over a running program — which is exactly why Terminate is documented
      * as restarting the machine rather than stopping the cell.
-     *
-     * The SDK's type definitions expose no disposal method. The probe below
-     * costs nothing and starts working the day they add one; until then the
-     * pod's Workers are left to the page's own teardown, and the generation
-     * bump is what stops a dropped pod from reporting into live UI.
      */
     function teardown() {
       cancelPendingTeardown();
@@ -770,18 +921,7 @@ if (!window.IronpadPod) {
       state.notebookId = null;
       state.written = {};
       state.shellExec = true;
-      if (!pod) return;
-      var names = ["destroy", "dispose", "shutdown", "close", "exit", "kill"];
-      for (var i = 0; i < names.length; i++) {
-        if (typeof pod[names[i]] === "function") {
-          try {
-            pod[names[i]]();
-          } catch (e) {
-            /* best effort */
-          }
-          break;
-        }
-      }
+      disposePod(pod);
     }
 
     return {
@@ -806,8 +946,10 @@ if (!window.IronpadPod) {
       },
       /**
        * A Linux cell unmounted. When the last one goes the pod goes with it,
-       * after a grace window: Leptos remounts within a tick, and tearing down
-       * on that would charge a fresh token to boot the same machine again.
+       * after {@link TEARDOWN_GRACE_MS} — long enough that the editor's
+       * Preview↔Edit round trip, which disposes and rebuilds the whole cell
+       * list, keeps the machine and its filesystem instead of paying 10
+       * tokens to boot an identical one.
        */
       release: function (cellId) {
         if (state.retained[cellId]) {

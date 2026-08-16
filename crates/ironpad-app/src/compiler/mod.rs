@@ -1969,7 +1969,7 @@ impl LiveView for Counter {
             CellTarget::Linux,
         )
         .expect("scaffold should succeed");
-        assert_eq!(preamble_lines, 1, "one injected line: `mod shared;`");
+        assert_eq!(preamble_lines, 0, "nothing is injected above the program");
 
         let result = build_micro_crate(
             &crate_dir,
@@ -1992,6 +1992,69 @@ impl LiveView for Counter {
             }
             BuildResult::Failure { stdout, stderr } => {
                 panic!("shared-source Linux cell failed.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-browserpod-linux-musl"]
+    async fn linux_cell_declares_crate_attributes_alongside_shared_source() {
+        // Only rustc can settle this one. A Linux cell is a whole program on a
+        // nightly, so `#![feature(…)]` and `//!` are ordinary things to write,
+        // and an inner attribute must LEAD the file — anything above it is
+        // "error: an inner attribute is not permitted in this context", with
+        // no workaround available to the author since the attribute is illegal
+        // in every position they can write it. Scaffolding `mod shared;` above
+        // the program made every such cell uncompilable the moment its
+        // notebook had any shared source (a notebook-level blob or one shared
+        // cell), which the unit tests can only see as a string shape.
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "linux-inner-attrs";
+        // `portable_simd` is a real gate: without the attribute this is E0658,
+        // so a scaffold that dropped or misplaced it fails here.
+        let source = "#![feature(portable_simd)]\n//! A whole program.\n\nuse std::simd::u32x4;\n\nfn main() {\n    let v = u32x4::splat(shared::doubled(21));\n    println!(\"{}\", v[0]);\n}";
+        let shared = "pub fn doubled(n: u32) -> u32 { n * 2 }";
+
+        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            "[dependencies]",
+            &[],
+            None,
+            Some(shared),
+            CellTarget::Linux,
+        )
+        .expect("scaffold should succeed");
+        assert_eq!(preamble_lines, 0, "nothing is injected above the program");
+
+        let result = build_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Linux,
+            false,
+            false,
+            false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                let bytes = std::fs::read(&wasm_path).expect("artifact should exist");
+                assert!(wasm_export_names(&bytes).iter().any(|e| e == "_start"));
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "Linux cell with inner attributes failed.\nstdout: {stdout}\nstderr: {stderr}"
+                );
             }
         }
     }

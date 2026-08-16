@@ -179,24 +179,30 @@ pub fn manifest_has_custom_deps(shared_cargo_toml: Option<&str>, cell_cargo_toml
 /// compiled to `wasm32-browserpod-linux-musl` and run as a real process under
 /// an in-browser kernel that services 431 syscalls (PRD-0066).
 ///
-/// `Unsupported` is the forward-compatibility arm and the reason this enum
-/// carries `#[serde(other)]`. A client that meets a cell type from a newer
-/// release must render it inert rather than guess: PRD-0047 shipped a live bug
-/// where an old cached client treated shared cells as ordinary ones and
-/// compiled them, and silently mistaking a `Linux` cell for `Code` would
-/// compile a whole program to the wrong target and fail incomprehensibly.
-/// Deserializing to `Unsupported` also keeps ONE unknown cell from failing the
-/// whole notebook parse, so the rest of the document still opens.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+/// `Unsupported` is the forward-compatibility arm. A client that meets a cell
+/// type from a newer release must render it inert rather than guess: PRD-0047
+/// shipped a live bug where an old cached client treated shared cells as
+/// ordinary ones and compiled them, and silently mistaking a `Linux` cell for
+/// `Code` would compile a whole program to the wrong target and fail
+/// incomprehensibly. Deserializing to `Unsupported` also keeps ONE unknown cell
+/// from failing the whole notebook parse, so the rest of the document opens.
+///
+/// It carries the **wire tag verbatim** and writes it back unchanged, which is
+/// what makes the arm survive contact with the editor. An old client renders
+/// such a cell with an ordinary body, so any edit — to that cell or to any
+/// other cell in the notebook — re-serializes the whole model through autosave.
+/// A payload-free `Unsupported` would serialize as the literal `"Unsupported"`
+/// and destroy the very type it exists to preserve, permanently and for every
+/// future client, from a collapse toggle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CellType {
     #[default]
     Code,
     Markdown,
     /// A whole Rust program run as a Linux process in the browser (PRD-0066).
     Linux,
-    /// Any cell type this build does not know. Never written, only read.
-    #[serde(other)]
-    Unsupported,
+    /// A cell type this build does not know, holding the tag it arrived with.
+    Unsupported(UnknownCellType),
 }
 
 impl CellType {
@@ -211,6 +217,119 @@ impl CellType {
     #[must_use]
     pub fn is_linux(self) -> bool {
         matches!(self, Self::Linux)
+    }
+
+    /// The exact string this cell type occupies in a notebook document. The
+    /// one place a `CellType` becomes wire text, and the inverse of
+    /// [`CellType::from_wire_tag`].
+    #[must_use]
+    pub fn wire_tag(&self) -> &str {
+        match self {
+            Self::Code => "Code",
+            Self::Markdown => "Markdown",
+            Self::Linux => "Linux",
+            Self::Unsupported(tag) => tag.as_str(),
+        }
+    }
+
+    /// Parse a wire tag, keeping anything unrecognized rather than guessing.
+    #[must_use]
+    pub fn from_wire_tag(tag: &str) -> Self {
+        match tag {
+            "Code" => Self::Code,
+            "Markdown" => Self::Markdown,
+            "Linux" => Self::Linux,
+            other => Self::Unsupported(UnknownCellType::new(other)),
+        }
+    }
+}
+
+/// The capacity of [`UnknownCellType`]'s inline buffer, in bytes. Cell type
+/// tags are Rust enum variant names (`Code`, `Markdown`, `Linux`), so this is
+/// roughly four times the longest plausible one.
+const UNKNOWN_TAG_CAPACITY: usize = 31;
+
+/// The wire tag of a cell type this build does not know, stored inline.
+///
+/// **Inline and `Copy` on purpose.** A `Box<str>` here would be the obvious
+/// shape, and it would cost `Copy` on [`CellType`] — which the editor's run
+/// pipeline depends on structurally: `CellRunCtx` derives `Copy` so its stages
+/// can be free functions instead of closures over a 2,000-line component, and
+/// a non-`Copy` field turns every `Effect::new(move || …)` capturing it into an
+/// `FnOnce` that Leptos will not accept. Measured, not assumed: making the
+/// payload a `Box<str>` broke twelve reactive call sites across the editor.
+/// A fixed buffer keeps the fix inside the format layer where it belongs.
+///
+/// A tag longer than [`UNKNOWN_TAG_CAPACITY`] degrades to the literal
+/// `"Unsupported"` — the old lossy behaviour — rather than truncating, since a
+/// truncated tag is a *different* tag and would corrupt the document while
+/// looking like it had preserved it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct UnknownCellType {
+    /// Valid UTF-8 in `..len`, zero beyond it (so `Eq` compares tags, not
+    /// leftovers). Never a partial tag: over-long input becomes the fallback.
+    bytes: [u8; UNKNOWN_TAG_CAPACITY],
+    len: u8,
+}
+
+impl UnknownCellType {
+    /// The tag written for a cell type too long to store, identical to what
+    /// every build before this one wrote for every unknown type.
+    const FALLBACK: &'static str = "Unsupported";
+
+    #[must_use]
+    fn new(tag: &str) -> Self {
+        let source = if tag.len() <= UNKNOWN_TAG_CAPACITY {
+            tag
+        } else {
+            Self::FALLBACK
+        };
+        let mut bytes = [0u8; UNKNOWN_TAG_CAPACITY];
+        bytes[..source.len()].copy_from_slice(source.as_bytes());
+        Self {
+            bytes,
+            // `source` is at most UNKNOWN_TAG_CAPACITY bytes, which fits a u8.
+            len: u8::try_from(source.len()).unwrap_or(0),
+        }
+    }
+
+    /// The tag, exactly as it will be written back out.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        // Only whole tags are ever stored, so the prefix is valid UTF-8.
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or(Self::FALLBACK)
+    }
+}
+
+impl std::fmt::Debug for UnknownCellType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl Serialize for CellType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.wire_tag())
+    }
+}
+
+impl<'de> Deserialize<'de> for CellType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct TagVisitor;
+
+        impl serde::de::Visitor<'_> for TagVisitor {
+            type Value = CellType;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a cell type tag")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, tag: &str) -> Result<CellType, E> {
+                Ok(CellType::from_wire_tag(tag))
+            }
+        }
+
+        deserializer.deserialize_str(TagVisitor)
     }
 }
 
@@ -849,7 +968,7 @@ mod tests {
             .unwrap()
             .replace("\"Linux\"", "\"Quantum\"");
         let future: CompileRequest = serde_json::from_str(&future).unwrap();
-        assert_eq!(future.cell_type, CellType::Unsupported);
+        assert_eq!(future.cell_type, CellType::from_wire_tag("Quantum"));
         assert!(!future.cell_type.compiles());
     }
 
@@ -1706,15 +1825,15 @@ mod cell_type_tests {
         // cell as `Code` compiles it to the wrong target and fails
         // incomprehensibly. It must land on `Unsupported`, never the default.
         let parsed: CellType = serde_json::from_str("\"Wasi\"").unwrap();
-        assert_eq!(parsed, CellType::Unsupported);
+        assert!(matches!(parsed, CellType::Unsupported(_)), "{parsed:?}");
         assert_ne!(parsed, CellType::Code, "must not fall back to the default");
         assert!(!parsed.compiles(), "an unknown cell must never compile");
     }
 
     #[test]
     fn one_unknown_cell_does_not_fail_the_whole_notebook() {
-        // Without `#[serde(other)]` this is a hard parse error and the reader
-        // loses every other cell in the document, not just the new one.
+        // Without the unknown-tag arm this is a hard parse error and the
+        // reader loses every other cell in the document, not just the new one.
         #[derive(serde::Deserialize)]
         struct Cell {
             cell_type: CellType,
@@ -1724,8 +1843,66 @@ mod cell_type_tests {
         )
         .expect("a future cell type must not fail the parse");
         assert_eq!(cells.len(), 3);
-        assert_eq!(cells[1].cell_type, CellType::Unsupported);
+        assert_eq!(cells[1].cell_type, CellType::from_wire_tag("FromTheFuture"));
         assert_eq!(cells[2].cell_type, CellType::Markdown);
+    }
+
+    #[test]
+    fn an_unknown_type_survives_a_round_trip_through_this_build() {
+        // The destructive path is AUTOSAVE, not editing the unknown cell: the
+        // editor re-serializes the whole model, so a collapse toggle on some
+        // other cell is enough to rewrite this one. Writing back the literal
+        // "Unsupported" would destroy the cell type permanently — for every
+        // future client too, including the one that knows what `Wasi` means.
+        let doc = r#"{
+            "version": 1,
+            "id": "6f1b4a1e-6b4a-4a1e-8b4a-4a1e6b4a4a1e",
+            "title": "From the future",
+            "created_at": "2026-08-16T00:00:00Z",
+            "updated_at": "2026-08-16T00:00:00Z",
+            "cells": [
+                {"id":"cell-0","order":0,"label":"Cell 1","cell_type":"Code","source":"42","version":0},
+                {"id":"cell-1","order":1,"label":"Cell 2","cell_type":"Wasi","source":"fn main() {}","version":0}
+            ]
+        }"#;
+
+        let opened: super::IronpadNotebook =
+            serde_json::from_str(doc).expect("a future cell type must still open the notebook");
+        let saved = serde_json::to_string(&opened).expect("serialize");
+
+        assert!(
+            saved.contains(r#""cell_type":"Wasi""#),
+            "the tag must be written back verbatim: {saved}"
+        );
+        assert!(
+            !saved.contains("Unsupported"),
+            "the placeholder must never reach the document: {saved}"
+        );
+
+        // And it must survive repeatedly, which is what "round trip" means
+        // for a notebook an old client keeps open and keeps saving.
+        let reopened: super::IronpadNotebook = serde_json::from_str(&saved).expect("re-open");
+        assert_eq!(reopened.cells[1].cell_type, opened.cells[1].cell_type);
+        assert_eq!(reopened.cells[0].cell_type, CellType::Code);
+        assert_eq!(
+            serde_json::to_string(&reopened).expect("re-serialize"),
+            saved
+        );
+    }
+
+    #[test]
+    fn a_tag_too_long_to_store_degrades_instead_of_truncating() {
+        // A truncated tag is a DIFFERENT tag, so it would corrupt the document
+        // while looking like it had preserved it. Falling back to the old
+        // placeholder is lossy in exactly the way every previous build was.
+        let long = "A".repeat(super::UNKNOWN_TAG_CAPACITY + 1);
+        let parsed = CellType::from_wire_tag(&long);
+        assert_eq!(parsed.wire_tag(), "Unsupported");
+        assert!(!parsed.compiles());
+
+        // One byte under the limit is stored whole.
+        let fits = "B".repeat(super::UNKNOWN_TAG_CAPACITY);
+        assert_eq!(CellType::from_wire_tag(&fits).wire_tag(), fits);
     }
 
     #[test]
@@ -1733,7 +1910,7 @@ mod cell_type_tests {
         assert!(CellType::Code.compiles());
         assert!(CellType::Linux.compiles());
         assert!(!CellType::Markdown.compiles());
-        assert!(!CellType::Unsupported.compiles());
+        assert!(!CellType::from_wire_tag("Wasi").compiles());
         assert!(CellType::Linux.is_linux());
         assert!(!CellType::Code.is_linux());
     }

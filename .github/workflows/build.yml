@@ -39,6 +39,16 @@ jobs:
           rustup toolchain install nightly-2026-06-01 --profile minimal \
             --target wasm32-unknown-unknown \
             --component rust-src --component enzyme
+      # Linux cells (PRD-0066) build on a vendor-supplied toolchain, not a
+      # rustup channel: the pack ships a prebuilt std ABI-tied to
+      # nightly-2026-05-19, so no other rustc can use it. `test-integration`
+      # compiles real Linux cells, and without this the two e2e tests fail
+      # with "toolchain 'browserpod-3.0.0' is not installed" rather than
+      # skipping. The `docker` job vendors this too, on a different runner.
+      - name: Install the BrowserPod cell toolchain
+        run: |
+          bash docker/vendor-browserpod.sh
+          sh -c "cd /tmp && tar -xzf $GITHUB_WORKSPACE/docker/vendor/browserpod-rust-3.0.0.tar.gz && sh /tmp/browserpod-rust-3.0.0/install.sh"
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
