@@ -129,7 +129,12 @@ pub(super) fn build_export_html(
         );
 
         match cell.cell_type {
-            CellType::Code => {
+            // A Linux cell is Rust source with output, same as a code cell as
+            // far as a static HTML export is concerned. `Unsupported` also
+            // renders its source rather than vanishing: an export that
+            // silently drops a cell is worse than one that shows text it
+            // cannot label (PRD-0066).
+            CellType::Code | CellType::Linux | CellType::Unsupported => {
                 let _ = writeln!(
                     html,
                     "<pre class=\"code-block\"><code>{}</code></pre>",

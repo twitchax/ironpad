@@ -160,12 +160,48 @@ pub fn manifest_has_custom_deps(shared_cargo_toml: Option<&str>, cell_cargo_toml
 
 // ── Cell Type ────────────────────────────────────────────────────────────────
 
-/// Distinguishes code cells (compiled to WASM) from markdown documentation cells.
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+/// What a cell *is*, which decides how it compiles and where it runs.
+///
+/// `Code` and `Linux` are both compiled Rust and are otherwise nothing alike:
+/// a `Code` cell is a fragment wrapped into `cell_main`, compiled to
+/// `wasm32-unknown-unknown` and called by our executor through a dozen host
+/// functions; a `Linux` cell is a whole program with its own `fn main`,
+/// compiled to `wasm32-browserpod-linux-musl` and run as a real process under
+/// an in-browser kernel that services 431 syscalls (PRD-0066).
+///
+/// `Unsupported` is the forward-compatibility arm and the reason this enum
+/// carries `#[serde(other)]`. A client that meets a cell type from a newer
+/// release must render it inert rather than guess: PRD-0047 shipped a live bug
+/// where an old cached client treated shared cells as ordinary ones and
+/// compiled them, and silently mistaking a `Linux` cell for `Code` would
+/// compile a whole program to the wrong target and fail incomprehensibly.
+/// Deserializing to `Unsupported` also keeps ONE unknown cell from failing the
+/// whole notebook parse, so the rest of the document still opens.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub enum CellType {
     #[default]
     Code,
     Markdown,
+    /// A whole Rust program run as a Linux process in the browser (PRD-0066).
+    Linux,
+    /// Any cell type this build does not know. Never written, only read.
+    #[serde(other)]
+    Unsupported,
+}
+
+impl CellType {
+    /// Whether this cell compiles Rust at all. Markdown does not, and an
+    /// `Unsupported` cell must not, since we cannot know what it meant.
+    #[must_use]
+    pub fn compiles(self) -> bool {
+        matches!(self, Self::Code | Self::Linux)
+    }
+
+    /// Whether this cell runs under `BrowserPod` rather than our own executor.
+    #[must_use]
+    pub fn is_linux(self) -> bool {
+        matches!(self, Self::Linux)
+    }
 }
 
 // ── Cell Manifest ────────────────────────────────────────────────────────────
@@ -1570,5 +1606,60 @@ impl CacheTier {
     #[must_use]
     pub fn path(self, cache_dir: &std::path::Path) -> std::path::PathBuf {
         cache_dir.join(self.dir_name())
+    }
+}
+
+#[cfg(test)]
+mod cell_type_tests {
+    use super::CellType;
+
+    #[test]
+    fn known_types_round_trip() {
+        for (ty, json) in [
+            (CellType::Code, "\"Code\""),
+            (CellType::Markdown, "\"Markdown\""),
+            (CellType::Linux, "\"Linux\""),
+        ] {
+            assert_eq!(serde_json::to_string(&ty).unwrap(), json);
+            assert_eq!(serde_json::from_str::<CellType>(json).unwrap(), ty);
+        }
+    }
+
+    #[test]
+    fn an_unknown_type_is_inert_rather_than_code() {
+        // The PRD-0047 failure mode: an old client that treats an unfamiliar
+        // cell as `Code` compiles it to the wrong target and fails
+        // incomprehensibly. It must land on `Unsupported`, never the default.
+        let parsed: CellType = serde_json::from_str("\"Wasi\"").unwrap();
+        assert_eq!(parsed, CellType::Unsupported);
+        assert_ne!(parsed, CellType::Code, "must not fall back to the default");
+        assert!(!parsed.compiles(), "an unknown cell must never compile");
+    }
+
+    #[test]
+    fn one_unknown_cell_does_not_fail_the_whole_notebook() {
+        // Without `#[serde(other)]` this is a hard parse error and the reader
+        // loses every other cell in the document, not just the new one.
+        #[derive(serde::Deserialize)]
+        struct Cell {
+            cell_type: CellType,
+        }
+        let cells: Vec<Cell> = serde_json::from_str(
+            r#"[{"cell_type":"Code"},{"cell_type":"FromTheFuture"},{"cell_type":"Markdown"}]"#,
+        )
+        .expect("a future cell type must not fail the parse");
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[1].cell_type, CellType::Unsupported);
+        assert_eq!(cells[2].cell_type, CellType::Markdown);
+    }
+
+    #[test]
+    fn only_code_and_linux_compile() {
+        assert!(CellType::Code.compiles());
+        assert!(CellType::Linux.compiles());
+        assert!(!CellType::Markdown.compiles());
+        assert!(!CellType::Unsupported.compiles());
+        assert!(CellType::Linux.is_linux());
+        assert!(!CellType::Code.is_linux());
     }
 }

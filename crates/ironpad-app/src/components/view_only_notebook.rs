@@ -637,6 +637,30 @@ fn ViewOnlyCell(
             <ViewOnlyMarkdownCell source=cell.source.clone() anchor_id=anchor_id />
         }
         .into_any(),
+        // PRD-0066. The pod runtime is T-005; until it lands a Linux cell
+        // renders read-only and says so, rather than falling through to the
+        // code path and compiling a whole program to the wrong target.
+        CellType::Linux => view! {
+            <ViewOnlyInertCell
+                cell=cell
+                index=index
+                anchor_id=anchor_id
+                badge="linux"
+                notice="This cell runs as a Linux process. Support is not enabled in this build."
+            />
+        }
+        .into_any(),
+        // A cell type from a newer release. Show the source, refuse to guess.
+        CellType::Unsupported => view! {
+            <ViewOnlyInertCell
+                cell=cell
+                index=index
+                anchor_id=anchor_id
+                badge="unsupported"
+                notice="This cell was written by a newer version of ironpad and cannot run here."
+            />
+        }
+        .into_any(),
     }
 }
 
@@ -1075,6 +1099,56 @@ fn ViewOnlyCodeCell(
 }
 
 // ── ViewOnlySharedCell ──────────────────────────────────────────────────────
+
+/// A cell this build can display but must not execute: a `Linux` cell before
+/// the pod runtime exists, or a cell type from a newer release.
+///
+/// It deliberately shows the source. A viewer that hid the cell entirely would
+/// make the notebook silently shorter than the document, which is the failure
+/// PRD-0047 shipped once already in the other direction.
+#[component]
+fn ViewOnlyInertCell(
+    cell: IronpadCell,
+    index: Option<usize>,
+    anchor_id: String,
+    badge: &'static str,
+    notice: &'static str,
+) -> impl IntoView {
+    let collapsed = RwSignal::new(cell.collapsed);
+    let body_class = Signal::derive(move || {
+        if collapsed.get() {
+            "ironpad-cell-body ironpad-cell-body--collapsed"
+        } else {
+            "ironpad-cell-body"
+        }
+    });
+
+    view! {
+        <div class="view-only-cell view-only-cell--frame view-only-cell--inert" id=anchor_id>
+            <div class="view-only-cell-header">
+                <button
+                    class="ironpad-cell-collapse-btn"
+                    on:click=move |_| collapsed.update(|c| *c = !*c)
+                >
+                    <Chevron expanded=Signal::derive(move || !collapsed.get())/>
+                </button>
+                {index.map(|n| view! {
+                    <span class="view-only-cell-index">{format!("[{n}]")}</span>
+                })}
+                <span class="view-only-cell-label">{cell.label.clone()}</span>
+                <span class="ironpad-cell-type-badge ironpad-cell-type-badge--inert">{badge}</span>
+            </div>
+            <div class=body_class>
+                <MonacoEditor
+                    initial_value=cell.source.clone()
+                    language="rust"
+                    read_only=true
+                />
+                <div class="view-only-inert-notice">{notice}</div>
+            </div>
+        </div>
+    }
+}
 
 /// Renders a shared cell (PRD-0044): read-only source with the amber shared
 /// chrome, no run button and no output — the code compiles as part of every

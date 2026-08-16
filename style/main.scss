@@ -4486,6 +4486,29 @@ code[class*="language-"] {
     }
 }
 
+// Cells this build can show but must not run (PRD-0066): a `Linux` cell before
+// the pod runtime exists, or a cell type from a newer release. Deliberately
+// muted rather than alarming: the notebook is fine, this one cell is inert.
+.view-only-cell--inert {
+    .view-only-cell-label {
+        color: var(--ip-text-secondary);
+    }
+}
+
+.ironpad-cell-type-badge--inert {
+    color: var(--ip-text-tertiary);
+    border: 1px dashed var(--ip-border);
+    background: transparent;
+}
+
+.view-only-inert-notice {
+    padding: 0.5rem 0.75rem;
+    border-top: 1px solid var(--ip-border);
+    font-family: var(--ip-font-mono);
+    font-size: 0.7rem;
+    color: var(--ip-text-tertiary);
+}
+
 @media (prefers-reduced-motion: reduce) {
 
     // The infinite loops: one travelling gradient, four opacity pulses.

@@ -189,8 +189,14 @@ pub fn rail_cells(cells: &[IronpadCell]) -> Vec<RailCell> {
                 RailCellKind::Shared
             } else {
                 match c.cell_type {
-                    CellType::Code => RailCellKind::Code,
-                    CellType::Markdown => RailCellKind::Markdown,
+                    // A Linux cell runs, so it carries run state and timing
+                    // like any other executable row (PRD-0066).
+                    CellType::Code | CellType::Linux => RailCellKind::Code,
+                    // Markdown is prose; `Unsupported` is a cell from a newer
+                    // release. Different reasons, same outline treatment: both
+                    // are listed so the rail still matches the document, and
+                    // neither can carry run state or a timing.
+                    CellType::Markdown | CellType::Unsupported => RailCellKind::Markdown,
                 }
             },
         })

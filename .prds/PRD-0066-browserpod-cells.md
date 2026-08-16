@@ -70,7 +70,7 @@ tasks:
 - id: T-002
   title: "CellType::Linux in the notebook format"
   priority: 1
-  status: todo
+  status: done
   notes: "New variant, NOT a boolean flag beside cell_type: Code. An unknown cell type must deserialize to an inert 'unsupported cell' that renders source read-only and refuses to run. The PRD-0047 lesson: an old client that silently treats it as Code would compile it to the wrong target and fail confusingly."
 - id: T-003
   title: "Compile path: fourth toolchain pin, variable target triple"
