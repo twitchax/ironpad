@@ -1,125 +1,149 @@
 ---
 id: PRD-0066
-title: "BrowserPod cells: a cell that thinks it is Linux"
-status: draft
+title: "Linux cells: a cell that is a real Linux process"
+status: active
 owner: "Aaron Roney"
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-08-16
 
 principles:
-- "Explicit, never detected. Every other special case keeps the execution model; this one replaces it, so it must be opted into, not inferred from a substring."
+- "Explicit, never detected. Every other special case keeps the execution model; this one replaces it, so it is opted into, not inferred from a substring."
 - "A second execution model, not a fourth build flag. Measured: 431 syscall imports against the ~12 host functions our executor provides."
-- "Unix semantics, not typed piping. A process has stdin and stdout; it does not have cellN slots."
-- "The build half is ours and cheap. The run half is rented, metered, CDN-only, and needs a key."
-- "Ship nothing to /public until the token limits are known. They are not published today; the pricing policy that documents them 404s."
+- "The pod is the piping model. One pod per notebook, shared filesystem, Unix semantics. There is no typed piping here and there should not be."
+- "Never autorun. Every pod boot spends a metered allowance on the owner's key; a boot must trace back to a click."
+- "The notebook format names the semantics (Linux), never the vendor (BrowserPod). WALI may make the vendor swappable; the persisted document should not have to care."
 
 references:
 - name: "BrowserPod 3.0: Rust in the browser"
   url: https://labs.leaningtech.com/blog/browserpod-rust
-- name: "BrowserPod licensing (free for personal and open-source; attribution required on the free tier)"
-  url: https://browserpod.io/docs/more/licensing
-- name: "browserpod-meta README: 'proprietary software and it's free to use only for personal and open-source projects'"
+- name: "browserpod-meta: 'free to use only for personal and open-source projects'"
   url: https://github.com/leaningtech/browserpod-meta
-- name: "API key docs: BrowserPod.boot({ apiKey })"
-  url: https://browserpod.io/docs/understanding-browserpod/api-key
+- name: "BrowserPod licensing (free tier requires visible link + logo)"
+  url: https://browserpod.io/docs/more/licensing
+- name: "WALI: Empowering WebAssembly with Thin Kernel Interfaces (EuroSys '25). MIT, WAMR-based, native-only today."
+  url: https://github.com/Wasm-Thin-Kernel-Interfaces/WALI
 
 acceptance_tests:
 - id: uat-001
-  name: "A BrowserPod cell compiles server-side and produces a wasm binary exporting _start"
+  name: "A Linux cell compiles server-side to a binary exporting _start"
   command: cargo make test-integration
   uat_status: unverified
 - id: uat-002
-  name: "A BrowserPod cell runs in the browser and its stdout becomes the cell output"
-  command: cargo make playwright -- browserpod
+  name: "A Linux cell runs in a pod and streams stdout into its panel"
+  command: cargo make playwright -- linux-cells
   uat_status: unverified
 - id: uat-003
-  name: "BrowserPod cells never appear in typed piping: cell_deps ignores them and the cascade skips them"
-  command: cargo make test
+  name: "Two Linux cells in one notebook share a filesystem: cell 1 writes, cell 2 reads"
+  command: cargo make playwright -- linux-cells
   uat_status: unverified
 - id: uat-004
-  name: "Attribution (link + logo) renders on any notebook containing a BrowserPod cell, and on no other"
-  command: cargo make playwright -- browserpod
+  name: "A notebook with no Linux cell requests nothing from rt.browserpod.io and boots no pod"
+  command: cargo make playwright -- linux-cells
   uat_status: unverified
 - id: uat-005
-  name: "Embeds refuse BrowserPod cells with the existing cross-origin-isolation notice, not a broken pod"
-  command: cargo make playwright -- embed
+  name: "Nothing autoruns a Linux cell: not public autorun, not Run All on load, not the agent protocol"
+  command: cargo make playwright -- linux-cells
   uat_status: unverified
 - id: uat-006
-  name: "A notebook with no BrowserPod cell loads no BrowserPod script and boots no pod"
-  command: cargo make playwright -- first-paint
+  name: "Attribution renders in every Linux cell frame and in no other cell"
+  command: cargo make playwright -- linux-cells
+  uat_status: unverified
+- id: uat-007
+  name: "A CDN failure degrades to an inline notice, not a broken page or a hung notebook"
+  command: cargo make playwright -- linux-cells
+  uat_status: unverified
+- id: uat-008
+  name: "Embeds refuse Linux cells via the existing cross-origin-isolation notice"
+  command: cargo make playwright -- embed
+  uat_status: unverified
+- id: uat-009
+  name: "Full gate"
+  command: cargo make uat
   uat_status: unverified
 
 tasks:
-- id: T-000
-  title: "BLOCKER: obtain an API key and settle licensing questions with Leaning Technologies"
-  priority: 0
-  status: blocked
-  notes: "Owner action, not an agent action. Needs: an account at console.browserpod.io, the free-tier token limits (unpublished; the pricing policy linked from their own README 404s), confirmation that per-notebook attribution satisfies 'your application must display', and a domain lock to ironpad.twitchax.com. Nothing below ships without this."
 - id: T-001
-  title: "Add CellKind::BrowserPod to the notebook format"
+  title: "Runtime spike: boot a pod in a page, run the spike binary, capture output"
   priority: 1
   status: todo
-  notes: "Explicit opt-in, mirroring `shared: true`. NOT substring detection. Old clients must degrade safely: an unknown kind should render as inert source, never as a normal Code cell (see the PRD-0047 browser-cache lesson, where an old client silently compiled shared cells as normal ones)."
+  notes: "FIRST, before any model change. Answers empirically what the SDK does not document: whether Process exposes completion/exit/kill, what boot costs in wall-clock, and what a token buys. Everything below is cheaper to design once this is known."
 - id: T-002
-  title: "Compile path: fourth toolchain pin + target"
+  title: "CellType::Linux in the notebook format"
   priority: 1
   status: todo
-  notes: "BROWSERPOD_TOOLCHAIN = browserpod-3.0.0 (pins nightly-2026-05-19 underneath), --target wasm32-browserpod-linux-musl. cell_toolchain already switches by name. cache_key's target triple is currently FIXED and must become variable; the comment there already anticipates this."
+  notes: "New variant, NOT a boolean flag beside cell_type: Code. An unknown cell type must deserialize to an inert 'unsupported cell' that renders source read-only and refuses to run. The PRD-0047 lesson: an old client that silently treats it as Code would compile it to the wrong target and fail confusingly."
 - id: T-003
-  title: "Runtime path: boot a Pod, run the binary, capture stdout"
+  title: "Compile path: fourth toolchain pin, variable target triple"
   priority: 1
   status: todo
-  notes: "Separate from executor-core.js entirely. `BrowserPod.boot({apiKey})`, write the binary into the pod FS via createFile, `run(exe, args, {terminal})` with createCustomTerminal's onOutput for capture. Lazy-loaded per notebook, like KaTeX/Prism."
+  notes: "BROWSERPOD_TOOLCHAIN = browserpod-3.0.0 (pins nightly-2026-05-19). cell_toolchain already switches by name. cache_key's target triple is currently FIXED and must become variable; its own comment anticipates this. Linux cells get shared.rs as `mod shared` but NOT ironpad-cell."
 - id: T-004
-  title: "Unix semantics: stdin from upstream display output, stdout as the cell output"
-  priority: 2
-  status: todo
-  notes: "No typed piping. cell_deps must not see BrowserPod cells as cellN producers or consumers, and the cascade must skip them."
-- id: T-005
-  title: "Conditional attribution component"
+  title: "Scaffold: whole programs, not fragments"
   priority: 1
   status: todo
-  notes: "Renders link + logo when the notebook contains a BrowserPod cell. Free-tier requirement. See Open Questions: whether per-notebook satisfies 'your application must display' is unconfirmed."
+  notes: "The author writes `fn main()`. ironpad supplies only Cargo.toml and the shared module. No cell_main wrapper, no cellN bindings, no trampoline."
+- id: T-005
+  title: "Pod runtime: one per notebook, lazy, ephemeral"
+  priority: 1
+  status: todo
+  notes: "Boot on first Linux-cell run, no storageKey (ephemeral by design), teardown on navigation. Separate from executor-core.js entirely. Script loaded per-route like KaTeX/Prism so a notebook without Linux cells never touches their CDN."
 - id: T-006
-  title: "Embed refusal + cross-origin isolation"
+  title: "Streaming terminal panel"
   priority: 2
   status: todo
-  notes: "The target sets --shared-memory and +atomics, so it needs COOP/COEP exactly as rayon cells do. Reuse the existing threaded-cell embed notice rather than inventing a second one."
+  notes: "createCustomTerminal({onOutput}) appends live. Existing panels are static and PanelMode::Snapshot assumes finality, so this is a new panel kind. Completion may have to be inferred (quiet timeout or sentinel) if Process exposes nothing; T-001 decides."
 - id: T-007
-  title: "Error UX for panic = abort"
+  title: "Failure and teardown UX"
   priority: 2
   status: todo
-  notes: "The target is panic-strategy: abort. Our panic hook cannot report a cell error the usual way; a panic takes the pod down. Decide what the frame shows."
+  notes: "panic = abort, so a panic kills the process and may kill the pod. Render stderr as a cell error. If the pod died, mark every other Linux cell in the notebook stale with 'the shared Linux machine restarted'. Terminate tears down the pod, visibly."
 - id: T-008
-  title: "Docker image: install the toolchain in the build stage"
+  title: "Never autorun, anywhere"
+  priority: 1
+  status: todo
+  notes: "Public-notebook autorun skips Linux cells. Run All includes them in notebook order but only on explicit invocation. Agent `cells run` refuses them with a clear error rather than dispatching (a CLI boot has no human watching)."
+- id: T-009
+  title: "Attribution in the cell frame header"
+  priority: 1
+  status: todo
+  notes: "Visible link + logo on every Linux cell, free-tier requirement. Renders nowhere else."
+- id: T-010
+  title: "ADD_LINUX editor button + no saved_output"
   priority: 2
   status: todo
-  notes: "38MB checksum-pinned tarball plus a full nightly. Vendor the tarball rather than curl|bash at image build time, so a prod image never depends on rt.browserpod.io being up (the RUNTIME already does; the BUILD need not)."
-- id: T-009
-  title: "One public notebook demonstrating it"
+  notes: "Third add-cell button beside ADD_CODE/ADD_MARKDOWN. Linux cells never capture saved_output; view-only pages show a Run affordance instead. capture-outputs must skip them, so the key never needs to exist in CI."
+- id: T-011
+  title: "PROTOCOL_VERSION 7 + live check + blob snapshots"
+  priority: 2
+  status: todo
+  notes: "Agents read/write Linux cells like any other. check_cell runs with the target swapped (server-side, costs no tokens). Share-time blob snapshots apply unchanged once the cache key carries the triple."
+- id: T-012
+  title: "Docker: vendor the toolchain tarball"
   priority: 3
   status: todo
-  notes: "Depends on T-000 and on the capture question in Open Questions. Deliberately last."
+  notes: "38MB checksum-pinned tarball plus a nightly. Vendor it rather than curl|bash at image build, so the prod BUILD never depends on rt.browserpod.io being up. The RUNTIME unavoidably does."
+- id: T-013
+  title: "One public notebook: a subprocess pipeline and real threads"
+  priority: 3
+  status: todo
+  notes: "Last. Threads are the stronger demo than first credited: sched_getaffinity is imported, so available_parallelism() should return something real and a cell can fan out across actual Workers."
 ---
 
 # Summary
 
-A new, explicitly opted-in cell kind that compiles to
-`wasm32-browserpod-linux-musl` and runs under BrowserPod's in-browser Linux
-kernel, so a cell can use `std::fs`, `std::process`, `std::net` and threads.
-Regular cells are unchanged.
+`CellType::Linux`: an explicitly opted-in cell that compiles to
+`wasm32-browserpod-linux-musl` and runs as a real Linux process under
+BrowserPod's in-browser kernel. It gets a filesystem, subprocesses, sockets and
+threads. Regular cells are untouched.
 
-The framing is a novelty showcase: ironpad's public notebooks are its marketing,
-and "this cell thinks it is Linux" is a striking thing to open a tab to.
+One pod per notebook, so Linux cells share a machine and pipe through the
+filesystem the way Unix programs do.
 
 # Problem
 
-ironpad cells target `wasm32-unknown-unknown` in a Web Worker. There is no
-filesystem, no process, no socket, no real thread. That is correct for what
-cells are, and it is also a hard ceiling on what a notebook can demonstrate.
-
-BrowserPod 3.0 added a Rust target that lifts the ceiling, for programs willing
-to be Linux processes instead of wasm modules.
+ironpad cells target `wasm32-unknown-unknown` in a Web Worker: no filesystem, no
+process, no socket, no real thread. Correct for what cells are, and a hard
+ceiling on what a notebook can demonstrate.
 
 # Technical Approach
 
@@ -129,94 +153,117 @@ A program using `std::fs`, `std::thread`, `std::process::Command`, `std::env`
 and `std::time` compiled **first try, no source changes, in 0.99s**, to a 544KB
 binary exporting `_start`, `main`, `__wasm_call_ctors` and `memory`.
 
-Install is ironpad's own mechanism: a checksum-pinned 38MB tarball drops a
-rustup toolchain into `~/.rustup/toolchains/browserpod-3.0.0`, pinning
-`nightly-2026-05-19` beneath it. `rustup toolchain uninstall` reverses it.
+The toolchain installs as an ordinary rustup toolchain
+(`~/.rustup/toolchains/browserpod-3.0.0`, pinning `nightly-2026-05-19`), which
+is the same mechanism `cell_toolchain` already uses for three pins.
 
-**The import table is the architectural finding:**
+**The import table decides the architecture:**
 
 | module | imports |
 | --- | --- |
-| `i` | **431** (`__syscall_openat_4`, `__syscall_futex_6`, `__syscall_getdents64`, …) |
+| `i` | **431** (`__syscall_clone3`, `__syscall_futex_6`, `__syscall_execve`, …) |
 | `wasi_snapshot_preview1` | 4 (args and environ only) |
 
-Our executor provides roughly a dozen host functions under `env`. 431 against 12
-is why this cannot be a build flag on the existing path: it needs their kernel.
+Against roughly a dozen host functions our executor provides under `env`. This
+cannot be a build flag on the existing path.
 
-## Constraints read off the target spec and the SDK
+## How threads actually work
 
-- **`panic-strategy: abort`.** Our panic hook reports cell errors; here a panic
-  takes the pod down (T-007).
-- **`--shared-memory` and `+atomics`** mean cross-origin isolation, so
-  BrowserPod cells inherit the rayon constraint exactly: no embeds (T-006).
-- **`target-family: ["unix"]` and `arch: "wasm64"`** are deliberate
-  misdirections in their spec so crates do not take reduced-functionality paths.
-  Both are load-bearing and neither is our business, but they explain why
-  unmodified crates compile.
-- **The runtime is CDN-only and cannot be vendored.** The `browserpod` npm
-  package is a 7KB shim whose entire body is
-  `import("https://rt.browserpod.io/3.0.1/browserpod.js")`. Their uptime becomes
-  ironpad's uptime for these cells, and offline is impossible. The BUILD
-  toolchain, by contrast, is a tarball we can vendor (T-008).
-- **`apiKey` is required, not optional**, per `index.d.ts`. It ships to the
-  client because it is a browser runtime; a console domain lock is the only real
-  protection.
+`std::thread::spawn` lowers to real `__syscall_clone`/`clone3` with `futex`
+parking, `set_tid_address`, `gettid` and the whole `sched_*` family; `fork`,
+`vfork`, `execve`, `wait4` and `pipe2` are all imported, so `Command::spawn` is
+a genuine fork/exec.
+
+Their kernel services these by spawning **a Web Worker per thread or process**,
+all sharing one `WebAssembly.Memory`. The target spec is what enables it:
+`--shared-memory`, `--import-memory=i,memory`, `+atomics` (real futex needs
+`memory.atomic.wait/notify`), and `--export=__startThread` as the entry point
+their kernel calls in the new Worker. `singlethread: true` and
+`has-thread-local: false` are not contradictions: they disable *LLVM's* TLS
+lowering so `__tls_base` is managed per-Worker by the kernel instead.
+
+This is the same primitive ironpad already uses for rayon cells, taken further,
+which is why Linux cells inherit the cross-origin-isolation requirement and the
+no-embeds rule.
+
+## Infrastructure already in place
+
+- **Cross-origin isolation**: the server already sets `COOP: same-origin` and
+  `COEP: require-corp` globally, which is why rayon cells work. No change.
+- **CSP**: the policy is `object-src 'none'; base-uri 'self'; form-action
+  'self'` and deliberately carries no `script-src`, so their dynamic import is
+  not blocked. No change. (A first pass reported otherwise by matching a
+  *comment* that mentions `script-src`; the policy itself does not contain it.)
+- **Their CDN cooperates with COEP**: `rt.browserpod.io` returns
+  `access-control-allow-origin: *` and `cross-origin-resource-policy:
+  cross-origin`, verified directly. They need `SharedArrayBuffer` themselves, so
+  this is designed for.
 
 ## Shape
 
 ```
-regular cell   source -> CELL_TOOLCHAIN  -> wasm32-unknown-unknown -> executor -> cell_main -> typed panels
-browserpod     source -> BROWSERPOD_TC   -> wasm32-browserpod-...  -> Pod      -> _start    -> stdout text
+regular cell  source -> CELL_TOOLCHAIN      -> wasm32-unknown-unknown -> executor -> cell_main -> typed panels
+Linux cell    source -> BROWSERPOD_TOOLCHAIN-> wasm32-browserpod-...  -> pod      -> _start    -> streamed stdout
 ```
 
-Two pipelines that share the compile-cache and admission machinery and share
-nothing at runtime.
+Two pipelines sharing the compile cache, admission control and blob snapshots,
+and sharing nothing at runtime.
 
 # Assumptions
 
-- ironpad qualifies for free use: it is public and MIT, and their README says
-  BrowserPod is "free to use only for personal and open-source projects".
-- Traffic is negligible, so metering is a rounding error in practice. This is a
-  reason to proceed, not a reason to skip T-000.
+- ironpad qualifies for free use: public, MIT, and their README says BrowserPod
+  is "free to use only for personal and open-source projects".
+- The owner's allowance is **10,000 tokens/month**. The unit is undefined in
+  public docs (the pricing policy linked from their own README 404s), so the
+  budget cannot be modelled yet. Never-autorun (T-008) exists so consumption
+  stays proportional to deliberate clicks regardless of what a token turns out
+  to be.
 
 # Constraints
 
-- **Nothing ships to `/public` before T-000.** The free-tier token limits are
-  not published; the pricing policy linked from their own README returns 404.
 - **No detection.** Flipping a cell to a different runtime because someone typed
-  `std::fs` would silently change its semantics and its piping behaviour.
-- Free-tier attribution (visible link + logo) is a requirement, not a courtesy.
+  `std::fs` would silently change its semantics and its piping.
+- **No autorun.** The only unbounded-consumption path, closed by construction.
+- **CDN dependency is accepted** with two hard requirements, both tested: a
+  notebook with no Linux cell never touches their CDN, and a CDN failure
+  degrades to an inline notice rather than a broken page.
+- **Ephemeral pods.** No `storageKey`. Persistence would make a notebook's
+  behaviour depend on invisible history, so the same notebook would give
+  different results to its author and its reader.
+- Free-tier attribution is a requirement, not a courtesy.
 
 # Open Questions
 
-1. **Does per-notebook attribution satisfy "your application must display"?**
-   Rendering it only where BrowserPod is used is arguably more honest than a
-   blanket footer, but it is an interpretation of their terms. Ask them.
-2. **What are the free-tier token limits, and what is the metering unit?**
-   Unanswerable from public docs today.
-3. **What does `capture-outputs` do with a BrowserPod cell?** It runs cells to
-   snapshot output, so it would need the runtime and the key in the capture
-   environment. If it cannot, the public notebook ships with no `saved_output`,
-   which is a visible downgrade on view-only pages.
-4. **What does a BrowserPod cell demonstrate that is worth a notebook?** A
-   filesystem walk is a shrug. Something like `ripgrep` over a seeded tree, or a
-   subprocess pipeline, earns the tab. Decide before building T-009.
-5. **Does the CSP need widening** for the dynamic import from `rt.browserpod.io`?
-   The current policy sets `object-src`/`base-uri`/`form-action` and
-   deliberately no `script-src`, so it may already pass. Verify, do not assume.
+Being resolved by building (T-001) or by asking Leaning Technologies, not by
+blocking:
+
+1. **What is a token?** 10,000/month is unmodellable until this is known.
+2. **`Process` is opaque.** `export class Process {}` in their own `index.d.ts`,
+   with `run()` returning `Promise<Process>`. There is no documented completion
+   signal, exit status, or kill. T-006 and T-007 both tighten if the answer is
+   good; if there is none, completion must be inferred and Terminate must tear
+   down the whole pod.
+3. **Does per-cell attribution satisfy "your application must display"?**
 
 # Non-Goals (MVP)
 
-- Compiling Rust in the browser. Their post says it is planned and not
-  implemented; if it lands, revisit the whole design.
-- Typed piping into or out of BrowserPod cells.
-- Running BrowserPod cells in embeds.
-- Self-hosting the runtime (enterprise contact only).
-- Making regular cells use this path.
+- Compiling Rust in the browser. Their post says planned, not implemented. If it
+  lands, only the compile third of this design moves; the runtime half stands.
+- Targeting WALI instead. It is MIT and open, but its only implementation is in
+  WAMR, native-only, with no browser host and no Rust target. It is the reason
+  the format says `Linux` rather than `BrowserPod`, not an option today.
+- Typed piping into or out of Linux cells; the shared filesystem is the model.
+- Running Linux cells in embeds.
+- Persistent pod filesystems, notebook-level filesystem seeding, `userImage`.
+- A runtime abstraction over the vendor. One implementation behind an interface
+  is speculative generality; the format already carries the protection.
 
 # History
 
-- 2026-08-15: Created after a spike that compiled a beefy program to the target
-  on the first attempt. Explicit-opt-in decided (owner agreed); 431-syscall
-  import table measured; CDN-only runtime and required API key confirmed from
-  the SDK's own type definitions. Blocked on T-000.
+- 2026-08-15: Created after a spike compiled a beefy program to the target on
+  the first attempt.
+- 2026-08-16: Rewritten after a full design grilling. Twenty decisions settled;
+  see Principles and Constraints. Two earlier claims corrected: "you would build
+  it twice" overstated the impact of browser-side rustc (only the compile third
+  moves), and the failure UX cannot assume an exit code the SDK does not
+  document. Proceeding without the licensing answers, by owner decision.
