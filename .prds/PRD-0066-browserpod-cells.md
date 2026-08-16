@@ -65,7 +65,7 @@ tasks:
 - id: T-001
   title: "Runtime spike: boot a pod in a page, run the spike binary, capture output"
   priority: 1
-  status: todo
+  status: done
   notes: "FIRST, before any model change. Answers empirically what the SDK does not document: whether Process exposes completion/exit/kill, what boot costs in wall-clock, and what a token buys. Everything below is cheaper to design once this is known."
 - id: T-002
   title: "CellType::Linux in the notebook format"
@@ -232,18 +232,53 @@ and sharing nothing at runtime.
   different results to its author and its reader.
 - Free-tier attribution is a requirement, not a courtesy.
 
+## What the runtime spike established (T-001, 2026-08-16)
+
+End to end, on a COOP/COEP-isolated origin matching production: the SDK loaded,
+a pod booted, our 553KB binary was written into its filesystem and executed, and
+its stdout came back. Real `/proc`, real `clone3` threads, and `/bin/ls`
+genuinely forked and exec'd (BusyBox) to list a file the Rust code had written.
+
+| step | cold | warm |
+| --- | --- | --- |
+| SDK import | 425ms | 6ms |
+| `BrowserPod.boot` | 1491ms | 653-880ms |
+| `run()` returns | 615ms | 615ms |
+
+So a first Linux-cell click costs roughly 1.5-2s of setup, amortized across the
+notebook because there is one pod (T-005).
+
+**`Process` is not an object, it is a PID.** `run()` resolves to a bare number:
+its prototype is `Number.prototype` (`toExponential`, `toFixed`, …). There is no
+`wait`, `exitCode`, `kill` or `then`. Consequences, both already chosen
+correctly but now forced rather than preferred:
+
+- **Completion must be inferred** (T-006). Quiet-output timeout or a sentinel is
+  the primary mechanism, not a fallback.
+- **Terminate must tear down the pod** (T-007). With no `kill`, there is no
+  other lever.
+
+Note the asymmetry: the *program* sees exit codes fine (`Command::output()`
+reported `exit status: 0`). The gap is only between JS and the top-level
+process.
+
+**Two API traps, both of which would bite the implementation identically:**
+
+1. `onOutput` hands a view over **resizable** (shared) memory, and `TextDecoder`
+   throws `The provided ArrayBuffer value must not be resizable`. Copy first
+   (`new Uint8Array(buf).slice()`). Worse: an exception thrown inside the
+   callback **wedges `run()` so it never resolves**, so the failure mode is a
+   hang rather than an error.
+2. `createFile` mode is **`"binary"`**, not `"w"`; the docs say only
+   `mode: string`. The returned object exposes just `read`/`write` on its
+   prototype despite `close()` appearing in their type definitions.
+
 # Open Questions
 
-Being resolved by building (T-001) or by asking Leaning Technologies, not by
-blocking:
-
-1. **What is a token?** 10,000/month is unmodellable until this is known.
-2. **`Process` is opaque.** `export class Process {}` in their own `index.d.ts`,
-   with `run()` returning `Promise<Process>`. There is no documented completion
-   signal, exit status, or kill. T-006 and T-007 both tighten if the answer is
-   good; if there is none, completion must be inferred and Terminate must tear
-   down the whole pod.
-3. **Does per-cell attribution satisfy "your application must display"?**
+1. **What is a token?** 10,000/month is unmodellable until this is known. Boot
+   is the plausible unit, and one pod per notebook plus never-autorun means a
+   session costs one.
+2. **Does per-cell attribution satisfy "your application must display"?**
 
 # Non-Goals (MVP)
 
