@@ -122,6 +122,11 @@ tasks:
   priority: 3
   status: todo
   notes: "38MB checksum-pinned tarball plus a nightly. Vendor it rather than curl|bash at image build, so the prod BUILD never depends on rt.browserpod.io being up. The RUNTIME unavoidably does."
+- id: T-014
+  title: "Keep pod-booting specs out of the default gate"
+  priority: 1
+  status: todo
+  notes: "At 10 tokens/boot the e2e suite outspends visitors by an order of magnitude. Specs that need a real pod live in an opt-in `cargo make test-linux-cells`, the way test-integration is already separated for being slow; `cargo make uat` and CI must never boot one. The absence-asserting specs (uat-001 compile, uat-004 no-CDN-contact, uat-005 never-autorun, uat-008 embed refusal) stay in the normal gate since they boot nothing. uat-007 (CDN failure) is tested by BLOCKING the rt.browserpod.io hostname in Playwright rather than by booting and killing, which is cheaper and deterministic."
 - id: T-013
   title: "One public notebook: a subprocess pipeline and real threads"
   priority: 3
@@ -273,12 +278,39 @@ process.
    `mode: string`. The returned object exposes just `read`/`write` on its
    prototype despite `close()` appearing in their type definitions.
 
+## Metering, measured (2026-08-16)
+
+**10 tokens per boot, flat, duration-independent.** Three short-lived boots cost
+30 (10,000 -> 9,970). A fourth pod held **idle for 322 seconds** cost exactly 10
+more (-> 9,960), 50x the lifetime at the same price.
+
+The mechanism explains it: booting pulls five assets from their CDN
+(`browserpod.js`, `kernel.wasm`, `cache.wasm`, `worker.js`, `opfs_worker.js`)
+inside the first 337ms, and then makes **zero further requests to their origin**.
+The runtime is entirely client-side afterwards, so there is no beacon that could
+report duration. Caveat: this observes their client, not their billing; the
+counter reading is the real evidence and the network trace only explains it.
+
+So the allowance is **~1,000 pod boots/month**, about 33/day, and three
+consequences follow:
+
+- **Holding a pod for a whole notebook session is free.** T-005 needs no idle
+  teardown.
+- **Long-running cells cost nothing extra**, so no runtime timeout is needed for
+  cost reasons (T-007's "no auto-timeout in v1" stands on its own merits).
+- **Boots are the only currency.** The only thing that matters is how often a pod
+  is created: one per notebook page-session, never automatic.
+
+### The test suite is the dominant consumer, not visitors
+
+At 10/boot, a pod-dependent spec run costs ~40 tokens; ten gate runs a day is
+400/day and the monthly allowance is gone in under four weeks of ordinary
+development, with no users involved. Holding pods cannot amortize this because
+the cost is entirely in the create. Hence T-014.
+
 # Open Questions
 
-1. **What is a token?** 10,000/month is unmodellable until this is known. Boot
-   is the plausible unit, and one pod per notebook plus never-autorun means a
-   session costs one.
-2. **Does per-cell attribution satisfy "your application must display"?**
+1. **Does per-cell attribution satisfy "your application must display"?**
 
 # Non-Goals (MVP)
 
