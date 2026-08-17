@@ -49,6 +49,15 @@ plain_body="request[notebook_id]=warmup&request[cell_id]=warm_plain&request[sour
 simd_source='use std::simd::f32x4; let v = f32x4::splat(2.0) * f32x4::splat(3.0); format!("warm {:?}", v.to_array())'
 simd_body="request[notebook_id]=warmup&request[cell_id]=warm_simd&request[source]=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$simd_source")&request[cargo_toml]=[dependencies]"
 
+# A minimal Linux cell (PRD-0066): a whole program for
+# wasm32-browserpod-linux-musl, which has its own toolchain, its own target dir
+# and therefore its own cold build. Warming it costs NO BrowserPod allowance:
+# compilation is server-side and a boot is the only metered event, so this
+# converges the one lane a reader of /public/linux-cells would otherwise pay
+# for on the first click.
+linux_source='fn main() { println!("warm"); }'
+linux_body="request[notebook_id]=warmup&request[cell_id]=warm_linux&request[source]=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$linux_source")&request[cargo_toml]=[dependencies]&request[cell_type]=Linux"
+
 # ── Convergence loops ─────────────────────────────────────────────────────────
 
 # warm_compile <label> <body>
@@ -105,5 +114,9 @@ echo "warming compile (simd)..."
 warm_compile "compile/simd" "$simd_body" || status=1
 echo "warming check (simd)..."
 warm_check "check/simd" "$simd_body" || status=1
+# Compile only: a reader of a Linux notebook never types into it, so the
+# check lane is not on their path.
+echo "warming compile (linux)..."
+warm_compile "compile/linux" "$linux_body" || status=1
 
 exit "$status"
