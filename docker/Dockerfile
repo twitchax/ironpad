@@ -67,6 +67,7 @@ FROM rust:1.93.0-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
+    clang \
     && rm -rf /var/lib/apt/lists/*
 
 # Cell compilation runs on ONE pinned nightly — never the host default (keep in
@@ -131,11 +132,13 @@ RUN rustup toolchain uninstall stable 1.93.0 || true
 # RUST_TARGET_PATH, so `--target wasm32-browserpod-linux-musl` resolves by name
 # with no `rustup target add`.
 #
-# NOT installed: clang. The pack ships a C-compiler wrapper that shells out to
-# the system clang, so a Linux cell whose dependency tree runs a `cc` build
-# script for the pod target will fail with "clang: not found". Pure-Rust cells
-# (the MVP case) never invoke it, and llvm is ~350MB, so this is left out
-# deliberately and noted rather than paid for speculatively.
+# Installed alongside: clang. The pack ships a C-compiler wrapper
+# (`wasm32-browserpod-linux-musl-clang`) that shells out to the system clang,
+# so a Linux cell whose dependency tree runs a `cc` build script for the pod
+# target fails with "clang: not found" without it. Pure-Rust cells never
+# invoke it, which is why this was deferred at first; it is ~350MB against the
+# 2.14GB PRD-0067 took off the toolchains, and "your dependency happens to
+# vendor C" is not a distinction a notebook author should have to know about.
 COPY docker/browserpod.env docker/vendor/ /tmp/browserpod/
 RUN set -eu; \
     . /tmp/browserpod/browserpod.env; \

@@ -906,12 +906,36 @@ pub async fn get_toolchain_fingerprint() -> Result<String, ServerFnError> {
 /// and CI run has no key, and the cell says so rather than booting a pod
 /// against nothing.
 #[server]
-#[allow(clippy::unused_async)] // `#[server]` requires an async fn.
 pub async fn get_browserpod_key() -> Result<Option<String>, ServerFnError> {
+    use crate::compiler::admission::BuildAdmission;
     use ironpad_common::AppConfig;
 
     let config = expect_context::<AppConfig>();
-    Ok(config.browserpod_key.clone())
+    let Some(key) = config.browserpod_key.clone() else {
+        return Ok(None);
+    };
+
+    // Rate limited per client (PRD-0067). This endpoint is deliberately
+    // anonymous — a reader of a public notebook must be able to boot a pod —
+    // so the key is handed to anyone who asks, and the only bound on asking
+    // is this one. The prod key is origin-locked at BrowserPod's edge, which
+    // makes a scraped key largely useless elsewhere; this is the second layer
+    // rather than the only one.
+    let admission = expect_context::<BuildAdmission>();
+    let client_ip = leptos_axum::extract::<http::HeaderMap>().await.map_or_else(
+        |_| "local".to_string(),
+        |headers| crate::compiler::admission::client_ip(&headers),
+    );
+    if !admission.try_admit_key(&client_ip) {
+        // Reported as "no key configured", which is the shape every
+        // contributor checkout and CI run already produces and which the cell
+        // already renders as a friendly notice. A distinct error here would
+        // be a second failure mode in the cell UI that says, to a reader who
+        // cannot act on it, that they asked too often.
+        return Ok(None);
+    }
+
+    Ok(Some(key))
 }
 
 // ── Share blob snapshots (PRD-0047) ──────────────────────────────────────────
@@ -1057,7 +1081,16 @@ async fn write_cell_blobs_capped(
 
     let mut fresh_entries = std::collections::BTreeMap::new();
     for (idx, cell) in notebook.cells.iter().enumerate() {
-        if !cell.is_runnable() {
+        // Every cell that COMPILES, not every cell that is `is_runnable()`
+        // (PRD-0067). That predicate is `Code && !shared`, so it excluded
+        // Linux cells — and a Linux cell on `/shared` is exactly the case
+        // PRD-0047 exists to prevent, since the viewer's Run button reaches
+        // `compile_cell` and spawns a real cargo build on this machine for
+        // anyone who clicks it. The viewer half was already wired: the
+        // manifest entry is passed to `ViewOnlyLinuxCell` and on to
+        // `run_flow::acquire_blob`, so it was only ever the server that
+        // declined to snapshot them.
+        if !cell.cell_type.compiles() || cell.shared {
             continue;
         }
         let cargo_toml = cell.cargo_toml.clone().unwrap_or_default();
@@ -1073,10 +1106,11 @@ async fn write_cell_blobs_capped(
             needs_atomics,
             needs_autodiff,
             needs_simd,
-            // From the cell, not assumed. `is_runnable()` excludes Linux
-            // cells today so this arm cannot see one — but the day Run All
-            // includes them, an assumed target here would snapshot every
-            // Linux cell under an ordinary cell's key.
+            // From the cell, not assumed. Since PRD-0067 this loop DOES
+            // see Linux cells, so the target is load-bearing rather than
+            // defensive: assume `Executor` here and every Linux cell gets
+            // snapshotted under an ordinary cell's key, which is a blob
+            // compiled for the wrong world served to whoever asks.
             CellTarget::from(cell.cell_type),
         );
 
@@ -2210,6 +2244,93 @@ pub async fn get_auth_info() -> Result<ironpad_common::AuthInfo, ServerFnError> 
 mod tests {
     use super::*;
     use ironpad_common::CellType;
+
+    /// PRD-0067: share snapshots must cover Linux cells.
+    ///
+    /// The predicate used to be `is_runnable()` (`Code && !shared`), which
+    /// excluded them, so a reader of `/shared` clicking Run on a Linux cell
+    /// reached `compile_cell` and spawned a real cargo build on the instance.
+    /// That is precisely what PRD-0047 exists to stop.
+    ///
+    /// The negative control is the load-bearing half: the entry must be keyed
+    /// with `CellTarget::Linux`. A blob seeded under the `Executor` key must
+    /// NOT be picked up, because that would serve a module compiled for the
+    /// wrong world to whoever asks.
+    #[tokio::test]
+    async fn share_snapshots_cover_linux_cells_under_the_linux_key() {
+        use crate::compiler::cache::content_hash;
+        use ironpad_common::cache_key::CellTarget;
+        use ironpad_common::{IronpadCell, IronpadNotebook};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_dir = tmp.path().join("data");
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(cache_dir.join("blobs")).expect("cache blobs dir");
+
+        let cell = IronpadCell {
+            id: "linux-1".to_string(),
+            order: 0,
+            label: "Linux".to_string(),
+            cell_type: CellType::Linux,
+            source: "fn main() { println!(\"hi\"); }".to_string(),
+            cargo_toml: None,
+            shared: false,
+            collapsed: false,
+            output_collapsed: false,
+            version: 0,
+            saved_output: None,
+        };
+
+        let mut notebook = IronpadNotebook::new("linux notebook");
+        notebook.cells = vec![cell.clone()];
+        let tags = vec![String::new()];
+
+        let key_for = |target| {
+            content_hash(
+                &cell.source,
+                "",
+                &[],
+                notebook.shared_cargo_toml.as_deref(),
+                notebook.effective_shared_source().as_deref(),
+                false,
+                false,
+                false,
+                target,
+            )
+        };
+
+        // Control: seeded under the WRONG target, the snapshot must miss.
+        let executor_key = key_for(CellTarget::Executor);
+        std::fs::write(
+            cache_dir.join("blobs").join(format!("{executor_key}.wasm")),
+            b"\0asm-x",
+        )
+        .expect("seed executor blob");
+        let missed = write_cell_blobs_capped(&data_dir, &cache_dir, &notebook, &tags, u64::MAX)
+            .await
+            .expect("snapshot should not error");
+        assert!(
+            missed.is_empty(),
+            "a blob under the Executor key must not satisfy a Linux cell: {missed:?}"
+        );
+
+        // Seeded under the Linux key, it must be picked up.
+        let linux_key = key_for(CellTarget::Linux);
+        assert_ne!(linux_key, executor_key, "the target must change the key");
+        std::fs::write(
+            cache_dir.join("blobs").join(format!("{linux_key}.wasm")),
+            b"\0asm-l",
+        )
+        .expect("seed linux blob");
+        let hit = write_cell_blobs_capped(&data_dir, &cache_dir, &notebook, &tags, u64::MAX)
+            .await
+            .expect("snapshot should not error");
+        assert_eq!(
+            hit.get("linux-1").map(|e| e.blob.as_str()),
+            Some(linux_key.as_str()),
+            "a Linux cell must be snapshotted under its own target key: {hit:?}"
+        );
+    }
 
     /// Every `admin_*` server fn must call the gate, and this scans the source
     /// rather than trusting a list someone remembers to update.

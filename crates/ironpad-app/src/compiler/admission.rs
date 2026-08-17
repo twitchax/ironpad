@@ -32,6 +32,22 @@ pub const DEFAULT_MAX_CONCURRENT_BUILDS: usize = 3;
 /// edit-compile loop; the Playwright suite tripped a 10/min version of this
 /// and overrides the env instead).
 const DEFAULT_RATE_BURST: f64 = 20.0;
+
+/// Per-client token bucket for `get_browserpod_key` (PRD-0066).
+///
+/// Deliberately its OWN bucket rather than a share of the build budget. The
+/// two are unrelated costs: a key fetch is one string, a build is a cargo
+/// process, and charging pod boots against build tokens would let a notebook
+/// full of Linux cells rate-limit its own compiles.
+///
+/// Sized so legitimate use never notices. One fetch happens per pod boot, one
+/// pod serves a whole notebook, so a reader hitting this is reloading dozens
+/// of times a minute. A scraper collecting the key in bulk is what it bounds:
+/// the prod key is origin-locked, so this is depth rather than the only lock.
+const DEFAULT_KEY_RATE_BURST: f64 = 30.0;
+
+/// Refill rate for [`DEFAULT_KEY_RATE_BURST`], per minute.
+const DEFAULT_KEY_RATE_PER_MIN: f64 = 30.0;
 const DEFAULT_RATE_PER_MIN: f64 = 30.0;
 
 /// Default bound on how long a compile may queue for a slot.
@@ -80,8 +96,11 @@ pub struct BuildAdmission {
     compile_slots: Arc<tokio::sync::Semaphore>,
     check_slots: Arc<tokio::sync::Semaphore>,
     buckets: Arc<Mutex<HashMap<String, Bucket>>>,
+    key_buckets: Arc<Mutex<HashMap<String, Bucket>>>,
     rate_burst: f64,
     rate_per_sec: f64,
+    key_rate_burst: f64,
+    key_rate_per_sec: f64,
     queue_timeout: Duration,
 }
 
@@ -117,6 +136,10 @@ impl BuildAdmission {
             env_f64("IRONPAD_BUILD_RATE_PER_MIN", DEFAULT_RATE_PER_MIN),
             Duration::from_secs(queue_timeout_secs),
         )
+        .with_key_rate(
+            env_f64("IRONPAD_KEY_RATE_BURST", DEFAULT_KEY_RATE_BURST),
+            env_f64("IRONPAD_KEY_RATE_PER_MIN", DEFAULT_KEY_RATE_PER_MIN),
+        )
     }
 
     /// Fully-explicit construction (tests).
@@ -131,10 +154,21 @@ impl BuildAdmission {
             compile_slots: Arc::new(tokio::sync::Semaphore::new(slots)),
             check_slots: Arc::new(tokio::sync::Semaphore::new(slots)),
             buckets: Arc::new(Mutex::new(HashMap::new())),
+            key_buckets: Arc::new(Mutex::new(HashMap::new())),
             rate_burst,
             rate_per_sec: rate_per_min / 60.0,
+            key_rate_burst: DEFAULT_KEY_RATE_BURST,
+            key_rate_per_sec: DEFAULT_KEY_RATE_PER_MIN / 60.0,
             queue_timeout,
         }
+    }
+
+    /// Override the `get_browserpod_key` bucket (tests, and `from_env`).
+    #[must_use]
+    pub fn with_key_rate(mut self, burst: f64, per_min: f64) -> Self {
+        self.key_rate_burst = burst;
+        self.key_rate_per_sec = per_min / 60.0;
+        self
     }
 
     /// Admit a compile that is about to spawn cargo: charge the client's
@@ -176,37 +210,70 @@ impl BuildAdmission {
         Arc::clone(&self.check_slots).try_acquire_owned().ok()
     }
 
-    /// Take one token from `client_ip`'s bucket, refilling for elapsed time
-    /// first. `true` = admitted.
+    /// Admit one `get_browserpod_key` request. `true` = admitted.
+    ///
+    /// Charges the key bucket, which is separate from the build bucket: see
+    /// [`DEFAULT_KEY_RATE_BURST`] for why the two budgets do not mix. Refusal
+    /// is not an error the reader can act on, so the caller reports the same
+    /// "no key configured" shape a contributor checkout produces rather than
+    /// inventing a second failure mode in the cell UI.
+    pub fn try_admit_key(&self, client_ip: &str) -> bool {
+        let admitted = take_token(
+            &self.key_buckets,
+            client_ip,
+            self.key_rate_burst,
+            self.key_rate_per_sec,
+        );
+        if !admitted {
+            tracing::warn!(client_ip, "browserpod key rate limit hit");
+        }
+        admitted
+    }
+
+    /// Take one token from `client_ip`'s build bucket, refilling for elapsed
+    /// time first. `true` = admitted.
     fn try_take_token(&self, client_ip: &str) -> bool {
-        let now = Instant::now();
-        let mut buckets = self.buckets.lock().expect("bucket table poisoned");
+        take_token(&self.buckets, client_ip, self.rate_burst, self.rate_per_sec)
+    }
+}
 
-        // Opportunistic sweep: a bucket back at full charge has been idle for
-        // at least burst/rate seconds and carries no information.
-        if buckets.len() >= BUCKET_SWEEP_THRESHOLD {
-            let (burst, per_sec) = (self.rate_burst, self.rate_per_sec);
-            buckets.retain(|_, b| {
-                let refilled = b.tokens + now.duration_since(b.last_refill).as_secs_f64() * per_sec;
-                refilled < burst
-            });
-        }
+/// Take one token from `client_ip`'s bucket in `table`, refilling for elapsed
+/// time first. `true` = admitted.
+///
+/// A free function over the table rather than a method, so the build bucket
+/// and the key bucket share one implementation of the refill, the sweep and
+/// the off-by-one that decides admission. Two copies of this drift.
+fn take_token(
+    table: &Mutex<HashMap<String, Bucket>>,
+    client_ip: &str,
+    burst: f64,
+    per_sec: f64,
+) -> bool {
+    let now = Instant::now();
+    let mut buckets = table.lock().expect("bucket table poisoned");
 
-        let bucket = buckets.entry(client_ip.to_string()).or_insert(Bucket {
-            tokens: self.rate_burst,
-            last_refill: now,
+    // Opportunistic sweep: a bucket back at full charge has been idle for
+    // at least burst/rate seconds and carries no information.
+    if buckets.len() >= BUCKET_SWEEP_THRESHOLD {
+        buckets.retain(|_, b| {
+            let refilled = b.tokens + now.duration_since(b.last_refill).as_secs_f64() * per_sec;
+            refilled < burst
         });
-        bucket.tokens = (bucket.tokens
-            + now.duration_since(bucket.last_refill).as_secs_f64() * self.rate_per_sec)
-            .min(self.rate_burst);
-        bucket.last_refill = now;
+    }
 
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
-            true
-        } else {
-            false
-        }
+    let bucket = buckets.entry(client_ip.to_string()).or_insert(Bucket {
+        tokens: burst,
+        last_refill: now,
+    });
+    bucket.tokens =
+        (bucket.tokens + now.duration_since(bucket.last_refill).as_secs_f64() * per_sec).min(burst);
+    bucket.last_refill = now;
+
+    if bucket.tokens >= 1.0 {
+        bucket.tokens -= 1.0;
+        true
+    } else {
+        false
     }
 }
 
@@ -301,6 +368,54 @@ mod tests {
         );
         drop(p1);
         assert!(a.try_admit_check().is_some(), "released slot is reusable");
+    }
+
+    #[test]
+    fn key_requests_are_rate_limited_per_client() {
+        let a = admission(4, 20.0, 20.0, 50).with_key_rate(3.0, 60.0);
+
+        for i in 0..3 {
+            assert!(
+                a.try_admit_key("1.2.3.4"),
+                "burst request {i} must be admitted"
+            );
+        }
+        assert!(
+            !a.try_admit_key("1.2.3.4"),
+            "past the burst must be refused"
+        );
+
+        // Per client, not global: one scraper must not lock every reader out.
+        assert!(
+            a.try_admit_key("5.6.7.8"),
+            "a different client has its own bucket"
+        );
+    }
+
+    /// The key bucket and the build bucket must not share a budget.
+    ///
+    /// A notebook full of Linux cells boots pods and fetches the key; if that
+    /// spent build tokens, running the notebook would rate-limit its own
+    /// compiles. The negative control is the point here: exhausting one
+    /// budget entirely must leave the other untouched.
+    #[tokio::test]
+    async fn key_and_build_budgets_are_independent() {
+        let a = admission(4, 2.0, 1.0, 50).with_key_rate(2.0, 1.0);
+
+        assert!(a.try_admit_key("1.2.3.4"));
+        assert!(a.try_admit_key("1.2.3.4"));
+        assert!(!a.try_admit_key("1.2.3.4"), "key budget is now spent");
+
+        // Builds are untouched by the spent key budget.
+        assert!(a.admit_compile("1.2.3.4").await.is_ok());
+        assert!(a.admit_compile("1.2.3.4").await.is_ok());
+        assert!(
+            matches!(
+                a.admit_compile("1.2.3.4").await,
+                Err(AdmissionDenied::RateLimited)
+            ),
+            "build budget is separate and spends on its own schedule"
+        );
     }
 
     #[test]
