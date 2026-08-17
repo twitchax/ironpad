@@ -19,7 +19,7 @@ use crate::types::{CellManifest, CellType, Diagnostic, IronpadCell, IronpadNoteb
 /// schema changes in a way a peer should be able to notice (a new payload
 /// variant, an added field, …). Decode sites (in the server/CLI crates) may
 /// log a warning when a received version differs from this constant.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Top-level message envelope. Every frame on the wire is one of these.
 ///
@@ -1176,7 +1176,14 @@ mod tests {
         // reports EVERY queue drop (continue-past-failures dependents and
         // user-terminate, PRD-0060 remediation), so agents stop inferring
         // them.
-        assert_eq!(PROTOCOL_VERSION, 6);
+        // 7: `CellType::Linux` and `CellType::Unsupported` (PRD-0066).
+        // `cell_type` rides the wire on every `IronpadCell`, so a peer can now
+        // receive a tag it has never heard of. Old peers do not break on it
+        // (`Unsupported` carries the tag verbatim and writes it back), which
+        // is precisely why the number is the only signal that anything
+        // changed. PRD-0066 shipped without this bump; it is T-011's third
+        // deliverable, landed late.
+        assert_eq!(PROTOCOL_VERSION, 7);
     }
 
     /// Forward-compat (new → old), envelope level: a frame minted by a newer

@@ -95,7 +95,14 @@ export default defineConfig({
       // rt.browserpod.io mapped to `~NOTFOUND`, so no boot can leave the
       // machine, and a boot is the only billable event. The value is not a
       // real key and would be rejected on arrival even if it escaped.
-      BROWSERPOD_KEY: "bp1_playwright_not_a_real_key_00000000000000000000000000",
+      // `cargo make test-linux-cells` exports the real key from
+      // `.hidden/dev.env`; every other run gets the fake one below. The
+      // default project cannot spend either way (the CDN host does not
+      // resolve for it), so this override only ever matters to the opt-in
+      // `linux-pod` project, which is the only place a boot is intended.
+      BROWSERPOD_KEY:
+        process.env.BROWSERPOD_KEY ??
+        "bp1_playwright_not_a_real_key_00000000000000000000000000",
       // Registers /auth/test-login (PRD-0053) so specs can mint real
       // sessions without GitHub. Production never sets this.
       IRONPAD_TEST_AUTH: "1",

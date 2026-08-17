@@ -310,6 +310,21 @@ fi
 
 if [ "$#" -gt 0 ] && [ "$1" = "--" ]; then shift; fi
 
+# A real key is required: the fake one baked into playwright.config.ts is
+# rejected on arrival, so these specs would test the failure path instead of
+# the pod. It lives only in the gitignored .hidden/dev.env.
+if [ -f .hidden/dev.env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.hidden/dev.env
+    set +a
+fi
+if [ -z "${BROWSERPOD_KEY:-}" ]; then
+    echo "    BROWSERPOD_KEY is unset and .hidden/dev.env did not supply one."
+    echo "    These specs need a real key; refusing to run against the fake one."
+    exit 1
+fi
+
 # IRONPAD_LINUX_POD_TESTS is what brings the `linux-pod` project into
 # existence at all; without it the config does not define it, which is why a
 # stray `npx playwright test` cannot reach these.

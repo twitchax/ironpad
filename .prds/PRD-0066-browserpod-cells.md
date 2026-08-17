@@ -4,7 +4,7 @@ title: "Linux cells: a cell that is a real Linux process"
 status: active
 owner: "Aaron Roney"
 created: 2026-08-15
-updated: 2026-08-16
+updated: 2026-08-17
 
 principles:
 - "Explicit, never detected. Every other special case keeps the execution model; this one replaces it, so it is opted into, not inferred from a substring."
@@ -27,39 +27,39 @@ acceptance_tests:
 - id: uat-001
   name: "A Linux cell compiles server-side to a binary exporting _start"
   command: cargo make test-integration
-  uat_status: unverified
+  uat_status: verified
 - id: uat-002
   name: "A Linux cell runs in a pod and streams stdout into its panel"
   command: cargo make test-linux-cells
-  uat_status: unverified
+  uat_status: verified
 - id: uat-003
   name: "Two Linux cells in one notebook share a filesystem: cell 1 writes, cell 2 reads"
   command: cargo make test-linux-cells
-  uat_status: unverified
+  uat_status: verified
 - id: uat-004
   name: "A notebook with no Linux cell requests nothing from rt.browserpod.io and boots no pod"
   command: cargo make playwright -- linux-cells
-  uat_status: unverified
+  uat_status: verified
 - id: uat-005
   name: "Nothing autoruns a Linux cell: not public autorun, not Run All on load, not the agent protocol"
   command: cargo make playwright -- linux-cells
-  uat_status: unverified
+  uat_status: verified
 - id: uat-006
   name: "Attribution renders in every Linux cell frame and in no other cell"
-  command: cargo make test-linux-cells
-  uat_status: unverified
+  command: cargo make playwright -- linux-cells
+  uat_status: verified
 - id: uat-007
   name: "A CDN failure degrades to an inline notice, not a broken page or a hung notebook"
-  command: cargo make playwright -- linux-cells
-  uat_status: unverified
+  command: cargo make playwright -- linux-cdn-and-embed
+  uat_status: verified
 - id: uat-008
   name: "Embeds refuse Linux cells via the existing cross-origin-isolation notice"
-  command: cargo make playwright -- embed
-  uat_status: unverified
+  command: cargo make playwright -- linux-cdn-and-embed
+  uat_status: verified
 - id: uat-009
   name: "Full gate"
   command: cargo make uat
-  uat_status: unverified
+  uat_status: verified
 
 tasks:
 - id: T-001
@@ -73,65 +73,65 @@ tasks:
   status: done
   notes: "New variant, NOT a boolean flag beside cell_type: Code. An unknown cell type must deserialize to an inert 'unsupported cell' that renders source read-only and refuses to run. The PRD-0047 lesson: an old client that silently treats it as Code would compile it to the wrong target and fail confusingly."
 - id: T-003
-  title: "Compile path: fourth toolchain pin, variable target triple"
+  title: "Compile path: a second toolchain pin, variable target triple"
   priority: 1
-  status: todo
-  notes: "BROWSERPOD_TOOLCHAIN = browserpod-3.0.0 (pins nightly-2026-05-19). cell_toolchain already switches by name. cache_key's target triple is currently FIXED and must become variable; its own comment anticipates this. Linux cells get shared.rs as `mod shared` but NOT ironpad-cell."
+  status: done
+  notes: "BROWSERPOD_TOOLCHAIN = browserpod-3.0.0 (pins nightly-2026-05-19). cell_toolchain switches by name; cache_key's target triple became variable. Linux cells get shared.rs as `mod shared` but NOT ironpad-cell. Titled `fourth toolchain pin` when written: PRD-0067 then collapsed the other three onto that same nightly, so browserpod is now one of TWO pins and `browserpod_pin_matches_cell_toolchain` fails the build if they drift."
 - id: T-004
   title: "Scaffold: whole programs, not fragments"
   priority: 1
-  status: todo
+  status: done
   notes: "The author writes `fn main()`. ironpad supplies only Cargo.toml and the shared module. No cell_main wrapper, no cellN bindings, no trampoline."
 - id: T-005
   title: "Pod runtime: one per notebook, lazy, ephemeral"
   priority: 1
-  status: todo
+  status: done
   notes: "Boot on first Linux-cell run, no storageKey (ephemeral by design), teardown on navigation. Separate from executor-core.js entirely. Script loaded per-route like KaTeX/Prism so a notebook without Linux cells never touches their CDN."
 - id: T-006
   title: "Streaming terminal panel"
   priority: 2
-  status: todo
+  status: done
   notes: "createCustomTerminal({onOutput}) appends live. Existing panels are static and PanelMode::Snapshot assumes finality, so this is a new panel kind. Completion may have to be inferred (quiet timeout or sentinel) if Process exposes nothing; T-001 decides."
 - id: T-007
   title: "Failure and teardown UX"
   priority: 2
-  status: todo
+  status: done
   notes: "panic = abort, so a panic kills the process and may kill the pod. Render stderr as a cell error. If the pod died, mark every other Linux cell in the notebook stale with 'the shared Linux machine restarted'. Terminate tears down the pod, visibly."
 - id: T-008
   title: "Never autorun, anywhere"
   priority: 1
-  status: todo
+  status: done
   notes: "Public-notebook autorun skips Linux cells. Run All includes them in notebook order but only on explicit invocation. Agent `cells run` refuses them with a clear error rather than dispatching (a CLI boot has no human watching)."
 - id: T-009
   title: "Attribution in the cell frame header"
   priority: 1
-  status: todo
+  status: done
   notes: "Visible link + logo on every Linux cell, free-tier requirement. Renders nowhere else."
 - id: T-010
   title: "ADD_LINUX editor button + no saved_output"
   priority: 2
-  status: todo
+  status: done
   notes: "Third add-cell button beside ADD_CODE/ADD_MARKDOWN. Linux cells never capture saved_output; view-only pages show a Run affordance instead. capture-outputs must skip them, so the key never needs to exist in CI."
 - id: T-011
   title: "PROTOCOL_VERSION 7 + live check + blob snapshots"
   priority: 2
-  status: todo
-  notes: "Agents read/write Linux cells like any other. check_cell runs with the target swapped (server-side, costs no tokens). Share-time blob snapshots apply unchanged once the cache key carries the triple."
+  status: done
+  notes: "Agents read/write Linux cells like any other. check_cell runs with the target swapped (server-side, costs no tokens). Share-time blob snapshots apply unchanged once the cache key carries the triple. The version bump was MISSED at ship time and landed later: `CellType::Linux` is a new variant on a type that rides the wire in `IronpadCell`, which is exactly what that constant's own doc says to bump for."
 - id: T-012
   title: "Docker: vendor the toolchain tarball"
   priority: 3
-  status: todo
+  status: done
   notes: "38MB checksum-pinned tarball plus a nightly. Vendor it rather than curl|bash at image build, so the prod BUILD never depends on rt.browserpod.io being up. The RUNTIME unavoidably does."
 - id: T-014
   title: "Keep pod-booting specs out of the default gate"
   priority: 1
-  status: todo
+  status: done
   notes: "At 10 tokens/boot the e2e suite outspends visitors by an order of magnitude. Specs that need a real pod live in an opt-in `cargo make test-linux-cells`, the way test-integration is already separated for being slow; `cargo make uat` and CI must never boot one. The absence-asserting specs (uat-001 compile, uat-004 no-CDN-contact, uat-005 never-autorun, uat-008 embed refusal) stay in the normal gate since they boot nothing. uat-007 (CDN failure) is tested by BLOCKING the rt.browserpod.io hostname in Playwright rather than by booting and killing, which is cheaper and deterministic."
 - id: T-013
   title: "One public notebook: a subprocess pipeline and real threads"
   priority: 3
-  status: todo
-  notes: "Last. Threads are the stronger demo than first credited: sched_getaffinity is imported, so available_parallelism() should return something real and a cell can fan out across actual Workers."
+  status: done
+  notes: "`public/notebooks/linux-cells.ironpad`, 10 cells (5 Linux). The premise in this note was WRONG and measurement corrected it: available_parallelism() returns 1 in a pod and so does nproc, so the notebook hard-codes its worker count. The fan-out is real regardless (2,045ms on one thread vs 194ms across sixteen). Verified end to end by tests/e2e/linux-pod/notebook.spec.ts, which drives the shipped notebook rather than cells of its own, because Linux cells carry no saved_output and are therefore invisible to the capture-outputs freshness gate."
 ---
 
 # Summary
@@ -343,3 +343,56 @@ vacuously, so this cannot be mistaken for coverage.
   it twice" overstated the impact of browser-side rustc (only the compile third
   moves), and the failure UX cannot assume an exit code the SDK does not
   document. Proceeding without the licensing answers, by owner decision.
+- 2026-08-17: T-013 lands (`public/notebooks/linux-cells.ironpad`, 10 cells)
+  and the frontmatter is corrected. **The bookkeeping was wrong first.** T-003
+  through T-012 and T-014 all read `todo` against a tree where the feature had
+  shipped in three commits, and all nine UATs read `unverified`. That is fixed
+  here, but the more useful finding is why it went unnoticed: two of the three
+  gaps below could not have been caught by running anything.
+
+  **T-013's own premise was false.** Its note read "sched_getaffinity is
+  imported, so available_parallelism() should return something real". It
+  returns **1**, and `nproc` agrees, measured in a real pod. A pool sized the
+  usual way is a pool of one, so the notebook hard-codes its worker count and
+  says why.
+
+  **The threads are real anyway, and the first measurement said otherwise.**
+  A probe counting primes below 200,000 reported 19ms serial against 38ms on
+  two threads and 20ms on four, which reads as "no parallelism". That number
+  was worthless: the same probe measured **20ms to spawn four empty threads**,
+  so the entire workload fit inside the spawn cost. Re-run at 6,000,000 the
+  answer inverts completely: **2,045ms on one thread, 194ms across sixteen, a
+  10.5x speedup**. The conclusion was formed off the first run and stated
+  before the second existed. Sizing the workload against the overhead is the
+  whole measurement, and a speedup test whose serial arm finishes in 19ms is
+  not a speedup test.
+
+  **Process slots are finite and `std` panics on the limit.** Fourteen
+  `Command::output()` calls back to back: the fourteenth failed `EAGAIN`, from
+  an `unwrap` inside `std::sys::process`, and the cell exited 137. Each child
+  is a Web Worker. The exact ceiling is NOT established (one observation, one
+  pod, no sweep), so the notebook reports what was seen and names no
+  mechanism.
+
+  **Three coverage holes, none of which any gate could see.**
+  `all_public_notebook_cells_compile` skipped every `cell_type != Code`, so
+  this notebook would have shipped with zero compile coverage while the suite
+  stayed green; it now routes Linux cells through `CellTarget::Linux` and
+  exempts them from the `cellN`/`last` skip, since a Linux cell has no typed
+  piping and `last` in one is an ordinary identifier. `cargo make
+  test-linux-cells` **could not have run**: `playwright.config.ts` hard-coded
+  the deliberately fake key, so the opt-in project would have exercised the
+  no-key failure path rather than a pod. The key now comes from
+  `.hidden/dev.env` and the task refuses to run against the fake one, which is
+  why `tests/e2e/linux-pod/` sat empty from the day it was created. And
+  uat-006 had **no test at all** despite being a licensing term rather than a
+  feature; it is now in the DEFAULT gate (attribution renders without a pod,
+  so pointing it at a metered run was wrong) and asserts the mark occupies
+  real space and its asset resolves, because `toBeVisible` passes on a
+  zero-area span whose mask 404s.
+
+  **T-011's third deliverable landed late.** `PROTOCOL_VERSION` was never
+  bumped for PRD-0066. `CellType` gained two variants and rides the wire on
+  every `IronpadCell`, which is exactly the case that constant's doc says to
+  bump for; old peers do not break on it, which is precisely why the number is
+  the only signal anything changed. Now 7.

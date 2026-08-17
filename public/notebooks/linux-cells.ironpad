@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "id": "6d1f0a52-3c7b-4e19-9a84-0b5c7f2d81ae",
+  "title": "Linux cells: a real process in a browser tab",
+  "description": "A Linux cell compiles to wasm32-browserpod-linux-musl and runs as a real Linux process against 431 syscalls: a filesystem shared across the notebook, fork/exec pipelines, and threads that are Web Workers.",
+  "tags": [
+    "linux",
+    "browserpod",
+    "processes",
+    "threads",
+    "wasm",
+    "blog"
+  ],
+  "created_at": "2026-08-17T00:00:00Z",
+  "updated_at": "2026-08-17T00:00:00Z",
+  "cells": [
+    {
+      "id": "cell_0",
+      "order": 0,
+      "label": "Introduction",
+      "cell_type": "Markdown",
+      "source": "> *AI authored to showcase ironpad capabilities.*\n\n## Introduction\n\nEvery other cell in ironpad compiles to `wasm32-unknown-unknown` and runs in a Web Worker, where there is no filesystem, no process table, and no thread the operating system knows about. **A Linux cell compiles to `wasm32-browserpod-linux-musl` and runs as a real Linux process**, serviced by [BrowserPod](https://browserpod.io)'s kernel inside this tab.\n\nThe two import tables, counted from the compiled modules:\n\n| cell kind | imports | serviced by |\n| --- | --- | --- |\n| regular | about a dozen host functions | ironpad's executor |\n| Linux | **431 syscalls**, plus 4 WASI | an in-browser kernel |\n\n`clone3`, `execve`, `futex`, `pipe2` and `wait4` are all in that table, so `std::fs`, `std::thread` and `std::process::Command` behave the way they behave on a server. Threads become Web Workers over one shared `WebAssembly.Memory`, and `Command::spawn` is a real fork and exec.\n\n**Nothing here runs until you click it.** Booting a pod spends metered allowance, so Linux cells never autorun and never join Run All on page load. Work down the notebook in order: every cell below is a separate process on **one shared machine**, and the later ones read files the earlier ones write.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_proc",
+      "order": 1,
+      "label": "A real process",
+      "cell_type": "Linux",
+      "source": "use std::fs;\n\nfn listing(path: &str) -> Vec<String> {\n    let mut names: Vec<String> = fs::read_dir(path)\n        .into_iter()\n        .flatten()\n        .filter_map(Result::ok)\n        .map(|e| e.file_name().to_string_lossy().into_owned())\n        .collect();\n    names.sort();\n    names\n}\n\nfn main() {\n    println!(\"pid         {}\", std::process::id());\n    println!(\n        \"target      {}-{}\",\n        std::env::consts::ARCH,\n        std::env::consts::OS\n    );\n    println!(\"cwd         {}\", std::env::current_dir().unwrap().display());\n\n    // /proc is answered by a kernel running in this browser tab. It is a real\n    // procfs rather than a shim returning plausible constants, which is also\n    // why it is partial: the files below are the ones that exist.\n    println!(\"/proc/self  {}\", listing(\"/proc/self\").join(\" \"));\n    for line in fs::read_to_string(\"/proc/self/status\")\n        .unwrap_or_default()\n        .lines()\n    {\n        println!(\"            {}\", line.replace('\\t', \" \"));\n    }\n\n    println!(\"/           {}\", listing(\"/\").join(\" \"));\n\n    // BusyBox, and rather more than BusyBox.\n    let bin = listing(\"/bin\");\n    println!(\"/bin        {} executables\", bin.len());\n    let notable: Vec<&String> = bin\n        .iter()\n        .filter(|n| {\n            matches!(\n                n.as_str(),\n                \"awk\" | \"curl\" | \"git\" | \"node\" | \"npm\" | \"python3\" | \"sh\" | \"sort\" | \"tar\" | \"vi\"\n            )\n        })\n        .collect();\n    println!(\n        \"            including {}\",\n        notable\n            .iter()\n            .map(|s| s.as_str())\n            .collect::<Vec<_>>()\n            .join(\", \")\n    );\n}",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_md_pod",
+      "order": 2,
+      "label": "One pod, one filesystem",
+      "cell_type": "Markdown",
+      "source": "## One pod, one filesystem\n\nRegular ironpad cells pipe typed Rust values downstream through the injected `cell0`, `cell1` and `last` bindings. **Linux cells have none of that, and do not need it.** One pod serves the whole notebook, so these cells are separate processes on the same machine, and a file written by one is a file read by the next. That is the Unix answer to the same problem.\n\nIt is also free. A boot costs **10 tokens, flat and duration-independent**: three short-lived pods cost 30, and a fourth held idle for 322 seconds cost exactly 10 more. Booting pulls five assets from the runtime CDN in the first 337ms and then never contacts that origin again, so the second cell you run pays nothing.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_write",
+      "order": 3,
+      "label": "Write a dataset",
+      "cell_type": "Linux",
+      "source": "use std::fs;\nuse std::io::Write;\n\n/// Write a day of hourly readings where the next cell can find them.\nfn main() {\n    fs::create_dir_all(\"/work\").expect(\"mkdir /work\");\n\n    let mut csv = fs::File::create(\"/work/readings.csv\").expect(\"create readings.csv\");\n    writeln!(csv, \"station,hour,celsius\").unwrap();\n    for hour in 0..24 {\n        for (station, base) in [(\"oslo\", -3.0_f64), (\"cairo\", 21.0), (\"quito\", 13.0)] {\n            let phase = (f64::from(hour) - 15.0) / 24.0 * std::f64::consts::TAU;\n            writeln!(csv, \"{station},{hour},{:.2}\", base + 6.0 * phase.sin()).unwrap();\n        }\n    }\n    drop(csv);\n\n    let bytes = fs::metadata(\"/work/readings.csv\").unwrap().len();\n    println!(\"pid {} wrote /work/readings.csv ({bytes} bytes)\", std::process::id());\n}",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_read",
+      "order": 4,
+      "label": "Read it from another pid",
+      "cell_type": "Linux",
+      "source": "use std::collections::BTreeMap;\nuse std::fs;\n\nfn main() {\n    println!(\"pid {} is a different process\", std::process::id());\n\n    let csv = fs::read_to_string(\"/work/readings.csv\")\n        .expect(\"run the cell above first: it writes /work/readings.csv\");\n\n    let mut by_station: BTreeMap<&str, Vec<f64>> = BTreeMap::new();\n    for line in csv.lines().skip(1) {\n        let mut field = line.split(',');\n        let (Some(station), Some(_hour), Some(celsius)) =\n            (field.next(), field.next(), field.next())\n        else {\n            continue;\n        };\n        by_station.entry(station).or_default().push(celsius.parse().unwrap());\n    }\n\n    for (station, values) in &by_station {\n        let mean = values.iter().sum::<f64>() / values.len() as f64;\n        let lo = values.iter().copied().fold(f64::INFINITY, f64::min);\n        let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);\n        println!(\n            \"{station:<6} n={:<3} mean={mean:6.2}  lo={lo:6.2}  hi={hi:6.2}\",\n            values.len()\n        );\n    }\n}",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_md_subp",
+      "order": 5,
+      "label": "Real subprocesses",
+      "cell_type": "Markdown",
+      "source": "## Real subprocesses\n\n`fork`, `vfork`, `execve`, `wait4` and `pipe2` are all imported, so `std::process::Command` is not an emulation. The kernel spawns a Web Worker for the child, and the parent gets a real pid back and waits on a real exit status.\n\nThe pod ships **352 executables on `PATH`**, mostly BusyBox applets but also `git`, `curl`, `node`, `npm` and `python3`. So a Rust program here can do what a shell script does: hand one child's stdout to the next child's stdin and let the kernel move the bytes.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_pipe",
+      "order": 6,
+      "label": "A three-process pipeline",
+      "cell_type": "Linux",
+      "source": "use std::io::Write;\nuse std::process::{Command, Stdio};\nuse std::thread;\n\nfn main() {\n    let csv = std::fs::read_to_string(\"/work/readings.csv\")\n        .expect(\"run the writer cell above first\");\n\n    // cut -d, -f1 | sort | uniq -c, as three separate processes with real\n    // pipes between them. Each child's stdout becomes the next child's stdin,\n    // so the data never passes back through this program.\n    let mut cut = Command::new(\"cut\")\n        .args([\"-d,\", \"-f1\"])\n        .stdin(Stdio::piped())\n        .stdout(Stdio::piped())\n        .spawn()\n        .expect(\"spawn cut\");\n\n    let mut sort = Command::new(\"sort\")\n        .stdin(Stdio::from(cut.stdout.take().unwrap()))\n        .stdout(Stdio::piped())\n        .spawn()\n        .expect(\"spawn sort\");\n\n    let uniq = Command::new(\"uniq\")\n        .arg(\"-c\")\n        .stdin(Stdio::from(sort.stdout.take().unwrap()))\n        .stdout(Stdio::piped())\n        .spawn()\n        .expect(\"spawn uniq\");\n\n    // Feed the head of the pipeline from a thread. Writing inline would\n    // deadlock this process against its own children the moment the payload\n    // outgrew one pipe buffer.\n    let mut head = cut.stdin.take().unwrap();\n    thread::spawn(move || head.write_all(csv.as_bytes()));\n\n    let out = uniq.wait_with_output().expect(\"collect uniq\");\n    println!(\"$ cut -d, -f1 < readings.csv | sort | uniq -c\");\n    print!(\"{}\", String::from_utf8_lossy(&out.stdout));\n    println!(\"uniq {}\", out.status);\n    println!(\"cut  {}\", cut.wait().unwrap());\n    println!(\"sort {}\", sort.wait().unwrap());\n}",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_md_thr",
+      "order": 7,
+      "label": "Threads are Workers",
+      "cell_type": "Markdown",
+      "source": "## Threads are Workers\n\n`std::thread::spawn` lowers to `clone3` with `futex` parking, and the kernel answers by starting a Web Worker that shares the same `WebAssembly.Memory`. The target spec is what allows it: `--shared-memory`, `--import-memory`, `+atomics` so `memory.atomic.wait` and `memory.atomic.notify` exist, and `--export=__startThread` as the entry point the kernel calls inside each new Worker. This is the same primitive ironpad uses for rayon cells, taken further, which is why Linux cells inherit its cross-origin-isolation requirement.\n\nOne habit does not carry over. **`available_parallelism()` returns 1 in a pod, and so does `nproc`**, so the usual way of sizing a pool hands you a pool of one. The count below is hard-coded because of it.\n\nThe threads themselves are real, and so is the throughput: on the machine this was written on, counting the primes below 6,000,000 took **1,798 ms on one thread and 209 ms across 16**, an 8.6x speedup. Your numbers will differ, which is the point of running it.",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_threads",
+      "order": 8,
+      "label": "Fan out across Workers",
+      "cell_type": "Linux",
+      "source": "use std::sync::atomic::{AtomicU64, Ordering};\nuse std::sync::Arc;\nuse std::thread;\nuse std::time::{Duration, Instant};\n\nconst N: u64 = 6_000_000;\n\nfn count_primes(lo: u64, hi: u64) -> u64 {\n    (lo..hi)\n        .filter(|&n| {\n            if n < 2 {\n                return false;\n            }\n            let mut d = 2;\n            while d * d <= n {\n                if n % d == 0 {\n                    return false;\n                }\n                d += 1;\n            }\n            true\n        })\n        .count() as u64\n}\n\n/// Count primes below `N` across `workers` threads, returning wall time.\nfn fan_out(workers: u64) -> (u64, u128) {\n    let started = Instant::now();\n    let chunk = (N - 2).div_ceil(workers);\n    let handles: Vec<_> = (0..workers)\n        .map(|i| {\n            let lo = 2 + i * chunk;\n            let hi = (lo + chunk).min(N);\n            thread::spawn(move || count_primes(lo, hi))\n        })\n        .collect();\n    let total = handles.into_iter().map(|h| h.join().unwrap()).sum();\n    (total, started.elapsed().as_millis())\n}\n\nfn main() {\n    // A pod reports one CPU, so a pool size is a decision here rather than a\n    // lookup. `nproc` agrees with std.\n    println!(\n        \"available_parallelism  {:?}\",\n        thread::available_parallelism().map(std::num::NonZero::get)\n    );\n\n    // Do these threads run at the same time, or take turns? Each announces\n    // itself and then waits to observe that every other one arrived too.\n    // Threads taking turns can never see the count reach four, so the number\n    // below is a measurement rather than a claim. The deadline is what keeps\n    // a serialising runtime from hanging this cell instead of answering it.\n    let arrived = Arc::new(AtomicU64::new(0));\n    let saw_all = Arc::new(AtomicU64::new(0));\n    let handles: Vec<_> = (0..4)\n        .map(|_| {\n            let (arrived, saw_all) = (arrived.clone(), saw_all.clone());\n            thread::spawn(move || {\n                arrived.fetch_add(1, Ordering::SeqCst);\n                let deadline = Instant::now() + Duration::from_millis(500);\n                while Instant::now() < deadline {\n                    if arrived.load(Ordering::SeqCst) == 4 {\n                        saw_all.fetch_add(1, Ordering::SeqCst);\n                        return;\n                    }\n                }\n            })\n        })\n        .collect();\n    for handle in handles {\n        handle.join().unwrap();\n    }\n    println!(\n        \"alive at once          {} of 4\",\n        saw_all.load(Ordering::SeqCst)\n    );\n\n    // Warm the Worker pool before timing anything. The first fan-out in a\n    // process pays startup the later ones do not, and measured cold it makes\n    // two threads look SLOWER than one.\n    fan_out(4);\n\n    let started = Instant::now();\n    let serial = count_primes(2, N);\n    let serial_ms = started.elapsed().as_millis();\n    println!(\"\\nprimes below {N}   {serial}\");\n    println!(\"  1 thread   {serial_ms:>5} ms\");\n\n    for workers in [2, 4, 8, 16] {\n        let (total, ms) = fan_out(workers);\n        assert_eq!(total, serial, \"the fan-out must not change the answer\");\n        let speedup = serial_ms as f64 / ms.max(1) as f64;\n        println!(\"{workers:>3} threads  {ms:>5} ms   {speedup:.2}x\");\n    }\n}",
+      "cargo_toml": null
+    },
+    {
+      "id": "cell_md_edges",
+      "order": 9,
+      "label": "What it costs",
+      "cell_type": "Markdown",
+      "source": "## What it costs, and what it will not do\n\n- **Every boot is metered.** 10 tokens flat, out of a monthly allowance of roughly 1,000 boots. That is why nothing on this page autoruns, and why the agent protocol refuses `cells run` against a Linux cell: a boot with no human watching is a boot nobody asked for.\n- **Process slots are finite.** Each child is a Web Worker. A probe that ran fourteen `Command::output()` calls back to back had the fourteenth fail with `EAGAIN`, and `std` panics there rather than returning the error to you.\n- **Pods are ephemeral.** There is no `storageKey`, so reloading this page hands you a fresh machine with an empty filesystem. A notebook whose behaviour depended on invisible history would read differently for its author than for you.\n- **No saved output.** Every other public notebook renders its author's last run on arrival. Capturing one of these would mean booting a metered pod during a build, so these cells start blank and stay blank until you click.\n- **Embeds refuse them.** Threads need `SharedArrayBuffer`, which needs cross-origin isolation, which an iframe on another origin does not have. The embed says so rather than offering a Run button that would do nothing.\n- **The runtime arrives from a CDN.** A notebook with no Linux cell never contacts it at all, and when it is unreachable the cell reports that instead of hanging.",
+      "cargo_toml": null
+    }
+  ]
+}

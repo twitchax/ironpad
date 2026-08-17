@@ -1745,15 +1745,17 @@ impl LiveView for Counter {
     /// Usage inside a cell: `// ironpad-test: compile-fail`
     const EXPECTED_COMPILE_FAIL_MARKER: &str = "ironpad-test: compile-fail";
 
-    /// Compiles every Code cell in every public notebook to verify they all
-    /// type-check against wasm32-unknown-unknown — except cells carrying
-    /// [`EXPECTED_COMPILE_FAIL_MARKER`], which must FAIL to type-check. Uses
-    /// `cargo check` (not `cargo build`) with a shared `CARGO_HOME` and target
-    /// dir so dependencies are downloaded/compiled only once.
+    /// Compiles every compiling cell in every public notebook to verify they
+    /// all type-check against the target their type implies — `Code` against
+    /// wasm32-unknown-unknown, `Linux` against wasm32-browserpod-linux-musl —
+    /// except cells carrying [`EXPECTED_COMPILE_FAIL_MARKER`], which must FAIL
+    /// to type-check. Uses `cargo check` (not `cargo build`) with a shared
+    /// `CARGO_HOME` and target dir so dependencies are downloaded/compiled
+    /// only once.
     #[tokio::test]
-    #[ignore = "slow: type-checks every public notebook cell for wasm32-unknown-unknown"]
+    #[ignore = "slow: type-checks every public notebook cell for its own target"]
     async fn all_public_notebook_cells_compile() {
-        use ironpad_common::{CellType, IronpadNotebook};
+        use ironpad_common::IronpadNotebook;
 
         let notebooks_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../public/notebooks")
@@ -1805,7 +1807,7 @@ impl LiveView for Counter {
             let mut previous_cell_types: Vec<String> = Vec::new();
 
             for cell in &cells {
-                if cell.cell_type != CellType::Code || cell.shared {
+                if !cell.cell_type.compiles() || cell.shared {
                     // Markdown never compiles; shared cells compile as part of
                     // every OTHER cell's shared.rs, not as cells. Both hold an
                     // empty piping slot so cellN indices stay positional.
@@ -1813,18 +1815,37 @@ impl LiveView for Counter {
                     continue;
                 }
 
+                // A Linux cell is a whole program for a different target
+                // (PRD-0066), so it is checked HERE rather than skipped. It
+                // used to fall out at the `!= CellType::Code` test above,
+                // which meant the moment a public notebook shipped one it got
+                // no compile coverage at all — the same silent hole that let
+                // rayon go unbuilt for the life of the feature.
+                let target = if cell.cell_type.is_linux() {
+                    CellTarget::Linux
+                } else {
+                    CellTarget::Executor
+                };
+
                 // Skip cells that reference prior cell outputs (cell0, cell1,
                 // etc.) or the scaffold-injected `last` binding — they can't
                 // compile in isolation since we don't know the concrete
                 // output types of predecessor cells.
-                let uses_cell_ref = (0..10).any(|i| {
-                    let pat = format!("cell{i}");
-                    cell.source.contains(&pat)
-                });
+                //
+                // Linux cells are exempt: there is no typed piping into one
+                // (the pod's filesystem is the piping model), so `last` in a
+                // Linux cell is an ordinary identifier and skipping on it
+                // would drop a checkable program on a false match.
+                let uses_cell_ref = !target.is_linux()
+                    && (0..10).any(|i| {
+                        let pat = format!("cell{i}");
+                        cell.source.contains(&pat)
+                    });
                 // Bare `last` (not `.last()`) indicates the scaffold binding.
-                let uses_last_binding = cell.source.split_whitespace().any(|tok| {
-                    tok == "last" || tok.starts_with("last,") || tok.starts_with("last)")
-                });
+                let uses_last_binding = !target.is_linux()
+                    && cell.source.split_whitespace().any(|tok| {
+                        tok == "last" || tok.starts_with("last,") || tok.starts_with("last)")
+                    });
                 if uses_cell_ref || uses_last_binding {
                     previous_cell_types.push(String::new());
                     continue;
@@ -1847,7 +1868,7 @@ impl LiveView for Counter {
                     &previous_cell_types,
                     shared_cargo_toml,
                     shared_source,
-                    CellTarget::Executor,
+                    target,
                 );
 
                 let (crate_dir, ..) = match scaffold_result {
@@ -1879,7 +1900,7 @@ impl LiveView for Counter {
                     session_id,
                     &unique_id,
                     None,
-                    CellTarget::Executor,
+                    target,
                     needs_atomics,
                     needs_autodiff,
                     needs_simd,

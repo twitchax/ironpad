@@ -1,7 +1,12 @@
 import { test, expect } from "@playwright/test";
 import { POD_HOST, recordPodRequests } from "./helpers/browserpod";
 import { trackJsErrors } from "./helpers/errors";
-import { ADD_CODE, ADD_LINUX, createNotebook, waitForPersistedCells } from "./helpers/session";
+import {
+  ADD_CODE,
+  ADD_LINUX,
+  createNotebook,
+  waitForPersistedCells,
+} from "./helpers/session";
 
 /**
  * PRD-0066: Linux cells — the half that costs nothing to test.
@@ -111,6 +116,70 @@ test.describe("Linux cells: the CDN stays untouched (PRD-0066)", () => {
     expect(jsErrors).toEqual([]);
   });
 
+  test("attribution rides every Linux cell frame and no other (uat-006)", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const MARK = ".ironpad-linux-attribution-mark";
+    const LINK = ".ironpad-linux-attribution";
+    const podRequests = recordPodRequests(page);
+
+    // The public Linux notebook, because the frame that carries attribution is
+    // the view-only one — the surface a pod actually runs on. A first draft of
+    // this test drove the EDITOR and failed at count 0, which is the app
+    // behaving correctly: a Linux cell cannot run there, so the editor card
+    // carries the "use Preview" notice instead.
+    await page.goto("/public/linux-cells");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+    const linuxCells = page.locator(".view-only-cell--linux");
+    await expect(linuxCells).toHaveCount(5);
+
+    // One per Linux cell, and none anywhere else on a page that also holds
+    // five markdown cells. The pair of counts is the assertion: "at least one
+    // is visible" would pass on a single stray link in a footer.
+    await expect(page.locator(LINK)).toHaveCount(5);
+    await expect(page.locator(`.view-only-cell--linux ${LINK}`)).toHaveCount(5);
+
+    // This is a term of BrowserPod's free tier ("a visible link + logo"),
+    // not decoration, which is why it is asserted at all: nothing else in the
+    // app would notice it silently vanishing, and the consequence is a
+    // licensing breach rather than a broken page.
+    const link = page.locator(LINK).first();
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute("href", "https://browserpod.io");
+
+    // The logo half. `toBeVisible` passes on a zero-area span and on one
+    // whose mask 404s, so measure the box and fetch the asset: attribution
+    // that renders an invisible logo satisfies the selector and not the
+    // licence.
+    const mark = page.locator(MARK).first();
+    const box = await mark.boundingBox();
+    expect(box, "the mark must occupy real space").not.toBeNull();
+    expect(box!.width).toBeGreaterThan(4);
+    expect(box!.height).toBeGreaterThan(4);
+
+    const maskUrl = await mark.evaluate(
+      (el) =>
+        getComputedStyle(el).maskImage ||
+        (getComputedStyle(el) as unknown as { webkitMaskImage: string })
+          .webkitMaskImage,
+    );
+    const asset = maskUrl.match(/url\("?([^")]+)"?\)/)?.[1];
+    expect(
+      asset,
+      `mark must be painted from an asset, got ${maskUrl}`,
+    ).toBeTruthy();
+    const res = await request.get(new URL(asset!, page.url()).toString());
+    expect(res.status(), "the vendored mark must actually resolve").toBe(200);
+    expect(await res.text()).toContain("<svg");
+
+    // Rendering attribution must cost nothing: it is markup, not a boot.
+    expect(podRequests).toEqual([]);
+  });
+
   test("a Linux cell says where it runs, and no other cell does (T-010)", async ({
     page,
   }) => {
@@ -170,9 +239,9 @@ test.describe("Linux cells: the CDN stays untouched (PRD-0066)", () => {
     // counts neither zero opacity nor an overflow-clipped box as hidden. A
     // draft of this test moved the notice inside the body as a control and
     // the collapse assertion stayed green.
-    await expect(
-      linuxCard.locator(`.ironpad-cell-body ${NOTICE}`),
-    ).toHaveCount(0);
+    await expect(linuxCard.locator(`.ironpad-cell-body ${NOTICE}`)).toHaveCount(
+      0,
+    );
 
     // And behaviourally, since "not a descendant" is only a proxy for "the
     // reader can still read it". `checkVisibility` with `opacityProperty`
@@ -184,14 +253,12 @@ test.describe("Linux cells: the CDN stays untouched (PRD-0066)", () => {
     ).toHaveCount(1);
     await expect
       .poll(() =>
-        page
-          .locator(NOTICE)
-          .evaluate((el) =>
-            el.checkVisibility({
-              opacityProperty: true,
-              visibilityProperty: true,
-            }),
-          ),
+        page.locator(NOTICE).evaluate((el) =>
+          el.checkVisibility({
+            opacityProperty: true,
+            visibilityProperty: true,
+          }),
+        ),
       )
       .toBe(true);
 
