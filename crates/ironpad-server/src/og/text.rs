@@ -274,7 +274,7 @@ mod tests {
     fn width_grows_with_text_and_scales_with_size() {
         let f = sans();
         assert!(f.width("mm", 40.0) > f.width("m", 40.0));
-        assert!(f.width("", 40.0) == 0.0);
+        assert!(f.width("", 40.0).abs() < 1e-9);
 
         // Linear in size: the advance sum is scaled, not re-measured.
         let single = f.width("ironpad", 20.0);

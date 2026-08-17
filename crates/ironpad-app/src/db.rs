@@ -169,8 +169,7 @@ where
                 let jitter = u64::from(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.subsec_nanos() % 4)
-                        .unwrap_or(0),
+                        .map_or(0, |d| d.subsec_nanos() % 4),
                 );
                 let backoff = (1u64 << (attempt - 1)) + jitter;
                 tracing::debug!(attempt, backoff_ms = backoff, "write conflict; retrying");

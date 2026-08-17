@@ -166,7 +166,7 @@ async fn main() {
     {
         let ws = app_state.ws.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            let mut interval = tokio::time::interval(std::time::Duration::from_mins(5));
             interval.tick().await; // consume the immediate first tick
             loop {
                 interval.tick().await;

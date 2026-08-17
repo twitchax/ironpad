@@ -48,7 +48,7 @@ const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 /// ~30s, so this much total silence means a half-open connection (a network
 /// drop without a FIN) — tear it down so the host doesn't stay registered
 /// forever. (The guest-side equivalent is configurable on [`WsState`].)
-const HOST_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const HOST_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
 
 /// WS close code sent when the first frame is not a valid `ClaimHost`.
 const WS_CLOSE_BAD_HANDSHAKE: u16 = 4400;

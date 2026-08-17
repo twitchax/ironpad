@@ -40,7 +40,7 @@ echo "==> Installing wasm-bindgen-cli..."
 # the crate and CLI schema versions to match exactly (`cargo make dev/build/playwright`
 # fail otherwise). Cell compiles pin their scaffolded wasm-bindgen to this CLI version
 # automatically (PRD-0031 T-002). When bumping the workspace `wasm-bindgen`, bump this too.
-cargo binstall wasm-bindgen-cli --version 0.2.114 --no-confirm --force 2>/dev/null || cargo install wasm-bindgen-cli --version 0.2.114
+cargo binstall wasm-bindgen-cli --version 0.2.127 --no-confirm --force 2>/dev/null || cargo install wasm-bindgen-cli --version 0.2.127
 
 echo "==> Adding wasm32-unknown-unknown target..."
 rustup target add wasm32-unknown-unknown 2>/dev/null || true

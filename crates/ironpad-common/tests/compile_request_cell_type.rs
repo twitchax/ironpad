@@ -139,8 +139,8 @@ fn line_of(src: &str, at: usize) -> usize {
 /// `cell_type: cell_type` INTO the shorthand, so any scan that only understands
 /// the long form will drift the moment someone runs the formatter.
 fn cell_type_value(src: &str, from: usize) -> Option<(usize, String)> {
-    let mut line_no = line_of(src, from);
-    for line in src[from..].lines().take(FIELD_SEARCH_LINES) {
+    let start_line = line_of(src, from);
+    for (line_no, line) in (start_line..).zip(src[from..].lines().take(FIELD_SEARCH_LINES)) {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("cell_type:") {
             // Judged without its trailing comment: prose mentioning
@@ -151,7 +151,6 @@ fn cell_type_value(src: &str, from: usize) -> Option<(usize, String)> {
         if t == "cell_type," {
             return Some((line_no, "cell_type".to_string()));
         }
-        line_no += 1;
     }
     None
 }
@@ -227,7 +226,7 @@ fn compile_requests_derive_cell_type_from_the_cell() {
                 // the exemption cannot grow silently past what was reasoned
                 // about.
             }
-            violations.push(format!("  {rel}:{line}\n      writes `cell_type: {value}`",));
+            violations.push(format!("  {rel}:{line}\n      writes `cell_type: {value}`"));
         }
     }
 

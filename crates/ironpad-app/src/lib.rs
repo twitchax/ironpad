@@ -41,28 +41,43 @@ pub mod compiler;
 #[cfg(feature = "ssr")]
 pub mod db;
 
-/// Toolchain for normal and SIMD cell builds — the common case, tracked at a
-/// recent nightly. The finicky feature cells keep their own pins so this one can
-/// stay fresh without dragging them along: `AUTODIFF_TOOLCHAIN` and
-/// `ATOMICS_TOOLCHAIN` in `compiler/build.rs`, selected by `cell_toolchain`.
+/// The toolchain every cell build uses, whatever its features (PRD-0067).
+///
+/// There used to be three nightly pins here, each held where some finicky
+/// feature was known-good: autodiff on 2026-06-01, rayon/atomics on
+/// 2025-12-22, everything else tracked fresh. Two of those three reasons had
+/// expired without anyone re-testing them, and the deploy image was carrying
+/// four nightlies (~2.9 GB) to honour them.
+///
+/// `nightly-2026-05-19` is the one date that satisfies all of it, and the
+/// image already had it: the `BrowserPod` pack's `libexec/{rustc,cargo}` are
+/// symlinks into this exact toolchain, so Linux cells (PRD-0066) pinned it
+/// there regardless. Collapsing onto it took the image from four nightlies to
+/// one.
+///
+/// **The ceiling is autodiff, and it is a hard one.** Nightlies from July 2026
+/// ICE with `incorrect autodiff typetree handling for slice`, and because
+/// `-Zautodiff=Enable` applies to the whole crate graph the ICE fires on a
+/// transitive dependency (`icu_normalizer`), not on user code, so no cell-side
+/// workaround exists. The floor is the `BrowserPod` pack, whose 22 prebuilt rlibs
+/// are ABI-tied to this rustc. Between them sits one usable date.
+///
+/// **This value is load-bearing beyond cells**: it must equal
+/// `BROWSERPOD_NIGHTLY` in `docker/browserpod.env`, or the image pays for a
+/// second full toolchain. `browserpod_pin_matches_cell_toolchain` in
+/// `compiler/build.rs` enforces that, so a `BrowserPod` bump surfaces the
+/// decision instead of silently regrowing the image.
 ///
 /// Pinning per-invocation (rather than the host default) is the point: dev
 /// hosts, CI, and the deploy image previously compiled plain cells on whatever
 /// their DEFAULT toolchain was (nightly on dev, stable in the image), so
-/// nightly-only code validated green locally and failed on prod.
-///
-/// **Pinned** rather than floating for the PRD-0041 reason: rolling nightlies
-/// drift into breakage. This one is verified to build a wasm-bindgen +
-/// `portable_simd` cell, and needs only the `wasm32-unknown-unknown` target and
-/// `rust-src`. The heavier requirements live on the split-out pins: `enzyme` on
-/// `AUTODIFF_TOOLCHAIN` (July 2026 nightlies ICE on autodiff typetrees for
-/// slices, so autodiff stays back on 2026-06-01), and the atomics sysroot on
-/// `ATOMICS_TOOLCHAIN`. Keep `docker/Dockerfile` and the CI workflow in sync
-/// when bumping this.
+/// nightly-only code validated green locally and failed on prod. Keep
+/// `docker/Dockerfile` and the CI workflow in sync when bumping this; the
+/// `toolchain_pins_are_installed_by_the_image` test checks that they are.
 ///
 /// Ungated (not `ssr`-only) because the client footer displays it too — one
-/// source of truth for the toolchain most cells compile on.
-pub const CELL_TOOLCHAIN: &str = "nightly-2026-07-14";
+/// source of truth for the toolchain cells compile on.
+pub const CELL_TOOLCHAIN: &str = "nightly-2026-05-19";
 
 #[cfg(feature = "hydrate")]
 pub(crate) mod blob_cache;

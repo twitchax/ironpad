@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 /// quick, so this is a generous backstop that stops a pathological input from
 /// hanging a compile indefinitely (build has its own 300s timeout). Optimization
 /// is best-effort — on timeout we simply fall back to the unoptimized bytes.
-const WASM_OPT_TIMEOUT: Duration = Duration::from_secs(120);
+const WASM_OPT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Attempt to optimize a WASM blob in-place using `wasm-opt -O3`.
 ///

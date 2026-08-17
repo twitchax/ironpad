@@ -760,14 +760,16 @@ mod e2e_tests {
     /// `--allow-undefined` for `wasm32-unknown-unknown`.
     ///
     /// Note: this guard only *discriminates* on nightlies that dropped the
-    /// `--allow-undefined` default for wasm32. Verified experimentally that
-    /// the pinned `nightly-2025-12-22` (see `rust-toolchain.toml`) still
-    /// allows undefined symbols, so this test passes with or without the
-    /// `#[link(...)]` fix while that pin is in place — the fix is correct
-    /// and necessary regardless, but the test's teeth return once the pin is
-    /// bumped forward to a strict nightly (e.g. 2026-06-01+). Browser-level
-    /// module-name correctness is independently covered by the Playwright
-    /// uat-003 acceptance test in PRD-0031.
+    /// `--allow-undefined` default for wasm32. It spent a long time toothless:
+    /// the old `nightly-2025-12-22` pin still allowed undefined symbols, so
+    /// this test passed with or without the `#[link(...)]` fix. PRD-0067 moved
+    /// every build onto `nightly-2026-05-19`, which does NOT — measured while
+    /// spiking it, where a cdylib with no allocator failed with `rust-lld:
+    /// error: undefined symbol: realloc`. So the teeth are back. Re-confirm
+    /// that when bumping the pin, by deleting the `#[link(...)]` attributes in
+    /// `ironpad-cell` and watching this test fail. Browser-level module-name
+    /// correctness is independently covered by the Playwright uat-003
+    /// acceptance test in PRD-0031.
     /// PRD-0041 regression: a cell using the real `std::autodiff` compiles
     /// through the actual pipeline — nightly toolchain, `-Zautodiff=Enable`,
     /// the scaffold's crate-root feature gate + fat-LTO profile, and Enzyme's
@@ -904,6 +906,104 @@ pub fn range(angle: f64) -> f64 {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "blocking (JSPI) cell should build and link.\nstdout(tail): {}\nstderr(tail): {}",
+                    &stdout[stdout.len().saturating_sub(2000)..],
+                    &stderr[stderr.len().saturating_sub(1500)..],
+                );
+            }
+        }
+    }
+
+    /// PRD-0067 regression: a rayon cell must LINK a shared-memory module.
+    ///
+    /// This gap is why the collapse took as long as it did to justify. The only
+    /// coverage a rayon cell had was `all_public_notebook_cells_compile`, which
+    /// calls `check_micro_crate` — `cargo check` does not link, so it could see
+    /// wasm-bindgen-rayon's `compile_error!` guard and nothing beyond it. The
+    /// `-Zbuild-std` atomics sysroot, the shared-memory link args and the TLS
+    /// export set were entirely untested, on any toolchain, for the whole life
+    /// of the feature. `ATOMICS_TOOLCHAIN` sat pinned to a nightly five months
+    /// stale on a justification nothing could re-check.
+    ///
+    /// Asserting `\0asm` alone would restore that hole at a smaller size: a
+    /// module missing `--import-memory` or the TLS exports is still valid wasm
+    /// and still fails at runtime, when wasm-bindgen-rayon tries to share it
+    /// across Web Workers. So this reads the export section.
+    #[tokio::test]
+    #[ignore = "slow: full cargo build of a micro-crate (-Zbuild-std atomics sysroot)"]
+    async fn compile_rayon_cell_links_a_shared_memory_module() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "rayon-atomics";
+
+        let source = "    use rayon::prelude::*;\n    let v: Vec<f64> = (0..1000).map(f64::from).collect();\n    CellOutput::from(v.par_iter().sum::<f64>())";
+        let cargo_toml = "[dependencies]\nrayon = \"1\"";
+
+        let (crate_dir, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+            CellTarget::Executor,
+        )
+        .expect("scaffold should succeed");
+
+        // The scaffold must have opted in, or the build below proves nothing:
+        // without the `rayon` feature on ironpad-cell there is no
+        // wasm-bindgen-rayon in the graph and no atomics guard to satisfy.
+        let manifest = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            manifest.contains(r#"features = ["rayon"]"#),
+            "scaffold must enable ironpad-cell's rayon feature:\n{manifest}"
+        );
+
+        let result = build_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            true,
+            false,
+            false,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        match result {
+            BuildResult::Success { wasm_path, .. } => {
+                let bytes = std::fs::read(&wasm_path).unwrap();
+                assert_eq!(&bytes[..4], b"\x00asm");
+                // Assert the POST-wasm-bindgen surface. The raw link exports
+                // (`__wasm_init_tls`, `__tls_size`, `__tls_align`) are inputs
+                // to wasm-bindgen's threading transform and are CONSUMED by it;
+                // asserting them here fails against a correct module. What
+                // survives is the worker-pool entry points, which is what the
+                // executor actually calls.
+                let exports = wasm_export_names(&bytes);
+                for sym in [
+                    "initThreadPool",
+                    "wbg_rayon_start_worker",
+                    "__wbindgen_thread_destroy",
+                    "__tls_base",
+                    "memory",
+                ] {
+                    assert!(
+                        exports.iter().any(|e| e == sym),
+                        "a rayon cell must export {sym} for wasm-bindgen-rayon's \
+                         worker pool; got {exports:?}"
+                    );
+                }
+            }
+            BuildResult::Failure { stdout, stderr } => {
+                panic!(
+                    "rayon cell should build.\nstdout(tail): {}\nstderr(tail): {}",
                     &stdout[stdout.len().saturating_sub(2000)..],
                     &stderr[stderr.len().saturating_sub(1500)..],
                 );

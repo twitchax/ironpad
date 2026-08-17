@@ -258,10 +258,10 @@ mod tests {
     #[test]
     fn parse_baked_versions_takes_the_first_two_non_blank_lines() {
         let baked =
-            parse_baked_versions("rustc 1.99.0-nightly (abc 2026-07-14)\nwasm-bindgen 0.2.114\n")
+            parse_baked_versions("rustc 1.97.0-nightly (abc 2026-05-19)\nwasm-bindgen 0.2.127\n")
                 .expect("two lines");
-        assert_eq!(baked.rustc, "rustc 1.99.0-nightly (abc 2026-07-14)");
-        assert_eq!(baked.wasm_bindgen, "wasm-bindgen 0.2.114");
+        assert_eq!(baked.rustc, "rustc 1.97.0-nightly (abc 2026-05-19)");
+        assert_eq!(baked.wasm_bindgen, "wasm-bindgen 0.2.127");
     }
 
     #[test]

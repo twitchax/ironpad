@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # wasm-bindgen-cli is pinned to the workspace's locked wasm-bindgen crate version
 # (kept in sync with Makefile.toml); a mismatch fails the frontend WASM post-processing.
 RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-RUN cargo binstall -y cargo-chef cargo-leptos wasm-bindgen-cli@0.2.114
+RUN cargo binstall -y cargo-chef cargo-leptos wasm-bindgen-cli@0.2.127
 
 WORKDIR /build
 
@@ -69,42 +69,45 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Cell compilation runs on four pinned toolchains — never the host default
-# (keep in sync with `cell_toolchain` in crates/ironpad-app/src/compiler/build.rs:
-# CELL_TOOLCHAIN in lib.rs, AUTODIFF_TOOLCHAIN + ATOMICS_TOOLCHAIN in build.rs,
-# BROWSERPOD_TOOLCHAIN pinned in docker/browserpod.env and installed below):
+# Cell compilation runs on ONE pinned nightly — never the host default (keep in
+# sync with `cell_toolchain` in crates/ironpad-app/src/compiler/build.rs;
+# CELL_TOOLCHAIN lives in lib.rs, BROWSERPOD_TOOLCHAIN in docker/browserpod.env
+# and installed below):
 #
-#   nightly-2026-07-14  normal + SIMD cells (CELL_TOOLCHAIN). The common case,
-#                       tracked fresh. Needs rust-src + the wasm32 target. Also
-#                       the image's rustup default, so a stray bare cargo/rustc
-#                       matches the common cell build.
-#   nightly-2026-06-01  std::autodiff cells (AUTODIFF_TOOLCHAIN). Carries
-#                       `enzyme` (matched libEnzyme/LLVM) + rust-src (for
-#                       -Zbuild-std when autodiff+rayon combine); July 2026
-#                       nightlies ICE on autodiff, so it stays back here.
-#   nightly-2025-12-22  rayon/atomics cells (ATOMICS_TOOLCHAIN). wasm-bindgen-
-#                       rayon's atomics guard breaks on newer nightlies.
+#   nightly-2026-05-19  every cell, whatever its features (CELL_TOOLCHAIN).
+#                       Needs the wasm32 target, `rust-src` (for -Zbuild-std on
+#                       rayon cells) and `enzyme` (matched libEnzyme/LLVM, for
+#                       std::autodiff cells). Also the image's rustup default,
+#                       so a stray bare cargo/rustc matches a cell build.
+#
+# This was FOUR nightlies until PRD-0067 (~2.9 GB of toolchains). Autodiff sets
+# the ceiling and it is hard: July 2026 nightlies ICE with `incorrect autodiff
+# typetree handling for slice`, and since `-Zautodiff=Enable` applies to the
+# whole crate graph the ICE lands on a transitive dependency, so no cell-side
+# workaround exists. BrowserPod sets the floor: its pack's `libexec/{rustc,cargo}`
+# are symlinks into this exact nightly, whose 22 prebuilt rlibs are ABI-tied to
+# it. Between the two sits one usable date, and because the pack installs it
+# anyway, every other cell build rides along for the cost of three components.
+#
+# The two pins that went away were held for reasons that had expired without
+# anyone re-testing them: rayon builds clean five months past the "newest
+# nightly wasm-bindgen-rayon's atomics guard tolerates", and the workspace pin
+# beneath it was still held for `thaw`, deleted in v0.12.13.
 #
 # The base image's stable toolchain is uninstalled at the end: nothing uses it,
 # and it costs ~1 GB of image.
-RUN rustup toolchain install nightly-2026-07-14 --profile minimal \
-    && rustup target add wasm32-unknown-unknown --toolchain nightly-2026-07-14 \
-    && rustup component add rust-src --toolchain nightly-2026-07-14 \
-    && rustup toolchain install nightly-2026-06-01 --profile minimal \
-    && rustup target add wasm32-unknown-unknown --toolchain nightly-2026-06-01 \
-    && rustup component add rust-src --toolchain nightly-2026-06-01 \
-    && rustup component add enzyme --toolchain nightly-2026-06-01 \
-    && rustup toolchain install nightly-2025-12-22 --profile minimal \
-    && rustup target add wasm32-unknown-unknown --toolchain nightly-2025-12-22 \
-    && rustup component add rust-src --toolchain nightly-2025-12-22 \
-    && rustup default nightly-2026-07-14
+RUN rustup toolchain install nightly-2026-05-19 --profile minimal \
+    && rustup target add wasm32-unknown-unknown --toolchain nightly-2026-05-19 \
+    && rustup component add rust-src --toolchain nightly-2026-05-19 \
+    && rustup component add enzyme --toolchain nightly-2026-05-19 \
+    && rustup default nightly-2026-05-19
 
 # Best-effort (own RUN so a failure can't mask the toolchain installs above):
 # drop the base image's stable toolchain — nothing uses it after the default
 # switch, and it costs ~1 GB.
 RUN rustup toolchain uninstall stable 1.93.0 || true
 
-# ── The fourth toolchain: BrowserPod (PRD-0066 Linux cells) ──────────────
+# ── The second toolchain: BrowserPod (PRD-0066 Linux cells) ─────────────
 #
 # Installed from a VENDORED tarball, never `curl | sh` at image-build time.
 # The upstream installer is a two-stage script that downloads from
@@ -122,7 +125,9 @@ RUN rustup toolchain uninstall stable 1.93.0 || true
 # The pack installs as an ordinary rustup toolchain by being copied into
 # $RUSTUP_HOME/toolchains (rustup discovers it by directory listing), and pulls
 # its own pinned nightly underneath from static.rust-lang.org — the one
-# registry this image already depends on. Its rustc wrapper bakes in
+# registry this image already depends on. Since PRD-0067 that nightly is the
+# one installed above, so this step finds it already present and adds nothing:
+# `browserpod_pin_matches_cell_toolchain` fails the build if they ever drift. Its rustc wrapper bakes in
 # RUST_TARGET_PATH, so `--target wasm32-browserpod-linux-musl` resolves by name
 # with no `rustup target add`.
 #
@@ -150,14 +155,16 @@ COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-
 COPY --from=builder /usr/bin/wasm-opt /usr/bin/wasm-opt
 
 # Pre-warm the cargo registry cache AND the default cell target dir with the
-# ironpad-cell dependency tree, on CELL_TOOLCHAIN (normal + SIMD cells, the
-# common case): `build` artifacts make the first cell compile fast, `check`
+# ironpad-cell dependency tree, on CELL_TOOLCHAIN (which since PRD-0067 is
+# every cell): `build` artifacts make the first cell compile fast, `check`
 # artifacts (distinct from build's) make live check-on-type warm from server
 # boot (PRD-0045) — the warmth policy's "default deps are always warm" guarantee
 # rests on this seed. The entrypoint copies it into the volume like the atomics
-# sysroot. Autodiff cells carry their own toolchain (AUTODIFF_TOOLCHAIN) AND
-# distinct RUSTFLAGS/profile, so this plain warmup never covered them — they are
-# warmed post-deploy by the runtime cache warmer instead. Warmups fail the image
+# sysroot. Autodiff cells no longer carry their own toolchain, but they still
+# carry distinct RUSTFLAGS and a fat-LTO profile, which cargo fingerprints apart
+# from these artifacts just as it used to by rustc version — so this plain
+# warmup still does not cover them, and they are still warmed post-deploy by
+# the runtime cache warmer instead. Warmups fail the image
 # build LOUDLY — a `|| true` here once hid a manifest error for months, shipping
 # images with no warmed cache and (via the entrypoint seed) crashing fresh
 # deployments.
@@ -166,17 +173,20 @@ COPY docker/warmup-Cargo.toml /tmp/warmup/Cargo.toml
 RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
     && cd /tmp/warmup \
     && CARGO_TARGET_DIR=/warmup-cache/targets/default \
-       cargo +nightly-2026-07-14 build --target wasm32-unknown-unknown --release \
+       cargo +nightly-2026-05-19 build --target wasm32-unknown-unknown --release \
     && CARGO_TARGET_DIR=/warmup-cache/targets/default \
-       cargo +nightly-2026-07-14 check --target wasm32-unknown-unknown --release \
+       cargo +nightly-2026-05-19 check --target wasm32-unknown-unknown --release \
     && rm -rf /tmp/warmup \
     && rm -rf /usr/local/cargo/registry/src
 
-# Pre-build atomics sysroot for rayon-enabled cells with the SAME pinned
-# toolchain runtime rayon builds use (ATOMICS_TOOLCHAIN) — a warmup on any
-# other nightly produces artifacts the runtime build fingerprints as stale and
-# silently rebuilds from scratch, which can blow the 300s build timeout on the
-# 2-CPU machine.
+# Pre-build the atomics sysroot for rayon-enabled cells. This needs its own
+# target dir and RUSTFLAGS (a `-Zbuild-std` std rebuilt with +atomics is a
+# different sysroot, not a different compiler), which is why it survives
+# PRD-0067's collapse as a separate warmup even though it now shares
+# CELL_TOOLCHAIN with the one above. The toolchain must MATCH what the runtime
+# rayon build uses — a warmup on any other nightly produces artifacts the
+# runtime build fingerprints as stale and silently rebuilds from scratch, which
+# can blow the 300s build timeout on the 2-CPU machine.
 COPY crates/ironpad-cell /tmp/warmup-atomics/crates/ironpad-cell
 COPY docker/warmup-atomics-Cargo.toml /tmp/warmup-atomics/Cargo.toml
 RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs \
@@ -190,7 +200,7 @@ RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs
                   -C link-arg=--export=__tls_size \
                   -C link-arg=--export=__tls_align \
                   -C link-arg=--export=__tls_base" \
-       cargo +nightly-2025-12-22 build --target wasm32-unknown-unknown --release \
+       cargo +nightly-2026-05-19 build --target wasm32-unknown-unknown --release \
        -Zbuild-std=std,panic_abort \
     && rm -rf /tmp/warmup-atomics
 
@@ -211,7 +221,7 @@ WORKDIR /app
 # file degrades to probing, which is exactly the slow boot this removes, and
 # nothing downstream would ever say so.
 RUN set -e; \
-    rustc +nightly-2026-07-14 --version > /app/toolchain-versions; \
+    rustc +nightly-2026-05-19 --version > /app/toolchain-versions; \
     wasm-bindgen --version >> /app/toolchain-versions; \
     test "$(wc -l < /app/toolchain-versions)" = "2"; \
     cat /app/toolchain-versions

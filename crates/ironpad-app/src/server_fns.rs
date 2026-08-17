@@ -2181,7 +2181,7 @@ fn dir_bytes(dir: &std::path::Path) -> u64 {
         .filter_map(Result::ok)
         .map(|e| match e.file_type() {
             Ok(t) if t.is_dir() => dir_bytes(&e.path()),
-            Ok(t) if t.is_file() => e.metadata().map(|m| m.len()).unwrap_or(0),
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
             _ => 0,
         })
         .sum()

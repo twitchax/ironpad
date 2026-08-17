@@ -1,18 +1,32 @@
-# Pinned to a nightly that compiles the `thaw` UI dependency. The 2026-06-01
-# nightly (and nearby) hit `error: queries overflow the depth limit!` while
-# codegen-ing thaw/tachys view types, which breaks `cargo make {build,test,
-# test-integration,ci,uat}` on a cold build. 2025-12-22 is the most recent
-# installed nightly verified to build the ssr harness cleanly. Bump forward
-# once thaw/leptos/tachys ship a fix for the recursion-depth regression.
+# The workspace builds on the same nightly cells compile on: CELL_TOOLCHAIN in
+# crates/ironpad-app/src/lib.rs. PRD-0067 collapsed four pins onto one, and this
+# file was the fourth.
+#
+# It was pinned to nightly-2025-12-22 with this justification: "Pinned to a
+# nightly that compiles the `thaw` UI dependency. The 2026-06-01 nightly (and
+# nearby) hit `error: queries overflow the depth limit!` while codegen-ing
+# thaw/tachys view types." Thaw was removed in v0.12.13 and is absent from both
+# Cargo.toml and Cargo.lock, so that reason had been dead for eight months and
+# nobody re-tested the pin. Moving it forward surfaced two real clippy findings
+# the older compiler had been hiding (`explicit_counter_loop` and
+# `unnecessary_trailing_comma`, both in a PRD-0066 test), which is the argument
+# for not letting a pin outlive its reason.
+#
+# `toolchain_pins_are_installed_by_the_image` asserts this channel equals
+# CELL_TOOLCHAIN. Holding them together is worth a test for a reason that is
+# actually true: one fewer toolchain on a dev box, and clippy runs against the
+# compiler cells are judged by.
 #
 # PRD-0031 T-001 note: the wasm host-import link regression test
 # (`compile_cell_with_host_imports_links_successfully` in
 # `crates/ironpad-app/src/compiler/mod.rs`) is only *discriminating* on
-# nightlies that dropped the `--allow-undefined` default for wasm32 (this
-# pin, 2025-12-22, still allows it, so the test passes even without the
-# `#[link(wasm_import_module = "env")]` fix). When bumping this pin forward,
-# re-confirm that regression test still fails without the fix.
+# nightlies that dropped the `--allow-undefined` default for wasm32. The old
+# 2025-12-22 pin still allowed it, so the test passed even without the
+# `#[link(wasm_import_module = "env")]` fix. This one does NOT: a cdylib with no
+# allocator fails here with `rust-lld: error: undefined symbol: realloc`
+# (measured while spiking PRD-0067), so the regression test is discriminating
+# again. Re-confirm that when bumping.
 [toolchain]
-channel = "nightly-2025-12-22"
+channel = "nightly-2026-05-19"
 components = ["rustfmt", "clippy", "rust-src"]
 targets = ["wasm32-unknown-unknown"]

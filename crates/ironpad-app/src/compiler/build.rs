@@ -67,7 +67,7 @@ pub(crate) async fn run_group_with_timeout(
 /// Cap on the `wasm-bindgen` post-processing subprocess. Normally sub-second
 /// per blob; the cap only exists so a wedged run cannot hold a compile slot
 /// forever.
-const WASM_BINDGEN_TIMEOUT: Duration = Duration::from_secs(120);
+const WASM_BINDGEN_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Target features for atomics/shared-memory WASM builds (rayon cells).
 ///
@@ -96,32 +96,6 @@ const ATOMICS_LINK_RUSTFLAGS: &str = "\
 /// needed: simd128 cell code links fine against the precompiled non-simd std.
 const SIMD_TARGET_FEATURES: &str = "+simd128";
 
-/// Toolchain used for atomics/shared-memory (rayon) cell builds.
-///
-/// `-Zbuild-std` requires a nightly with the `rust-src` component. This is
-/// **pinned** rather than a floating `+nightly` so the atomics build is
-/// reproducible and cannot drift into breakage as the rolling nightly advances
-/// — wasm-bindgen-rayon's `atomics` target-feature guard (`compile_error!`)
-/// began failing on nightlies newer than this one. Keep in sync with
-/// `rust-toolchain.toml`; the deploy image must install this toolchain with
-/// `rust-src` and the `wasm32-unknown-unknown` target.
-const ATOMICS_TOOLCHAIN: &str = "nightly-2025-12-22";
-
-/// Toolchain for `std::autodiff` (Enzyme) cells.
-///
-/// Held back from [`crate::CELL_TOOLCHAIN`] on purpose: this is the nightly
-/// carrying the matched `enzyme` rustup component (libEnzyme/LLVM pair), and
-/// July 2026 nightlies ICE on autodiff typetrees for slices (PRD-0041). It also
-/// ships `rust-src` for `-Zbuild-std` when autodiff and rayon combine. Bumping
-/// it forward needs a fresh enzyme build plus an autodiff compile smoke-test.
-///
-/// Like [`ATOMICS_TOOLCHAIN`], this pin is NOT part of the cache fingerprint
-/// (which tracks only `CELL_TOOLCHAIN`), so changing it requires a `CACHE_EPOCH`
-/// bump in `cache.rs` to invalidate stale autodiff blobs. The deploy image must
-/// install it with `enzyme`, `rust-src`, and the `wasm32-unknown-unknown`
-/// target.
-const AUTODIFF_TOOLCHAIN: &str = "nightly-2026-06-01";
-
 /// RUSTFLAGS enabling Enzyme autodiff (`std::autodiff`) for a cell build.
 const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 
@@ -136,39 +110,40 @@ const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 /// +browserpod-3.0.0` is therefore all the setup a Linux cell build needs —
 /// no RUSTFLAGS, no `-Zbuild-std`, no target JSON to locate.
 ///
-/// Like [`ATOMICS_TOOLCHAIN`] and [`AUTODIFF_TOOLCHAIN`], this pin is NOT part
-/// of the cache fingerprint (which tracks only `CELL_TOOLCHAIN`), so bumping
-/// it needs a `CACHE_EPOCH` bump to invalidate stale Linux blobs.
+/// This pin is NOT part of the cache fingerprint (which tracks only
+/// `CELL_TOOLCHAIN`), so bumping it needs a `CACHE_EPOCH` bump to invalidate
+/// stale Linux blobs.
+///
+/// Since PRD-0067 it carries a second obligation: the nightly this pack pins
+/// beneath itself IS [`crate::CELL_TOOLCHAIN`], so a pack whose `nightly-pin`
+/// moves regrows the image by a whole toolchain. `browserpod_pin_matches_cell_toolchain`
+/// fails the build rather than letting that happen quietly.
 const BROWSERPOD_TOOLCHAIN: &str = "browserpod-3.0.0";
 
-/// Pick the pinned toolchain for a cell build from its target and feature
-/// flags.
+/// Pick the pinned toolchain for a cell build from its target.
 ///
-/// Four separate pins, each held where it is known-good so the common case can
-/// track a fresh [`crate::CELL_TOOLCHAIN`] without dragging the finicky ones
-/// along:
-/// - Linux cells → [`BROWSERPOD_TOOLCHAIN`], **first**: the other three flags
-///   describe how to build for `wasm32-unknown-unknown`, and no nightly but
-///   this one can build for `wasm32-browserpod-linux-musl` at all, so the
-///   target decides before any feature does,
-/// - autodiff → [`AUTODIFF_TOOLCHAIN`] (has `enzyme`; wins over atomics because
-///   it also carries `rust-src` for the autodiff+rayon `-Zbuild-std` combo),
-/// - rayon/atomics without autodiff → [`ATOMICS_TOOLCHAIN`],
-/// - everything else (normal + SIMD cells) → [`crate::CELL_TOOLCHAIN`].
+/// Two pins, and the target alone decides: [`BROWSERPOD_TOOLCHAIN`] builds for
+/// `wasm32-browserpod-linux-musl` (no other toolchain can), and
+/// [`crate::CELL_TOOLCHAIN`] builds everything else.
 ///
-/// Autodiff and normal cells therefore build on different rustc versions; they
-/// share the `targets/default` dir but cargo fingerprints them apart (autodiff
-/// also carries distinct RUSTFLAGS and a fat-LTO profile), so both stay warm
-/// side by side without churn. Linux cells share it too and collide with
-/// nothing: their artifacts land under a target-triple subdirectory of their
-/// own.
-fn cell_toolchain(target: CellTarget, needs_atomics: bool, needs_autodiff: bool) -> &'static str {
+/// It used to take `needs_atomics` and `needs_autodiff` and route to two more
+/// nightlies. PRD-0067 collapsed those onto one date after finding that two of
+/// the three justifications had expired: rayon builds clean on nightlies five
+/// months past the pin that was "the newest one wasm-bindgen-rayon's atomics
+/// guard tolerates", and the workspace pin beneath it was still held for a
+/// dependency (`thaw`) deleted in v0.12.13. The autodiff ICE is the one that
+/// was real, and it is what sets the date.
+///
+/// **The features did not go away, only the toolchain split did.** Atomics
+/// still gets its target features, link args and `-Zbuild-std`; autodiff still
+/// gets `-Zautodiff=Enable` and a fat-LTO profile. Cargo fingerprints those
+/// builds apart by RUSTFLAGS and profile exactly as it used to by rustc
+/// version, so they still stay warm side by side in `targets/default` without
+/// churn. Linux cells collide with nothing either: their artifacts land under
+/// a target-triple subdirectory of their own.
+const fn cell_toolchain(target: CellTarget) -> &'static str {
     if target.is_linux() {
         BROWSERPOD_TOOLCHAIN
-    } else if needs_autodiff {
-        AUTODIFF_TOOLCHAIN
-    } else if needs_atomics {
-        ATOMICS_TOOLCHAIN
     } else {
         CELL_TOOLCHAIN
     }
@@ -478,7 +453,7 @@ fn configure_cargo_cmd(
     // Every cell build pins its toolchain explicitly — never the host default,
     // which differs between dev (nightly) and the deploy image, and once let
     // nightly-only cells validate green locally and fail on prod.
-    let toolchain = cell_toolchain(target, needs_atomics, needs_autodiff);
+    let toolchain = cell_toolchain(target);
     cmd.arg(format!("+{toolchain}"));
     // Ensure the rustup shim respects our +toolchain over any inherited
     // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
@@ -816,62 +791,74 @@ mod tests {
     }
 
     #[test]
-    fn autodiff_cells_use_the_enzyme_pin() {
-        // Autodiff rides its own pin (enzyme + no July slice-typetree ICE), and
-        // it wins over atomics for the rare autodiff+rayon combo.
-        let autodiff = format!("+{AUTODIFF_TOOLCHAIN}");
-        for simd in [false, true] {
-            assert_eq!(
-                selected_toolchain_arg(false, true, simd).as_deref(),
-                Some(autodiff.as_str()),
-            );
+    fn every_feature_combination_lands_on_the_one_cell_pin() {
+        // PRD-0067: autodiff and rayon used to route to their own nightlies.
+        // They still get their own RUSTFLAGS and profile — only the toolchain
+        // split collapsed — so the assertion that matters now is that NO
+        // feature combination can pull a wasm cell off CELL_TOOLCHAIN.
+        let cell = format!("+{CELL_TOOLCHAIN}");
+        for atomics in [false, true] {
+            for autodiff in [false, true] {
+                for simd in [false, true] {
+                    assert_eq!(
+                        selected_toolchain_arg(atomics, autodiff, simd).as_deref(),
+                        Some(cell.as_str()),
+                        "({atomics}, {autodiff}, {simd})",
+                    );
+                }
+            }
         }
-        assert_eq!(
-            selected_toolchain_arg(true, true, true).as_deref(),
-            Some(autodiff.as_str()),
-        );
-    }
-
-    #[test]
-    fn atomics_without_autodiff_keeps_the_rayon_pin() {
-        // wasm-bindgen-rayon's atomics guard breaks on newer nightlies, so
-        // rayon cells stay on their own pin.
-        let atomics = format!("+{ATOMICS_TOOLCHAIN}");
-        assert_eq!(
-            selected_toolchain_arg(true, false, false).as_deref(),
-            Some(atomics.as_str()),
-        );
-        assert_eq!(
-            selected_toolchain_arg(true, false, true).as_deref(),
-            Some(atomics.as_str()),
-        );
     }
 
     #[test]
     fn cell_toolchain_routing() {
-        let wasm = CellTarget::Executor;
-        assert_eq!(cell_toolchain(wasm, false, false), CELL_TOOLCHAIN);
-        assert_eq!(cell_toolchain(wasm, false, true), AUTODIFF_TOOLCHAIN);
-        assert_eq!(cell_toolchain(wasm, true, false), ATOMICS_TOOLCHAIN);
-        assert_eq!(cell_toolchain(wasm, true, true), AUTODIFF_TOOLCHAIN); // autodiff wins
-        assert_ne!(CELL_TOOLCHAIN, AUTODIFF_TOOLCHAIN);
-        assert_ne!(CELL_TOOLCHAIN, ATOMICS_TOOLCHAIN);
+        assert_eq!(cell_toolchain(CellTarget::Executor), CELL_TOOLCHAIN);
+        assert_eq!(cell_toolchain(CellTarget::Linux), BROWSERPOD_TOOLCHAIN);
     }
 
     #[test]
     fn the_linux_target_wins_over_every_feature_flag() {
-        // The other three pins are nightlies that cannot build for
-        // `wasm32-browserpod-linux-musl` at all, so a Linux cell that happens
-        // to declare rayon (or mention `std::autodiff` in a comment) must
-        // still get the browserpod toolchain — the target is not a feature.
-        for (atomics, autodiff) in [(false, false), (true, false), (false, true), (true, true)] {
-            assert_eq!(
-                cell_toolchain(CellTarget::Linux, atomics, autodiff),
-                BROWSERPOD_TOOLCHAIN,
-                "({atomics}, {autodiff})",
-            );
-        }
+        // `wasm32-browserpod-linux-musl` is buildable by exactly one toolchain,
+        // so a Linux cell that happens to declare rayon (or mention
+        // `std::autodiff` in a comment) must still get the browserpod pack.
+        // Since PRD-0067 the routing takes only the target, which is what makes
+        // that true by construction rather than by remembering an `if` order —
+        // `effective_features` is where a Linux cell's feature flags are
+        // dropped, and it has its own tests.
+        assert_eq!(cell_toolchain(CellTarget::Linux), BROWSERPOD_TOOLCHAIN);
         assert_ne!(BROWSERPOD_TOOLCHAIN, CELL_TOOLCHAIN);
+    }
+
+    /// The whole image-size argument for PRD-0067 rests on this equality.
+    ///
+    /// The `BrowserPod` pack does not embed a compiler: its `libexec/rustc` and
+    /// `libexec/cargo` are symlinks into the nightly named by its `nightly-pin`
+    /// file, which its installer pulls with `--profile minimal`. That nightly
+    /// is in the image whether or not anything else uses it, so pointing
+    /// `CELL_TOOLCHAIN` at the same date makes every other cell build free.
+    ///
+    /// Let them drift and nothing breaks — the image just quietly carries two
+    /// full toolchains again, which is the state this PRD removed and exactly
+    /// the kind of regression no test would otherwise catch.
+    #[test]
+    fn browserpod_pin_matches_cell_toolchain() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("workspace root");
+        let env_file = std::fs::read_to_string(root.join("docker/browserpod.env"))
+            .expect("docker/browserpod.env defines the vendored BrowserPod toolchain");
+        let pinned = env_file
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("BROWSERPOD_NIGHTLY="))
+            .expect("browserpod.env must record the nightly the pack pins");
+        assert_eq!(
+            pinned, CELL_TOOLCHAIN,
+            "BrowserPod pins {pinned} but cells build on {CELL_TOOLCHAIN}; \
+             they must match or the image pays for two full toolchains \
+             (PRD-0067). Bumping the pack means re-verifying autodiff and \
+             rayon on its nightly, then moving CELL_TOOLCHAIN with it."
+        );
     }
 
     #[test]
@@ -1067,30 +1054,28 @@ mod tests {
         let ci = std::fs::read_to_string(root.join(".github/workflows/build.yml")).unwrap();
         let toolchain_toml = std::fs::read_to_string(root.join("rust-toolchain.toml")).unwrap();
 
-        for (name, pin) in [
-            ("CELL_TOOLCHAIN", CELL_TOOLCHAIN),
-            ("AUTODIFF_TOOLCHAIN", AUTODIFF_TOOLCHAIN),
-            ("ATOMICS_TOOLCHAIN", ATOMICS_TOOLCHAIN),
-        ] {
-            assert!(
-                dockerfile.contains(&format!("rustup toolchain install {pin}")),
-                "docker/Dockerfile does not install {name} ({pin})"
-            );
-            assert!(
-                ci.contains(pin),
-                ".github/workflows/build.yml does not reference {name} ({pin})"
-            );
-        }
-        // The deploy image's default toolchain is the common-case pin.
+        assert!(
+            dockerfile.contains(&format!("rustup toolchain install {CELL_TOOLCHAIN}")),
+            "docker/Dockerfile does not install CELL_TOOLCHAIN ({CELL_TOOLCHAIN})"
+        );
+        assert!(
+            ci.contains(CELL_TOOLCHAIN),
+            ".github/workflows/build.yml does not reference CELL_TOOLCHAIN ({CELL_TOOLCHAIN})"
+        );
+        // The deploy image's default toolchain is the cell pin.
         assert!(
             dockerfile.contains(&format!("rustup default {CELL_TOOLCHAIN}")),
             "docker/Dockerfile must default to CELL_TOOLCHAIN"
         );
-        // The workspace's own toolchain rides the atomics pin (documented on
-        // ATOMICS_TOOLCHAIN: "Keep in sync with rust-toolchain.toml").
+        // The workspace builds on the same nightly cells compile on (PRD-0067).
+        // This used to ride ATOMICS_TOOLCHAIN, and the comment above the pin
+        // justified it by a `thaw` codegen bug — for a dependency deleted in
+        // v0.12.13. Holding the two together is still worth a test, but for a
+        // reason that is true: it is one fewer toolchain on a dev box, and it
+        // means clippy runs against the compiler cells are judged by.
         assert!(
-            toolchain_toml.contains(&format!("channel = \"{ATOMICS_TOOLCHAIN}\"")),
-            "rust-toolchain.toml channel must match ATOMICS_TOOLCHAIN"
+            toolchain_toml.contains(&format!("channel = \"{CELL_TOOLCHAIN}\"")),
+            "rust-toolchain.toml channel must match CELL_TOOLCHAIN"
         );
 
         // The fourth pin installs from a vendored tarball rather than
@@ -1120,15 +1105,10 @@ mod tests {
             .lines()
             .find_map(|line| line.trim().strip_prefix("BROWSERPOD_NIGHTLY="))
             .expect("browserpod.env must record the nightly the pack pins");
-        let known = [
-            CELL_TOOLCHAIN,
-            AUTODIFF_TOOLCHAIN,
-            ATOMICS_TOOLCHAIN,
-            browserpod_nightly,
-        ];
+        let known = [CELL_TOOLCHAIN, browserpod_nightly];
         for (file, text) in [("docker/Dockerfile", &dockerfile), ("build.yml", &ci)] {
             for (idx, _) in text.match_indices("nightly-20") {
-                let pin = &text[idx..(idx + "nightly-2026-07-14".len()).min(text.len())];
+                let pin = &text[idx..(idx + CELL_TOOLCHAIN.len()).min(text.len())];
                 assert!(
                     known.contains(&pin),
                     "{file} references unknown toolchain pin {pin}"

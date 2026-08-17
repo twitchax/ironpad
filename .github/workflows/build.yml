@@ -23,22 +23,17 @@ jobs:
       # silently overrides a stable pin here, wasting the setup and its cached components).
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-12-22
+          toolchain: nightly-2026-05-19
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy, rust-src
-      # Cell builds pin their own toolchains (cell_toolchain in ironpad-app's
-      # compiler/build.rs; keep in sync here and in docker/Dockerfile). The
-      # integration tests compile real cells, so the runner needs both:
-      #   nightly-2026-07-14 — normal + SIMD cells (CELL_TOOLCHAIN)
-      #   nightly-2026-06-01 — std::autodiff cells (AUTODIFF_TOOLCHAIN), + enzyme
-      # Rayon cells use nightly-2025-12-22, already installed above.
-      - run: |
-          rustup toolchain install nightly-2026-07-14 --profile minimal \
-            --target wasm32-unknown-unknown \
-            --component rust-src
-          rustup toolchain install nightly-2026-06-01 --profile minimal \
-            --target wasm32-unknown-unknown \
-            --component rust-src --component enzyme
+      # Cell builds pin their toolchain explicitly (cell_toolchain in
+      # ironpad-app's compiler/build.rs; keep in sync here and in
+      # docker/Dockerfile). Since PRD-0067 that is the SAME nightly the
+      # workspace uses, installed above — all this adds is `enzyme`, which
+      # std::autodiff cells need and which rust-toolchain.toml cannot request.
+      # The integration tests compile real autodiff cells, so without it they
+      # fail rather than skip.
+      - run: rustup component add enzyme --toolchain nightly-2026-05-19
       # Linux cells (PRD-0066) build on a vendor-supplied toolchain, not a
       # rustup channel: the pack ships a prebuilt std ABI-tied to
       # nightly-2026-05-19, so no other rustc can use it. `test-integration`
@@ -59,7 +54,7 @@ jobs:
       # --force: rust-cache restores binstall's install manifest (.crates.toml) without
       # the binaries, so a plain binstall would skip them and cargo then reports e.g.
       # "no such command: make". Forcing a reinstall keeps the binaries present.
-      - run: cargo binstall -y --force cargo-make cargo-nextest wasm-bindgen-cli@0.2.114
+      - run: cargo binstall -y --force cargo-make cargo-nextest wasm-bindgen-cli@0.2.127
       - run: cargo make ci
       # Run the real gate: the #[ignore]'d compiler-pipeline integration tests and a
       # wasm/hydrate compile check, so green CI means the WASM frontend actually builds.
@@ -112,12 +107,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # rust-toolchain.toml pins the active toolchain to nightly-2025-12-22, so install
+      # rust-toolchain.toml pins the active toolchain to nightly-2026-05-19, so install
       # that directly (a stable pin here is silently overridden) with llvm-tools-preview —
       # cargo-llvm-cov needs it on the *active* toolchain to find llvm-profdata/llvm-cov.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-12-22
+          toolchain: nightly-2026-05-19
           targets: wasm32-unknown-unknown
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2

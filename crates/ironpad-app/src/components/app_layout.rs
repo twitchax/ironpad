@@ -488,7 +488,7 @@ fn StatusBar(ctx: LayoutContext) -> impl IntoView {
                 "Ready"
             </span>
             // The label is dropped per the handoff, so the tooltip carries it:
-            // a bare `nightly-2026-07-14` is legible but not self-describing.
+            // a bare `nightly-2026-05-19` is legible but not self-describing.
             <span class="ironpad-status-item" title="Cell compiler toolchain">
                 {move || ctx.compiler_version.get()}
             </span>
