@@ -350,3 +350,68 @@ test.describe("Studio frame", () => {
     });
   }
 });
+
+test.describe("Rail navigation", () => {
+  /**
+   * Clicking a rail row must scroll the CELL LIST and nothing else.
+   *
+   * `scrollIntoView` scrolls every scrollable ancestor, and the viewport is
+   * one of them. `body` carries `overflow: hidden`, which propagates to the
+   * viewport and stops the *user* scrolling without stopping the *API*, so on
+   * a long notebook (cannon's list is ~12,000px) the document has thousands of
+   * pixels of programmatic scroll available. Clicking a row slid the entire
+   * shell up and took the header and footer with it: the footer moved 397px,
+   * and `overflow: hidden` meant there was no scrolling back.
+   *
+   * Both halves are asserted. Without the second the test passes when the
+   * click does nothing at all.
+   */
+  test("a rail row scrolls the list without moving the shell", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/public/cannon");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+    const rows = page.locator(".ip-rail-row");
+    await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(3_000); // hydration (suite convention)
+
+    const shell = () =>
+      page.evaluate(() => ({
+        footerY: Math.round(
+          document.querySelector(".ironpad-status-bar")!.getBoundingClientRect()
+            .y,
+        ),
+        headerY: Math.round(
+          document.querySelector(".ironpad-header")!.getBoundingClientRect().y,
+        ),
+        railY: Math.round(
+          document.querySelector(".ip-rail")!.getBoundingClientRect().y,
+        ),
+        docScrollTop: Math.round(document.documentElement.scrollTop),
+        cellsScrollTop: Math.round(
+          document.querySelector(".view-only-cells")!.scrollTop,
+        ),
+      }));
+
+    const before = await shell();
+    expect(before.cellsScrollTop).toBe(0);
+
+    const count = await rows.count();
+    await rows.nth(count - 1).click();
+    await page.waitForTimeout(1_500); // smooth scroll settles
+
+    const after = await shell();
+
+    // The shell is nailed down.
+    expect(after.footerY).toBe(before.footerY);
+    expect(after.headerY).toBe(before.headerY);
+    expect(after.railY).toBe(before.railY);
+    expect(after.docScrollTop).toBe(0);
+
+    // And the click did something: the last row is far down a long list.
+    expect(after.cellsScrollTop).toBeGreaterThan(1_000);
+  });
+});

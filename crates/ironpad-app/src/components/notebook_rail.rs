@@ -466,7 +466,7 @@ pub fn NotebookRail(
                             selected.set(Some(cell_id.clone()));
                             mobile_open.set(false);
                             #[cfg(feature = "hydrate")]
-                            scroll_to_cell(&cell_id, suppress_until);
+                            scroll_to_cell(&cell_id, suppress_until, scroll_root);
                         }
                     >
                         <span
@@ -576,27 +576,62 @@ const CLICK_SUPPRESS_MS: f64 = 700.0;
 
 /// Scroll a cell to the top of its scrollport and hold the spy off while it
 /// travels.
+///
+/// **Scrolls the scrollport directly rather than calling `scrollIntoView`.**
+/// That API scrolls EVERY scrollable ancestor, and the viewport is one of
+/// them: `body` carries `overflow: hidden`, which propagates to the viewport
+/// and stops the *user* scrolling without stopping the *API*. On a long
+/// notebook the document's scrollable region is thousands of pixels tall
+/// (8,664px on `/public/cannon`, entirely from the cell list), so clicking a
+/// rail row slid the whole shell up and took the header and footer with it,
+/// leaving no way to scroll back because the same `hidden` blocks the user.
+/// Measured before the fix: the footer moved 397px on one click.
+///
+/// Predates the rail becoming full-height chrome; that change only made it
+/// easier to see, since the footer used to be the only thing that moved.
 #[cfg(feature = "hydrate")]
-fn scroll_to_cell(cell_id: &str, suppress_until: StoredValue<f64>) {
-    let Some(element) = leptos::web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(&cell_anchor_id(cell_id)))
-    else {
+fn scroll_to_cell(cell_id: &str, suppress_until: StoredValue<f64>, scroll_root: &'static str) {
+    let Some(document) = leptos::web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(element) = document.get_element_by_id(&cell_anchor_id(cell_id)) else {
         return;
     };
 
-    let options = leptos::web_sys::ScrollIntoViewOptions::new();
-    options.set_block(leptos::web_sys::ScrollLogicalPosition::Start);
-    // `scrollIntoView`'s option overrides CSS `scroll-behavior`, so the
-    // reduced-motion preference has to be read here rather than left to the
-    // stylesheet.
-    options.set_behavior(if prefers_reduced_motion() {
-        leptos::web_sys::ScrollBehavior::Auto
-    } else {
+    // The reduced-motion preference has to be read here rather than left to
+    // the stylesheet, because the scroll option overrides CSS
+    // `scroll-behavior`.
+    let smooth = !prefers_reduced_motion();
+    if smooth {
         suppress_until.set_value(js_sys::Date::now() + CLICK_SUPPRESS_MS);
+    }
+    let behavior = if smooth {
         leptos::web_sys::ScrollBehavior::Smooth
-    });
-    element.scroll_into_view_with_scroll_into_view_options(&options);
+    } else {
+        leptos::web_sys::ScrollBehavior::Auto
+    };
+
+    let Some(root) = document.query_selector(scroll_root).ok().flatten() else {
+        // No scrollport found: fall back to the ancestor walk rather than
+        // doing nothing, matching what the scroll-spy does when the same
+        // selector misses.
+        let options = leptos::web_sys::ScrollIntoViewOptions::new();
+        options.set_block(leptos::web_sys::ScrollLogicalPosition::Start);
+        options.set_behavior(behavior);
+        element.scroll_into_view_with_scroll_into_view_options(&options);
+        return;
+    };
+
+    // Where the anchor sits relative to the scrollport's own top, plus how far
+    // the scrollport is already scrolled: `scrollTo` takes a content-box
+    // offset, and the rects are viewport-relative.
+    let top = element.get_bounding_client_rect().top() - root.get_bounding_client_rect().top()
+        + f64::from(root.scroll_top());
+
+    let options = leptos::web_sys::ScrollToOptions::new();
+    options.set_top(top);
+    options.set_behavior(behavior);
+    root.scroll_to_with_scroll_to_options(&options);
 }
 
 #[cfg(feature = "hydrate")]
