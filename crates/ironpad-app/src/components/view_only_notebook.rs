@@ -320,6 +320,21 @@ pub(crate) fn ViewOnlyNotebook(
 
     view! {
         <div class="view-only-notebook">
+            // The rail is a sibling of the WHOLE content column, not of the
+            // cell list, so it spans header to footer and meets the window
+            // edge. Nested inside the row with the cells (its first shape) it
+            // started below the toolbar and left the cell column centred in a
+            // different box than its own title, 122px apart at 1440px.
+            <NotebookRail
+                cells=notebook.with_value(|nb| rail_cells(&nb.cells))
+                run=rail_run
+                toolchain=crate::CELL_TOOLCHAIN
+                deps=notebook.with_value(|nb| {
+                    rail_deps(nb.shared_cargo_toml.as_deref(), &nb.cells)
+                })
+                embed=embed
+            />
+            <div class="view-only-main">
             <div class="view-only-toolbar">
                 // Title row: optional breadcrumb crumb, the title itself, and
                 // the read-only pill. Named for the ROW, not the crumb: it
@@ -441,16 +456,6 @@ pub(crate) fn ViewOnlyNotebook(
                     "This notebook uses threaded (rayon) cells, which need a cross-origin-isolated page and can't run inside an embed. Plain and async cells run fine; use the badge below to open the full notebook."
                 </div>
             })}
-            <div class="view-only-body">
-            <NotebookRail
-                cells=notebook.with_value(|nb| rail_cells(&nb.cells))
-                run=rail_run
-                toolchain=crate::CELL_TOOLCHAIN
-                deps=notebook.with_value(|nb| {
-                    rail_deps(nb.shared_cargo_toml.as_deref(), &nb.cells)
-                })
-                embed=embed
-            />
             <div class="view-only-cells">
                 {notebook.with_value(|nb| {
                     let cells = nb.cells.clone();
@@ -537,12 +542,12 @@ pub(crate) fn ViewOnlyNotebook(
                     </div>
                 }.into_any())}
             </div>
-            </div>
             {embed_badge_href.map(|href| view! {
                 <a class="ironpad-embed-badge" href=href target="_blank" rel="noopener">
                     <IconLabel icon=icons::REACTIVE label="Powered by ironpad · Open"/><Icon icon=icons::EXTERNAL/>
                 </a>
             })}
+            </div>
         </div>
     }
 }

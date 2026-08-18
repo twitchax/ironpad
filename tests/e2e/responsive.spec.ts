@@ -253,3 +253,100 @@ test.describe("Reduced motion", () => {
     expect(outputAnimationsIntact).toBe("2s");
   });
 });
+
+test.describe("Studio frame", () => {
+  /**
+   * The rail is chrome: it meets the header, the footer and the window edge.
+   *
+   * Its first shape nested it in a row WITH the cell list but BELOW the
+   * toolbar, which produced both halves of one bug. It started 139px under
+   * the header instead of touching it, and the cells ended up centred in a
+   * different box than their own title, 122px apart at 1440px.
+   *
+   * Only rendered geometry can see any of this. Both stylesheets read
+   * correctly the whole time.
+   */
+  test("the rail spans header to footer and meets the left edge", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/public/linux-cells");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const geom = await page.evaluate(() => {
+      const box = (s: string) => {
+        const el = document.querySelector(s);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, right: r.right, bottom: r.bottom };
+      };
+      return {
+        header: box(".ironpad-header"),
+        footer: box(".ironpad-status-bar"),
+        rail: box(".ip-rail"),
+        toolbar: box(".view-only-toolbar"),
+        cell: box(".view-only-cell"),
+        overflowX:
+          document.documentElement.scrollWidth -
+          document.documentElement.clientWidth,
+      };
+    });
+
+    // Flush left, and vertically it exactly fills the gap between the two
+    // bars. Asserting the SHARED edges rather than a height: a rail that
+    // merely happened to be 824px tall while floating would pass a height
+    // check and fail this one.
+    expect(geom.rail!.x).toBe(0);
+    expect(Math.round(geom.rail!.y)).toBe(Math.round(geom.header!.bottom));
+    expect(Math.round(geom.rail!.bottom)).toBe(Math.round(geom.footer!.y));
+
+    // The title and the cells under it share a centre. They are built to:
+    // the cell list's max-width plus its own gutters is the toolbar's
+    // max-width, so any drift means they are being centred in different
+    // boxes again.
+    const centre = (b: { x: number; right: number }) => (b.x + b.right) / 2;
+    expect(Math.abs(centre(geom.toolbar!) - centre(geom.cell!))).toBeLessThan(
+      2,
+    );
+
+    expect(geom.overflowX).toBe(0);
+  });
+
+  /**
+   * The shell gutter shrinks at 1024px and again at 768px, and the frame
+   * cancels it to go full-bleed. A hard-coded cancellation is correct at one
+   * width and wrong at the other two: the first version hung the rail 8px off
+   * the left edge at 1000px, which is why this sweeps widths instead of
+   * checking the desktop case twice.
+   */
+  for (const width of [1440, 1200, 1024, 1000, 768, 390]) {
+    test(`the frame cancels the shell gutter exactly at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto("/public/linux-cells");
+      await expect(page.locator(".view-only-notebook")).toBeVisible({
+        timeout: 30_000,
+      });
+
+      const geom = await page.evaluate(() => {
+        const el = document.querySelector(".view-only-notebook")!;
+        const r = el.getBoundingClientRect();
+        return {
+          x: r.x,
+          right: r.right,
+          inner: window.innerWidth,
+          overflowX:
+            document.documentElement.scrollWidth -
+            document.documentElement.clientWidth,
+        };
+      });
+
+      expect(geom.x, `frame overhangs the left edge at ${width}px`).toBe(0);
+      expect(Math.round(geom.right)).toBe(geom.inner);
+      expect(geom.overflowX).toBe(0);
+    });
+  }
+});
