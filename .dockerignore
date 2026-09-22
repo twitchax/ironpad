@@ -1,6 +1,10 @@
 # Build artifacts
 target/
 
+# Local cache: 7.3 GB of targets/workspaces/cargo-home/blobs (gitignored,
+# rebuilt at runtime). This was the whole Docker build context until 2026-09-16.
+cache/
+
 # IDE
 .idea/
 .vscode/
@@ -11,6 +15,7 @@ node_modules/
 # Test artifacts
 test-results/
 playwright-report/
+.playwright-mcp/
 
 # Git
 .git/
