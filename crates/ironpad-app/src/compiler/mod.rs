@@ -1013,6 +1013,60 @@ pub fn range(angle: f64) -> f64 {
 
     #[tokio::test]
     #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn compile_fearless_simd_cell_reaches_the_simd128_backend() {
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "fearless-simd";
+
+        // `Level::as_wasm_simd128` only exists when fearless_simd itself was
+        // compiled with `+simd128`, so this builds only if detection fired
+        // AND the flag reached the dependency, not just the cell crate.
+        // Without it the crate silently compiles its scalar fallback.
+        let source = "    let level = fearless_simd::Level::new();\n    CellOutput::from(level.as_wasm_simd128().is_some())";
+        let cargo_toml = "[dependencies]\nfearless_simd = \"1.0\"";
+        let needs_simd = uses_wasm_simd(source, None);
+        assert!(needs_simd, "a fearless_simd cell must opt into simd128");
+
+        let (crate_dir, ..) = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            cargo_toml,
+            &[],
+            None,
+            None,
+            CellTarget::Executor,
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            false,
+            false,
+            needs_simd,
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        if let BuildResult::Failure { stdout, stderr } = result {
+            panic!(
+                "fearless_simd cell should build against its simd128 backend.\nstdout(tail): {}\nstderr(tail): {}",
+                &stdout[stdout.len().saturating_sub(2000)..],
+                &stderr[stderr.len().saturating_sub(1500)..],
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_cell_with_portable_simd_builds_successfully() {
         let cache_dir = tempdir();
         let cell_path = ironpad_cell_path();

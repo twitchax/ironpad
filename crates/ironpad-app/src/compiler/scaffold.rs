@@ -2300,6 +2300,18 @@ impl LiveView for Dashboard {
     }
 
     #[test]
+    fn uses_wasm_simd_detects_simd_crates() {
+        // These crates gate their wasm backends on `cfg(target_feature =
+        // "simd128")`, so a miss is silent: the scalar fallback compiles
+        // and runs, just without lanes.
+        assert!(uses_wasm_simd("use fearless_simd::prelude::*;", None));
+        assert!(uses_wasm_simd("#[fearless_simd_macros::simd]", None));
+        assert!(uses_wasm_simd("use wide::f32x4;", None));
+        assert!(uses_wasm_simd("use pulp::Arch;", None));
+        assert!(!uses_wasm_simd("let wide = 4; // a wide load", None));
+    }
+
+    #[test]
     fn uses_wasm_simd_detects_in_shared_source() {
         let shared = "use std::simd::prelude::*;\npub fn dot(a: &[f32]) -> f32 { a[0] }";
         assert!(uses_wasm_simd("shared::dot(&[1.0])", Some(shared)));

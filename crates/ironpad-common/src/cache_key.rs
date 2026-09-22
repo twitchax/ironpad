@@ -419,10 +419,21 @@ pub fn uses_std_autodiff(source: &str, shared_source: Option<&str>) -> bool {
 /// IS the opt-in. A false positive (the strings in a comment) costs only an
 /// unused feature gate and a harmless codegen flag — every current browser
 /// instantiates simd128 modules natively.
+///
+/// SIMD crates count too. `fearless_simd`, `wide` and `pulp` pick their wasm
+/// backend with `cfg(target_feature = "simd128")`, so without the flag they
+/// compile their scalar fallback and run it without complaint: a miss here is
+/// a silent slowdown, not an error. Matched by path prefix, since a cell
+/// cannot use a crate without naming it.
 #[must_use]
 pub fn uses_wasm_simd(source: &str, shared_source: Option<&str>) -> bool {
     let hit = |s: &str| {
-        s.contains("std::simd") || s.contains("core::simd") || s.contains("std::arch::wasm32")
+        s.contains("std::simd")
+            || s.contains("core::simd")
+            || s.contains("std::arch::wasm32")
+            || s.contains("fearless_simd")
+            || s.contains("wide::")
+            || s.contains("pulp::")
     };
     hit(source) || shared_source.is_some_and(hit)
 }
