@@ -106,6 +106,17 @@
     },
     "shared": "fef0a03d5bc762c4"
   },
+  "fearless-simd": {
+    "cells": {
+      "cell_level": "3d2d0e8f261afd5d",
+      "cell_dot": "63add6b1649a2bdb",
+      "cell_mandel": "e4f65e1268f9e370",
+      "cell_trap": "62595c3c4fb21f07",
+      "cell_fma": "dbc5884769ee5d6a",
+      "cell_q15": "1d09fc283b7af4a3"
+    },
+    "shared": "6e340b9cffb37a98"
+  },
   "fourier-series": {
     "cells": {
       "cell_controls": "7d91b5fa45fb861a",

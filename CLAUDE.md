@@ -584,7 +584,7 @@ Cells opt into heavier build modes just by using a feature; detection is substri
 | --- | --- | --- | --- |
 | rayon (atomics) | `rayon` in merged deps | `-Zbuild-std`, atomics target features + shared-memory link flags | wasm-bindgen-rayon worker pool |
 | autodiff (Enzyme) | `autodiff_forward` / `autodiff_reverse` / `std::autodiff` | `enzyme` component, `-Zautodiff=Enable`, forced fat-LTO profile, crate-root `#![feature(autodiff)]` | none |
-| SIMD (PRD-0042) | `std::simd` / `core::simd` / `std::arch::wasm32` (comments count) | `-C target-feature=+simd128`, crate-root `#![feature(portable_simd)]`; no std rebuild | none (all modern browsers) |
+| SIMD (PRD-0042) | `std::simd` / `core::simd` / `std::arch::wasm32`, plus the SIMD crates `fearless_simd` / `wide::` / `pulp::`, whose wasm backends are `cfg(target_feature = "simd128")`-gated and silently compile a scalar fallback without the flag (comments count; source only, so a crate renamed in `Cargo.toml` escapes) | `-C target-feature=+simd128`, crate-root `#![feature(portable_simd)]`; no std rebuild | none (all modern browsers) |
 | blocking/JSPI (PRD-0043) | imports `ironpad_blocking_*` (via `ironpad_cell::blocking`) | none (plain imports) | executor wraps imports in `WebAssembly.Suspending`, enters raw `cell_main` via `WebAssembly.promising`; Chrome/Edge 137+ only, friendly gate elsewhere |
 | coroutines | `#[coroutine]` / `CoroutineState` / `ops::Coroutine` | crate-root `#![feature(coroutines, coroutine_trait, stmt_expr_attributes)]`; no toolchain change | none |
 
