@@ -49,7 +49,11 @@ pub struct CliArgs {
 
     /// Global cap on concurrent cargo builds (PRD-0052). Compiles queue for a
     /// slot (bounded); live checks shed to Skipped. Cache hits never take one.
-    #[arg(long, default_value_t = 3, env = "IRONPAD_MAX_CONCURRENT_BUILDS")]
+    #[arg(
+        long,
+        default_value_t = ironpad_app::compiler::admission::DEFAULT_MAX_CONCURRENT_BUILDS,
+        env = "IRONPAD_MAX_CONCURRENT_BUILDS"
+    )]
     pub max_concurrent_builds: usize,
 
     /// GitHub OAuth app client id (PRD-0053). Sign-in is hidden when either
@@ -213,6 +217,10 @@ mod tests {
         assert_eq!(args.public_url, None);
         assert_eq!(args.max_guests, 512);
         assert_eq!(args.guest_idle_timeout_secs, 1800);
+        assert_eq!(
+            args.max_concurrent_builds,
+            ironpad_app::compiler::admission::DEFAULT_MAX_CONCURRENT_BUILDS
+        );
         // Auth defaults (PRD-0053): no credentials, and — critically — the
         // test-login gate closed.
         assert_eq!(args.github_client_id, None);
