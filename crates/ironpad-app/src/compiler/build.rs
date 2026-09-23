@@ -219,24 +219,21 @@ pub async fn build_micro_crate(
     target: CellTarget,
     features: CellFeatures,
 ) -> anyhow::Result<BuildResult> {
-    // The target decides which feature flags survive, once, before anything
-    // reads them: the target dir below, the log line, and the cargo
-    // invocation must all describe the same build.
-    let features = features.for_target(target);
-
-    let cargo_home = cargo_home_dir(cache_dir);
-    let target_dir = if features.atomics {
-        atomics_target_dir(cache_dir)
-    } else {
-        target_dir(cache_dir, session_id)
-    };
-
-    tokio::fs::create_dir_all(&cargo_home).await?;
-    tokio::fs::create_dir_all(&target_dir).await?;
-
-    // Canonicalize paths so they resolve correctly when cargo runs in crate_dir.
-    let cargo_home = tokio::fs::canonicalize(&cargo_home).await?;
-    let target_dir = tokio::fs::canonicalize(&target_dir).await?;
+    let PreparedCargo {
+        cmd,
+        cargo_home,
+        target_dir,
+        features,
+    } = prepare_cargo(
+        "build",
+        crate_dir,
+        cache_dir,
+        session_id,
+        compilation_proxy,
+        target,
+        features,
+    )
+    .await?;
 
     tracing::info!(
         cell_id = %cell_id,
@@ -252,20 +249,6 @@ pub async fn build_micro_crate(
     );
 
     let timeout = build_timeout();
-
-    let mut cmd = Command::new("cargo");
-    configure_cargo_cmd(
-        &mut cmd,
-        "build",
-        crate_dir,
-        &cargo_home,
-        &target_dir,
-        compilation_proxy,
-        target,
-        features,
-    );
-    cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
 
     // Child span around the cargo subprocess, so a trace separates compile
     // time from the scaffold/wasm-bindgen/wasm-opt stages around it.
@@ -389,6 +372,71 @@ pub async fn build_micro_crate(
     })
 }
 
+/// A cargo invocation configured for one cell build or check, with the
+/// directories and the feature set it was configured with, so the caller's
+/// log line and artifact path describe the same build the command runs.
+struct PreparedCargo {
+    cmd: Command,
+    cargo_home: PathBuf,
+    target_dir: PathBuf,
+    /// Post-[`CellFeatures::for_target`]: what the build actually applies.
+    features: CellFeatures,
+}
+
+/// Everything [`build_micro_crate`] and [`check_micro_crate`] do before
+/// spawning cargo, in one place so the two cannot drift: the target decides
+/// which feature flags survive (once, before anything reads them), which picks
+/// the target dir (the shared atomics dir for rayon cells, the session's
+/// otherwise), both dirs are created and canonicalized (cargo runs in
+/// `crate_dir`, so relative paths would resolve against it), and the command
+/// is configured with piped stdout/stderr.
+async fn prepare_cargo(
+    subcommand: &str,
+    crate_dir: &Path,
+    cache_dir: &Path,
+    session_id: &str,
+    compilation_proxy: Option<&str>,
+    target: CellTarget,
+    features: CellFeatures,
+) -> anyhow::Result<PreparedCargo> {
+    let features = features.for_target(target);
+
+    let cargo_home = cargo_home_dir(cache_dir);
+    let target_dir = if features.atomics {
+        atomics_target_dir(cache_dir)
+    } else {
+        target_dir(cache_dir, session_id)
+    };
+
+    // Async fs: the check path is the latency-sensitive check-on-type route,
+    // the one that most needs to not block a worker.
+    tokio::fs::create_dir_all(&cargo_home).await?;
+    tokio::fs::create_dir_all(&target_dir).await?;
+    let cargo_home = tokio::fs::canonicalize(&cargo_home).await?;
+    let target_dir = tokio::fs::canonicalize(&target_dir).await?;
+
+    let mut cmd = Command::new("cargo");
+    configure_cargo_cmd(
+        &mut cmd,
+        subcommand,
+        crate_dir,
+        &cargo_home,
+        &target_dir,
+        compilation_proxy,
+        target,
+        features,
+    );
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    Ok(PreparedCargo {
+        cmd,
+        cargo_home,
+        target_dir,
+        features,
+    })
+}
+
 /// Apply the cargo invocation shared by [`build_micro_crate`] and
 /// [`check_micro_crate`]: toolchain selection, the `{subcommand} --target
 /// {triple} --release --message-format=json` args,
@@ -398,11 +446,12 @@ pub async fn build_micro_crate(
 /// Extracting this keeps the build and check entry points from silently
 /// drifting — e.g. an `env_remove` added later for correctness lands in both the
 /// production build and the `cargo check` guard behind
-/// `all_public_notebook_cells_compile`. Stdio/process-group setup stays with the
-/// caller since only the real build needs it.
+/// `all_public_notebook_cells_compile`. Outside tests it is reached only
+/// through [`prepare_cargo`], which owns the stdio piping; the process-group
+/// setup lives in [`run_group_with_timeout`].
 ///
 /// The feature flags must already have passed through
-/// [`CellFeatures::for_target`] (both entry points apply it first), so what is
+/// [`CellFeatures::for_target`] (`prepare_cargo` applies it first), so what is
 /// set here is what the build actually gets.
 #[allow(clippy::too_many_arguments)]
 fn configure_cargo_cmd(
@@ -512,23 +561,16 @@ pub async fn check_micro_crate(
     features: CellFeatures,
     timeout: Duration,
 ) -> anyhow::Result<CheckResult> {
-    // Same rule as the build path, applied before anything reads the flags.
-    let features = features.for_target(target);
-
-    let cargo_home = cargo_home_dir(cache_dir);
-    let target_dir = if features.atomics {
-        atomics_target_dir(cache_dir)
-    } else {
-        target_dir(cache_dir, session_id)
-    };
-
-    // Async fs like the build path: this is the latency-sensitive
-    // check-on-type route, the one that most needs to not block a worker.
-    tokio::fs::create_dir_all(&cargo_home).await?;
-    tokio::fs::create_dir_all(&target_dir).await?;
-
-    let cargo_home = tokio::fs::canonicalize(&cargo_home).await?;
-    let target_dir = tokio::fs::canonicalize(&target_dir).await?;
+    let PreparedCargo { cmd, features, .. } = prepare_cargo(
+        "check",
+        crate_dir,
+        cache_dir,
+        session_id,
+        compilation_proxy,
+        target,
+        features,
+    )
+    .await?;
 
     tracing::debug!(
         cell_id = %cell_id,
@@ -538,20 +580,6 @@ pub async fn check_micro_crate(
         needs_simd = features.simd,
         "starting live check",
     );
-
-    let mut cmd = Command::new("cargo");
-    configure_cargo_cmd(
-        &mut cmd,
-        "check",
-        crate_dir,
-        &cargo_home,
-        &target_dir,
-        compilation_proxy,
-        target,
-        features,
-    );
-    cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
 
     let output = run_group_with_timeout(cmd, timeout)
         .instrument(tracing::info_span!("cargo_check", cell_id = %cell_id))
@@ -860,6 +888,54 @@ mod tests {
             wasm.get(target_pos + 1).map(String::as_str),
             Some("wasm32-unknown-unknown"),
         );
+    }
+
+    /// The masking and the target-dir policy live in one place, so pin them
+    /// there: an atomics cell checks in the shared atomics dir, while a Linux
+    /// cell (whose features the target masks) uses the session dir.
+    #[tokio::test]
+    async fn prepare_cargo_picks_the_target_dir_from_the_masked_features() {
+        let cache = tempfile::tempdir().unwrap();
+        let atomics = features(true, false, false);
+
+        let executor = prepare_cargo(
+            "check",
+            Path::new("/crate"),
+            cache.path(),
+            "session-1",
+            None,
+            CellTarget::Executor,
+            atomics,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            executor.target_dir,
+            std::fs::canonicalize(atomics_target_dir(cache.path())).unwrap()
+        );
+        assert_eq!(executor.features, atomics);
+
+        let linux = prepare_cargo(
+            "check",
+            Path::new("/crate"),
+            cache.path(),
+            "session-1",
+            None,
+            CellTarget::Linux,
+            atomics,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            linux.target_dir,
+            std::fs::canonicalize(target_dir(cache.path(), "session-1")).unwrap()
+        );
+        assert_eq!(linux.features, CellFeatures::default());
+        assert!(!linux
+            .cmd
+            .as_std()
+            .get_args()
+            .any(|a| a.to_string_lossy().starts_with("-Zbuild-std")));
     }
 
     // ── cargo_home_dir ──────────────────────────────────────────────────
