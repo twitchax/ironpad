@@ -546,22 +546,15 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
                 );
             }
         };
-        // A dependency check only matters for ANOTHER cell's failure, and
-        // it needs the cached notebook — read it lazily per candidate event.
-        let needs_dep_check = matches!(
-            &event,
-            protocol::Event::CellExecuted { cell_id: id, success: false, .. }
-            | protocol::Event::CellCompiled { cell_id: id, success: false, .. }
-                if id != cell_id
-        );
-        let notebook = if needs_dep_check {
-            state.notebook.read().await.clone()
-        } else {
-            None
+        // Classify against a BORROW of the cached notebook: cloning it per
+        // foreign failure copied every cell's source and saved output. The
+        // guard is uncontended (the only writer is the WS recv task) and is
+        // dropped before the next await.
+        let signal = {
+            let notebook = state.notebook.read().await;
+            run_signal(cell_id, &event, notebook.as_ref())
         };
-        if let Some(outcome) =
-            apply_signal(&mut held, run_signal(cell_id, &event, notebook.as_ref()))
-        {
+        if let Some(outcome) = apply_signal(&mut held, signal) {
             return IpcResponse::success(outcome);
         }
         grace_until = match (&held, grace_until) {
@@ -1388,6 +1381,93 @@ mod tests {
             run_signal("mine", &failure("ghost"), Some(&nb)),
             RunSignal::Inferred(_)
         ));
+    }
+
+    /// Drive `serve_cells_run` against a fake host: ack the `CellRun` it
+    /// forwards, then report one execution failure of `failed` and nothing
+    /// else, and return what the wait concluded within its 1s deadline.
+    async fn run_past_a_failure(sources: &[(&str, &str)], failed: &str) -> IpcResponse {
+        let state = Arc::new(test_state());
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells = sources
+            .iter()
+            .zip(0..)
+            .map(|(&(id, source), order)| {
+                let mut cell = make_cell(id, order);
+                cell.source = source.to_string();
+                cell
+            })
+            .collect();
+        *state.notebook.write().await = Some(nb);
+        let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<String>();
+        *state.ws_tx.write().await = Some(ws_tx);
+
+        let host = {
+            let state = Arc::clone(&state);
+            let failed = failed.to_string();
+            tokio::spawn(async move {
+                let sent: protocol::Message =
+                    serde_json::from_str(&ws_rx.recv().await.expect("the run is forwarded"))
+                        .unwrap();
+                let frame = |id: String, kind| {
+                    serde_json::to_string(&protocol::Message { id, kind }).unwrap()
+                };
+                let ack = frame(
+                    sent.id,
+                    MessageKind::Response(Response::MutationOk {
+                        detail: MutationResult::CellRunStarted {
+                            cell_id: "mine".into(),
+                        },
+                    }),
+                );
+                handle_ws_message(&ack, &state).await;
+                let failure = frame(
+                    String::new(),
+                    MessageKind::Event(EventEnvelope {
+                        by: ClientId::browser(),
+                        event: Event::CellExecuted {
+                            cell_id: failed,
+                            display_text: Some("boom".into()),
+                            type_tag: None,
+                            execution_time_ms: 0.0,
+                            success: false,
+                        },
+                    }),
+                );
+                handle_ws_message(&failure, &state).await;
+            })
+        };
+
+        let response = serve_cells_run(
+            &ipc("cells.run", json!({ "cell_id": "mine", "timeout_secs": 1 })),
+            &state,
+        )
+        .await;
+        host.await.unwrap();
+        response
+    }
+
+    /// A foreign failure the target does not depend on concludes nothing:
+    /// the queue continues past it, so the wait runs to its deadline instead
+    /// of standing on a `prerequisite_failed` guess.
+    #[tokio::test]
+    async fn run_wait_stays_open_past_an_independent_failure() {
+        let response = run_past_a_failure(&[("indep", "1 + 1"), ("mine", "42")], "indep").await;
+        assert!(!response.ok, "the wait must not conclude: {response:?}");
+        assert_eq!(response.code, Some(IpcErrorCode::Timeout));
+    }
+
+    /// The positive control for the test above: the same harness does
+    /// conclude when the failed cell is one the target consumes, so the
+    /// timeout there is the dependency check speaking, not a harness that
+    /// cannot observe a verdict.
+    #[tokio::test]
+    async fn run_wait_concludes_on_a_dependency_failure() {
+        let response = run_past_a_failure(&[("dep", "1 + 1"), ("mine", "cell0 * 2")], "dep").await;
+        assert!(response.ok, "{response:?}");
+        let data = response.data.unwrap();
+        assert_eq!(data["status"], "prerequisite_failed");
+        assert_eq!(data["cell_id"], "dep");
     }
 
     #[test]
