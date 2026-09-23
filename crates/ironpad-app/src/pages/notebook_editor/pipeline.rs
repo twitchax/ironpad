@@ -224,24 +224,29 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
         // flight, the request MERGES into it (`merged_run_queue`) — the
         // queue owns execution, and this cell waits its turn.
         {
-            let cells = state.cells.get_untracked();
-            let outputs = state.cell_outputs.get_untracked();
             let sources = state.current_cell_sources();
-            let unexecuted = crate::components::executor::unexecuted_dependencies(
-                &cells,
-                &cid,
-                &outputs,
-                |id| sources.get(id).cloned(),
-            );
-            let queue = state.run_all_queue.get_untracked();
-            let front_is_me = queue.first().is_some_and(|id| *id == cid);
-
-            // Direct run only when nothing needs to cascade AND no other
-            // cell holds the queue (front-is-me is the queue dispatching us).
-            if !unexecuted.is_empty() || (!queue.is_empty() && !front_is_me) {
-                state
-                    .run_all_queue
-                    .set(merged_run_queue(&cells, &queue, &unexecuted, &cid));
+            // Borrowed, not cloned: the helpers take slices and maps. The
+            // queue write happens after every borrow is released.
+            let cascaded = state.cells.with_untracked(|cells| {
+                let unexecuted = state.cell_outputs.with_untracked(|outputs| {
+                    crate::components::executor::unexecuted_dependencies(
+                        cells,
+                        &cid,
+                        outputs,
+                        |id| sources.get(id).cloned(),
+                    )
+                });
+                state.run_all_queue.with_untracked(|queue| {
+                    let front_is_me = queue.first().is_some_and(|id| *id == cid);
+                    // Direct run only when nothing needs to cascade AND no
+                    // other cell holds the queue (front-is-me is the queue
+                    // dispatching us).
+                    (!unexecuted.is_empty() || (!queue.is_empty() && !front_is_me))
+                        .then(|| merged_run_queue(cells, queue, &unexecuted, &cid))
+                })
+            });
+            if let Some(queue) = cascaded {
+                state.run_all_queue.set(queue);
                 return;
             }
         }
@@ -253,12 +258,12 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
         // Collect previous cell outputs for the I/O pipeline — the one
         // shared recipe (`assemble_cell_inputs`): positional slots, empty
         // for markdown/unexecuted, types feeding the cache key.
-        let (input_bytes, previous_cell_types) = {
-            let cells = state.cells.get_untracked();
+        let (input_bytes, previous_cell_types) = state.cells.with_untracked(|cells| {
             let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-            let outputs = state.cell_outputs.get_untracked();
-            crate::components::executor::assemble_cell_inputs(&cells, my_idx, &outputs)
-        };
+            state.cell_outputs.with_untracked(|outputs| {
+                crate::components::executor::assemble_cell_inputs(cells, my_idx, outputs)
+            })
+        });
 
         // Used inside #[cfg(feature = "hydrate")] below.
         let _ = &input_bytes;
@@ -273,8 +278,9 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
 
         // Invalidate downstream Code cells' cached outputs (this cell and all after it).
         {
-            let cells = state.cells.get_untracked();
-            let downstream_ids = downstream_code_ids(&cells, &cid);
+            let downstream_ids = state
+                .cells
+                .with_untracked(|cells| downstream_code_ids(cells, &cid));
             state.cell_outputs.update(|map| {
                 for id in &downstream_ids {
                     map.remove(id);
@@ -773,13 +779,17 @@ fn dispatch_live_check_with_retries(
     let previous_cell_types: Vec<String> = if shared {
         vec![]
     } else {
-        let cells = state.cells.get_untracked();
-        let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-        let outputs = state.cell_outputs.get_untracked();
         // THE shared projection — same vector the compile path scaffolds and
         // cache-keys from (`assemble_cell_inputs`), so a check never forks
-        // its scaffold or cache key from the eventual compile.
-        let types = crate::components::executor::previous_cell_types(&cells, my_idx, &outputs);
+        // its scaffold or cache key from the eventual compile. Borrowed: this
+        // runs on every 1s typing debounce, and cloning the cells and every
+        // output's bytes to read type tags was the recurring cost here.
+        let types = state.cells.with_untracked(|cells| {
+            let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+            state.cell_outputs.with_untracked(|outputs| {
+                crate::components::executor::previous_cell_types(cells, my_idx, outputs)
+            })
+        });
         // The shared detection recipe (PRD-0060): handles slots >= 10 and
         // the `last` alias, which the old 0..10 substring scan missed.
         let refs = ironpad_common::cell_deps::referenced_slots(&current_source);
