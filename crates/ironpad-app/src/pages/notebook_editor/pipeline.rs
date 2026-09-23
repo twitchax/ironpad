@@ -41,7 +41,7 @@ pub(super) struct CellRunCtx {
     pub(super) cell_type: CellType,
     pub(super) is_shared: Signal<bool>,
     pub(super) cell_status: RwSignal<CellStatus>,
-    pub(super) last_compile: RwSignal<Option<CompileResponse>>,
+    pub(super) last_compile: RwSignal<Option<CompileSummary>>,
     pub(super) compile_time_ms: RwSignal<Option<f64>>,
     pub(super) execution_result: RwSignal<Option<ExecutionResult>>,
     pub(super) source: RwSignal<String>,
@@ -79,6 +79,30 @@ impl CellRunCtx {
                 cell_id: dep,
                 blocked_by: failed_cell_id.to_string(),
             });
+        }
+    }
+}
+
+// ── Compile summary ─────────────────────────────────────────────────────────
+
+/// What a cell keeps of its last compile: everything its readers use (the
+/// inline markers, the "Compiled (… KB" line, the error panel) and never the
+/// wasm blob itself. Holding the whole `CompileResponse` kept a copy of every
+/// cell's blob (often 1 MB or more for rayon/simd cells) resident for the
+/// page's lifetime, and cloned it again on each panel render.
+#[derive(Clone, Debug)]
+pub(super) struct CompileSummary {
+    pub(super) diagnostics: Vec<Diagnostic>,
+    pub(super) blob_len: usize,
+    pub(super) cached: bool,
+}
+
+impl From<&CompileResponse> for CompileSummary {
+    fn from(response: &CompileResponse) -> Self {
+        Self {
+            diagnostics: response.diagnostics.clone(),
+            blob_len: response.wasm_blob.len(),
+            cached: response.cached,
         }
     }
 }
@@ -377,7 +401,7 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                             )
                             .await;
 
-                            last_compile.set(Some(response.clone()));
+                            last_compile.set(Some(CompileSummary::from(&response)));
 
                             let exec_err = match run_flow::load_and_execute(
                                 &cell_id_for_exec,
@@ -509,7 +533,7 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         #[cfg(not(feature = "hydrate"))]
                         {
                             cell_status.set(CellStatus::Success);
-                            last_compile.set(Some(response));
+                            last_compile.set(Some(CompileSummary::from(&response)));
 
                             // Clear stale flag on successful execution (SSR path).
                             state.cell_stale.update(|stale| {
@@ -530,7 +554,7 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         }
                     } else {
                         cell_status.set(CellStatus::Error);
-                        last_compile.set(Some(response));
+                        last_compile.set(Some(CompileSummary::from(&response)));
 
                         // Drop + report is one act (`fail_and_report`).
                         ctx.fail_and_report(&cell_id_for_exec);
@@ -549,12 +573,10 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                         diagnostics: diagnostics.clone(),
                         success: false,
                     });
-                    last_compile.set(Some(CompileResponse {
-                        wasm_blob: vec![],
+                    last_compile.set(Some(CompileSummary {
                         diagnostics,
+                        blob_len: 0,
                         cached: false,
-                        preamble_lines: 0,
-                        js_glue: None,
                     }));
 
                     // Drop + report is one act (`fail_and_report`).
@@ -955,6 +977,32 @@ mod tests {
         assert_eq!(
             merged_run_queue(&cells, &ids(&["a", "b"]), &[], "x"),
             ids(&["a", "x", "b"])
+        );
+    }
+
+    #[test]
+    fn compile_summary_keeps_what_the_panels_read_and_drops_the_blob() {
+        let response = CompileResponse {
+            wasm_blob: vec![0; 1234],
+            diagnostics: vec![Diagnostic {
+                message: "unused variable".to_string(),
+                severity: Severity::Warning,
+                spans: vec![],
+                code: Some("unused_variables".to_string()),
+            }],
+            cached: true,
+            preamble_lines: 7,
+            js_glue: Some("glue".to_string()),
+        };
+        let summary = CompileSummary::from(&response);
+        assert_eq!(summary.blob_len, response.wasm_blob.len());
+        assert!(summary.cached);
+        assert_eq!(summary.diagnostics.len(), 1);
+        assert_eq!(summary.diagnostics[0].message, "unused variable");
+        assert_eq!(summary.diagnostics[0].severity, Severity::Warning);
+        assert_eq!(
+            summary.diagnostics[0].code.as_deref(),
+            Some("unused_variables")
         );
     }
 

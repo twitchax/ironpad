@@ -1,7 +1,7 @@
 use crate::components::icon::{Chevron, Icon, IconLabel};
 use crate::components::icons;
 use ironpad_common::protocol::CellPatch;
-use ironpad_common::{CellManifest, CellType, CompileResponse, Diagnostic, ExecutionResult};
+use ironpad_common::{CellManifest, CellType, Diagnostic, ExecutionResult};
 use leptos::prelude::*;
 
 use crate::components::markdown_cell::MarkdownCell;
@@ -9,7 +9,7 @@ use crate::components::monaco_editor::{MonacoEditor, MonacoEditorHandle};
 use crate::model::NotebookModel;
 
 use super::cell_output::{CellOutputPanel, CompileResultPanel};
-use super::pipeline;
+use super::pipeline::{self, CompileSummary};
 use super::state::{persist_notebook, CellStatus, NotebookState};
 
 // ── Cell item ───────────────────────────────────────────────────────────────
@@ -81,7 +81,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── Cell status & compile result ────────────────────────────────────
 
     let cell_status = RwSignal::new(CellStatus::Idle);
-    let last_compile: RwSignal<Option<CompileResponse>> = RwSignal::new(None);
+    let last_compile: RwSignal<Option<CompileSummary>> = RwSignal::new(None);
     // Live check-on-type (PRD-0045): latest check diagnostics and a
     // generation counter so superseded responses are discarded.
     let last_check: RwSignal<Option<Vec<Diagnostic>>> = RwSignal::new(None);
@@ -663,24 +663,28 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     #[cfg(feature = "hydrate")]
     {
         Effect::new(move || {
-            // `try_get` (not `get`): this marker effect can be queued by a
+            // `try_with` (not `with`): this marker effect can be queued by a
             // compile result and then run during the cell's disposal teardown,
             // when the signal's arena slot is already reclaimed. Bail on the
             // disposed slot rather than panic (traits.rs "already been disposed").
-            let Some(compile) = last_compile.try_get() else {
+            let Some(markers) = last_compile.try_with(|compile| {
+                compile
+                    .as_ref()
+                    .map(|summary| pipeline::diagnostics_to_markers(&summary.diagnostics))
+            }) else {
                 return;
             };
             let Some(handle) = source_handle.get_untracked() else {
                 return;
             };
 
-            let Some(response) = compile else {
+            let Some(markers) = markers else {
                 // Compile was cleared (e.g. new compile started); markers
                 // already cleared by the compile-start code above.
                 return;
             };
 
-            handle.set_markers(&pipeline::diagnostics_to_markers(&response.diagnostics));
+            handle.set_markers(&markers);
         });
 
         // Live check-on-type markers (PRD-0045). Compile and check results

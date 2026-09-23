@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::components::icon::{Chevron, IconLabel};
 use crate::components::icons;
-use ironpad_common::{CellManifest, CompileResponse, Diagnostic, ExecutionResult, Severity};
+use ironpad_common::{CellManifest, Diagnostic, ExecutionResult, Severity};
 use leptos::prelude::*;
 
 use crate::components::error_panel::ErrorPanel;
@@ -10,6 +10,7 @@ use crate::components::output_render::{
     render_display_panel, DisplayPanel, PanelMode, WidgetSink, EDITOR_PANEL_CLASSES,
 };
 
+use super::pipeline::CompileSummary;
 use super::state::{CellOutputData, CellStatus};
 
 // ── Compile result panel ─────────────────────────────────────────────────────
@@ -22,7 +23,7 @@ use super::state::{CellOutputData, CellStatus};
 #[component]
 pub(super) fn CompileResultPanel(
     cell_status: RwSignal<CellStatus>,
-    last_compile: RwSignal<Option<CompileResponse>>,
+    last_compile: RwSignal<Option<CompileSummary>>,
     compile_time_ms: RwSignal<Option<f64>>,
     execution_result: RwSignal<Option<ExecutionResult>>,
 ) -> impl IntoView {
@@ -35,22 +36,27 @@ pub(super) fn CompileResultPanel(
                 return view! { <div /> }.into_any();
             }
 
-            let Some(response) = last_compile.get() else {
-                return view! { <div /> }.into_any();
-            };
-
             match status {
                 CellStatus::Success => {
-                    let blob_size = response.wasm_blob.len();
-                    let cached = response.cached;
+                    // Borrowed: only the scalars and the warnings are needed,
+                    // never a clone of the whole summary or execution result.
+                    let Some((blob_size, cached, warnings)) = last_compile.with(|compile| {
+                        compile.as_ref().map(|summary| {
+                            let warnings: Vec<Diagnostic> = summary
+                                .diagnostics
+                                .iter()
+                                .filter(|d| d.severity == Severity::Warning)
+                                .cloned()
+                                .collect();
+                            (summary.blob_len, summary.cached, warnings)
+                        })
+                    }) else {
+                        return view! { <div /> }.into_any();
+                    };
                     let time = compile_time_ms.get().unwrap_or(0.0);
-                    let warnings: Vec<Diagnostic> = response
-                        .diagnostics
-                        .into_iter()
-                        .filter(|d| d.severity == Severity::Warning)
-                        .collect();
 
-                    let runtime_ms = execution_result.get().map(|r| r.execution_time_ms);
+                    let runtime_ms = execution_result
+                        .with(|result| result.as_ref().map(|r| r.execution_time_ms));
 
                     // Precision loss acceptable for display sizing.
                     #[allow(clippy::cast_precision_loss)]
@@ -81,7 +87,11 @@ pub(super) fn CompileResultPanel(
                 }
 
                 CellStatus::Error => {
-                    let diagnostics = response.diagnostics.clone();
+                    let Some(diagnostics) = last_compile
+                        .with(|compile| compile.as_ref().map(|summary| summary.diagnostics.clone()))
+                    else {
+                        return view! { <div /> }.into_any();
+                    };
 
                     view! {
                         <ErrorPanel diagnostics=diagnostics />
@@ -151,28 +161,40 @@ pub(super) fn CellOutputPanel(
 
     view! {
         {move || {
-            let Some(result) = execution_result.get() else {
+            let collapsed = output_collapsed.get();
+            // Everything the panel shows, read through a borrow: cloning the
+            // result (and its output bytes, twice more) on every render,
+            // including each collapse toggle, bought nothing. The hex dump
+            // is formatted here, and only when the body is showing it.
+            let Some((time_ms, byte_count, ran_on_main_thread, panels, hex)) =
+                execution_result.with(|result| {
+                    result.as_ref().map(|result| {
+                        // Parse display panels from JSON, with backward-compat fallback.
+                        let panels: Vec<DisplayPanel> = match &result.display_text {
+                            Some(json) => serde_json::from_str(json).unwrap_or_else(|_| {
+                                vec![DisplayPanel::Text(json.clone())]
+                            }),
+                            None => vec![],
+                        };
+                        let hex = (!collapsed && !result.output_bytes.is_empty())
+                            .then(|| format_hex_dump(&result.output_bytes));
+                        (
+                            result.execution_time_ms,
+                            result.output_bytes.len(),
+                            result.ran_on_main_thread,
+                            panels,
+                            hex,
+                        )
+                    })
+                })
+            else {
                 return view! { <div /> }.into_any();
             };
 
-
-            let panel_class = if output_collapsed.get() {
+            let panel_class = if collapsed {
                 "ironpad-output-panel ironpad-output-panel--collapsed"
             } else {
                 "ironpad-output-panel"
-            };
-
-            let time_ms = result.execution_time_ms;
-            let byte_count = result.output_bytes.len();
-            let ran_on_main_thread = result.ran_on_main_thread;
-            let output_bytes = result.output_bytes.clone();
-
-            // Parse display panels from JSON, with backward-compat fallback.
-            let panels: Vec<DisplayPanel> = match &result.display_text {
-                Some(json) => serde_json::from_str(json).unwrap_or_else(|_| {
-                    vec![DisplayPanel::Text(json.clone())]
-                }),
-                None => vec![],
             };
 
             view! {
@@ -200,11 +222,9 @@ pub(super) fn CellOutputPanel(
                         }}
                     </div>
 
-                    {if output_collapsed.get_untracked() {
+                    {if collapsed {
                         view! { <div /> }.into_any()
                     } else {
-                        let output_bytes = output_bytes.clone();
-
                         view! {
                             <div class="ironpad-output-body">
                                 // Display panels section (shared with the read-only viewer).
@@ -213,10 +233,7 @@ pub(super) fn CellOutputPanel(
                                 }).collect::<Vec<_>>()}
 
                                 // Raw bytes hex dump section.
-                                {if output_bytes.is_empty() {
-                                    view! { <div /> }.into_any()
-                                } else {
-                                    let hex = format_hex_dump(&output_bytes);
+                                {if let Some(hex) = hex {
                                     view! {
                                         <details class="ironpad-output-bytes">
                                             <summary class="ironpad-output-bytes-header">
@@ -225,6 +242,8 @@ pub(super) fn CellOutputPanel(
                                             <pre class="ironpad-output-hex-dump">{hex}</pre>
                                         </details>
                                     }.into_any()
+                                } else {
+                                    view! { <div /> }.into_any()
                                 }}
                             </div>
                         }.into_any()
