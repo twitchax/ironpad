@@ -134,11 +134,12 @@ pub(super) fn CellOutputPanel(
                 cell_outputs,
                 run_all_queue,
                 cells: Signal::derive(move || {
-                    cells
-                        .get()
-                        .iter()
-                        .map(|c| (c.id.clone(), c.is_runnable()))
-                        .collect()
+                    cells.with(|cells| {
+                        cells
+                            .iter()
+                            .map(|c| (c.id.clone(), c.is_runnable()))
+                            .collect()
+                    })
                 }),
                 cell_stale: Some(cell_stale),
             })

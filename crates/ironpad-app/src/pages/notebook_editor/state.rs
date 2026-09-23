@@ -144,6 +144,12 @@ pub(crate) struct NotebookState {
     /// Per-cell output data from the last execution, keyed by cell ID.
     /// Used to pipe cell N's output as cell N+1's input.
     pub(super) cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
+    /// Each executed cell's output type tag ([`type_tags_of`] over
+    /// `cell_outputs`). A memo so readers that only need tags (the per-cell
+    /// autocomplete context) re-run when a TAG changes, not on every
+    /// byte-only write: a widget drag rewrites its cell's output bytes on
+    /// each input event.
+    pub(super) type_tags: Memo<HashMap<String, String>>,
     /// Triggers all cells to immediately flush their content to the server.
     // Used in cell_item.rs under #[cfg(feature = "hydrate")]; appears dead during SSR.
     #[allow(dead_code)]
@@ -221,6 +227,15 @@ pub(crate) struct NotebookState {
     /// context itself. `Toaster` is `Copy` and app-root-owned, which is what
     /// makes dispatching from a post-await continuation disposal-safe.
     pub(super) toaster: Toaster,
+}
+
+/// Each executed cell's output type tag, keyed by cell id; outputs with no
+/// tag are skipped. The projection behind [`NotebookState::type_tags`].
+pub(super) fn type_tags_of(outputs: &HashMap<String, CellOutputData>) -> HashMap<String, String> {
+    outputs
+        .iter()
+        .filter_map(|(id, data)| data.type_tag.clone().map(|tag| (id.clone(), tag)))
+        .collect()
 }
 
 // ── Cell flush (PRD-0032 T-007) ─────────────────────────────────────────────
@@ -893,6 +908,43 @@ mod tests {
     fn draft_save_states_are_distinct() {
         assert_ne!(DraftSaveState::Refused, DraftSaveState::Failed);
         assert_ne!(DraftSaveState::Refused, DraftSaveState::Synced);
+    }
+
+    #[test]
+    fn type_tags_skip_untagged_outputs() {
+        let outputs: HashMap<String, CellOutputData> = [
+            (
+                "tagged",
+                CellOutputData {
+                    bytes: vec![1, 2, 3],
+                    type_tag: Some("u32".to_string()),
+                },
+            ),
+            ("untagged", CellOutputData::default()),
+        ]
+        .into_iter()
+        .map(|(id, data)| (id.to_string(), data))
+        .collect();
+        assert_eq!(
+            type_tags_of(&outputs),
+            HashMap::from([("tagged".to_string(), "u32".to_string())])
+        );
+    }
+
+    #[test]
+    fn type_tags_ignore_output_bytes() {
+        // The memo's point: a byte-only rewrite (a widget drag) projects to
+        // an EQUAL map, so Memo equality stops it re-running every reader.
+        let before = HashMap::from([(
+            "w".to_string(),
+            CellOutputData {
+                bytes: vec![0],
+                type_tag: Some("f64".to_string()),
+            },
+        )]);
+        let mut after = before.clone();
+        after.get_mut("w").expect("seeded").bytes = vec![9, 9, 9];
+        assert_eq!(type_tags_of(&before), type_tags_of(&after));
     }
 
     #[test]

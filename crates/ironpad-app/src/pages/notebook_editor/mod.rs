@@ -116,13 +116,15 @@ pub fn NotebookEditor(
 ) -> impl IntoView {
     // Set up notebook-level reactive state.
 
+    let cell_outputs = RwSignal::new(HashMap::new());
     let state = NotebookState {
         notebook: RwSignal::new(None),
         notebook_id: RwSignal::new(notebook_id.clone()),
         cells: RwSignal::new(Vec::new()),
         active_cell: RwSignal::new(None),
         pending_focus_cell: RwSignal::new(None),
-        cell_outputs: RwSignal::new(HashMap::new()),
+        cell_outputs,
+        type_tags: Memo::new(move |_| cell_outputs.with(state::type_tags_of)),
         save_generation: RwSignal::new(0),
         run_all_queue: RwSignal::new(Vec::new()),
         shared_cargo_toml: RwSignal::new(None),

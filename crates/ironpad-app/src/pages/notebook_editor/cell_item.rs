@@ -378,10 +378,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_queue = StoredValue::new(cell.id.clone());
 
     Effect::new(move || {
-        let queue = state.run_all_queue.get();
         let cid = cell_id_for_queue.get_value();
-
-        let my_pos = queue.iter().position(|id| id == &cid);
+        // Borrowed, and released before the match: the `Some(0)` arm writes
+        // the queue (`advance_queue`), which a live borrow would forbid.
+        let my_pos = state
+            .run_all_queue
+            .with(|queue| queue.iter().position(|id| *id == cid));
 
         match my_pos {
             Some(0) => {
@@ -430,9 +432,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let cell_id_for_blocked = StoredValue::new(cell.id.clone());
 
     Effect::new(move || {
-        let blocked = state.cell_blocked_by.get();
         let cid = cell_id_for_blocked.get_value();
-        if blocked.contains_key(&cid) {
+        if state
+            .cell_blocked_by
+            .with(|blocked| blocked.contains_key(&cid))
+        {
             cell_status.set(CellStatus::Blocked);
         } else if cell_status.get_untracked() == CellStatus::Blocked {
             cell_status.set(CellStatus::Idle);
@@ -616,7 +620,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── Autocomplete context ────────────────────────────────────────────
     //
     // Push cell variable context to the Monaco completion provider whenever
-    // the editor handle appears or cell outputs change (types may update).
+    // the editor handle appears or an output type tag changes.
 
     #[cfg(feature = "hydrate")]
     {
@@ -630,87 +634,16 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 return;
             };
 
-            // Re-run when cell_outputs change (new type_tags after execution).
-            let outputs = state.cell_outputs.get();
-            let cells = state.cells.get_untracked();
+            // Re-run when a type tag changes (new outputs after execution).
+            // The tags memo, not `cell_outputs`: every byte-only write (a
+            // widget drag) used to deep-clone the whole outputs map in every
+            // cell just to rebuild an identical context.
             let cid = cell_id_for_ctx.get_value();
-            let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-
-            let variables = js_sys::Array::new();
-
-            // Piping slots are POSITIONAL over every preceding cell (markdown
-            // included, as an empty slot) — the scaffold binds `cellN` by
-            // index into that full vector. Enumerate all preceding cells and
-            // only SUGGEST the Code ones, so `cellN` matches the actual
-            // binding: numbering by code-cell-only index offered the wrong
-            // name (and type) in any notebook opening with a markdown cell.
-            for (i, c) in cells[..my_idx].iter().enumerate() {
-                if c.cell_type != CellType::Code {
-                    continue;
-                }
-                let type_str = outputs
-                    .get(&c.id)
-                    .and_then(|d| d.type_tag.as_deref())
-                    .unwrap_or("unknown");
-
-                let var = js_sys::Object::new();
-                let _ = js_sys::Reflect::set(
-                    &var,
-                    &wasm_bindgen::JsValue::from_str("name"),
-                    &wasm_bindgen::JsValue::from_str(&format!("cell{i}")),
-                );
-                let _ = js_sys::Reflect::set(
-                    &var,
-                    &wasm_bindgen::JsValue::from_str("type"),
-                    &wasm_bindgen::JsValue::from_str(type_str),
-                );
-                let _ = js_sys::Reflect::set(
-                    &var,
-                    &wasm_bindgen::JsValue::from_str("doc"),
-                    &wasm_bindgen::JsValue::from_str(&format!(
-                        "Output of cell {} ({})",
-                        c.label, type_str
-                    )),
-                );
-                variables.push(&var);
-            }
-
-            // Add `last` alias pointing to the most recent typed Code cell.
-            let has_prev_code = cells[..my_idx]
-                .iter()
-                .any(|c| c.cell_type == CellType::Code);
-            if has_prev_code {
-                // Walk backwards to find the most recent Code cell with a type_tag.
-                let last_type = cells[..my_idx]
-                    .iter()
-                    .rev()
-                    .filter(|c| c.cell_type == CellType::Code)
-                    .find_map(|c| {
-                        outputs
-                            .get(&c.id)
-                            .and_then(|d| d.type_tag.as_deref())
-                            .map(ToString::to_string)
-                    })
-                    .unwrap_or_else(|| "unknown".to_string());
-
-                let var = js_sys::Object::new();
-                let _ = js_sys::Reflect::set(
-                    &var,
-                    &wasm_bindgen::JsValue::from_str("name"),
-                    &wasm_bindgen::JsValue::from_str("last"),
-                );
-                let _ = js_sys::Reflect::set(
-                    &var,
-                    &wasm_bindgen::JsValue::from_str("type"),
-                    &wasm_bindgen::JsValue::from_str(&last_type),
-                );
-                let _ = js_sys::Reflect::set(
-                    &var,
-                    &wasm_bindgen::JsValue::from_str("doc"),
-                    &wasm_bindgen::JsValue::from_str("Output of the most recent cell"),
-                );
-                variables.push(&var);
-            }
+            let variables = state.type_tags.with(|tags| {
+                state
+                    .cells
+                    .with_untracked(|cells| completion_variables(cells, tags, &cid))
+            });
 
             let context = js_sys::Object::new();
             let _ = js_sys::Reflect::set(
@@ -1133,10 +1066,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         if !runs_in_editor || is_shared.get() {
                             return view! { <span /> }.into_any();
                         }
-                        let is_stale = state.cell_stale.get()
-                            .get(&cell_id_for_stale_header)
-                            .copied()
-                            .unwrap_or(false);
+                        let is_stale = state.cell_stale.with(|stale| {
+                            stale.get(&cell_id_for_stale_header).copied().unwrap_or(false)
+                        });
                         if is_stale && state.reactive_mode.get() {
                             view! { <span class="ironpad-stale-indicator ironpad-stale-indicator--pending" title="Pending re-execution (reactive mode)"><Icon icon=icons::PENDING/></span> }.into_any()
                         } else if is_stale {
@@ -1524,6 +1456,83 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// The Monaco completion variables for the cell `cell_id`: a `cellN` entry
+/// per preceding Code cell and a `last` alias, typed from the output tags.
+#[cfg(feature = "hydrate")]
+fn completion_variables(
+    cells: &[CellManifest],
+    tags: &std::collections::HashMap<String, String>,
+    cell_id: &str,
+) -> js_sys::Array {
+    let my_idx = cells.iter().position(|c| c.id == cell_id).unwrap_or(0);
+    let variables = js_sys::Array::new();
+
+    // Piping slots are POSITIONAL over every preceding cell (markdown
+    // included, as an empty slot) — the scaffold binds `cellN` by
+    // index into that full vector. Enumerate all preceding cells and
+    // only SUGGEST the Code ones, so `cellN` matches the actual
+    // binding: numbering by code-cell-only index offered the wrong
+    // name (and type) in any notebook opening with a markdown cell.
+    for (i, c) in cells[..my_idx].iter().enumerate() {
+        if c.cell_type != CellType::Code {
+            continue;
+        }
+        let type_str = tags.get(&c.id).map_or("unknown", String::as_str);
+
+        let var = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &var,
+            &wasm_bindgen::JsValue::from_str("name"),
+            &wasm_bindgen::JsValue::from_str(&format!("cell{i}")),
+        );
+        let _ = js_sys::Reflect::set(
+            &var,
+            &wasm_bindgen::JsValue::from_str("type"),
+            &wasm_bindgen::JsValue::from_str(type_str),
+        );
+        let _ = js_sys::Reflect::set(
+            &var,
+            &wasm_bindgen::JsValue::from_str("doc"),
+            &wasm_bindgen::JsValue::from_str(&format!("Output of cell {} ({})", c.label, type_str)),
+        );
+        variables.push(&var);
+    }
+
+    // Add `last` alias pointing to the most recent typed Code cell.
+    let has_prev_code = cells[..my_idx]
+        .iter()
+        .any(|c| c.cell_type == CellType::Code);
+    if has_prev_code {
+        // Walk backwards to find the most recent Code cell with a type_tag.
+        let last_type = cells[..my_idx]
+            .iter()
+            .rev()
+            .filter(|c| c.cell_type == CellType::Code)
+            .find_map(|c| tags.get(&c.id))
+            .map_or("unknown", String::as_str);
+
+        let var = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &var,
+            &wasm_bindgen::JsValue::from_str("name"),
+            &wasm_bindgen::JsValue::from_str("last"),
+        );
+        let _ = js_sys::Reflect::set(
+            &var,
+            &wasm_bindgen::JsValue::from_str("type"),
+            &wasm_bindgen::JsValue::from_str(last_type),
+        );
+        let _ = js_sys::Reflect::set(
+            &var,
+            &wasm_bindgen::JsValue::from_str("doc"),
+            &wasm_bindgen::JsValue::from_str("Output of the most recent cell"),
+        );
+        variables.push(&var);
+    }
+
+    variables
+}
 
 /// Pull the model's `latest` text into one editor pane: the Monaco buffer the
 /// host sees and the signal the run pipeline compiles from. Each is written
