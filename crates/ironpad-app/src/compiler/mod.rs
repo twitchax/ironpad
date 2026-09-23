@@ -11,10 +11,15 @@ pub mod toolchain;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// The workspace session every server compile and check scaffolds and builds
+/// under: `{cache}/workspaces/{WORKSPACE_SESSION}/{cell_id}` for the scaffold,
+/// `{cache}/targets/{WORKSPACE_SESSION}` for the shared target dir.
+pub const WORKSPACE_SESSION: &str = "default";
+
 /// Serializes concurrent compiles that share a cell id.
 ///
-/// Each cell scaffolds into `{cache}/workspaces/default/{cell_id}`, a path keyed
-/// only by `cell_id`. Two requests with the same id (the same notebook in two
+/// Each cell scaffolds into `{cache}/workspaces/{WORKSPACE_SESSION}/{cell_id}`
+/// (see [`WORKSPACE_SESSION`]), a path keyed only by `cell_id`. Two requests with the same id (the same notebook in two
 /// tabs, or an attacker-chosen id colliding with a victim's) would otherwise
 /// race: one overwrites the other's scaffolded source, and the loser builds the
 /// wrong source and caches it under its *own* content hash — cache poisoning.

@@ -91,6 +91,65 @@ fn reject_uncompilable_cell_type(
     )))
 }
 
+/// Validate a compile request and derive what it builds: the prologue shared
+/// by [`compile_cell_core`] and [`check_cell_core`], so a new validation lands
+/// in both or neither.
+///
+/// The one place the request's cell type becomes a compile target, via
+/// `CellTarget::from`. Derived once and threaded through hashing, scaffold and
+/// build so those three can never disagree about what is being built (a cache
+/// key computed for one target and a binary produced for another is a blob
+/// that silently serves the wrong artifact). Uncompilable types are rejected
+/// BEFORE the mapping, which is total, so nothing after it could tell a cell
+/// type it does not understand from an ordinary one.
+#[cfg(feature = "ssr")]
+fn prepare_cell(request: &CompileRequest) -> Result<(CellTarget, CellFeatures), ServerFnError> {
+    reject_uncompilable_cell_type(request.cell_type)?;
+    let target = CellTarget::from(request.cell_type);
+
+    // Validate the cell_id before it touches the filesystem or Cargo.toml: it is
+    // joined into cache paths and interpolated into `name = "cell-{id}"`, so an
+    // unvalidated id can traverse directories (`../`) or inject manifest keys.
+    if !crate::compiler::scaffold::is_valid_cell_id(&request.cell_id) {
+        return Err(ServerFnError::new(format!(
+            "invalid cell_id {:?}: expected 1-64 chars of [A-Za-z0-9_-]",
+            request.cell_id
+        )));
+    }
+
+    // A pure function of the inputs (no I/O), so both cores can derive it
+    // before any lock or filesystem work.
+    let features = CellFeatures::detect(
+        &request.source,
+        &request.cargo_toml,
+        request.shared_cargo_toml.as_deref(),
+        request.shared_source.as_deref(),
+    );
+    Ok((target, features))
+}
+
+/// Scaffold the request's micro-crate into the shared workspace session.
+#[cfg(feature = "ssr")]
+fn scaffold_request(
+    config: &ironpad_common::AppConfig,
+    request: &CompileRequest,
+    target: CellTarget,
+) -> Result<crate::compiler::scaffold::Scaffolded, ServerFnError> {
+    crate::compiler::scaffold::scaffold_micro_crate(
+        &config.cache_dir,
+        &config.ironpad_cell_path,
+        crate::compiler::WORKSPACE_SESSION,
+        &request.cell_id,
+        &request.source,
+        &request.cargo_toml,
+        &request.previous_cell_types,
+        request.shared_cargo_toml.as_deref(),
+        request.shared_source.as_deref(),
+        target,
+    )
+    .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))
+}
+
 /// Compile a single cell's Rust source into a WASM blob.
 ///
 /// Ties together the full compilation pipeline: cache check → scaffold →
@@ -131,35 +190,18 @@ async fn compile_cell_core(
     client_ip: &str,
     request: CompileRequest,
 ) -> Result<CompileResponse, ServerFnError> {
-    // Reject what this build cannot compile BEFORE deriving a target: the
-    // mapping below is total, so nothing after this line can tell a cell type
-    // it does not understand from an ordinary one.
-    reject_uncompilable_cell_type(request.cell_type)?;
-    // The one place the request's cell type becomes a compile target, via
-    // `CellTarget::from`. Derived once and threaded through hashing, scaffold
-    // and build so those three can never disagree about what is being built
-    // (a cache key computed for one target and a binary produced for another
-    // is a blob that silently serves the wrong artifact).
-    let target = CellTarget::from(request.cell_type);
     use crate::compiler::{
         build::{build_micro_crate, BuildResult},
         cache::{content_hash, store_blob, try_cache_hit},
         diagnostics::parse_diagnostics,
         optimize::optimize_wasm,
-        scaffold::{scaffold_micro_crate, Scaffolded},
+        scaffold::Scaffolded,
+        WORKSPACE_SESSION,
     };
 
-    let session_id = "default";
-
-    // Validate the cell_id before it touches the filesystem or Cargo.toml: it is
-    // joined into cache paths and interpolated into `name = "cell-{id}"`, so an
-    // unvalidated id can traverse directories (`../`) or inject manifest keys.
-    if !crate::compiler::scaffold::is_valid_cell_id(&request.cell_id) {
-        return Err(ServerFnError::new(format!(
-            "invalid cell_id {:?}: expected 1-64 chars of [A-Za-z0-9_-]",
-            request.cell_id
-        )));
-    }
+    // Validated before the lock: a request that can never compile must not
+    // queue behind (or hold up) a real one.
+    let (target, features) = prepare_cell(&request)?;
 
     // Serialize concurrent compiles of the same cell so their shared scaffold
     // dir can't be overwritten mid-build (which would cache one source's output
@@ -172,18 +214,11 @@ async fn compile_cell_core(
     )
     .await;
 
-    // The feature set is a pure function of the inputs (no I/O), so the cache
-    // key can be derived before scaffolding. Scaffolding writes Cargo.toml +
-    // lib.rs (+ shared.rs) to disk, so defer it until a confirmed cache miss: a
-    // repeat compile of an unchanged cell (the common case, a hot path) hits
-    // the cache and must not pay those filesystem writes.
-    let features = CellFeatures::detect(
-        &request.source,
-        &request.cargo_toml,
-        request.shared_cargo_toml.as_deref(),
-        request.shared_source.as_deref(),
-    );
-
+    // The key is a pure function of the inputs (no I/O), so it can be derived
+    // before scaffolding. Scaffolding writes Cargo.toml + lib.rs (+ shared.rs)
+    // to disk, so defer it until a confirmed cache miss: a repeat compile of an
+    // unchanged cell (the common case, a hot path) hits the cache and must not
+    // pay those filesystem writes.
     let hash = content_hash(
         &request.source,
         &request.cargo_toml,
@@ -245,26 +280,14 @@ async fn compile_cell_core(
     let Scaffolded {
         crate_dir,
         preamble_lines,
-    } = scaffold_micro_crate(
-        &config.cache_dir,
-        &config.ironpad_cell_path,
-        session_id,
-        &request.cell_id,
-        &request.source,
-        &request.cargo_toml,
-        &request.previous_cell_types,
-        request.shared_cargo_toml.as_deref(),
-        request.shared_source.as_deref(),
-        target,
-    )
-    .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
+    } = scaffold_request(config, &request, target)?;
 
     // Build.
 
     let build_result = build_micro_crate(
         &crate_dir,
         &config.cache_dir,
-        session_id,
+        WORKSPACE_SESSION,
         &request.cell_id,
         config.compilation_proxy.as_deref(),
         target,
@@ -455,31 +478,15 @@ async fn check_cell_core(
     admission: &crate::compiler::admission::BuildAdmission,
     request: CompileRequest,
 ) -> Result<CheckResponse, ServerFnError> {
-    // Reject what this build cannot compile BEFORE deriving a target: the
-    // mapping below is total, so nothing after this line can tell a cell type
-    // it does not understand from an ordinary one.
-    reject_uncompilable_cell_type(request.cell_type)?;
-    // The one place the request's cell type becomes a compile target, via
-    // `CellTarget::from`. Derived once and threaded through hashing, scaffold
-    // and build so those three can never disagree about what is being built
-    // (a cache key computed for one target and a binary produced for another
-    // is a blob that silently serves the wrong artifact).
-    let target = CellTarget::from(request.cell_type);
     use crate::compiler::{
         build::{check_micro_crate, CheckResult, CheckTimedOut},
         diagnostics::{parse_diagnostics, parse_shared_range_diagnostics},
-        scaffold::{scaffold_micro_crate, Scaffolded},
+        scaffold::Scaffolded,
+        WORKSPACE_SESSION,
     };
     use ironpad_common::CheckStatus;
 
-    let session_id = "default";
-
-    if !crate::compiler::scaffold::is_valid_cell_id(&request.cell_id) {
-        return Err(ServerFnError::new(format!(
-            "invalid cell_id {:?}: expected 1-64 chars of [A-Za-z0-9_-]",
-            request.cell_id
-        )));
-    }
+    let (target, features) = prepare_cell(&request)?;
 
     // Never queue a live check behind an in-flight compile (or another
     // check) of the same cell: skip and let the client try again after the
@@ -503,34 +510,15 @@ async fn check_cell_core(
         });
     };
 
-    let features = CellFeatures::detect(
-        &request.source,
-        &request.cargo_toml,
-        request.shared_cargo_toml.as_deref(),
-        request.shared_source.as_deref(),
-    );
-
     let Scaffolded {
         crate_dir,
         preamble_lines,
-    } = scaffold_micro_crate(
-        &config.cache_dir,
-        &config.ironpad_cell_path,
-        session_id,
-        &request.cell_id,
-        &request.source,
-        &request.cargo_toml,
-        &request.previous_cell_types,
-        request.shared_cargo_toml.as_deref(),
-        request.shared_source.as_deref(),
-        target,
-    )
-    .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))?;
+    } = scaffold_request(config, &request, target)?;
 
     let result = check_micro_crate(
         &crate_dir,
         &config.cache_dir,
-        session_id,
+        WORKSPACE_SESSION,
         &request.cell_id,
         config.compilation_proxy.as_deref(),
         target,
@@ -2632,6 +2620,54 @@ mod tests {
         }
     }
 
+    /// Both cores share one validation prologue (review compiler-2), so an
+    /// unsafe cell id is refused by each before it can reach a path join or
+    /// the generated manifest's `name = "cell-{id}"`.
+    #[tokio::test]
+    async fn both_cores_reject_an_unsafe_cell_id() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let cache = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_dir: cache.path().to_path_buf(),
+            cache_dir: cache.path().to_path_buf(),
+            port: 0,
+            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
+            compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
+            admin_login: None,
+            browserpod_key: None,
+        };
+        let request = || CompileRequest {
+            cell_id: "../x".to_string(),
+            ..admission_test_request("unused")
+        };
+        let locks = CompileLocks::default();
+        // Generous limits, so the id check is the only thing that can refuse.
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            4,
+            100.0,
+            100.0,
+            std::time::Duration::from_millis(50),
+        );
+
+        let compile = compile_cell_core(&config, &locks, &admission, "test", request())
+            .await
+            .expect_err("compile must refuse a traversing id");
+        assert!(compile.to_string().contains("invalid cell_id"), "{compile}");
+
+        let check = check_cell_core(&config, &locks, &admission, request())
+            .await
+            .expect_err("check must refuse a traversing id");
+        assert!(check.to_string().contains("invalid cell_id"), "{check}");
+
+        assert!(
+            !cache.path().join("workspaces").exists(),
+            "nothing may be scaffolded for a refused id"
+        );
+    }
+
     // ── compile_cell_core (cache-hit path) ───────────────────────────────
 
     #[tokio::test]
@@ -2703,12 +2739,12 @@ mod tests {
             "cached blob should round-trip"
         );
 
-        // The scaffold writes to {cache}/workspaces/default/{cell_id}; a cache
-        // hit must never create it.
+        // The scaffold writes to {cache}/workspaces/{WORKSPACE_SESSION}/{cell_id};
+        // a cache hit must never create it.
         let workspace = cache
             .path()
             .join("workspaces")
-            .join("default")
+            .join(crate::compiler::WORKSPACE_SESSION)
             .join(cell_id);
         assert!(
             !workspace.exists(),
