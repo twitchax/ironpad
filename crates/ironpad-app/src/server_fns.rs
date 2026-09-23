@@ -131,10 +131,10 @@ fn prepare_cell(request: &CompileRequest) -> Result<(CellTarget, CellFeatures), 
 /// Scaffold the request's micro-crate into the shared workspace session.
 ///
 /// The scaffold is synchronous filesystem work (canonicalize, directory
-/// creation, several writes), and it runs on every live-check debounce, so it goes to
-/// the blocking pool rather than parking a runtime worker. The owned copies
-/// that costs are cheaper than a stalled worker. (`block_in_place` is not an
-/// option: it panics on the current-thread runtimes the tests run on.)
+/// creation, several writes), and it runs on every live-check debounce, so it
+/// goes to the blocking pool rather than parking a runtime worker. The owned
+/// copies this costs are cheaper than a stalled worker. (`block_in_place` is
+/// not an option: it panics on the current-thread runtimes the tests run on.)
 #[cfg(feature = "ssr")]
 async fn scaffold_request(
     config: &ironpad_common::AppConfig,
