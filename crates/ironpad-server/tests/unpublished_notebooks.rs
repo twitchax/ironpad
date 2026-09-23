@@ -38,14 +38,13 @@
 //! private to `ironpad-app`; its coverage lives beside it in
 //! `ironpad_app::server_fns`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::Router;
 use ironpad_app::db::Db;
 use ironpad_common::AppConfig;
 use ironpad_server::routes;
 use ironpad_server::state::{AppState, WsState};
-use leptos::config::LeptosOptions;
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -82,21 +81,14 @@ fn secret_notebook_json() -> String {
 /// Every distinctive string a leak could carry.
 const SECRETS: [&str; 3] = [SECRET_TITLE, SECRET_DESCRIPTION, SECRET_SOURCE];
 
-fn app_state(data_dir: PathBuf, cache_dir: PathBuf) -> AppState {
-    AppState {
-        leptos_options: LeptosOptions::builder().output_name("ironpad-test").build(),
-        config: AppConfig {
-            data_dir,
+fn app_state(data_dir: &Path, cache_dir: PathBuf) -> AppState {
+    AppState::for_tests(
+        AppConfig {
             cache_dir,
-            port: 0,
-            ironpad_cell_path: PathBuf::from("/tmp"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
+            ..AppConfig::for_tests(data_dir)
         },
-        ws: WsState::default(),
-    }
+        WsState::default(),
+    )
 }
 
 /// The production crawler routes, with the DB `Extension` the OG and oEmbed
@@ -176,11 +168,7 @@ async fn an_unpublished_account_notebook_is_invisible_on_every_anonymous_surface
     // path is a DIFFERENT path, and the one PRD-0063 got wrong.
     let bob_session = db.create_session("2").await.expect("stranger signs in");
 
-    let base = serve(
-        app_state(data.path().into(), cache.path().into()),
-        db.clone(),
-    )
-    .await;
+    let base = serve(app_state(data.path(), cache.path().into()), db.clone()).await;
 
     for (who, session) in [
         ("anonymous", None),
@@ -245,7 +233,7 @@ async fn the_crawler_table_serves_robots_and_the_site_card() {
     let db = Db::open(&dbdir.path().join("test.db"))
         .await
         .expect("open accounts db");
-    let base = serve(app_state(data.path().into(), cache.path().into()), db).await;
+    let base = serve(app_state(data.path(), cache.path().into()), db).await;
 
     let (status, body) = get_raw(&format!("{base}/robots.txt"), None).await;
     assert_eq!(status, 200, "robots.txt is routed");

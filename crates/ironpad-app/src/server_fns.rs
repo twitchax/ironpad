@@ -2491,18 +2491,10 @@ mod tests {
             "identical source must not share a cache key across targets"
         );
 
-        let config = AppConfig {
-            data_dir: cache.path().to_path_buf(),
-            cache_dir: cache.path().to_path_buf(),
-            port: 0,
-            // Both requests must resolve from cache; reaching the scaffold
-            // with this path would fail loudly.
-            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
-        };
+        // Both requests must resolve from cache; `for_tests` points the
+        // ironpad-cell path at nothing, so reaching the scaffold would fail
+        // loudly.
+        let config = AppConfig::for_tests(cache.path());
         let request_for = |cell_type, cell_id: &str| CompileRequest {
             cell_type,
             notebook_id: "nb".to_string(),
@@ -2565,16 +2557,7 @@ mod tests {
         use ironpad_common::AppConfig;
 
         let cache = tempfile::tempdir().unwrap();
-        let config = AppConfig {
-            data_dir: cache.path().to_path_buf(),
-            cache_dir: cache.path().to_path_buf(),
-            port: 0,
-            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
-        };
+        let config = AppConfig::for_tests(cache.path());
         let request_for = |cell_type| CompileRequest {
             cell_type,
             notebook_id: "nb".to_string(),
@@ -2650,16 +2633,7 @@ mod tests {
         use ironpad_common::AppConfig;
 
         let cache = tempfile::tempdir().unwrap();
-        let config = AppConfig {
-            data_dir: cache.path().to_path_buf(),
-            cache_dir: cache.path().to_path_buf(),
-            port: 0,
-            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
-        };
+        let config = AppConfig::for_tests(cache.path());
         let request = || CompileRequest {
             cell_id: "../x".to_string(),
             ..admission_test_request("unused")
@@ -2716,18 +2690,10 @@ mod tests {
         .await
         .unwrap();
 
-        let config = AppConfig {
-            data_dir: cache.path().to_path_buf(),
-            cache_dir: cache.path().to_path_buf(),
-            port: 0,
-            // A hit must not touch the scaffold, so this path is deliberately
-            // bogus — reaching scaffold would fail before writing anything.
-            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
-        };
+        // A hit must not touch the scaffold, and `for_tests` points the
+        // ironpad-cell path at nothing — reaching scaffold would fail before
+        // writing anything.
+        let config = AppConfig::for_tests(cache.path());
         let request = CompileRequest {
             cell_type: CellType::Code,
             notebook_id: "nb".to_string(),
@@ -2822,16 +2788,7 @@ mod tests {
         .await
         .unwrap();
 
-        let config = AppConfig {
-            data_dir: cache.path().to_path_buf(),
-            cache_dir: cache.path().to_path_buf(),
-            port: 0,
-            ironpad_cell_path: cache.path().join("nonexistent-ironpad-cell"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
-        };
+        let config = AppConfig::for_tests(cache.path());
         let request = CompileRequest {
             cell_type: CellType::Code,
             notebook_id: "nb".to_string(),
@@ -2891,16 +2848,7 @@ mod tests {
         use ironpad_common::AppConfig;
 
         let dir = tempfile::tempdir().unwrap();
-        let config = AppConfig {
-            data_dir: dir.path().to_path_buf(),
-            cache_dir: dir.path().to_path_buf(),
-            port: 0,
-            ironpad_cell_path: dir.path().join("nonexistent-ironpad-cell"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
-        };
+        let config = AppConfig::for_tests(dir.path());
         let admission = crate::compiler::admission::BuildAdmission::new(
             1,
             0.0,
@@ -2933,16 +2881,7 @@ mod tests {
         use ironpad_common::CheckStatus;
 
         let dir = tempfile::tempdir().unwrap();
-        let config = AppConfig {
-            data_dir: dir.path().to_path_buf(),
-            cache_dir: dir.path().to_path_buf(),
-            port: 0,
-            ironpad_cell_path: dir.path().join("nonexistent-ironpad-cell"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
-        };
+        let config = AppConfig::for_tests(dir.path());
         let admission = crate::compiler::admission::BuildAdmission::new(
             1,
             10.0,

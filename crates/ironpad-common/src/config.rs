@@ -48,6 +48,30 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    /// Test support: a config rooted at `dir` (data and cache both), port 0,
+    /// no proxy, no admin, no `BrowserPod` key, and an ironpad-cell path that
+    /// does not exist, so a test that unexpectedly reaches the scaffold fails
+    /// loudly instead of building.
+    ///
+    /// Public rather than `cfg(test)` because its callers are other crates'
+    /// tests and `tests/` integration suites, which cannot see this crate's
+    /// test-only items. It exists so a new config field is added in ONE
+    /// fixture instead of ten hand-built literals.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_tests(dir: &std::path::Path) -> Self {
+        Self {
+            data_dir: dir.to_path_buf(),
+            cache_dir: dir.to_path_buf(),
+            port: 0,
+            ironpad_cell_path: dir.join("nonexistent-ironpad-cell"),
+            compilation_proxy: None,
+            public_url: "http://localhost".to_string(),
+            admin_login: None,
+            browserpod_key: None,
+        }
+    }
+
     /// Absolute URL for a root-relative `path` (which must start with `/`).
     #[must_use]
     pub fn absolute_url(&self, path: &str) -> String {
@@ -77,14 +101,8 @@ mod tests {
 
     fn config(public_url: &str) -> AppConfig {
         AppConfig {
-            data_dir: PathBuf::from("/data"),
-            cache_dir: PathBuf::from("/cache"),
-            port: 3111,
-            ironpad_cell_path: PathBuf::from("/cell"),
-            compilation_proxy: None,
             public_url: public_url.to_string(),
-            admin_login: None,
-            browserpod_key: None,
+            ..AppConfig::for_tests(std::path::Path::new("/data"))
         }
     }
 

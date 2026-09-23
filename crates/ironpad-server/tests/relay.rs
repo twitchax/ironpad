@@ -3,7 +3,7 @@
 //! Spins up the Axum WS routes on a random port and exercises the complete
 //! session lifecycle through real WebSocket connections.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use axum::Router;
@@ -15,7 +15,6 @@ use ironpad_common::protocol::{
 use ironpad_common::types::CellType;
 use ironpad_common::AppConfig;
 use ironpad_server::state::{AppState, WsState};
-use leptos::config::LeptosOptions;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite;
@@ -27,20 +26,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// Build a minimal `AppState` (no Leptos SSR routes needed) around a given
 /// `WsState`, so individual tests can tune caps/timeouts.
 fn state_with_ws(ws: WsState) -> AppState {
-    AppState {
-        leptos_options: LeptosOptions::builder().output_name("ironpad-test").build(),
-        config: AppConfig {
-            data_dir: PathBuf::from("/tmp"),
-            cache_dir: PathBuf::from("/tmp"),
-            port: 0,
-            ironpad_cell_path: PathBuf::from("/tmp"),
-            compilation_proxy: None,
-            public_url: "http://localhost".to_string(),
-            admin_login: None,
-            browserpod_key: None,
-        },
-        ws,
-    }
+    AppState::for_tests(AppConfig::for_tests(Path::new("/tmp")), ws)
 }
 
 /// Build a minimal `AppState` with a default `WsState`.

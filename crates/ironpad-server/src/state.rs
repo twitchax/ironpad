@@ -33,6 +33,23 @@ pub struct AppState {
     pub ws: WsState,
 }
 
+impl AppState {
+    /// Test support: an `AppState` around `config` and `ws` with minimal
+    /// Leptos options (no SSR routes are mounted by the suites that use it).
+    ///
+    /// Public for the same reason as [`AppConfig::for_tests`]: `tests/`
+    /// suites cannot see `cfg(test)` items.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_tests(config: AppConfig, ws: WsState) -> Self {
+        Self {
+            leptos_options: LeptosOptions::builder().output_name("ironpad-test").build(),
+            config,
+            ws,
+        }
+    }
+}
+
 /// Leptos needs to extract `LeptosOptions` from state for SSR + file serving.
 impl FromRef<AppState> for LeptosOptions {
     fn from_ref(state: &AppState) -> Self {

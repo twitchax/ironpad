@@ -591,7 +591,7 @@ async fn handle_guest_message(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::Path;
 
     use ironpad_common::protocol::{
         self, ClientId, ControlMessage, ErrorCode, Event, EventEnvelope, MessageKind, Mutation,
@@ -599,7 +599,6 @@ mod tests {
     };
     use ironpad_common::types::CellType;
     use ironpad_common::AppConfig;
-    use leptos::config::LeptosOptions;
     use tokio::sync::mpsc;
 
     use crate::state::{AppState, WsState};
@@ -625,20 +624,7 @@ mod tests {
 
     /// Build a minimal `AppState` suitable for WS handler tests.
     fn test_state() -> AppState {
-        AppState {
-            leptos_options: LeptosOptions::builder().output_name("ironpad-test").build(),
-            config: AppConfig {
-                data_dir: PathBuf::from("/tmp"),
-                cache_dir: PathBuf::from("/tmp"),
-                port: 0,
-                ironpad_cell_path: PathBuf::from("/tmp"),
-                compilation_proxy: None,
-                public_url: "http://localhost".to_string(),
-                admin_login: None,
-                browserpod_key: None,
-            },
-            ws: WsState::default(),
-        }
+        AppState::for_tests(AppConfig::for_tests(Path::new("/tmp")), WsState::default())
     }
 
     // ── Host message tests ──────────────────────────────────────────────
