@@ -106,7 +106,7 @@ pub fn embed_target(public_url: &str, url: &str) -> Option<EmbedTarget> {
     // form still resolves and people paste what their address bar shows.
     let id = id.strip_suffix(".ironpad").unwrap_or(id);
 
-    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+    if !ironpad_common::is_safe_path_segment(id) {
         return None;
     }
 

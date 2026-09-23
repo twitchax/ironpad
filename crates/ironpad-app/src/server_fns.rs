@@ -691,11 +691,12 @@ pub async fn list_public_notebooks() -> Result<Vec<PublicNotebookSummary>, Serve
     )
 }
 
-/// Rejects path segments that contain directory separators or `..` traversal.
+/// Rejects path segments that are empty or contain directory separators or
+/// `..` traversal ([`ironpad_common::is_safe_path_segment`]).
 #[cfg(feature = "ssr")]
 fn validate_safe_path_segment(s: &str) -> anyhow::Result<()> {
-    if s.contains('/') || s.contains('\\') || s.contains("..") {
-        anyhow::bail!("invalid filename: must not contain separators or '..'");
+    if !ironpad_common::is_safe_path_segment(s) {
+        anyhow::bail!("invalid filename: must be non-empty, without separators or '..'");
     }
     Ok(())
 }
@@ -3555,7 +3556,7 @@ mod tests {
     #[tokio::test]
     async fn server_fn_core_get_public_notebook_rejects_path_traversal() {
         let dir = tempfile::tempdir().unwrap();
-        for bad in ["../secret.ironpad", "sub/file.ironpad", "a\\b", ".."] {
+        for bad in ["../secret.ironpad", "sub/file.ironpad", "a\\b", "..", ""] {
             let result = get_public_notebook_core(dir.path(), bad).await;
             assert!(result.is_err(), "should reject traversal: {bad}");
             assert!(result.unwrap_err().to_string().contains("invalid filename"));

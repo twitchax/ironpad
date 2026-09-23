@@ -409,11 +409,8 @@ async fn write_atomic(dir: &Path, path: &Path, bytes: &[u8]) -> anyhow::Result<(
 /// notebook directories. The `_core` loaders validate too; this refuses the
 /// obviously-hostile shapes before any filesystem work happens.
 fn notebook_id_from(file: &str) -> Option<&str> {
-    let id = file.strip_suffix(".png")?;
-    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
-        return None;
-    }
-    Some(id)
+    file.strip_suffix(".png")
+        .filter(|id| ironpad_common::is_safe_path_segment(id))
 }
 
 fn png_response(bytes: Vec<u8>) -> Response {
