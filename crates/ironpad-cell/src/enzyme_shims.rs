@@ -19,14 +19,17 @@
 
 use core::alloc::Layout;
 
-/// Header bytes prepended to every shim allocation (stores the size; keeps
-/// 16-byte alignment for the payload).
-const SHIM_HEADER: usize = 16;
+use crate::shim_layout::{shim_layout, SHIM_HEADER};
 
 #[no_mangle]
 pub extern "C" fn malloc(size: usize) -> *mut u8 {
+    // A size whose header-extended layout does not exist fails like any
+    // oversized request, with null; `calloc` relies on that for its
+    // saturated product.
+    let Some(layout) = shim_layout(size) else {
+        return core::ptr::null_mut();
+    };
     unsafe {
-        let layout = Layout::from_size_align_unchecked(size + SHIM_HEADER, SHIM_HEADER);
         let base = std::alloc::alloc(layout);
         if base.is_null() {
             return base;
@@ -44,6 +47,8 @@ pub extern "C" fn free(ptr: *mut u8) {
     unsafe {
         let base = ptr.sub(SHIM_HEADER);
         let size = base.cast::<usize>().read();
+        // Unchecked is sound here: `size` was validated by `shim_layout` when
+        // `malloc` allocated this block, and the header stores it unchanged.
         let layout = Layout::from_size_align_unchecked(size + SHIM_HEADER, SHIM_HEADER);
         std::alloc::dealloc(base, layout);
     }
@@ -51,8 +56,11 @@ pub extern "C" fn free(ptr: *mut u8) {
 
 #[no_mangle]
 pub extern "C" fn realloc(ptr: *mut u8, new_size: u64) -> *mut u8 {
-    #[allow(clippy::cast_possible_truncation)] // wasm32: sizes fit in usize.
-    let new_size = new_size as usize;
+    // A size over 4 GiB cannot be served on wasm32; a truncating cast would
+    // hand back a small block instead of failing (the original stays valid).
+    let Ok(new_size) = usize::try_from(new_size) else {
+        return core::ptr::null_mut();
+    };
     if ptr.is_null() {
         return malloc(new_size);
     }

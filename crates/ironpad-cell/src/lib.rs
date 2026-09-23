@@ -106,6 +106,7 @@ pub mod ui;
 pub mod enzyme_shims;
 #[cfg(target_arch = "wasm32")]
 pub mod http;
+mod shim_layout;
 
 // ── CellInput ────────────────────────────────────────────────────────────────
 
