@@ -1,12 +1,12 @@
 //! Notebook lifecycle workflows: Share Immutable, Save to Account, Share
-//! Mutable, Push, Discard Draft, Unpublish, Delete, and Download .ironpad.
+//! Mutable, Push, Discard Draft, Unpublish, Delete, Export HTML, and
+//! Download .ironpad.
 //!
 //! Extracted from the editor component (`mod.rs`) so every serialize-flow
 //! shares the same flush discipline (PRD-0032 T-007) — the one inline flow
 //! that predated this module (Unpublish) was also the one that missed the
 //! flush and could drop the last debounce-window of typing.
 
-use ironpad_common::IronpadNotebook;
 use leptos::prelude::*;
 
 use crate::components::toaster::{ToastIntent, Toaster};
@@ -14,17 +14,7 @@ use crate::server_fns::share_notebook;
 
 use super::state::NotebookState;
 
-// ── Flush + read primitives ─────────────────────────────────────────────────
-
-/// Bump the cell-flush generation, yield so the per-cell flush effects run
-/// (PRD-0032 T-007), then read the notebook back out of the model. `None`
-/// means the page was disposed mid-flush (navigation) — callers just stop.
-async fn flush_and_read_notebook(state: &NotebookState) -> Option<IronpadNotebook> {
-    state.save_generation.try_update(|g| *g += 1)?;
-    #[cfg(feature = "hydrate")]
-    super::yield_for_cell_flush(super::CELL_FLUSH_YIELD_MS).await;
-    state.notebook.try_get_untracked().flatten()
-}
+// ── Flush + serialize ───────────────────────────────────────────────────────
 
 /// Flush in-progress cell edits, then serialize the current notebook to JSON
 /// along with its positional type tags (for blob snapshotting, PRD-0047).
@@ -36,7 +26,7 @@ async fn flush_serialize_tags(
     toaster: Toaster,
     fail_title: &'static str,
 ) -> Option<(String, Vec<String>)> {
-    let mut nb = flush_and_read_notebook(state).await?;
+    let mut nb = state.flush_and_read().await?;
     // Embed the author's last-run outputs into the OUTGOING copy only
     // (PRD-0056): the model and the debounced autosaves stay lean.
     if let Some(texts) = state.cell_display_texts.try_get_untracked() {
@@ -506,6 +496,27 @@ pub(super) fn delete_mutable_current_notebook(toaster: Toaster, share_id: String
     });
 }
 
+// ── Export HTML ─────────────────────────────────────────────────────────────
+
+/// Export the current notebook, with its last-run outputs, as a standalone
+/// HTML file. Flushes first, so "type then immediately Export" does not
+/// produce a stale artifact (PRD-0032 T-007).
+#[cfg(feature = "hydrate")]
+pub(super) fn export_html_current_notebook(state: &NotebookState) {
+    let state = *state;
+    leptos::task::spawn_local(async move {
+        let Some(nb) = state.flush_and_read().await else {
+            return;
+        };
+        // try_: disposal can land during the flush's yield.
+        let Some(display_texts) = state.cell_display_texts.try_get_untracked() else {
+            return;
+        };
+        let html = super::export::build_export_html(&nb, &display_texts);
+        super::export::trigger_html_download(&html, &nb.title);
+    });
+}
+
 // ── Download .ironpad ───────────────────────────────────────────────────────
 
 /// Download the current notebook as a `.ironpad` file, serialized from the
@@ -517,7 +528,7 @@ pub(super) fn delete_mutable_current_notebook(toaster: Toaster, share_id: String
 pub(super) fn download_current_notebook(state: &NotebookState, toaster: Toaster) {
     let state = *state;
     leptos::task::spawn_local(async move {
-        let Some(mut nb) = flush_and_read_notebook(&state).await else {
+        let Some(mut nb) = state.flush_and_read().await else {
             return;
         };
         // Downloads carry the outputs too (PRD-0056) — this is how a public

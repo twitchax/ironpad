@@ -183,7 +183,14 @@ fn restore_snapshot(state: &NotebookState, toaster: Toaster, saved_at: f64) {
             };
             // Now flush in-progress editor content and force a pre-restore
             // snapshot, so the restore itself is undoable. Safe to prune the
-            // ring now — the target JSON is already in hand.
+            // ring now — the target JSON is already in hand. The flush is
+            // what makes that true: the model lags Monaco by the 1s save
+            // debounce, and the reload below kills the pending timer, so
+            // persisting the model alone dropped the last second of typing
+            // from the very snapshot that promises to keep it.
+            if state.flush_cells().await.is_none() {
+                return;
+            }
             let _ = super::state::persist_notebook_durable(&state).await;
             crate::storage::client::snapshot_now(&id).await;
             match serde_json::from_str::<ironpad_common::IronpadNotebook>(&json) {

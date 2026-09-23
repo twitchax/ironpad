@@ -217,6 +217,33 @@ pub(crate) struct NotebookState {
     pub(super) toaster: Toaster,
 }
 
+// ── Cell flush (PRD-0032 T-007) ─────────────────────────────────────────────
+
+impl NotebookState {
+    /// Flush every cell's unsaved editor content into the model (PRD-0032
+    /// T-007): bump the flush generation, then yield so each `CellItem`'s
+    /// flush effect runs before the caller reads or persists the notebook.
+    /// `None` means the page was disposed mid-flush (navigation) — callers
+    /// just stop.
+    ///
+    /// The one flush for every flow that must not lose the last debounce
+    /// window of typing: the serialize flows, Restore's pre-restore
+    /// snapshot, Preview, and Ctrl+S.
+    pub(super) async fn flush_cells(&self) -> Option<()> {
+        self.save_generation.try_update(|g| *g += 1)?;
+        #[cfg(feature = "hydrate")]
+        super::yield_for_cell_flush(super::CELL_FLUSH_YIELD_MS).await;
+        Some(())
+    }
+
+    /// [`Self::flush_cells`], then read the flushed notebook out of the
+    /// model. `None` when the page was disposed mid-flush.
+    pub(super) async fn flush_and_read(&self) -> Option<IronpadNotebook> {
+        self.flush_cells().await?;
+        self.notebook.try_get_untracked().flatten()
+    }
+}
+
 // ── Reactive execution scheduling ───────────────────────────────────────────
 
 impl NotebookState {

@@ -102,4 +102,61 @@ test.describe("Local version history (PRD-0058)", () => {
     );
     expect(afterDelete).toEqual([]);
   });
+
+  test("Restore flushes typing still inside the save debounce into the pre-restore snapshot", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+
+    await createNotebook(page);
+    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+
+    await page.locator(".ironpad-add-cell-btn").first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cell, "let saved_before = 1;");
+    await waitForPersistedCells(page, 1);
+    await page.waitForTimeout(2_000);
+    await page.evaluate(
+      (id) => (window as any).IronpadStorage.snapshotNow(id),
+      notebookId,
+    );
+
+    // Open the panel BEFORE typing, so the Restore click lands well inside
+    // the 1s save debounce: the edit below exists only in Monaco and the
+    // cell's dirty flag, never in the model or IndexedDB, until a flush.
+    await page.locator(MENU).click();
+    await page
+      .locator(".ironpad-toolbar-dropdown-item", { hasText: "History" })
+      .click();
+    const panel = page.locator(".ironpad-history-panel");
+    const restore = panel.locator(".ironpad-history-restore").first();
+    await expect(restore).toBeVisible({ timeout: 10_000 });
+
+    page.on("dialog", (d) => d.accept());
+    await setCellSource(page, cell, "let typed_inside_the_debounce = 2;");
+    await restore.click();
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Restored" }),
+    ).toBeVisible({ timeout: 30_000 });
+
+    // The reload killed the pending debounce timer, so the only way that
+    // text survives is the pre-restore flush putting it in the snapshot
+    // that makes the restore undoable.
+    const history = await page.evaluate(
+      (id) => (window as any).IronpadStorage.listHistory(id),
+      notebookId,
+    );
+    const newest = await page.evaluate(
+      async ([id, savedAt]) =>
+        (window as any).IronpadStorage.getHistorySnapshot(id, savedAt),
+      [notebookId, history[0].savedAt] as const,
+    );
+    expect(
+      newest,
+      "the last second of typing is in the pre-restore snapshot",
+    ).toContain("typed_inside_the_debounce");
+  });
 });

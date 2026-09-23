@@ -39,7 +39,7 @@ use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
 #[cfg(feature = "hydrate")]
 use self::sharing::{
     delete_mutable_current_notebook, discard_draft_current_notebook, download_current_notebook,
-    save_to_account_current_notebook, unpublish_current_notebook,
+    export_html_current_notebook, save_to_account_current_notebook, unpublish_current_notebook,
 };
 use self::sharing::{
     push_mutable_current_notebook, share_current_notebook, share_mutable_current_notebook,
@@ -57,8 +57,8 @@ use self::state::{persist_notebook, DraftSaveState, NotebookState, PublishButton
 // so callers must yield before re-reading the notebook.
 
 /// Delay (ms) after bumping `state.save_generation` before re-reading the
-/// notebook, giving the per-cell flush effects time to run. Used by the
-/// `sharing` workflows and Export HTML, which only need the in-memory model
+/// notebook, giving the per-cell flush effects time to run. Used by
+/// `NotebookState::flush_cells`, which only needs the in-memory model
 /// flushed.
 #[cfg(feature = "hydrate")]
 const CELL_FLUSH_YIELD_MS: i32 = 120;
@@ -349,9 +349,6 @@ pub fn NotebookEditor(
             }
             prev_gen.set(gen);
 
-            // Signal all cells to flush their pending content.
-            state.save_generation.update(|g| *g += 1);
-
             // Update title from layout into the notebook signal.
             let title = layout.notebook_title.get_untracked().unwrap_or_default();
             let _ = model.apply(
@@ -364,8 +361,14 @@ pub fn NotebookEditor(
                 ironpad_common::protocol::ClientId::browser(),
             );
 
-            // Persist to IndexedDB.
-            persist_notebook(&state);
+            // Flush every cell's pending content into the model, THEN
+            // persist: the flush effects run queued, so persisting in the
+            // same tick as the bump raced them for the write.
+            leptos::task::spawn_local(async move {
+                if state.flush_cells().await.is_some() {
+                    persist_notebook(&state);
+                }
+            });
 
             layout.last_save_time.set(Some(js_sys::Date::now()));
 
@@ -830,35 +833,7 @@ fn NotebookContent() -> impl IntoView {
                                         on:click=move |_| {
                                             hamburger_open.set(false);
                                             #[cfg(feature = "hydrate")]
-                                            {
-                                                // Flush cells' in-progress editor content
-                                                // before building the export, so "type then
-                                                // immediately Export" doesn't produce a stale
-                                                // artifact (PRD-0032 T-007).
-                                                state.save_generation.update(|g| *g += 1);
-                                                leptos::task::spawn_local(async move {
-                                                    yield_for_cell_flush(CELL_FLUSH_YIELD_MS)
-                                                        .await;
-                                                    // try_: disposal can land
-                                                    // during the yield.
-                                                    let Some(nb) = state
-                                                        .notebook
-                                                        .try_get_untracked()
-                                                        .flatten()
-                                                    else {
-                                                        return;
-                                                    };
-                                                    let Some(display_texts) = state
-                                                        .cell_display_texts
-                                                        .try_get_untracked()
-                                                    else {
-                                                        return;
-                                                    };
-                                                    let html =
-                                                        export::build_export_html(&nb, &display_texts);
-                                                    export::trigger_html_download(&html, &nb.title);
-                                                });
-                                            }
+                                            export_html_current_notebook(&state);
                                         }
                                     >
                                         <IconLabel icon=icons::EXPORT label="Export HTML"/>
@@ -1150,15 +1125,13 @@ fn NotebookContent() -> impl IntoView {
                     // pre-commit source; the second round re-reads it
                     // post-commit.
                     #[cfg(feature = "hydrate")]
-                    {
-                        state.save_generation.update(|g| *g += 1);
-                        leptos::task::spawn_local(async move {
-                            yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
-                            state.save_generation.update(|g| *g += 1);
-                            yield_for_cell_flush(CELL_FLUSH_YIELD_MS).await;
-                            state.is_view_mode.set(true);
-                        });
-                    }
+                    leptos::task::spawn_local(async move {
+                        if state.flush_cells().await.is_some()
+                            && state.flush_cells().await.is_some()
+                        {
+                            let _ = state.is_view_mode.try_set(true);
+                        }
+                    });
                     #[cfg(not(feature = "hydrate"))]
                     state.is_view_mode.set(true);
                 }
