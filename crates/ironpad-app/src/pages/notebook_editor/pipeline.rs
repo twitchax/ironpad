@@ -775,15 +775,6 @@ fn dispatch_live_check_with_retries(
     let state_for_retry = *state;
 
     let request = CompileRequest {
-        // Correct only while the editor's Run affordance excludes Linux
-        // cells (`cell_item.rs`). It is NOT true by the type system: the
-        // per-cell Run button is gated on `is_markdown || is_shared`, so a
-        // Linux cell sails through and gets compiled with the Code scaffold,
-        // which wraps the author's `fn main` inside `cell_main` where it is
-        // legal, never called, and reports SUCCESS WITH NO OUTPUT. Verified:
-        // it compiles with only a "never used" warning, so the author gets a
-        // green run that did nothing. If Linux cells ever become runnable
-        // from the editor, this must become `cell.cell_type`.
         // A shared cell's check compiles SHARED_CHECK_BODY through the Code
         // scaffold regardless of the cell's own type, so it reports Code; any
         // other cell reports what it is, and the server derives the target.
