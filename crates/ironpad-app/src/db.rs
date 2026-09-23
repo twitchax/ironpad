@@ -719,39 +719,6 @@ impl Db {
         }))
     }
 
-    /// Overwrite a share's content (a push). Ownership is checked by the
-    /// caller via [`user_owns_share`](Self::user_owns_share).
-    #[tracing::instrument(name = "db_update_share", level = "info", skip_all, fields(id = %id))]
-    pub async fn update_mutable_share(
-        &self,
-        id: &str,
-        notebook_json: &str,
-        manifest_json: Option<String>,
-    ) -> Result<()> {
-        with_conflict_retry(|| async {
-            self.inner
-                .query(
-                    "UPDATE type::record('mutable_share', $id) SET \
-                        notebook_json = $nb, manifest_json = $mf, \
-                        bytes = $bytes, pushed_at = $now",
-                )
-                .bind(("id", id.to_string()))
-                .bind(("nb", notebook_json.to_string()))
-                .bind(("mf", manifest_json.clone()))
-                .bind((
-                    "bytes",
-                    i64::try_from(notebook_json.len()).unwrap_or(i64::MAX),
-                ))
-                .bind(("now", now_rfc3339()))
-                .await
-                .context("share update failed")?
-                .check()
-                .context("share update returned an error")?;
-            Ok(())
-        })
-        .await
-    }
-
     // ── Draft slot (PRD-0054) ───────────────────────────────────────────
 
     /// Write the draft slot (an autosave). Ownership is checked by the
@@ -1566,17 +1533,23 @@ mod tests {
         assert!(db.user_owns_share("1", &id).await.unwrap());
         assert!(!db.user_owns_share("2", &id).await.unwrap());
 
-        // Push updates content + manifest.
-        db.update_mutable_share(
+        // Push updates content + manifest, the way production pushes: the
+        // edit lands in the draft slot and a promote publishes it.
+        let pushed = "{\"title\":\"nb2\"}";
+        db.save_draft(&id, pushed).await.unwrap();
+        db.promote_draft(
             &id,
-            "{\"title\":\"nb2\"}",
             Some("{\"version\":1}".to_string()),
+            pushed.len() as u64,
         )
         .await
         .unwrap();
         let row = db.get_mutable_share(&id).await.unwrap().unwrap();
-        assert_eq!(row.notebook_json.as_deref(), Some("{\"title\":\"nb2\"}"));
+        assert_eq!(row.notebook_json.as_deref(), Some(pushed));
         assert_eq!(row.manifest_json.as_deref(), Some("{\"version\":1}"));
+        // A real push leaves the share clean: nothing is left in the draft.
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(!edit.dirty, "the promote must clear the draft slot");
 
         // Delete removes the share AND its grant.
         db.delete_mutable_share(&id).await.unwrap();
