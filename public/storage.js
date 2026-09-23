@@ -20,6 +20,11 @@ window.IronpadStorage = (function () {
     // same cache key the server uses. LRU-pruned to MAX_BLOB_ENTRIES.
     const BLOB_STORE = 'blobs';
     const MAX_BLOB_ENTRIES = 64;
+    // How stale a hit's lastUsed may get before the hit rewrites it. Every
+    // touch puts the whole record back (the wasm blob is often megabytes)
+    // just to move one timestamp, and minute-level recency is plenty to
+    // order 64 entries for LRU pruning.
+    const BLOB_TOUCH_INTERVAL_MS = 60 * 1000;
     // Retired stores, deleted by migration: 'mutable' held PRD-0049/0053
     // working copies of published notebooks — those live entirely on the
     // server now (PRD-0054).
@@ -328,7 +333,7 @@ window.IronpadStorage = (function () {
 
         /**
          * Look up a locally cached compiled blob by content hash, touching
-         * its LRU timestamp on hit.
+         * its LRU timestamp on hit at most once per BLOB_TOUCH_INTERVAL_MS.
          * @param {string} hash - 64-hex cache key.
          * @returns {Promise<Object|null>} { hash, wasm: Uint8Array, glue,
          *          diagnostics, lastUsed } or null.
@@ -336,11 +341,18 @@ window.IronpadStorage = (function () {
         getBlob: async function (hash) {
             const db = await openDb();
             try {
+                // ONE readwrite transaction for the get and the touch, even
+                // when the touch is skipped: split into two, a Force
+                // Recompile putBlob landing in between would be overwritten
+                // by this stale record.
                 const store = blobTx(db, 'readwrite');
                 const record = await reqToPromise(store.get(hash));
                 if (!record) return null;
-                record.lastUsed = Date.now();
-                await reqToPromise(store.put(record));
+                const now = Date.now();
+                if (!(now - (record.lastUsed || 0) < BLOB_TOUCH_INTERVAL_MS)) {
+                    record.lastUsed = now;
+                    await reqToPromise(store.put(record));
+                }
                 return record;
             } finally {
                 db.close();

@@ -172,3 +172,63 @@ test.describe("Blob delivery (PRD-0047)", () => {
     expect(cached.compile).toEqual([]);
   });
 });
+
+test.describe("Local blob store LRU touch", () => {
+  test("a hit rewrites lastUsed only once it is a minute stale", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForFunction(() => (window as any).IronpadStorage);
+    const touch = await page.evaluate(async () => {
+      const S = (window as any).IronpadStorage;
+      const hash = `lru-touch-${crypto.randomUUID()}`;
+      await S.putBlob(hash, new Uint8Array([0, 97, 115, 109]), null, null, 0);
+
+      // Raw IndexedDB: storage.js has no lastUsed setter, and reading the
+      // record back through getBlob would itself be the touch under test.
+      const withStore = (
+        mode: IDBTransactionMode,
+        op: (store: IDBObjectStore) => IDBRequest,
+      ) =>
+        new Promise<any>((resolve, reject) => {
+          const open = indexedDB.open("ironpad");
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const db = open.result;
+            const req = op(db.transaction("blobs", mode).objectStore("blobs"));
+            req.onsuccess = () => {
+              db.close();
+              resolve(req.result);
+            };
+            req.onerror = () => {
+              db.close();
+              reject(req.error);
+            };
+          };
+        });
+      const lastUsed = async () =>
+        (await withStore("readonly", (s) => s.get(hash))).lastUsed;
+
+      const record = await withStore("readonly", (s) => s.get(hash));
+      record.lastUsed = Date.now() - 120_000;
+      await withStore("readwrite", (s) => s.put(record));
+      const stale = await lastUsed();
+
+      await S.getBlob(hash);
+      const afterFirst = await lastUsed();
+      // Long enough that an unconditional touch would stamp a new value.
+      await new Promise((r) => setTimeout(r, 20));
+      const hit = await S.getBlob(hash);
+      const afterSecond = await lastUsed();
+      return { stale, afterFirst, afterSecond, hitLen: hit?.wasm?.length };
+    });
+    expect(touch.afterFirst, "a stale entry is touched").toBeGreaterThan(
+      touch.stale,
+    );
+    expect(
+      touch.afterSecond,
+      "a fresh entry's hit does not rewrite the record",
+    ).toBe(touch.afterFirst);
+    expect(touch.hitLen, "the skipped touch still serves the blob").toBe(4);
+  });
+});
