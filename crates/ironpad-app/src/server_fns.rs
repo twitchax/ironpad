@@ -1544,9 +1544,11 @@ pub(crate) async fn push_mutable_core(
 /// account notebook that has never been published, or one that has been
 /// unpublished in place. Every reader surface — the reader page, the embed,
 /// the OG card, oEmbed, and the blob manifest — must read that as "no such
-/// notebook", so the rule is written once and consumed by all three access
-/// cores. Restating it per surface is how a fourth surface inherits two of
-/// the three.
+/// notebook", so the rule is written once and consumed by both access cores,
+/// [`mutable_access_core`] and [`mutable_manifest_access_core`]. The
+/// anonymous [`get_mutable_notebook_core`] is `mutable_access_core` with no
+/// viewer, not a third copy.
+/// Restating it per surface is how a new surface inherits only some of it.
 #[cfg(feature = "ssr")]
 fn published_copy(row: &crate::db::MutableShareRow) -> Option<&str> {
     row.notebook_json.as_deref()
@@ -1554,7 +1556,8 @@ fn published_copy(row: &crate::db::MutableShareRow) -> Option<&str> {
 
 /// Fetch just the notebook of a mutable share for ANONYMOUS surfaces — the
 /// OG-card handler, the oEmbed provider, and tests. A private share returns
-/// `None` here unconditionally (PRD-0061): these surfaces serve crawlers and
+/// `None` here unconditionally (PRD-0061), because this is
+/// [`mutable_access_core`] with no viewer: these surfaces serve crawlers and
 /// unfurlers, which never hold a session, and a title in an OG card is
 /// already a leak. The reader page uses [`get_mutable_notebook`], which
 /// resolves the caller's session.
@@ -1563,18 +1566,12 @@ pub async fn get_mutable_notebook_core(
     db: &crate::db::Db,
     id: &str,
 ) -> anyhow::Result<Option<IronpadNotebook>> {
-    let Some(row) = db.get_mutable_share(id).await? else {
-        return Ok(None);
-    };
-    let Some(notebook_json) = published_copy(&row) else {
-        return Ok(None);
-    };
-    if row.private {
-        return Ok(None);
-    }
-    serde_json::from_str(notebook_json)
-        .map(Some)
-        .map_err(|e| anyhow::anyhow!("invalid stored notebook: {e}"))
+    use ironpad_common::MutableNotebookAccess;
+
+    Ok(match mutable_access_core(db, id, None).await? {
+        MutableNotebookAccess::Found(found) => Some(found.notebook),
+        MutableNotebookAccess::Private { .. } | MutableNotebookAccess::NotFound => None,
+    })
 }
 
 /// Unpublish in place (PRD-0064): clear the published copy and its manifest,
