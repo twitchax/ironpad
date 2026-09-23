@@ -49,34 +49,33 @@ impl CompileLocks {
     /// shares its artifact identity. The returned guard must be held for the
     /// whole compile.
     pub async fn acquire(&self, cell_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        let key = lock_key(cell_id);
-        let cell_lock = {
-            let mut table = self.locks.lock().expect("compile-lock table poisoned");
-            // Prune entries no longer in use so the table can't grow without
-            // bound across many distinct cell ids. An entry with
-            // `strong_count == 1` is held only by the table (no in-flight
-            // compile holds a guard clone), so it's safe to drop; keep the id
-            // we're about to (re)acquire regardless. This runs under the table
-            // lock, so a concurrent acquirer for a pruned id simply recreates a
-            // fresh lock — mutual exclusion is preserved because a count of 1
-            // means no compile is currently inside the critical section.
-            table.retain(|id, lock| *id == key || Arc::strong_count(lock) > 1);
-            table.entry(key).or_default().clone()
-        };
-        cell_lock.lock_owned().await
+        self.cell_lock(cell_id).lock_owned().await
     }
 
     /// Acquire the lock for `cell_id` only if no compile/check currently
     /// holds it. Returns `None` when busy — live checks use this to SKIP
     /// rather than queue behind a long build (PRD-0045).
     pub fn try_acquire(&self, cell_id: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        self.cell_lock(cell_id).try_lock_owned().ok()
+    }
+
+    /// The per-cell lock for `cell_id`'s artifact identity, pruning idle
+    /// entries on the way. Both acquire paths go through here, so they share
+    /// one pruning rule. The table guard drops at the end of this call, before
+    /// any caller awaits the returned lock.
+    fn cell_lock(&self, cell_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let key = lock_key(cell_id);
-        let cell_lock = {
-            let mut table = self.locks.lock().expect("compile-lock table poisoned");
-            table.retain(|id, lock| *id == key || Arc::strong_count(lock) > 1);
-            table.entry(key).or_default().clone()
-        };
-        cell_lock.try_lock_owned().ok()
+        let mut table = self.locks.lock().expect("compile-lock table poisoned");
+        // Prune entries no longer in use so the table can't grow without
+        // bound across many distinct cell ids. An entry with
+        // `strong_count == 1` is held only by the table (no in-flight
+        // compile holds a guard clone), so it's safe to drop; keep the id
+        // we're about to (re)acquire regardless. This runs under the table
+        // lock, so a concurrent acquirer for a pruned id simply recreates a
+        // fresh lock — mutual exclusion is preserved because a count of 1
+        // means no compile is currently inside the critical section.
+        table.retain(|id, lock| *id == key || Arc::strong_count(lock) > 1);
+        table.entry(key).or_default().clone()
     }
 
     /// Number of entries currently in the lock table (test-only introspection).
@@ -175,6 +174,20 @@ mod compile_locks_tests {
             locks.table_len(),
             1,
             "idle cell-1 should be pruned, leaving only in-use cell-2"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_acquire_also_prunes_idle_entries() {
+        // The live-check path must share the compile path's prune, or a
+        // stream of checks over distinct ids would grow the table forever.
+        let locks = CompileLocks::default();
+        drop(locks.acquire("cell-a").await);
+        let _check = locks.try_acquire("cell-b");
+        assert_eq!(
+            locks.table_len(),
+            1,
+            "idle cell-a should be pruned by try_acquire, leaving only cell-b"
         );
     }
 
