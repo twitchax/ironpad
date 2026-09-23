@@ -78,7 +78,8 @@ pub(crate) fn ViewOnlyNotebook(
     /// badge, and surfaces the threaded-cell limitation.
     #[prop(optional)]
     embed: bool,
-    /// Notebook source spec (`shared/{hash}` or `public/{filename}`), used to
+    /// Notebook source spec (`shared/{hash}`, `public/{filename}` or
+    /// `mutable/{id}`), used to
     /// build embed snippets on view pages and the canonical link inside embeds.
     /// Empty means "unknown source": no Embed button, badge links to `/`.
     #[prop(optional)]
@@ -1179,7 +1180,7 @@ fn ViewOnlyCodeCell(
     }
 }
 
-// ── ViewOnlySharedCell ──────────────────────────────────────────────────────
+// ── ViewOnlyInertCell / ViewOnlySharedCell ──────────────────────────────────
 
 /// A cell this build can display but must not execute: a cell type from a
 /// newer release.
@@ -1276,8 +1277,9 @@ fn ViewOnlyMarkdownCell(#[prop(into)] source: String, anchor_id: String) -> impl
 /// The title slot renders **nothing** today. `Plot` still draws its title
 /// inside the SVG, so filling this in now would show every chart's title
 /// twice; it becomes the title's home once the SVG stops drawing one. This is
-/// the one place that swap has to happen — both the saved-snapshot and the
-/// live-result paths render their caption through here.
+/// the one place code-cell output captions render (Linux cells draw their
+/// own Terminal caption), so the swap happens here: both the saved-snapshot
+/// and the live-result paths render their caption through it.
 #[component]
 fn ViewOnlyOutputCaption(
     /// Right-hand note: panel count on a snapshot, size and runtime on a live

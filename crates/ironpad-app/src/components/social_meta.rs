@@ -95,8 +95,8 @@ pub fn SocialMeta(
     /// Advertise an oEmbed endpoint for this page (PRD-0051).
     ///
     /// Set on the routes that have a matching `/embed/*` renderer, which is
-    /// `/public` and `/shared`. A consumer that follows this link embeds the
-    /// running notebook rather than a picture of it.
+    /// `/public`, `/shared` and `/mutable` (PRD-0057). A consumer that follows
+    /// this link embeds the running notebook rather than a picture of it.
     #[prop(optional)]
     oembed: bool,
     /// Ask search engines not to index this page.
@@ -210,8 +210,8 @@ pub fn mark_not_found() {
 /// closes the element and anything after it becomes live markup in the head.
 /// Notebook titles are attacker-controlled on `/shared` and `/mutable` (both
 /// accept unauthenticated uploads), which made that a stored XSS on ironpad's
-/// own origin, where `window.IronpadStorage` exposes the mutable-share user
-/// key. Every other tag here is escaped by the framework's attribute writer;
+/// own origin, where `IndexedDB` notebooks and the session-bearing requests
+/// live. Every other tag here is escaped by the framework's attribute writer;
 /// the title is the one text node and therefore the one hole.
 ///
 /// Removing rather than entity-escaping is deliberate: on the client

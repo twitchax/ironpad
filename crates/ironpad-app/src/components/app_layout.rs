@@ -352,18 +352,6 @@ fn format_relative_time(epoch_ms: f64, now_ms: f64) -> String {
     }
 }
 
-/// Sign-in element for the HEADER (PRD-0053): a silhouette over "Sign in"
-/// when signed out, the GitHub avatar over "Sign out" when signed in, and
-/// nothing at all while loading or on an instance with no OAuth configured.
-/// Both states are the same portrait-over-label stack; the signed-in handle
-/// lives in the tooltip, because a third row does not fit a 48px header.
-///
-/// Header, not the status bar: the status bar is hidden on the home page,
-/// which is exactly where a visitor looks for a way to log in (this shipped
-/// as a footer widget in 0.15.0 and was invisible on `/`).
-///
-/// Plain anchors, not buttons: the OAuth dance and logout are full-page
-/// navigations by nature (the session cookie changes hands).
 /// The anonymous portrait, shared by both auth states so they cannot drift.
 /// Hand-drawn rather than an `icons::` role: it is a portrait frame the
 /// avatar `<img>` swaps into, sized and clipped by the same rule.
@@ -377,6 +365,18 @@ fn AuthSilhouette() -> impl IntoView {
     }
 }
 
+/// Sign-in element for the HEADER (PRD-0053): a silhouette over "Sign in"
+/// when signed out, the GitHub avatar over "Sign out" when signed in, and
+/// nothing at all while loading or on an instance with no OAuth configured.
+/// Both states are the same portrait-over-label stack; the signed-in handle
+/// lives in the tooltip, because a third row does not fit a 48px header.
+///
+/// Header, not the status bar: the status bar is hidden on the home page,
+/// which is exactly where a visitor looks for a way to log in (this shipped
+/// as a footer widget in 0.15.0 and was invisible on `/`).
+///
+/// Plain anchors, not buttons: the OAuth dance and logout are full-page
+/// navigations by nature (the session cookie changes hands).
 #[component]
 fn AuthStatus(ctx: LayoutContext) -> impl IntoView {
     let location = leptos_router::hooks::use_location();

@@ -272,9 +272,6 @@ pub(crate) const VIEW_ONLY_PANEL_CLASSES: PanelClasses = PanelClasses {
     visual: "view-only-output-display view-only-output-visual",
 };
 
-/// Render a single [`DisplayPanel`] into a view, using the given class set and
-/// widget side-effect sink. Shared by the editor and the read-only viewer.
-#[allow(clippy::needless_pass_by_value)]
 /// How a panel renders: `Live` mounts the ticking components (simulation,
 /// live view) against a loaded WASM module; `Snapshot` renders the SAME
 /// panel statically for a saved output (PRD-0056) — a simulation shows its
@@ -287,6 +284,9 @@ pub(crate) enum PanelMode {
     Snapshot,
 }
 
+/// Render a single [`DisplayPanel`] into a view, using the given class set and
+/// widget side-effect sink. Shared by the editor and the read-only viewer.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn render_display_panel(
     panel: DisplayPanel,
     classes: PanelClasses,
