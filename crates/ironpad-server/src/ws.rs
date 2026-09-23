@@ -4,7 +4,7 @@
 //! and CLI guests, enforcing session/token validation and permissions.
 //! It never interprets notebook state.
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -230,8 +230,16 @@ async fn close_host(
 }
 
 /// Process a message from the host browser.
-async fn handle_host_message(text: &str, notebook_id: &str, connection_id: &str, state: &AppState) {
-    let Ok(msg) = serde_json::from_str::<ironpad_common::protocol::Message>(text) else {
+///
+/// `text` is the inbound frame's own buffer, forwarded by `clone()` (a
+/// refcount bump) rather than re-copied per send.
+async fn handle_host_message(
+    text: &Utf8Bytes,
+    notebook_id: &str,
+    connection_id: &str,
+    state: &AppState,
+) {
+    let Ok(msg) = serde_json::from_str::<ironpad_common::protocol::Message>(text.as_str()) else {
         tracing::warn!("host sent invalid JSON");
         return;
     };
@@ -252,7 +260,7 @@ async fn handle_host_message(text: &str, notebook_id: &str, connection_id: &str,
 
             state
                 .ws
-                .broadcast_to_notebook_guests(notebook_id, text)
+                .broadcast_to_notebook_guests(notebook_id, text.clone())
                 .await;
 
             // The read gate above skips a write-only (read: false) originator, so
@@ -264,7 +272,7 @@ async fn handle_host_message(text: &str, notebook_id: &str, connection_id: &str,
             // follow-ups — never another client's edits, which stay gated.
             if let Some(origin_client) = origin {
                 if !state.ws.guest_can_read(&origin_client).await
-                    && !state.ws.send_to_guest(&origin_client, text).await
+                    && !state.ws.send_to_guest(&origin_client, text.clone()).await
                 {
                     // The originator strands on its request timeout without
                     // this ack — leave a trace instead of failing silently.
@@ -276,7 +284,7 @@ async fn handle_host_message(text: &str, notebook_id: &str, connection_id: &str,
         // Host sends a response → route to the guest that sent the query.
         MessageKind::Response(_) => {
             if let Some(client_id) = state.ws.resolve_query(&msg.id).await {
-                if !state.ws.send_to_guest(&client_id, text).await {
+                if !state.ws.send_to_guest(&client_id, text.clone()).await {
                     tracing::warn!(client_id = %client_id, "failed to deliver query response to guest");
                 }
             }
@@ -327,7 +335,7 @@ async fn handle_host_control(
                     token: result.token,
                 }),
             );
-            state.ws.send_to_host(notebook_id, &response).await;
+            state.ws.send_to_host(notebook_id, response).await;
         }
 
         ControlMessage::EndSession { session_id } => {
@@ -435,7 +443,7 @@ async fn handle_guest(
             client_id: ClientId(client_id.clone()),
         }),
     );
-    state.ws.send_to_host(&notebook_id, &connected_msg).await;
+    state.ws.send_to_host(&notebook_id, connected_msg).await;
 
     // Forward channel → WebSocket.
     let mut send_task = tokio::spawn(async move {
@@ -496,19 +504,20 @@ async fn handle_guest(
             client_id: ClientId(client_id),
         }),
     );
-    state.ws.send_to_host(&notebook_id, &disconnected_msg).await;
+    state.ws.send_to_host(&notebook_id, disconnected_msg).await;
 }
 
-/// Process a message from a CLI guest.
+/// Process a message from a CLI guest. `text` is forwarded the same way as in
+/// [`handle_host_message`].
 async fn handle_guest_message(
-    text: &str,
+    text: &Utf8Bytes,
     notebook_id: &str,
     _session_id: &str,
     client_id: &str,
     permissions: &Permissions,
     state: &AppState,
 ) {
-    let Ok(msg) = serde_json::from_str::<ironpad_common::protocol::Message>(text) else {
+    let Ok(msg) = serde_json::from_str::<ironpad_common::protocol::Message>(text.as_str()) else {
         tracing::warn!(client_id = %client_id, "guest sent invalid JSON");
         return;
     };
@@ -522,7 +531,7 @@ async fn handle_guest_message(
                 message: "Insufficient permissions for this operation".into(),
             }),
         );
-        state.ws.send_to_guest(client_id, &error).await;
+        state.ws.send_to_guest(client_id, error).await;
         return;
     }
 
@@ -534,7 +543,7 @@ async fn handle_guest_message(
         // for a query it routes the Response.
         MessageKind::Mutation(_) | MessageKind::Query(_) => {
             state.ws.track_query(&msg.id, client_id).await;
-            match state.ws.send_to_host(notebook_id, text).await {
+            match state.ws.send_to_host(notebook_id, text.clone()).await {
                 HostDelivery::Delivered => {}
                 // Host alive but its outbound queue is saturated; the frame was
                 // dropped. Don't misreport this live host as gone (review L2):
@@ -558,7 +567,7 @@ async fn handle_guest_message(
                             message: "host disconnected".into(),
                         }),
                     );
-                    state.ws.send_to_guest(client_id, &err).await;
+                    state.ws.send_to_guest(client_id, err).await;
                 }
             }
         }
@@ -587,8 +596,33 @@ mod tests {
 
     use crate::state::{AppState, WsState};
 
-    use super::{handle_guest_message, handle_host_message, WS_CHANNEL_BOUND};
+    use super::WS_CHANNEL_BOUND;
     use crate::state::wire_msg;
+
+    /// The handlers take the inbound frame's `Utf8Bytes`; tests build frames
+    /// as JSON strings.
+    async fn handle_host_message(text: &str, notebook_id: &str, conn: &str, state: &AppState) {
+        super::handle_host_message(&text.into(), notebook_id, conn, state).await;
+    }
+
+    async fn handle_guest_message(
+        text: &str,
+        notebook_id: &str,
+        session_id: &str,
+        client_id: &str,
+        permissions: &Permissions,
+        state: &AppState,
+    ) {
+        super::handle_guest_message(
+            &text.into(),
+            notebook_id,
+            session_id,
+            client_id,
+            permissions,
+            state,
+        )
+        .await;
+    }
 
     /// Build a minimal `AppState` suitable for WS handler tests.
     fn test_state() -> AppState {

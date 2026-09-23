@@ -298,12 +298,22 @@ impl WsState {
     /// Send a JSON message to the host of a notebook, reporting whether it was
     /// enqueued, dropped under backpressure, or the host is gone. See
     /// [`HostDelivery`] for why `Full` and `Disconnected` are kept distinct.
-    pub async fn send_to_host(&self, notebook_id: &str, message: &str) -> HostDelivery {
+    ///
+    /// Every send here takes `impl Into<Utf8Bytes>` so the relay can forward
+    /// an inbound frame's own ref-counted buffer (a clone is a refcount bump)
+    /// and move a freshly serialized `String` in, where a `&str` would copy the
+    /// whole payload per relayed message. The conversion happens after the
+    /// host lookup, so a `Disconnected` result allocates nothing.
+    pub async fn send_to_host(
+        &self,
+        notebook_id: &str,
+        message: impl Into<Utf8Bytes>,
+    ) -> HostDelivery {
         let hosts = self.hosts.read().await;
         let Some(host) = hosts.get(notebook_id) else {
             return HostDelivery::Disconnected;
         };
-        match host.sender.try_send(Utf8Bytes::from(message)) {
+        match host.sender.try_send(message.into()) {
             Ok(()) => HostDelivery::Delivered,
             Err(mpsc::error::TrySendError::Full(_)) => HostDelivery::Full,
             Err(mpsc::error::TrySendError::Closed(_)) => HostDelivery::Disconnected,
@@ -355,8 +365,8 @@ impl WsState {
     /// The payload is materialized once and fanned out as cheap ref-counted
     /// clones — events carry full cell source, so a per-recipient copy was a
     /// real allocation on the relay hot path.
-    pub async fn broadcast_to_guests(&self, session_id: &str, message: &str) {
-        let payload = Utf8Bytes::from(message);
+    pub async fn broadcast_to_guests(&self, session_id: &str, message: impl Into<Utf8Bytes>) {
+        let payload: Utf8Bytes = message.into();
         let guests = self.guests.read().await;
         if let Some(list) = guests.get(session_id) {
             for guest in list {
@@ -373,8 +383,12 @@ impl WsState {
     /// confidentiality boundary for the `read` permission. Session lifecycle
     /// control messages (`SessionEnded`) use [`broadcast_to_guests`], which is
     /// *not* gated so a revoked guest still learns its session ended.
-    pub async fn broadcast_to_notebook_guests(&self, notebook_id: &str, message: &str) {
-        let payload = Utf8Bytes::from(message);
+    pub async fn broadcast_to_notebook_guests(
+        &self,
+        notebook_id: &str,
+        message: impl Into<Utf8Bytes>,
+    ) {
+        let payload: Utf8Bytes = message.into();
         let sessions = self.readable_sessions_for_notebook(notebook_id).await;
         let guests = self.guests.read().await;
         for session_id in &sessions {
@@ -387,14 +401,12 @@ impl WsState {
     }
 
     /// Send a JSON message to a specific guest by `client_id`.
-    pub async fn send_to_guest(&self, client_id: &str, message: &str) -> bool {
+    pub async fn send_to_guest(&self, client_id: &str, message: impl Into<Utf8Bytes>) -> bool {
         let guests = self.guests.read().await;
-        for list in guests.values() {
-            if let Some(guest) = list.iter().find(|g| g.client_id == client_id) {
-                return guest.sender.try_send(Utf8Bytes::from(message)).is_ok();
-            }
-        }
-        false
+        let Some(guest) = guests.values().flatten().find(|g| g.client_id == client_id) else {
+            return false;
+        };
+        guest.sender.try_send(message.into()).is_ok()
     }
 
     /// Drops all guest senders on a session (closing their sockets); callers
@@ -419,7 +431,7 @@ impl WsState {
                 session_id: session_id.to_string(),
             }),
         );
-        self.broadcast_to_guests(session_id, &close_msg).await;
+        self.broadcast_to_guests(session_id, close_msg).await;
         self.disconnect_guests(session_id).await;
     }
 
@@ -722,6 +734,26 @@ mod tests {
 
         assert_eq!(rx1.recv().await.unwrap(), "update");
         assert_eq!(rx2.recv().await.unwrap(), "update");
+    }
+
+    #[tokio::test]
+    async fn broadcast_fans_one_buffer_out_without_copying_it() {
+        // The relay forwards the inbound frame's own buffer: every recipient
+        // gets a refcount bump on the SAME bytes, not a copy.
+        let ws = WsState::default();
+        let (tx1, mut rx1) = mpsc::channel(64);
+        let (tx2, mut rx2) = mpsc::channel(64);
+        ws.register_guest("sess-1", "client-1", tx1).await;
+        ws.register_guest("sess-1", "client-2", tx2).await;
+
+        let frame = Utf8Bytes::from(String::from("cell-source"));
+        let origin = frame.as_str().as_ptr();
+        ws.broadcast_to_guests("sess-1", frame).await;
+
+        let a = rx1.recv().await.unwrap();
+        let b = rx2.recv().await.unwrap();
+        assert_eq!(a.as_str().as_ptr(), origin);
+        assert_eq!(b.as_str().as_ptr(), origin);
     }
 
     #[tokio::test]
