@@ -155,30 +155,22 @@ async fn github_callback(
     let return_path = safe_redirect_path(Some(return_path));
 
     // Exchange the code for an access token.
-    let token: TokenResponse = match state
-        .http
-        .post("https://github.com/login/oauth/access_token")
-        .header(header::ACCEPT, "application/json")
-        .form(&[
-            ("client_id", github.client_id.as_str()),
-            ("client_secret", github.client_secret.as_str()),
-            ("code", &code),
-        ])
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
+    let token: TokenResponse = match github_json(
+        state
+            .http
+            .post("https://github.com/login/oauth/access_token")
+            .header(header::ACCEPT, "application/json")
+            .form(&[
+                ("client_id", github.client_id.as_str()),
+                ("client_secret", github.client_secret.as_str()),
+                ("code", &code),
+            ]),
+        "token exchange",
+    )
+    .await
     {
-        Ok(res) => match res.json().await {
-            Ok(token) => token,
-            Err(e) => {
-                tracing::error!(error = %e, "token response malformed");
-                return (StatusCode::BAD_GATEWAY, "GitHub token exchange failed").into_response();
-            }
-        },
-        Err(e) => {
-            tracing::error!(error = %e, "token exchange request failed");
-            return (StatusCode::BAD_GATEWAY, "GitHub token exchange failed").into_response();
-        }
+        Ok(token) => token,
+        Err(res) => return res,
     };
     let Some(access_token) = token.access_token else {
         tracing::warn!(
@@ -189,27 +181,19 @@ async fn github_callback(
     };
 
     // Fetch the identity. User-Agent is mandatory on api.github.com.
-    let user: GithubUser = match state
-        .http
-        .get("https://api.github.com/user")
-        .header(header::ACCEPT, "application/vnd.github+json")
-        .header(header::USER_AGENT, "ironpad")
-        .bearer_auth(&access_token)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
+    let user: GithubUser = match github_json(
+        state
+            .http
+            .get("https://api.github.com/user")
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header(header::USER_AGENT, "ironpad")
+            .bearer_auth(&access_token),
+        "user lookup",
+    )
+    .await
     {
-        Ok(res) => match res.json().await {
-            Ok(user) => user,
-            Err(e) => {
-                tracing::error!(error = %e, "user response malformed");
-                return (StatusCode::BAD_GATEWAY, "GitHub user lookup failed").into_response();
-            }
-        },
-        Err(e) => {
-            tracing::error!(error = %e, "user lookup request failed");
-            return (StatusCode::BAD_GATEWAY, "GitHub user lookup failed").into_response();
-        }
+        Ok(user) => user,
+        Err(res) => return res,
     };
 
     finish_login(
@@ -220,6 +204,34 @@ async fn github_callback(
         &return_path,
     )
     .await
+}
+
+/// Send one GitHub API request and decode its JSON body, or produce the 502
+/// the callback answers with when GitHub cannot be reached or talks nonsense.
+///
+/// Both of the callback's round trips go through here, so a fix to one (a
+/// timeout, a status mapping) cannot miss the other. `what` names the step in
+/// the log and in the response body (`GitHub {what} failed`).
+async fn github_json<T: serde::de::DeserializeOwned>(
+    req: reqwest::RequestBuilder,
+    what: &'static str,
+) -> Result<T, Response> {
+    let bad_gateway = || (StatusCode::BAD_GATEWAY, format!("GitHub {what} failed")).into_response();
+    let res = match req
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+    {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!(error = %e, what, "GitHub request failed");
+            return Err(bad_gateway());
+        }
+    };
+    res.json().await.map_err(|e| {
+        tracing::error!(error = %e, what, "GitHub response malformed");
+        bad_gateway()
+    })
 }
 
 /// Delete the session and clear the cookie.
