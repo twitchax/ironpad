@@ -17,6 +17,8 @@
  * refuses views over a SharedArrayBuffer the way browsers do. Node's own
  * decoder accepts them, so without it a live-view decode of a rayon cell's
  * shared memory (a trap inside a WASM import, in a browser) would pass here.
+ * Both codecs also count their constructions, which the executor makes once
+ * per script load rather than once per per-frame call.
  */
 
 import { test } from "node:test";
@@ -41,10 +43,11 @@ function isShared(buffer) {
   return Object.prototype.toString.call(buffer) === "[object SharedArrayBuffer]";
 }
 
-/** A `TextDecoder` with the browser's shared-memory rule and a call counter. */
+/** A `TextDecoder` with the browser's shared-memory rule and counters. */
 function makeBrowserTextDecoder(stats) {
   return class BrowserTextDecoder {
     constructor() {
+      stats.codecs += 1;
       this.inner = new TextDecoder();
     }
 
@@ -61,17 +64,27 @@ function makeBrowserTextDecoder(stats) {
   };
 }
 
+/** A `TextEncoder` that counts its constructions. */
+function makeCountingTextEncoder(stats) {
+  return class CountingTextEncoder extends TextEncoder {
+    constructor() {
+      super();
+      stats.codecs += 1;
+    }
+  };
+}
+
 function source(name) {
   return readFileSync(path.join(PUBLIC, name), "utf8");
 }
 
 /**
  * Evaluate public scripts against one fake global. Each script sees `self`,
- * `importScripts`, `TextDecoder` and `console` as that global's, which is all
- * the executor chain reaches for at load time.
+ * `importScripts`, the two UTF-8 codecs and `console` as that global's, which
+ * is all the executor chain reaches for at load time.
  */
 function makeGlobal() {
-  const stats = { decodes: 0, warnings: [] };
+  const stats = { decodes: 0, codecs: 0, warnings: [] };
   const posted = [];
   const g = {
     location: { search: "" },
@@ -85,13 +98,15 @@ function makeGlobal() {
     warn: (...args) => stats.warnings.push(args.join(" ")),
   };
   const Decoder = makeBrowserTextDecoder(stats);
+  const Encoder = makeCountingTextEncoder(stats);
 
   function run(name) {
     // eslint-disable-next-line no-new-func
-    new Function("self", "importScripts", "TextDecoder", "console", source(name))(
+    new Function("self", "importScripts", "TextDecoder", "TextEncoder", "console", source(name))(
       g,
       importScripts,
       Decoder,
+      Encoder,
       fakeConsole,
     );
   }
@@ -198,6 +213,19 @@ function bindgenEntry(cell, moduleExports = {}, extraWasm = {}) {
       ...extraWasm,
     },
   };
+}
+
+/** A TickResult at 256 pointing at three RGB bytes at 512. */
+function writeTickResult(cell) {
+  cell.put(512, [10, 20, 30]);
+  return cell.putU32s(256, [512, 3, 1, 1]);
+}
+
+/** A LiveTickResult at 256 (kind 1 = Html) pointing at UTF-8 content at 512. */
+function writeLiveTickResult(cell, content) {
+  const { len } = cell.putText(512, content);
+  cell.putU32s(256, [1, 512, len]);
+  return { ptr: 256, len };
 }
 
 // ── Host messages (review js-1) ─────────────────────────────────────────────
@@ -359,4 +387,46 @@ test("_cellMemory resolves either loading path and tolerates a half-built entry"
   assert.equal(executor._cellMemory("broken"), null);
   assert.equal(executor._cellMemory("missing"), null);
   assert.equal(executor._blockingRead("broken", 0, 8), 0, "a blocking read on it copies nothing");
+});
+
+// ── UTF-8 codecs and CellResult (review js-5) ───────────────────────────────
+
+test("the per-frame paths reuse the executor's codecs instead of building new ones", async () => {
+  // Sim reads, host messages and LiveView frames run once per animation
+  // frame, and each used to construct a fresh TextDecoder/TextEncoder.
+  const { executor, stats } = loadCore();
+  const loaded = stats.codecs;
+  const cell = makeMemory({ shared: true });
+  executor.modules.set("c1", rawEntry(cell, { cell_tick: () => writeLiveTickResult(cell, "x").ptr }));
+  executor.simBusWrite("k", 1);
+  const key = cell.putText(64, "k");
+  const msg = cell.putText(128, '{"type":"sim_emit","key":"k","value":2}');
+
+  for (let i = 0; i < 3; i++) {
+    executor._simRead("c1", key.ptr, key.len);
+    executor._simReadAll("c1", key.ptr, key.len);
+    executor._dispatchHostMessage("c1", msg.ptr, msg.len);
+    await executor.tickLive("c1");
+  }
+
+  assert.ok(stats.decodes >= 12, "the calls above did decode");
+  assert.equal(stats.codecs, loaded, "and constructed no codec to do it");
+});
+
+test("execute decodes display text and type tag out of shared memory", async () => {
+  // `_readCellResult` decodes through the executor's one shared decoder; the
+  // copies it makes first are what keep that safe on a rayon cell's memory.
+  const { executor } = loadCore();
+  const cell = makeMemory({ shared: true });
+  const display = cell.putText(600, '[{"Text":"42"}]');
+  const tag = cell.putText(700, "i32");
+  cell.put(800, [42, 0, 0, 0]);
+  cell.putU32s(256, [800, 4, display.ptr, display.len, tag.ptr, tag.len]);
+  executor.modules.set("c", rawEntry(cell, { cell_main: (_inPtr, _inLen) => 256 }));
+
+  const result = await executor.execute("c", new Uint8Array(0));
+
+  assert.equal(result.displayText, '[{"Text":"42"}]');
+  assert.equal(result.typeTag, "i32");
+  assert.deepEqual(Array.from(result.outputBytes), [42, 0, 0, 0]);
 });

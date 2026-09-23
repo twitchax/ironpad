@@ -16,6 +16,9 @@
   // FFI helpers.  All GPU handles live in a flat Map so WASM cells can
   // reference them by integer handle.
 
+  // Shared by every dispatch (stateless in non-streaming use).
+  var UTF8_DECODER = new TextDecoder();
+
   var _gpuDevice = null;
   var _gpuAvailable = null; // null = not yet probed, true/false = result
   var _gpuHandles = new Map();
@@ -104,8 +107,10 @@
   ) {
     if (!_gpuDevice) return 1;
     try {
-      var shaderBytes = new Uint8Array(memory.buffer, shaderPtr, shaderLen);
-      var shaderCode = new TextDecoder().decode(shaderBytes);
+      // Copied before decoding: a rayon cell's memory is a SharedArrayBuffer,
+      // and a browser TextDecoder rejects a view of one.
+      var shaderBytes = new Uint8Array(memory.buffer, shaderPtr, shaderLen).slice();
+      var shaderCode = UTF8_DECODER.decode(shaderBytes);
 
       var shaderModule = _gpuDevice.createShaderModule({ code: shaderCode });
 

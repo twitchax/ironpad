@@ -16,6 +16,17 @@
   var Gpu = self.__IronpadExecutorGpu;
   var Glue = self.__IronpadExecutorGlue;
 
+  // ── UTF-8 codecs ───────────────────────────────────────────────────────────
+  //
+  // One of each for the whole executor: both are stateless in non-streaming
+  // use, and the sim reads, host messages and LiveView frames that use them
+  // run once per animation frame. Every decode input is a COPY of linear
+  // memory (`.slice()`), never a live view: a rayon cell's memory is a
+  // SharedArrayBuffer, which a browser TextDecoder rejects.
+
+  var UTF8_DECODER = new TextDecoder();
+  var UTF8_ENCODER = new TextEncoder();
+
   // ── CellResult layout ──────────────────────────────────────────────────────
   //
   // The cell_main function returns a pointer to a CellResult (#[repr(C)]):
@@ -196,7 +207,7 @@
     var memory = this._cellMemory(cellId);
     if (!memory) return null;
     var bytes = new Uint8Array(memory.buffer, ptr, len).slice();
-    return new TextDecoder().decode(bytes);
+    return UTF8_DECODER.decode(bytes);
   };
 
   /// Parse host-message text and dispatch it by `type`. The worker wraps this
@@ -229,12 +240,12 @@
     if (!x || !x.memory || !x.ironpad_alloc) return 0;
 
     var keyBytes = new Uint8Array(x.memory.buffer, keyPtr, keyLen).slice();
-    var key = new TextDecoder().decode(keyBytes);
+    var key = UTF8_DECODER.decode(keyBytes);
 
     var busEntry = this._simBus.get(key);
     if (!busEntry || busEntry.latest === null || busEntry.latest === undefined) return 0;
 
-    var jsonBytes = new TextEncoder().encode(busEntry.latest);
+    var jsonBytes = UTF8_ENCODER.encode(busEntry.latest);
     return _writeLengthPrefixed(x.memory, x.ironpad_alloc, jsonBytes);
   };
 
@@ -246,13 +257,13 @@
     if (!x || !x.memory || !x.ironpad_alloc) return 0;
 
     var keyBytes = new Uint8Array(x.memory.buffer, keyPtr, keyLen).slice();
-    var key = new TextDecoder().decode(keyBytes);
+    var key = UTF8_DECODER.decode(keyBytes);
 
     var busEntry = this._simBus.get(key);
     if (!busEntry || busEntry.ring.length === 0) return 0;
 
     var json = "[" + busEntry.ring.join(",") + "]";
-    var jsonBytes = new TextEncoder().encode(json);
+    var jsonBytes = UTF8_ENCODER.encode(json);
     return _writeLengthPrefixed(x.memory, x.ironpad_alloc, jsonBytes);
   };
 
@@ -400,7 +411,7 @@
     if (memory) {
       var urlBytes = new Uint8Array(urlLen);
       urlBytes.set(new Uint8Array(memory.buffer, urlPtr, urlLen));
-      url = new TextDecoder().decode(urlBytes);
+      url = UTF8_DECODER.decode(urlBytes);
     }
     var ok = false;
     var bytes;
@@ -411,12 +422,12 @@
         ok = true;
         bytes = body;
       } else {
-        bytes = new TextEncoder().encode(
+        bytes = UTF8_ENCODER.encode(
           "HTTP " + resp.status + (resp.statusText ? " " + resp.statusText : "")
         );
       }
     } catch (e) {
-      bytes = new TextEncoder().encode(String((e && e.message) || e));
+      bytes = UTF8_ENCODER.encode(String((e && e.message) || e));
     }
     this._blockingPayloads.set(cellId, { ok: ok, bytes: bytes });
     return bytes.length;
@@ -756,12 +767,12 @@
 
     // Decode display text from UTF-8.
     var displayText = displayLen > 0
-      ? new TextDecoder().decode(new Uint8Array(memory.buffer, displayPtr, displayLen).slice())
+      ? UTF8_DECODER.decode(new Uint8Array(memory.buffer, displayPtr, displayLen).slice())
       : null;
 
     // Decode type tag from UTF-8.
     var typeTag = typeTagLen > 0
-      ? new TextDecoder().decode(new Uint8Array(memory.buffer, typeTagPtr, typeTagLen).slice())
+      ? UTF8_DECODER.decode(new Uint8Array(memory.buffer, typeTagPtr, typeTagLen).slice())
       : null;
 
     // ── Clean up all WASM allocations ────────────────────────────────────
@@ -906,7 +917,7 @@
 
     // Decode content string from UTF-8.
     var content = contentLen > 0
-      ? new TextDecoder().decode(new Uint8Array(memory.buffer, contentPtr, contentLen).slice())
+      ? UTF8_DECODER.decode(new Uint8Array(memory.buffer, contentPtr, contentLen).slice())
       : "";
 
     // ── Clean up WASM allocations ──────────────────────────────────────
