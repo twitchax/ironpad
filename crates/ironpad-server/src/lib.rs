@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod crawl;
+mod escape;
 pub mod notebook_class;
 pub mod oembed;
 pub mod og;

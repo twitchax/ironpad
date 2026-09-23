@@ -18,6 +18,7 @@ use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use ironpad_common::absolute_url;
 
+use crate::escape::markup_escape;
 use crate::state::AppState;
 
 /// `/embed/*` renders the same notebooks as `/public` and `/shared` without
@@ -72,27 +73,11 @@ fn push_url(out: &mut String, public_url: &str, path: &str) {
     let _ = writeln!(
         out,
         "  <url><loc>{}</loc></url>",
-        escape(&absolute_url(public_url, path))
+        // Notebook filenames come off disk rather than from a request, but a
+        // `&` in one would still produce a malformed sitemap that a crawler
+        // silently drops.
+        markup_escape(&absolute_url(public_url, path))
     );
-}
-
-/// XML-escapes a URL for inclusion in a `<loc>`.
-///
-/// Notebook filenames come off disk rather than from a request, but a `&` in
-/// one would still produce a malformed sitemap that a crawler silently drops.
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -188,6 +173,17 @@ mod tests {
         let xml = sitemap_xml(ORIGIN, &[]);
         assert!(xml.contains("<loc>https://ironpad.twitchax.com/</loc>"));
         assert!(xml.trim_end().ends_with("</urlset>"));
+    }
+
+    #[test]
+    fn a_control_character_in_a_name_still_yields_a_parseable_loc() {
+        // XML 1.0 cannot encode a C0 control at all, so one reaching a `<loc>`
+        // would make the whole sitemap unparseable.
+        let xml = sitemap_xml(ORIGIN, &["bad\u{1}name.ironpad".to_string()]);
+        assert!(xml.contains("<loc>https://ironpad.twitchax.com/public/badname</loc>"));
+        assert!(!xml
+            .chars()
+            .any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r'));
     }
 
     #[test]

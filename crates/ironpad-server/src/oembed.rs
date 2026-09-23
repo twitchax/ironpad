@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use ironpad_common::absolute_url;
 use serde::{Deserialize, Serialize};
 
+use crate::escape::markup_escape;
 use crate::notebook_class::Class;
 use crate::state::AppState;
 
@@ -141,30 +142,14 @@ pub fn response_for(
         // this string is embedded verbatim into the consumer's page.
         html: format!(
             r#"<iframe src="{}" style="width:100%;border:0;" height="{height}" loading="lazy" title="{}"></iframe>"#,
-            escape_attr(&src),
-            escape_attr(&title),
+            markup_escape(&src),
+            markup_escape(&title),
         ),
         title,
         width: DEFAULT_WIDTH,
         height,
         cache_age: CACHE_AGE,
     }
-}
-
-/// Escapes a string for use inside a double-quoted HTML attribute.
-fn escape_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 // ── Handler ─────────────────────────────────────────────────────────────────

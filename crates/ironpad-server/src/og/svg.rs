@@ -6,6 +6,7 @@
 use std::fmt::Write as _;
 
 use super::text::{mono, sans, sans_bold, MONO_FAMILY, SANS_FAMILY};
+use crate::escape::markup_escape;
 
 // ── Canvas ──────────────────────────────────────────────────────────────────
 
@@ -133,7 +134,7 @@ pub fn render(card: &Card) -> String {
     let _ = write!(
         s,
         r#"<text x="{x:.1}" y="{BRAND_BASELINE}" font-family="{SANS_FAMILY}" font-weight="500" font-size="{LABEL_SIZE}" fill="{TEXT_MUTED}" letter-spacing="1.6">{}</text>"#,
-        escape(&label),
+        markup_escape(&label),
         x = PAD + brand_w + 22.0,
     );
 
@@ -262,7 +263,7 @@ pub fn render(card: &Card) -> String {
     let _ = write!(
         s,
         r#"<text x="{x}" y="{FOOTER_BASELINE}" text-anchor="end" font-family="{SANS_FAMILY}" font-weight="400" font-size="{FOOTER_SIZE}" fill="{TEXT_MUTED}">{}</text>"#,
-        escape(&card.host),
+        markup_escape(&card.host),
         x = W - PAD,
     );
 
@@ -287,7 +288,7 @@ fn text_el(
     let _ = write!(
         out,
         r#"<text x="{x:.1}" y="{y:.1}" font-family="{family}" font-weight="{weight}" font-size="{size}" fill="{fill}">{}</text>"#,
-        escape(content)
+        markup_escape(content)
     );
 }
 
@@ -301,7 +302,11 @@ fn code_line_el(out: &mut String, x: f64, y: f64, line: &str) {
         r#"<text xml:space="preserve" x="{x:.1}" y="{y:.1}" font-family="{MONO_FAMILY}" font-weight="400" font-size="{CODE_SIZE}">"#
     );
     for (piece, colour) in tokenize(line) {
-        let _ = write!(out, r#"<tspan fill="{colour}">{}</tspan>"#, escape(piece));
+        let _ = write!(
+            out,
+            r#"<tspan fill="{colour}">{}</tspan>"#,
+            markup_escape(piece)
+        );
     }
     out.push_str("</text>");
 }
@@ -440,37 +445,6 @@ fn expand_tabs(line: &str) -> String {
         } else {
             out.push(ch);
             column += 1;
-        }
-    }
-    out
-}
-
-/// XML-escapes text and attribute content, dropping characters XML cannot
-/// represent at all.
-///
-/// Notebook titles are attacker-controlled on `/shared` and `/mutable`, so an
-/// unescaped `<` would let a share inject arbitrary SVG (including a
-/// `<script>`) into an image the server signs with its own hostname.
-///
-/// Escaping alone is not enough. XML 1.0 forbids the C0 controls outright, and
-/// no entity can encode them, so a title carrying one made `usvg` reject the
-/// whole document: `/og/{class}/{id}.png` answered 500 for that notebook
-/// permanently, since the failure is deterministic in its content. They are
-/// dropped rather than escaped for that reason. Tab, newline, and carriage
-/// return are the three XML permits and are kept.
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            // XML 1.0 §2.2: only these three C0 controls are legal.
-            '\t' | '\n' | '\r' => out.push(c),
-            c if c.is_control() => {}
-            _ => out.push(c),
         }
     }
     out
@@ -648,13 +622,5 @@ mod tests {
         assert_eq!(expand_tabs("\tx"), "    x");
         assert_eq!(expand_tabs("ab\tx"), "ab  x");
         assert_eq!(expand_tabs("no tabs"), "no tabs");
-    }
-
-    #[test]
-    fn escape_covers_every_xml_metacharacter() {
-        assert_eq!(
-            escape(r#"<a href="x">&'"#),
-            "&lt;a href=&quot;x&quot;&gt;&amp;&apos;"
-        );
     }
 }
