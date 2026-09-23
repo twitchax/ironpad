@@ -200,6 +200,100 @@ function bindgenEntry(cell, moduleExports = {}, extraWasm = {}) {
   };
 }
 
+// ── Host messages (review js-1) ─────────────────────────────────────────────
+
+test("a host message in shared memory reaches its handler once, parsed", () => {
+  // The rayon case: a cell's memory is a SharedArrayBuffer, and a browser
+  // TextDecoder throws on a live view of one. The read must go through a copy.
+  const { executor, stats } = loadCore();
+  const cell = makeMemory({ shared: true });
+  executor.modules.set("c1", rawEntry(cell));
+
+  const calls = [];
+  executor.onHostMessage("progress_update", (msg, cellId) => calls.push({ msg, cellId }));
+
+  const { ptr, len } = cell.putText(64, '{"type":"progress_update","id":"p1","value":50}');
+  executor._dispatchHostMessage("c1", ptr, len);
+
+  assert.deepEqual(calls, [
+    { msg: { type: "progress_update", id: "p1", value: 50 }, cellId: "c1" },
+  ]);
+  assert.equal(stats.decodes, 1);
+});
+
+test("a host message for an unloaded cell is dropped without reading memory", () => {
+  const { executor, stats } = loadCore();
+  let called = false;
+  executor.onHostMessage("progress_update", () => {
+    called = true;
+  });
+
+  executor._dispatchHostMessage("missing", 0, 10);
+
+  assert.equal(called, false);
+  assert.equal(stats.decodes, 0);
+});
+
+test("a malformed host message warns instead of trapping the cell", () => {
+  // The handler runs inside a WASM import: a throw there traps the cell.
+  const { executor, stats } = loadCore();
+  const cell = makeMemory();
+  executor.modules.set("c1", rawEntry(cell));
+
+  const { ptr, len } = cell.putText(64, "{not json");
+  assert.doesNotThrow(() => executor._dispatchHostMessage("c1", ptr, len));
+  assert.equal(stats.warnings.length, 1);
+  assert.match(stats.warnings[0], /failed to parse host message/);
+});
+
+test("the worker forwards each host message once, decoded once, before local dispatch", () => {
+  // The worker used to re-resolve memory and decode a live view itself, then
+  // call the core, which decoded a second time. The forward now rides the
+  // core's single copy-and-decode, so shared memory is safe here too.
+  const { executor, stats, posted } = loadWorker();
+  const cell = makeMemory({ shared: true });
+  executor.modules.set("c1", bindgenEntry(cell));
+
+  const order = [];
+  executor.onHostMessage("progress_update", (msg) => order.push(["handler", msg.value, posted.length]));
+
+  const text = '{"type":"progress_update","id":"p1","value":75}';
+  const { ptr, len } = cell.putText(128, text);
+  executor._dispatchHostMessage("c1", ptr, len);
+
+  assert.deepEqual(posted, [{ type: "hostMessage", cellId: "c1", messageJson: text }]);
+  assert.deepEqual(order, [["handler", 75, 1]], "forwarded to the main thread first");
+  assert.equal(stats.decodes, 1, "read and decoded exactly once");
+});
+
+test("the worker's own sim_emit handler updates its bus from a forwarded message", () => {
+  const { executor, posted } = loadWorker();
+  const cell = makeMemory({ shared: true });
+  executor.modules.set("c1", rawEntry(cell));
+
+  const text = '{"type":"sim_emit","key":"speed","value":3.5}';
+  const { ptr, len } = cell.putText(64, text);
+  executor._dispatchHostMessage("c1", ptr, len);
+
+  assert.equal(posted.length, 1);
+  assert.equal(executor._simBus.get("speed").latest, "3.5");
+});
+
+test("the worker forwards a gpu_read_pixels request and still defers it locally", () => {
+  const { executor, stats, posted } = loadWorker();
+  const cell = makeMemory();
+  executor.modules.set("c1", rawEntry(cell));
+
+  const text = '{"type":"gpu_read_pixels","output_handle":1,"staging_handle":2,"width":4,"height":4}';
+  const { ptr, len } = cell.putText(64, text);
+  executor._dispatchHostMessage("c1", ptr, len);
+
+  assert.equal(posted.length, 1);
+  assert.equal(executor._pendingGpuReadbacks.length, 1);
+  assert.equal(executor._pendingGpuReadbacks[0].width, 4);
+  assert.equal(stats.decodes, 1, "unshared memory is read once too");
+});
+
 // ── Sim bus reads (review js-2) ─────────────────────────────────────────────
 
 test("_simRead writes the latest value as [u32-LE length][JSON bytes]", () => {

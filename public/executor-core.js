@@ -184,12 +184,24 @@
   /// Read a JSON message from WASM memory and dispatch to the appropriate
   /// handler.  Called by the `ironpad_host_message` import at runtime.
   CellExecutor.prototype._dispatchHostMessage = function (cellId, ptr, len) {
+    var text = this._readHostText(cellId, ptr, len);
+    if (text !== null) this._handleHostMessage(cellId, text);
+  };
+
+  /// Copy a host message's UTF-8 text out of the cell's memory, or null when
+  /// the cell (or its memory) is gone. The copy comes BEFORE the decode: a
+  /// rayon cell's memory is a SharedArrayBuffer, and a browser TextDecoder
+  /// throws on a view of one, which inside this import traps the cell.
+  CellExecutor.prototype._readHostText = function (cellId, ptr, len) {
     var memory = this._cellMemory(cellId);
-    if (!memory) return;
-
+    if (!memory) return null;
     var bytes = new Uint8Array(memory.buffer, ptr, len).slice();
-    var text = new TextDecoder().decode(bytes);
+    return new TextDecoder().decode(bytes);
+  };
 
+  /// Parse host-message text and dispatch it by `type`. The worker wraps this
+  /// (not `_dispatchHostMessage`) to forward the same text to the main thread.
+  CellExecutor.prototype._handleHostMessage = function (cellId, text) {
     try {
       var msg = JSON.parse(text);
 

@@ -146,27 +146,19 @@ executor.onHostMessage("sim_emit", function (msg, _cellId) {
 
 // ── Host message forwarding ─────────────────────────────────────────────────
 //
-// WASM cells call `ironpad_host_message(ptr, len)` which lands in
-// `_dispatchHostMessage`.  We intercept to read the raw JSON from WASM memory
-// (only accessible here in the Worker) and forward it to the main thread.
+// WASM cells call `ironpad_host_message(ptr, len)` which lands in the core's
+// `_dispatchHostMessage`: it copies the JSON text out of WASM memory (only
+// reachable here in the Worker) and hands it to `_handleHostMessage`. Wrapping
+// that second half forwards the SAME text to the main thread, so a message is
+// read and decoded once, through the core's shared-memory-safe copy. The
+// forward happens before the local dispatch, gpu_read_pixels included.
 
-var origDispatch = executor._dispatchHostMessage.bind(executor);
+var origHandle = executor._handleHostMessage.bind(executor);
 
-executor._dispatchHostMessage = function (cellId, ptr, len) {
-  var entry = executor.modules.get(cellId);
-  if (entry) {
-    var memory = entry.type === "bindgen"
-      ? (entry.wasm && entry.wasm.memory)
-      : (entry.instance && entry.instance.exports.memory);
-    if (memory) {
-      var bytes = new Uint8Array(memory.buffer, ptr, len);
-      var text = new TextDecoder().decode(bytes);
-      self.postMessage({ type: "hostMessage", cellId: cellId, messageJson: text });
-    }
-  }
-
+executor._handleHostMessage = function (cellId, text) {
+  self.postMessage({ type: "hostMessage", cellId: cellId, messageJson: text });
   // Dispatch locally as well (in case any in-worker handler is registered).
-  origDispatch(cellId, ptr, len);
+  origHandle(cellId, text);
 };
 
 // ── Command handler ─────────────────────────────────────────────────────────

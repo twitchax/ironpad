@@ -153,4 +153,68 @@ test.describe("Cell execution and output", () => {
 
     expect(jsErrors).toEqual([]);
   });
+
+  test("a rayon cell's host message crosses from the worker without a fallback", async ({
+    page,
+  }) => {
+    // Regression (review js-1): a rayon cell's memory is a SharedArrayBuffer,
+    // and the worker used to decode each host message from a LIVE view of it.
+    // A browser TextDecoder rejects shared views, so the throw landed inside
+    // the WASM import, trapped the cell, and it silently re-ran on the main
+    // thread. The host message here is a sim_emit, whose arrival on the
+    // bridge's own bus is the positive control that the forward happened.
+    // A cold rayon build rebuilds std with atomics, hence the long timeout.
+    test.setTimeout(300_000);
+
+    const jsErrors = trackJsErrors(page);
+
+    await page.goto("/");
+    await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.waitForTimeout(3_000); // hydration (suite convention)
+    await page.locator("button", { hasText: "New Notebook" }).click();
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
+    await expect(page.locator(".ironpad-editor")).toBeVisible();
+
+    await page.locator(".ironpad-add-cell-btn").first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell).toBeVisible();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Each tab owns its own Monaco editor pane: [0] Code, [1] Cargo.toml.
+    const panes = cell.locator(".ironpad-cell-editor-pane");
+    await cell.locator(".ironpad-cell-tab", { hasText: "Cargo.toml" }).click();
+    await expect(panes.nth(1).locator(".monaco-editor")).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, panes.nth(1), '[dependencies]\nrayon = "1"\n');
+    await cell.locator(".ironpad-cell-tab", { hasText: "Code" }).click();
+    await setCellSource(
+      page,
+      panes.nth(0),
+      "let total: u64 = (1..=1000u64).into_par_iter().sum();\n" +
+        'sim::emit("e2e-rayon-sum", &total);\n' +
+        'CellOutput::text(format!("sum={total}"))'
+    );
+
+    await page.locator('button[title="Run cell"]').first().click();
+    await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 240_000,
+    });
+    await expect(cell.locator(".ironpad-output-display-text")).toContainText(
+      "sum=500500"
+    );
+
+    // The message reached the main thread...
+    const forwarded = await page.evaluate(() =>
+      (window as any).IronpadExecutor.simBusRead("e2e-rayon-sum")
+    );
+    expect(forwarded).toBe(500500);
+
+    // ...and the cell ran in the WORKER, not on the main-thread fallback.
+    await expect(cell.locator(".ironpad-output-fallback-badge")).toHaveCount(0);
+
+    expect(jsErrors).toEqual([]);
+  });
 });
