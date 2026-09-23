@@ -12,7 +12,7 @@
 # `unnecessary_trailing_comma`, both in a PRD-0066 test), which is the argument
 # for not letting a pin outlive its reason.
 #
-# `toolchain_pins_are_installed_by_the_image` asserts this channel equals
+# `toolchain_pins_are_in_sync_across_dockerfile_ci_and_toolchain_toml` asserts this channel equals
 # CELL_TOOLCHAIN. Holding them together is worth a test for a reason that is
 # actually true: one fewer toolchain on a dev box, and clippy runs against the
 # compiler cells are judged by.
