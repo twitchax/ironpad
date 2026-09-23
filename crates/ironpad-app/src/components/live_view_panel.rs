@@ -49,6 +49,18 @@ pub(crate) fn render_live_content<'a>(kind: &str, text: &'a str) -> LiveContent<
     }
 }
 
+/// Decode a `LiveTickResult` kind code (`ironpad_cell::LiveTickResult`) into
+/// the kind string [`render_live_content`] and the initial `LiveView` panel use.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+pub(crate) fn live_kind_str(code: u32) -> &'static str {
+    match code {
+        1 => "html",
+        2 => "markdown",
+        // 0 and anything else: plain text.
+        _ => "text",
+    }
+}
+
 /// Write a `LiveView` cell's content into its element, by kind, then let
 /// `KaTeX` render any maths an HTML or markdown kind brought in.
 #[cfg(feature = "hydrate")]
@@ -105,12 +117,7 @@ pub fn LiveViewPanel(
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(live_result) = crate::components::executor::tick_live_cell(&cid).await
                     {
-                        let kind_str = match live_result.kind {
-                            1 => "html",
-                            2 => "markdown",
-                            // 0 and anything else: plain text.
-                            _ => "text",
-                        };
+                        let kind_str = live_kind_str(live_result.kind);
                         // try_ read: this task resumes after a worker round
                         // trip and the panel may have been disposed (cell
                         // re-run, output collapse, navigation) — a plain
@@ -191,7 +198,16 @@ pub fn LiveViewPanel(
 
 #[cfg(test)]
 mod tests {
-    use super::{render_live_content, LiveContent};
+    use super::{live_kind_str, render_live_content, LiveContent};
+
+    #[test]
+    fn live_kind_codes_decode_to_kind_strings() {
+        assert_eq!(live_kind_str(0), "text");
+        assert_eq!(live_kind_str(1), "html");
+        assert_eq!(live_kind_str(2), "markdown");
+        // An unknown code renders as plain text, never as HTML.
+        assert_eq!(live_kind_str(99), "text");
+    }
 
     #[test]
     fn html_kind_is_sanitized() {

@@ -642,14 +642,16 @@ impl From<SimulationMeta> for CellOutput {
 
 impl From<LiveViewMeta> for CellOutput {
     fn from(meta: LiveViewMeta) -> Self {
-        let (kind, content) = match &meta.initial_content {
-            LiveContent::Text(s) => ("text".to_string(), s.clone()),
-            LiveContent::Html(s) => ("html".to_string(), s.clone()),
-            LiveContent::Markdown(s) => ("markdown".to_string(), s.clone()),
+        // By value: the meta is owned, so the initial content moves into the
+        // panel rather than being copied.
+        let (kind, content) = match meta.initial_content {
+            LiveContent::Text(s) => ("text", s),
+            LiveContent::Html(s) => ("html", s),
+            LiveContent::Markdown(s) => ("markdown", s),
         };
         let panels = vec![DisplayPanel::LiveView {
             fps: meta.fps,
-            kind,
+            kind: kind.into(),
             content,
         }];
         Self {
@@ -963,6 +965,10 @@ pub struct LiveViewMeta {
 }
 
 /// FFI-safe return type for the `cell_tick` export of a `LiveView` cell.
+///
+/// The app decodes `kind` with `live_kind_str` (ironpad-app's
+/// `components/live_view_panel.rs`) into the same strings the
+/// `From<LiveViewMeta>` panel carries.
 ///
 /// Layout (12 bytes on wasm32):
 ///   - offset 0: `kind` (`u32`) — 0=Text, 1=Html, 2=Markdown
