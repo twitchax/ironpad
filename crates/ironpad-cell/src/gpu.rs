@@ -4,9 +4,11 @@
 //! the GPU and produce [`Canvas`] output, with automatic CPU fallback when
 //! WebGPU is unavailable.
 //!
-//! For live GPU-driven simulations (e.g., particle systems, fluid dynamics),
-//! see the [`GpuSimulation`] trait, which dispatches a compute shader per tick
-//! and falls back to CPU rendering automatically.
+//! GPU dispatch is currently available only through [`GpuCanvas`] in a regular
+//! cell. The [`GpuSimulation`] trait keeps its shader-shaped API, but its
+//! default [`tick`](GpuSimulation::tick) renders on the CPU via
+//! [`tick_cpu`](GpuSimulation::tick_cpu): the live tick path has no readback
+//! channel for GPU output yet.
 //!
 //! # WGSL shader conventions
 //!
@@ -252,16 +254,18 @@ impl GpuCanvas {
 
 // ── GpuSimulation ───────────────────────────────────────────────────────────
 
-/// Trait for GPU-driven live simulations.
+/// Trait for live simulations described by a WGSL compute shader.
 ///
-/// Analogous to [`Simulation`](crate::Simulation) but each tick dispatches a
-/// WGSL compute shader on the GPU.  When WebGPU is unavailable the default
-/// [`tick`](GpuSimulation::tick) implementation automatically falls back to
-/// CPU rendering via [`tick_cpu`](GpuSimulation::tick_cpu).
+/// Analogous to [`Simulation`](crate::Simulation), with a shader, uniforms and
+/// dimensions alongside the frame. **Ticks currently run on the CPU:** the
+/// default [`tick`](GpuSimulation::tick) always calls
+/// [`tick_cpu`](GpuSimulation::tick_cpu), because the tick ABI has no channel
+/// for reading GPU output back into the frame. GPU dispatch is available only
+/// through [`GpuCanvas`] in a regular cell.
 ///
 /// Because `tick()` returns a [`Canvas`] (the same type `Simulation::tick`
-/// returns), a `GpuSimulation` can be adapted to `Simulation` today without
-/// scaffold changes:
+/// returns), a `GpuSimulation` can be adapted to `Simulation` without
+/// scaffold changes, and renders through `tick_cpu`:
 ///
 /// ```ignore
 /// struct MySim { /* … */ }
@@ -315,19 +319,21 @@ pub trait GpuSimulation: Sized + 'static {
 
     /// Advance simulation state and render one frame.
     ///
-    /// The default implementation dispatches the compute shader when WebGPU is
-    /// available and falls back to [`tick_cpu`](GpuSimulation::tick_cpu)
-    /// otherwise.
+    /// The default implementation renders on the CPU through
+    /// [`tick_cpu`](GpuSimulation::tick_cpu), whether or not WebGPU is
+    /// available.
     fn tick(&mut self) -> Canvas {
-        if gpu_available() {
-            let (w, h) = self.dimensions();
-            GpuCanvas::new(w, h, self.shader(), &self.uniforms()).render()
-        } else {
-            self.tick_cpu()
-        }
+        // Deliberately never GPU, even when `gpu_available()`: a GPU dispatch
+        // is read back only after `cell_main` returns, and the tick ABI has no
+        // readback channel at all. A per-tick `GpuCanvas::render` returned its
+        // gray placeholder every frame and leaked its three GPU buffers until
+        // the next execute, which then attached the stale readbacks to
+        // whichever cell ran. Real per-tick GPU needs per-dispatch handle
+        // ownership and a tick-local readback queue in the executor first.
+        self.tick_cpu()
     }
 
-    /// CPU fallback for when WebGPU is unavailable.
+    /// Render one frame on the CPU; what [`tick`](GpuSimulation::tick) runs.
     ///
     /// The default returns a black canvas. Override to provide a meaningful
     /// software rasteriser.
@@ -465,6 +471,42 @@ mod tests {
 
         let frame2 = sim.tick();
         assert_eq!(frame2.get_pixel(0, 0), (20, 0, 0));
+    }
+
+    #[test]
+    fn gpu_simulation_default_tick_always_delegates_to_tick_cpu() {
+        // Natively `gpu_available()` is already false, so this documents the
+        // delegation more than it guards it: the GPU branch this replaced
+        // could only be reached in a WebGPU browser, where headless tests do
+        // not run.
+        struct Marked {
+            ticks: u32,
+        }
+        impl GpuSimulation for Marked {
+            fn init() -> Self {
+                Marked { ticks: 0 }
+            }
+            fn dimensions(&self) -> (u32, u32) {
+                (3, 1)
+            }
+            fn shader(&self) -> &str {
+                "// never dispatched from tick"
+            }
+            fn uniforms(&self) -> Vec<f32> {
+                vec![]
+            }
+            fn tick_cpu(&mut self) -> Canvas {
+                self.ticks += 1;
+                Canvas::from_fn(3, 1, |x, _| (7, x as u8, self.ticks as u8))
+            }
+        }
+
+        let mut sim = Marked::init();
+        for n in 1..=3u8 {
+            let frame = sim.tick();
+            assert_eq!(frame.get_pixel(2, 0), (7, 2, n));
+        }
+        assert_eq!(sim.ticks, 3);
     }
 
     #[test]

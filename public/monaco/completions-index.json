@@ -187,7 +187,7 @@
    "insert": "GpuSimulation",
    "kind": "interface",
    "detail": "pub trait GpuSimulation: Sized + 'static",
-   "doc": "Trait for GPU-driven live simulations."
+   "doc": "Trait for live simulations described by a WGSL compute shader."
   },
   {
    "label": "get",
