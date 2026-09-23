@@ -1,0 +1,81 @@
+<svg width="800" height="400" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="800" height="400" opacity="1" fill="transparent" stroke="none"/>
+<text x="400" y="15" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="14.516129032258064" opacity="1" fill="var(--ip-plot-text, #82828C)">
+Scatter &amp; golden
+</text>
+<text x="10" y="192" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-text, #82828C)" transform="rotate(270, 10, 192)">
+y
+</text>
+<text x="430" y="390" dy="-0.5ex" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-text, #82828C)">
+x
+</text>
+<line opacity="1" stroke="var(--ip-plot-grid, #8693AB)" stroke-dasharray="2 5" stroke-width="1" x1="70" y1="309" x2="789" y2="309"/>
+<line opacity="1" stroke="var(--ip-plot-grid, #8693AB)" stroke-dasharray="2 5" stroke-width="1" x1="70" y1="257" x2="789" y2="257"/>
+<line opacity="1" stroke="var(--ip-plot-grid, #8693AB)" stroke-dasharray="2 5" stroke-width="1" x1="70" y1="205" x2="789" y2="205"/>
+<line opacity="1" stroke="var(--ip-plot-grid, #8693AB)" stroke-dasharray="2 5" stroke-width="1" x1="70" y1="154" x2="789" y2="154"/>
+<line opacity="1" stroke="var(--ip-plot-grid, #8693AB)" stroke-dasharray="2 5" stroke-width="1" x1="70" y1="102" x2="789" y2="102"/>
+<line opacity="1" stroke="var(--ip-plot-grid, #8693AB)" stroke-dasharray="2 5" stroke-width="1" x1="70" y1="50" x2="789" y2="50"/>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="69,35 69,349 "/>
+<text x="60" y="309" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+-1.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="64,309 69,309 "/>
+<text x="60" y="257" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+0.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="64,257 69,257 "/>
+<text x="60" y="205" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+1.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="64,205 69,205 "/>
+<text x="60" y="154" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+2.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="64,154 69,154 "/>
+<text x="60" y="102" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+3.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="64,102 69,102 "/>
+<text x="60" y="50" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+4.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="64,50 69,50 "/>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="70,350 789,350 "/>
+<text x="102" y="360" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+0.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="102,350 102,355 "/>
+<text x="266" y="360" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+1.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="266,350 266,355 "/>
+<text x="429" y="360" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+2.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="429,350 429,355 "/>
+<text x="592" y="360" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+3.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="592,350 592,355 "/>
+<text x="756" y="360" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="var(--ip-plot-muted, #79799A)">
+4.0
+</text>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-axis, #7085A0)" stroke-width="1" points="756,350 756,355 "/>
+<polyline fill="none" opacity="1" stroke="var(--ip-plot-zero, #8391AC)" stroke-width="1" points="70,257 789,257 "/>
+<circle cx="102" cy="335" r="4" opacity="1" fill="var(--ip-plot-series-1, #E03F59)" stroke="none" stroke-width="1"/>
+<circle cx="266" cy="141" r="4" opacity="1" fill="var(--ip-plot-series-1, #E03F59)" stroke="none" stroke-width="1"/>
+<circle cx="511" cy="50" r="4" opacity="1" fill="var(--ip-plot-series-1, #E03F59)" stroke="none" stroke-width="1"/>
+<circle cx="756" cy="102" r="4" opacity="1" fill="var(--ip-plot-series-1, #E03F59)" stroke="none" stroke-width="1"/>
+<text x="102" y="335" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="8.064516129032258" opacity="1" fill="var(--ip-plot-text, #82828C)">
+-1.5
+</text>
+<text x="266" y="141" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="8.064516129032258" opacity="1" fill="var(--ip-plot-text, #82828C)">
+2.2
+</text>
+<text x="511" y="50" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="8.064516129032258" opacity="1" fill="var(--ip-plot-text, #82828C)">
+4.0
+</text>
+<text x="756" y="102" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="8.064516129032258" opacity="1" fill="var(--ip-plot-text, #82828C)">
+3.0
+</text>
+<g class="ironpad-tooltips"><circle cx="102" cy="335" r="8" fill="transparent" stroke="none"><title>(0, -1.5)</title></circle><circle cx="266" cy="141" r="8" fill="transparent" stroke="none"><title>(1, 2.25)</title></circle><circle cx="511" cy="50" r="8" fill="transparent" stroke="none"><title>(2.5, 4)</title></circle><circle cx="756" cy="102" r="8" fill="transparent" stroke="none"><title>(4, 3)</title></circle></g></svg>

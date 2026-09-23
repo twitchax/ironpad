@@ -96,11 +96,11 @@ pub struct Plot {
 }
 
 impl Plot {
-    /// Create a line chart from `(x, y)` data points.
-    #[must_use]
-    pub fn line(data: &[(f64, f64)]) -> Self {
+    /// The defaults every chart kind starts from: 800x400, no title or axis
+    /// labels, tooltips and point labels off.
+    fn with_kind(kind: ChartKind) -> Self {
         Self {
-            kind: ChartKind::Line(data.to_vec()),
+            kind,
             title: None,
             x_label: None,
             y_label: None,
@@ -109,36 +109,26 @@ impl Plot {
             tooltips: false,
             point_labels: false,
         }
+    }
+
+    /// Create a line chart from `(x, y)` data points.
+    #[must_use]
+    pub fn line(data: &[(f64, f64)]) -> Self {
+        Self::with_kind(ChartKind::Line(data.to_vec()))
     }
 
     /// Create a bar chart from `(label, value)` data points.
     #[must_use]
     pub fn bar(data: &[(&str, f64)]) -> Self {
-        Self {
-            kind: ChartKind::Bar(data.iter().map(|(l, v)| ((*l).to_owned(), *v)).collect()),
-            title: None,
-            x_label: None,
-            y_label: None,
-            width: 800,
-            height: 400,
-            tooltips: false,
-            point_labels: false,
-        }
+        Self::with_kind(ChartKind::Bar(
+            data.iter().map(|(l, v)| ((*l).to_owned(), *v)).collect(),
+        ))
     }
 
     /// Create a scatter plot from `(x, y)` data points.
     #[must_use]
     pub fn scatter(data: &[(f64, f64)]) -> Self {
-        Self {
-            kind: ChartKind::Scatter(data.to_vec()),
-            title: None,
-            x_label: None,
-            y_label: None,
-            width: 800,
-            height: 400,
-            tooltips: false,
-            point_labels: false,
-        }
+        Self::with_kind(ChartKind::Scatter(data.to_vec()))
     }
 
     /// Set the chart title.
@@ -243,24 +233,7 @@ impl Plot {
             ))
             .expect("drawing line series cannot fail");
 
-        if self.point_labels {
-            chart
-                .draw_series(data.iter().map(|&(x, y)| {
-                    Text::new(
-                        format!("{y:.1}"),
-                        (x, y),
-                        ("sans-serif", 10).into_font().color(&COLOR_TEXT),
-                    )
-                }))
-                .expect("drawing point labels cannot fail");
-        }
-
-        if self.tooltips {
-            for &(x, y) in data {
-                let (px, py) = chart.backend_coord(&(x, y));
-                tooltip_points.push((px, py, format!("({x}, {y})")));
-            }
-        }
+        self.draw_point_extras(&mut chart, data, tooltip_points);
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -283,14 +256,10 @@ impl Plot {
 
         let mut builder = ChartBuilder::on(root);
         builder.margin(10);
+        self.apply_caption(&mut builder);
 
-        if let Some(t) = &self.title {
-            builder.caption(
-                t.as_str(),
-                ("sans-serif", 18).into_font().color(&COLOR_TEXT),
-            );
-        }
-
+        // Always both areas, unlike `build_chart_context`: the bottom one
+        // carries the category labels whether or not an axis label is set.
         builder.set_label_area_size(LabelAreaPosition::Bottom, 40);
         builder.set_label_area_size(LabelAreaPosition::Left, 60);
 
@@ -372,6 +341,29 @@ impl Plot {
             )
             .expect("drawing scatter series cannot fail");
 
+        self.draw_point_extras(&mut chart, data, tooltip_points);
+    }
+
+    // ── Shared chart builder helpers ─────────────────────────────────────
+
+    /// The chart title, when one is set, in the themed text colour.
+    fn apply_caption(&self, builder: &mut ChartBuilder<'_, '_, SVGBackend<'_>>) {
+        if let Some(t) = &self.title {
+            builder.caption(
+                t.as_str(),
+                ("sans-serif", 18).into_font().color(&COLOR_TEXT),
+            );
+        }
+    }
+
+    /// The optional per-point extras line and scatter charts share: a value
+    /// label on each point and a tooltip target at its pixel position.
+    fn draw_point_extras(
+        &self,
+        chart: &mut ChartContext<'_, SVGBackend<'_>, Cartesian2d<RangedCoordf64, RangedCoordf64>>,
+        data: &[(f64, f64)],
+        tooltip_points: &mut Vec<(i32, i32, String)>,
+    ) {
         if self.point_labels {
             chart
                 .draw_series(data.iter().map(|&(x, y)| {
@@ -381,7 +373,7 @@ impl Plot {
                         ("sans-serif", 10).into_font().color(&COLOR_TEXT),
                     )
                 }))
-                .expect("drawing scatter point labels cannot fail");
+                .expect("drawing point labels cannot fail");
         }
 
         if self.tooltips {
@@ -391,8 +383,6 @@ impl Plot {
             }
         }
     }
-
-    // ── Shared chart builder helper ──────────────────────────────────────
 
     fn build_chart_context<'a, 'b>(
         &self,
@@ -406,13 +396,8 @@ impl Plot {
     > {
         let mut builder = ChartBuilder::on(root);
         builder.margin(10);
+        self.apply_caption(&mut builder);
 
-        if let Some(t) = &self.title {
-            builder.caption(
-                t.as_str(),
-                ("sans-serif", 18).into_font().color(&COLOR_TEXT),
-            );
-        }
         if self.x_label.is_some() || self.y_label.is_some() {
             builder.set_label_area_size(LabelAreaPosition::Bottom, 40);
             builder.set_label_area_size(LabelAreaPosition::Left, 60);
@@ -759,6 +744,62 @@ mod tests {
             !svg.contains("2.7"),
             "default plot should not have point label text"
         );
+    }
+
+    /// One chart of each kind with every optional element switched on, so
+    /// the goldens exercise the caption, point-label, tooltip and axis-label
+    /// paths together.
+    fn golden_charts() -> [(&'static str, String); 3] {
+        let xy = [(0.0, -1.5), (1.0, 2.25), (2.5, 4.0), (4.0, 3.0)];
+        [
+            (
+                "line",
+                Plot::line(&xy)
+                    .title("Line <golden>")
+                    .x_label("x")
+                    .y_label("y")
+                    .point_labels(true)
+                    .tooltips(true)
+                    .render_svg(),
+            ),
+            (
+                "scatter",
+                Plot::scatter(&xy)
+                    .title("Scatter & golden")
+                    .x_label("x")
+                    .y_label("y")
+                    .point_labels(true)
+                    .tooltips(true)
+                    .render_svg(),
+            ),
+            (
+                "bar",
+                Plot::bar(&[("A", 3.7), ("B", 9.1), ("C", 5.3)])
+                    .title("Bar golden")
+                    .point_labels(true)
+                    .tooltips(true)
+                    .render_svg(),
+            ),
+        ]
+    }
+
+    /// Byte-exact pins on the rendered SVG, captured from the renderer before
+    /// its per-kind helpers were shared. The substring tests above survive a
+    /// change to layout, ordering or styling; these do not. A deliberate
+    /// rendering change regenerates the files under `tests/golden/`.
+    #[test]
+    fn rendered_svg_matches_the_goldens() {
+        let goldens = [
+            include_str!("../tests/golden/plot_line.svg"),
+            include_str!("../tests/golden/plot_scatter.svg"),
+            include_str!("../tests/golden/plot_bar.svg"),
+        ];
+        for ((name, svg), golden) in golden_charts().into_iter().zip(goldens) {
+            assert!(
+                svg == golden,
+                "{name} chart differs from tests/golden/plot_{name}.svg"
+            );
+        }
     }
 
     // ── Theming ──────────────────────────────────────────────────────────
