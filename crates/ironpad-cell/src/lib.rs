@@ -459,40 +459,60 @@ impl CellOutput {
 
 // ── From<T> for CellOutput ───────────────────────────────────────────────────
 
-/// Implement `From<T> for CellOutput` for primitive types that implement both
-/// `Serialize` and `Display`.  Each conversion serializes the value with bincode
-/// (for piping to the next cell) and sets a human-readable display string.
-macro_rules! impl_from_for_cell_output {
+/// Encode `value` for piping, then hand it to `panels` for display: the one
+/// shape every typed `From<T> for CellOutput` takes, so a bare output carries
+/// exactly the bytes and [`TypeTag`] the tuple impls below build for the same
+/// value.
+///
+/// `panels` receives the value by move, so a variant that owns its display
+/// payload (`Svg`, `Table`, `String`) hands it over without a clone.
+fn typed_output_with<T: serde::Serialize + TypeTag>(
+    value: T,
+    panels: impl FnOnce(T) -> Vec<DisplayPanel>,
+) -> CellOutput {
+    let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
+        .expect("serialization of a TypeTag type cannot fail");
+    CellOutput {
+        bytes,
+        panels: panels(value),
+        type_tag: Some(T::type_tag()),
+    }
+}
+
+/// `From`, [`IntoPanels`] and [`TypeTag`] for primitives that implement both
+/// `Serialize` and `Display`: bincode bytes for piping, a text panel for
+/// display, and the type's own name as its tag. One list, three impls.
+macro_rules! impl_primitive_output {
     ($($ty:ty),+ $(,)?) => {
         $(
             impl From<$ty> for CellOutput {
                 fn from(value: $ty) -> Self {
-                    let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
-                        .expect("serialization of primitive types cannot fail");
-                    Self {
-                        bytes,
-                        panels: vec![DisplayPanel::Text(value.to_string())],
-                        type_tag: Some(stringify!($ty).into()),
-                    }
+                    typed_output_with(value, |v| v.into_panels())
+                }
+            }
+
+            impl IntoPanels for $ty {
+                fn into_panels(&self) -> Vec<DisplayPanel> {
+                    vec![DisplayPanel::Text(format!("{self}"))]
+                }
+            }
+
+            impl TypeTag for $ty {
+                fn type_tag() -> String {
+                    stringify!($ty).into()
                 }
             }
         )+
     };
 }
 
-impl_from_for_cell_output!(
+impl_primitive_output!(
     i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, f32, f64, bool, usize, isize,
 );
 
 impl From<String> for CellOutput {
     fn from(value: String) -> Self {
-        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
-            .expect("serialization of String cannot fail");
-        Self {
-            bytes,
-            panels: vec![DisplayPanel::Text(value)],
-            type_tag: Some("String".into()),
-        }
+        typed_output_with(value, |s| vec![DisplayPanel::Text(s)])
     }
 }
 
@@ -516,6 +536,9 @@ impl From<()> for CellOutput {
 
 impl<T: serde::Serialize + std::fmt::Debug> From<Vec<T>> for CellOutput {
     fn from(value: Vec<T>) -> Self {
+        // Deliberately not `typed_output_with`: the bare display names the
+        // element type (`Vec<u64>, len = …`), while the tuple path's
+        // `IntoPanels` prints the generic `Vec<_>`.
         let type_tag = Some(clean_type_name(std::any::type_name::<Vec<T>>()));
         let display = format_vec_truncated(&value, type_tag.as_deref());
         let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
@@ -530,87 +553,44 @@ impl<T: serde::Serialize + std::fmt::Debug> From<Vec<T>> for CellOutput {
 
 impl From<Svg> for CellOutput {
     fn from(value: Svg) -> Self {
-        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
-            .expect("serialization of Svg cannot fail");
-        Self {
-            bytes,
-            panels: vec![DisplayPanel::Svg(value.0)],
-            type_tag: Some("Svg".into()),
-        }
+        typed_output_with(value, |v| vec![DisplayPanel::Svg(v.0)])
     }
 }
 
 impl From<Html> for CellOutput {
     fn from(value: Html) -> Self {
-        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
-            .expect("serialization of Html cannot fail");
-        Self {
-            bytes,
-            panels: vec![DisplayPanel::Html(value.0)],
-            type_tag: Some("Html".into()),
-        }
+        typed_output_with(value, |v| vec![DisplayPanel::Html(v.0)])
     }
 }
 
 impl From<Table> for CellOutput {
     fn from(value: Table) -> Self {
-        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
-            .expect("serialization of Table cannot fail");
-        Self {
-            bytes,
-            panels: vec![DisplayPanel::Table {
-                headers: value.headers,
-                rows: value.rows,
-            }],
-            type_tag: Some("Table".into()),
-        }
+        // Moves the rows into the panel: `into_panels(&self)` would clone a
+        // potentially large table.
+        typed_output_with(value, |t| {
+            vec![DisplayPanel::Table {
+                headers: t.headers,
+                rows: t.rows,
+            }]
+        })
     }
 }
 
 impl From<Md> for CellOutput {
     fn from(value: Md) -> Self {
-        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
-            .expect("serialization of Md cannot fail");
-        Self {
-            bytes,
-            panels: vec![DisplayPanel::Markdown(value.0)],
-            type_tag: Some("Md".into()),
-        }
+        typed_output_with(value, |v| vec![DisplayPanel::Markdown(v.0)])
     }
 }
 
 impl From<Json> for CellOutput {
     fn from(value: Json) -> Self {
-        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
-            .expect("serialization of Json cannot fail");
-        Self {
-            bytes,
-            panels: vec![DisplayPanel::Html(render_json_html(&value.0))],
-            type_tag: Some("Json".into()),
-        }
+        typed_output_with(value, |v| v.into_panels())
     }
 }
 
 impl From<canvas::Canvas> for CellOutput {
     fn from(value: canvas::Canvas) -> Self {
-        let width = value.width();
-        let height = value.height();
-        let bmp = value.to_bmp();
-        let base64_data = canvas::base64_encode(&bmp);
-
-        let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
-            .expect("serialization of Canvas cannot fail");
-
-        Self {
-            bytes,
-            panels: vec![DisplayPanel::BlobImage {
-                mime_type: "image/bmp".into(),
-                base64_data,
-                width,
-                height,
-            }],
-            type_tag: Some("Canvas".into()),
-        }
+        typed_output_with(value, |c| c.into_panels())
     }
 }
 
@@ -692,22 +672,6 @@ pub trait IntoPanels {
     fn into_panels(&self) -> Vec<DisplayPanel>;
 }
 
-macro_rules! impl_into_panels_for_primitive {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl IntoPanels for $ty {
-                fn into_panels(&self) -> Vec<DisplayPanel> {
-                    vec![DisplayPanel::Text(format!("{self}"))]
-                }
-            }
-        )+
-    };
-}
-
-impl_into_panels_for_primitive!(
-    i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, f32, f64, bool, usize, isize,
-);
-
 impl IntoPanels for String {
     fn into_panels(&self) -> Vec<DisplayPanel> {
         vec![DisplayPanel::Text(self.clone())]
@@ -755,11 +719,12 @@ impl IntoPanels for Json {
 
 impl IntoPanels for canvas::Canvas {
     fn into_panels(&self) -> Vec<DisplayPanel> {
-        // Must match the `From<Canvas> for CellOutput` rendering: a structured
-        // BlobImage panel the UI displays directly. Emitting an `<img>` inside
-        // an Html panel puts the data: URI through the HTML sanitizer, which
-        // strips it (ammonia's URL schemes exclude `data:`) — a tuple output
-        // like `(Table, canvas)` then renders a correctly-sized empty image.
+        // The one Canvas rendering: `From<Canvas> for CellOutput` delegates
+        // here. A structured BlobImage panel the UI displays directly;
+        // emitting an `<img>` inside an Html panel puts the data: URI through
+        // the HTML sanitizer, which strips it (ammonia's URL schemes exclude
+        // `data:`) — a tuple output like `(Table, canvas)` then renders a
+        // correctly-sized empty image.
         let bmp = self.to_bmp();
         vec![DisplayPanel::BlobImage {
             mime_type: "image/bmp".into(),
@@ -820,22 +785,6 @@ impl IntoPanels for () {
 pub trait TypeTag {
     fn type_tag() -> String;
 }
-
-macro_rules! impl_type_tag_for_primitive {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl TypeTag for $ty {
-                fn type_tag() -> String {
-                    stringify!($ty).into()
-                }
-            }
-        )+
-    };
-}
-
-impl_type_tag_for_primitive!(
-    i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, f32, f64, bool, usize, isize,
-);
 
 impl TypeTag for String {
     fn type_tag() -> String {
@@ -1415,6 +1364,57 @@ mod tests {
             }
             other => panic!("expected BlobImage, got {other:?}"),
         }
+    }
+
+    /// A bare `From<T>` output must equal what the tuple path builds for the
+    /// same value: its `IntoPanels` panels, its `TypeTag` tag, and its bincode
+    /// bytes. The Canvas pair once drifted (an Html panel on one side, a
+    /// `BlobImage` on the other) and cost a `CACHE_EPOCH` bump.
+    fn assert_from_matches_into_panels_and_type_tag<T>(value: &T)
+    where
+        T: Clone + Serialize + IntoPanels + TypeTag,
+        CellOutput: From<T>,
+    {
+        let out = CellOutput::from(value.clone());
+        assert_eq!(out.panels, value.into_panels(), "{}", T::type_tag());
+        assert_eq!(out.type_tag, Some(T::type_tag()));
+        assert_eq!(
+            out.bytes,
+            bincode::serde::encode_to_vec(value, bincode::config::standard()).unwrap(),
+            "{}",
+            T::type_tag()
+        );
+    }
+
+    #[test]
+    fn from_matches_into_panels_and_type_tag() {
+        assert_from_matches_into_panels_and_type_tag(&-8i8);
+        assert_from_matches_into_panels_and_type_tag(&-16i16);
+        assert_from_matches_into_panels_and_type_tag(&-32i32);
+        assert_from_matches_into_panels_and_type_tag(&-64i64);
+        assert_from_matches_into_panels_and_type_tag(&-128i128);
+        assert_from_matches_into_panels_and_type_tag(&8u8);
+        assert_from_matches_into_panels_and_type_tag(&16u16);
+        assert_from_matches_into_panels_and_type_tag(&32u32);
+        assert_from_matches_into_panels_and_type_tag(&64u64);
+        assert_from_matches_into_panels_and_type_tag(&128u128);
+        assert_from_matches_into_panels_and_type_tag(&1.25f32);
+        assert_from_matches_into_panels_and_type_tag(&-2.5f64);
+        assert_from_matches_into_panels_and_type_tag(&true);
+        assert_from_matches_into_panels_and_type_tag(&7usize);
+        assert_from_matches_into_panels_and_type_tag(&-7isize);
+        assert_from_matches_into_panels_and_type_tag(&"text".to_string());
+        assert_from_matches_into_panels_and_type_tag(&Svg("<svg/>".into()));
+        assert_from_matches_into_panels_and_type_tag(&Html("<b>b</b>".into()));
+        assert_from_matches_into_panels_and_type_tag(&Md("# m".into()));
+        assert_from_matches_into_panels_and_type_tag(&Table::new(
+            vec!["h1", "h2"],
+            vec![vec!["a", "b"], vec!["c", "d"]],
+        ));
+        assert_from_matches_into_panels_and_type_tag(&Json(serde_json::json!({"k": [1, 2]})));
+        let mut canvas = canvas::Canvas::new(3, 2);
+        canvas.set_pixel(1, 1, (9, 8, 7));
+        assert_from_matches_into_panels_and_type_tag(&canvas);
     }
 
     #[test]
