@@ -263,6 +263,16 @@ a:focus-visible {
     }
 }
 
+// Single-line truncation with a trailing ellipsis. All three are needed:
+// `text-overflow` only draws the ellipsis on a box that clips its overflow
+// and does not wrap. In a flex row the item also needs `min-width: 0`, which
+// stays at the call site because not every caller is a flex item.
+@mixin ip-ellipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 // Two tiers, expressed as defaults rather than as separate mixins: the
 // primary 34px controls, and a compact tier for chips inside panels and
 // cards, where a full-height button would dominate its row.
@@ -516,9 +526,7 @@ a:focus-visible {
     font-weight: 500;
     color: var(--ip-text-secondary);
     max-width: 400px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    @include ip-ellipsis;
 }
 
 .ironpad-notebook-title--editable {
@@ -2394,9 +2402,7 @@ code[class*="language-"] {
         // Keep the notebook title visible (truncated) on small screens rather
         // than hiding it entirely.
         max-width: 45vw;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
+        @include ip-ellipsis;
     }
 
     .ironpad-home-header {
@@ -2947,9 +2953,7 @@ code[class*="language-"] {
     font-weight: 500;
     color: var(--ip-text-primary);
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    @include ip-ellipsis;
 }
 
 // Right-hand metadata group. Renders even when empty: it is what pushes the
@@ -3202,9 +3206,7 @@ code[class*="language-"] {
 .ironpad-history-entry-title {
     font-size: 0.72rem;
     color: var(--ip-text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    @include ip-ellipsis;
 }
 
 .ironpad-history-restore {
@@ -3251,9 +3253,7 @@ code[class*="language-"] {
     font-size: 0.75rem;
     font-weight: 600;
     color: var(--ip-text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    @include ip-ellipsis;
 }
 
 .view-only-output-note {
@@ -3918,9 +3918,7 @@ code[class*="language-"] {
     padding: 4px 8px;
     border-radius: var(--ip-radius-sm);
     flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    @include ip-ellipsis;
 }
 
 .ironpad-session-token-toggle,
@@ -4046,9 +4044,7 @@ code[class*="language-"] {
     label {
         width: 200px;
         min-width: 200px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        @include ip-ellipsis;
         font-size: 0.85rem;
         color: var(--ip-text-secondary, #b0b0b0);
     }
