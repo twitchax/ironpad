@@ -41,6 +41,7 @@ use ironpad_common::IronpadCell;
 use crate::components::icon::{Chevron, Icon, IconLabel};
 use crate::components::icons;
 use crate::components::monaco_editor::MonacoEditor;
+use crate::components::notebook_rail::{RailCellRun, RailCellStatus, RailRunState};
 
 // ── Pod runtime bindings (client-side only) ─────────────────────────────────
 
@@ -345,6 +346,8 @@ pub(crate) fn ViewOnlyLinuxCell(
     notebook_id: String,
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
+    /// The rail's live run state; this cell writes its own entry.
+    rail_run: RailRunState,
     /// Rendered inside an `/embed/*` iframe. Static and known at SSR, which is
     /// why the refusal keys on it (see below).
     #[prop(optional)]
@@ -396,6 +399,32 @@ pub(crate) fn ViewOnlyLinuxCell(
     let compile_time_ms: RwSignal<Option<f64>> = RwSignal::new(None);
     // Bumped by every Run and every Terminate; see [`RunGuard`].
     let run_epoch = RwSignal::new(0u64);
+
+    // Mirror the run into the rail (PRD-0065 T-006), derived from the same
+    // signals the header reads so the two cannot disagree. A Linux run has
+    // no execution timing the page can measure, only the compile.
+    let rail_id = cell.with_value(|c| c.id.clone());
+    Effect::new(move || {
+        let status = if stage.get().busy() {
+            RailCellStatus::Running
+        } else if error_message.with(Option::is_some)
+            || outcome.with(|o| o.as_ref().is_some_and(Outcome::failed))
+        {
+            RailCellStatus::Failed
+        } else if outcome.with(|o| o.as_ref().is_some_and(Outcome::started)) {
+            RailCellStatus::Ran
+        } else {
+            RailCellStatus::NotRun
+        };
+        rail_run.set(
+            &rail_id,
+            RailCellRun {
+                status,
+                compile_ms: compile_time_ms.get(),
+                run_ms: None,
+            },
+        );
+    });
 
     // The pod is refcounted by mounted Linux cells: the last one to unmount
     // takes the machine with it, after the runtime's grace window. Both calls

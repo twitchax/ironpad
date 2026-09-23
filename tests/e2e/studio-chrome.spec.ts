@@ -91,6 +91,38 @@ test.describe("Studio rail", () => {
     expect(errors).toHaveLength(0);
   });
 
+  test("a cell that ran shows it in the rail, with a timing and Runtime totals", async ({
+    page,
+  }) => {
+    // The rail's run state had no writer at all, so every code row sat on
+    // the not-run dot forever and the Runtime totals never rendered. The
+    // notebook autoruns (/public is first-party, PRD-0040), so waiting is
+    // enough to drive a real run.
+    test.setTimeout(300_000);
+    await gotoNotebook(page);
+
+    // Rows and anchors are both every cell in notebook order, so a cell's
+    // anchor index is its row index.
+    const firstCode = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[id^="ip-cell-"]')).findIndex((el) =>
+        el.matches(
+          ".view-only-cell--frame:not(.view-only-cell--shared):not(.view-only-cell--inert):not(.view-only-cell--linux)",
+        ),
+      ),
+    );
+    expect(firstCode, "the notebook has a code cell").toBeGreaterThanOrEqual(0);
+
+    const row = rail(page).locator(".ip-rail-row").nth(firstCode);
+    await expect(row.locator(".ip-rail-dot--ran")).toHaveCount(1, { timeout: 240_000 });
+    await expect(row.locator(".ip-rail-row-timing")).toHaveText(/^\d+(\.\d)?ms$/);
+    await expect(rail(page).locator(".ip-rail-stats")).toBeVisible();
+
+    // The other direction: prose rows never pick up run state.
+    const markdownCells = await page.locator(".view-only-markdown").count();
+    expect(markdownCells, "the notebook has prose").toBeGreaterThan(0);
+    await expect(rail(page).locator(".ip-rail-dot--prose")).toHaveCount(markdownCells);
+  });
+
   test("the rail installs exactly one observer across a navigation", async ({ page }) => {
     // A leaked observer is invisible until it stacks. Navigating away and back
     // must not double-report; a disposed-signal read would abort the wasm app

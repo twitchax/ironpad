@@ -17,7 +17,7 @@ use crate::components::linux_cell::ViewOnlyLinuxCell;
 use crate::components::markdown_cell::render_markdown;
 use crate::components::monaco_editor::MonacoEditor;
 use crate::components::notebook_rail::{
-    cell_anchor_id, rail_cells, rail_deps, NotebookRail, RailRunState,
+    cell_anchor_id, rail_cells, rail_deps, NotebookRail, RailCellRun, RailCellStatus, RailRunState,
 };
 use crate::components::output_render::{
     render_display_panel, CellOutputData, DisplayPanel, PanelMode, WidgetSink,
@@ -152,9 +152,10 @@ pub(crate) fn ViewOnlyNotebook(
     // cells) — the caller's map when provided (editor view mode), else local.
     let cell_outputs: RwSignal<HashMap<String, CellOutputData>> =
         cell_outputs.unwrap_or_else(|| RwSignal::new(HashMap::new()));
-    // Rail run state (PRD-0065 T-006). Caller-owned so the rail only reads it;
-    // enrichment rather than a prerequisite, since every row falls back to a
-    // not-run default when nothing writes here.
+    // Rail run state (PRD-0065 T-006). Owned here so the rail only reads it;
+    // every runnable cell mirrors its own run signals into its entry (see
+    // `ViewOnlyCodeCell` and `ViewOnlyLinuxCell`), and a cell nobody has run
+    // reads the not-run default.
     let rail_run = RailRunState::new();
 
     // Run-all sequential execution queue (cell IDs in order).
@@ -469,6 +470,7 @@ pub(crate) fn ViewOnlyNotebook(
                                 blocked_by=blocked_by
                                 force_recompile=force_recompile
                                 share_blob=share_blob
+                                rail_run=rail_run
                             />
                         }
                     }).collect_view()
@@ -594,6 +596,8 @@ fn ViewOnlyCell(
     blocked_by: RwSignal<HashMap<String, String>>,
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
+    /// The rail's live run state; runnable cells write their own entry.
+    rail_run: RailRunState,
 ) -> impl IntoView {
     if cell.shared {
         // Shared cells never execute: their source rides in every other
@@ -619,6 +623,7 @@ fn ViewOnlyCell(
                 blocked_by=blocked_by
                 force_recompile=force_recompile
                 share_blob=share_blob
+                rail_run=rail_run
             />
         }
         .into_any(),
@@ -641,6 +646,7 @@ fn ViewOnlyCell(
                 notebook_id=notebook_id
                 force_recompile=force_recompile
                 share_blob=share_blob
+                rail_run=rail_run
                 embed=embed
             />
         }
@@ -679,6 +685,7 @@ fn ViewOnlyCodeCell(
     blocked_by: RwSignal<HashMap<String, String>>,
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
+    rail_run: RailRunState,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let stored_notebook_id = StoredValue::new(notebook_id);
@@ -688,6 +695,35 @@ fn ViewOnlyCodeCell(
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
     let error_message: RwSignal<Option<String>> = RwSignal::new(None);
     let compile_time_ms: RwSignal<Option<f64>> = RwSignal::new(None);
+
+    // Mirror this cell's run signals into the rail (PRD-0065 T-006): one
+    // derivation over the state the cell already keeps, rather than a write
+    // at each transition of the async flow below, where one is easy to miss
+    // (the early `compiling` guard, the failure arms). Timings survive the
+    // Running state because a new run clears neither `execution_result` nor
+    // `compile_time_ms`.
+    let rail_id = cell.with_value(|c| c.id.clone());
+    Effect::new(move || {
+        let status = if compiling.get() {
+            RailCellStatus::Running
+        } else if error_message.with(Option::is_some) {
+            RailCellStatus::Failed
+        } else if blocked_by.with(|m| m.contains_key(&rail_id)) {
+            RailCellStatus::Blocked
+        } else if execution_result.with(Option::is_some) {
+            RailCellStatus::Ran
+        } else {
+            RailCellStatus::NotRun
+        };
+        rail_run.set(
+            &rail_id,
+            RailCellRun {
+                status,
+                compile_ms: compile_time_ms.get(),
+                run_ms: execution_result.with(|r| r.as_ref().map(|r| r.execution_time_ms)),
+            },
+        );
+    });
 
     // Trigger signal: incrementing this dispatches a compile.
     let run_trigger = RwSignal::new(0u64);

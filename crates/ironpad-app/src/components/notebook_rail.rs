@@ -91,11 +91,15 @@ pub struct RailCellRun {
 
 /// The rail's live half: a caller-owned map from cell id to [`RailCellRun`].
 ///
-/// A newtype rather than a bare `RwSignal<HashMap<..>>` prop for two reasons.
-/// It keeps the map type an implementation detail, so the storage can change
-/// without touching call sites; and it puts the "a status change must not
-/// erase the timings already recorded" rule in one place instead of at every
-/// cell that reports progress.
+/// A newtype rather than a bare `RwSignal<HashMap<..>>` prop so the map type
+/// stays an implementation detail and the storage can change without
+/// touching call sites.
+///
+/// Writers replace a cell's WHOLE entry: each runnable cell derives its
+/// entry from its own run signals in one effect (`view_only_notebook.rs`,
+/// `linux_cell.rs`). That is also what keeps a status change from erasing
+/// the timings a previous run recorded, since a new run clears neither the
+/// cell's result nor its compile time.
 #[derive(Clone, Copy)]
 pub struct RailRunState(RwSignal<HashMap<String, RailCellRun>>);
 
@@ -116,29 +120,6 @@ impl RailRunState {
         self.0.update(|m| {
             m.insert(cell_id.to_string(), run);
         });
-    }
-
-    /// Move a cell to `status`, preserving whatever timings it already had.
-    ///
-    /// This is the common report ("started", "blocked", "failed"), and doing
-    /// it with [`Self::set`] would silently blank the timings the previous run
-    /// recorded.
-    pub fn set_status(self, cell_id: &str, status: RailCellStatus) {
-        self.0.update(|m| {
-            m.entry(cell_id.to_string()).or_default().status = status;
-        });
-    }
-
-    /// Record a completed run: status plus both timings.
-    pub fn set_ran(self, cell_id: &str, compile_ms: Option<f64>, run_ms: Option<f64>) {
-        self.set(
-            cell_id,
-            RailCellRun {
-                status: RailCellStatus::Ran,
-                compile_ms,
-                run_ms,
-            },
-        );
     }
 
     /// Reactive read of one cell's state. Disposal-safe: a row rendering after
@@ -919,6 +900,46 @@ mod tests {
     fn a_notebook_with_no_dependencies_lists_nothing() {
         assert!(rail_deps(None, &[]).is_empty());
         assert!(rail_deps(Some("[dependencies]\n"), &[]).is_empty());
+    }
+
+    #[test]
+    fn totals_are_hidden_until_something_ran_then_sum_every_entry() {
+        Owner::new().with(|| {
+            let run = RailRunState::new();
+            assert_eq!(run.totals(), (None, None), "no measurement, no total");
+
+            run.set(
+                "a",
+                RailCellRun {
+                    status: RailCellStatus::Ran,
+                    compile_ms: Some(200.0),
+                    run_ms: Some(3.0),
+                },
+            );
+            // A Linux cell reports a compile and no run timing.
+            run.set(
+                "b",
+                RailCellRun {
+                    status: RailCellStatus::Ran,
+                    compile_ms: Some(100.0),
+                    run_ms: None,
+                },
+            );
+            assert_eq!(run.totals(), (Some(300.0), Some(3.0)));
+            assert_eq!(run.get("a").status, RailCellStatus::Ran);
+
+            // `set` replaces the whole entry rather than accumulating into it.
+            run.set(
+                "a",
+                RailCellRun {
+                    status: RailCellStatus::Running,
+                    compile_ms: Some(50.0),
+                    run_ms: Some(1.0),
+                },
+            );
+            assert_eq!(run.totals(), (Some(150.0), Some(1.0)));
+            assert_eq!(run.get("never-ran"), RailCellRun::default());
+        });
     }
 
     #[test]
