@@ -790,29 +790,46 @@
 
   // ── Tick execution ───────────────────────────────────────────────────────
   //
-  // Simulation cells export `cell_tick()` which advances one simulation step
-  // and returns a TickResult (16 bytes) containing the RGB frame data.
-  // The WASM module stays loaded between ticks — state persists in a static.
+  // Simulation and LiveView cells export `cell_tick()`, which advances one
+  // step and returns a result struct; the WASM module stays loaded between
+  // ticks, so state persists in a static. The two kinds differ ONLY in that
+  // struct: a Simulation's TickResult (16 bytes) carries an RGB frame, a
+  // LiveView's LiveTickResult (12 bytes) a content kind and string. One call
+  // path serves both, parameterized by the struct size and its reader, so
+  // hardening one kind cannot leave the other behind.
 
   /// Execute a single tick on a loaded simulation cell.
   ///
   /// Returns Promise<{ width, height, rgbBytes }>.
-  CellExecutor.prototype.tick = async function (cellId) {
+  CellExecutor.prototype.tick = function (cellId) {
+    return this._tickWith(cellId, TICK_RESULT_SIZE, this._readTickResult);
+  };
+
+  /// Execute a single tick on a loaded LiveView cell.
+  ///
+  /// Returns Promise<{ kind, content }>.
+  CellExecutor.prototype.tickLive = function (cellId) {
+    return this._tickWith(cellId, LIVE_TICK_RESULT_SIZE, this._readLiveTickResult);
+  };
+
+  /// Tick a loaded cell and decode its result struct with `reader`, a
+  /// `(memory, dealloc, retptr, useSret)` method that also frees the struct.
+  CellExecutor.prototype._tickWith = async function (cellId, resultSize, reader) {
     var entry = this.modules.get(cellId);
     if (!entry) {
       throw new Error("Cell " + cellId + " not loaded");
     }
 
     if (entry.type === "bindgen") {
-      return this._tickBindgen(entry);
+      return this._tickBindgenWith(entry, reader);
     } else {
-      return this._tickRaw(entry);
+      return this._tickRawWith(entry, resultSize, reader);
     }
   };
 
   // ── wasm-bindgen tick path ──────────────────────────────────────────────
 
-  CellExecutor.prototype._tickBindgen = async function (entry) {
+  CellExecutor.prototype._tickBindgenWith = async function (entry, reader) {
     var mod = entry.module;
     var wasm = entry.wasm;
     var memory = wasm.memory;
@@ -836,12 +853,12 @@
       throw new Error("cell_tick returned null");
     }
 
-    return this._readTickResult(memory, dealloc, resultPtr, false);
+    return reader.call(this, memory, dealloc, resultPtr, false);
   };
 
   // ── Legacy raw tick path ────────────────────────────────────────────────
 
-  CellExecutor.prototype._tickRaw = function (entry) {
+  CellExecutor.prototype._tickRawWith = function (entry, resultSize, reader) {
     var instance = entry.instance;
     var memory = instance.exports.memory;
     var alloc = instance.exports.ironpad_alloc;
@@ -858,7 +875,7 @@
 
     if (useSret) {
       if (!alloc) throw new Error("raw module: missing 'ironpad_alloc' export");
-      retptr = alloc(TICK_RESULT_SIZE);
+      retptr = alloc(resultSize);
       if (retptr === 0) {
         throw new Error("ironpad_alloc failed for tick return struct");
       }
@@ -874,11 +891,11 @@
         }
       }
     } catch (e) {
-      if (useSret && retptr) dealloc(retptr, TICK_RESULT_SIZE);
+      if (useSret && retptr) dealloc(retptr, resultSize);
       throw new Error("WASM tick trapped: " + _describeWasmTrap(e, memory));
     }
 
-    return this._readTickResult(memory, dealloc, retptr, useSret);
+    return reader.call(this, memory, dealloc, retptr, useSret);
   };
 
   // ── Shared TickResult reader ────────────────────────────────────────────
@@ -926,96 +943,6 @@
     if (useSret || retptr) dealloc(retptr, LIVE_TICK_RESULT_SIZE);
 
     return { kind: kind, content: content };
-  };
-
-  // ── LiveView tick execution ───────────────────────────────────────────
-  //
-  // LiveView cells export `cell_tick()` which advances one step and returns
-  // a LiveTickResult (12 bytes) containing the content kind and string.
-
-  /// Execute a single tick on a loaded LiveView cell.
-  ///
-  /// Returns Promise<{ kind, content }>.
-  CellExecutor.prototype.tickLive = async function (cellId) {
-    var entry = this.modules.get(cellId);
-    if (!entry) {
-      throw new Error("Cell " + cellId + " not loaded");
-    }
-
-    if (entry.type === "bindgen") {
-      return this._tickLiveBindgen(entry);
-    } else {
-      return this._tickLiveRaw(entry);
-    }
-  };
-
-  // ── wasm-bindgen LiveView tick path ──────────────────────────────────
-
-  CellExecutor.prototype._tickLiveBindgen = async function (entry) {
-    var mod = entry.module;
-    var wasm = entry.wasm;
-    var memory = wasm.memory;
-    var dealloc = wasm.ironpad_dealloc;
-
-    if (!memory) throw new Error("wasm-bindgen module: missing 'memory' export");
-    if (!dealloc) throw new Error("wasm-bindgen module: missing 'ironpad_dealloc' export");
-
-    var tickFn = mod.cell_tick || wasm.cell_tick;
-    if (!tickFn) throw new Error("Module does not export cell_tick");
-
-    var resultPtr;
-    try {
-      resultPtr = await tickFn();
-    } catch (e) {
-      throw new Error("WASM tick trapped: " + _describeWasmTrap(e, memory));
-    }
-
-    if (!resultPtr) {
-      throw new Error("cell_tick returned null");
-    }
-
-    return this._readLiveTickResult(memory, dealloc, resultPtr, false);
-  };
-
-  // ── Legacy raw LiveView tick path ────────────────────────────────────
-
-  CellExecutor.prototype._tickLiveRaw = function (entry) {
-    var instance = entry.instance;
-    var memory = instance.exports.memory;
-    var alloc = instance.exports.ironpad_alloc;
-    var dealloc = instance.exports.ironpad_dealloc;
-    var cellTick = instance.exports.cell_tick;
-
-    if (!memory) throw new Error("raw module: missing 'memory' export");
-    if (!dealloc) throw new Error("raw module: missing 'ironpad_dealloc' export");
-    if (!cellTick) throw new Error("raw module: missing 'cell_tick' export");
-
-    var retptr;
-    var useSret = cellTick.length === 1;
-
-    if (useSret) {
-      if (!alloc) throw new Error("raw module: missing 'ironpad_alloc' export");
-      retptr = alloc(LIVE_TICK_RESULT_SIZE);
-      if (retptr === 0) {
-        throw new Error("ironpad_alloc failed for live tick return struct");
-      }
-    }
-
-    try {
-      if (useSret) {
-        cellTick(retptr);
-      } else {
-        retptr = cellTick();
-        if (!retptr) {
-          throw new Error("cell_tick returned null");
-        }
-      }
-    } catch (e) {
-      if (useSret && retptr) dealloc(retptr, LIVE_TICK_RESULT_SIZE);
-      throw new Error("WASM tick trapped: " + _describeWasmTrap(e, memory));
-    }
-
-    return this._readLiveTickResult(memory, dealloc, retptr, useSret);
   };
 
   /// Remove a loaded cell module, freeing browser-side resources.

@@ -389,6 +389,121 @@ test("_cellMemory resolves either loading path and tolerates a half-built entry"
   assert.equal(executor._blockingRead("broken", 0, 8), 0, "a blocking read on it copies nothing");
 });
 
+// ── Ticks (review js-4) ─────────────────────────────────────────────────────
+
+test("tick reads a raw cell's TickResult and frees it with the TickResult size", async () => {
+  const { executor } = loadCore();
+  const cell = makeMemory({ shared: true });
+  const retptr = writeTickResult(cell);
+  executor.modules.set("sim", rawEntry(cell, { cell_tick: () => retptr }));
+
+  const frame = await executor.tick("sim");
+
+  assert.equal(frame.width, 1);
+  assert.equal(frame.height, 1);
+  assert.deepEqual(Array.from(frame.rgbBytes), [10, 20, 30]);
+  assert.deepEqual(cell.log.deallocs, [
+    [512, 3],
+    [retptr, TICK_RESULT_SIZE],
+  ]);
+  assert.deepEqual(cell.log.allocs, [], "a direct-return tick allocates nothing");
+});
+
+test("tickLive reads a raw cell's LiveTickResult and frees it with its own size", async () => {
+  const { executor } = loadCore();
+  const cell = makeMemory({ shared: true });
+  const result = writeLiveTickResult(cell, "<b>t = 1</b>");
+  executor.modules.set("live", rawEntry(cell, { cell_tick: () => result.ptr }));
+
+  const frame = await executor.tickLive("live");
+
+  assert.deepEqual(frame, { kind: 1, content: "<b>t = 1</b>" });
+  assert.deepEqual(cell.log.deallocs, [
+    [512, result.len],
+    [result.ptr, LIVE_TICK_RESULT_SIZE],
+  ]);
+});
+
+test("an sret tick allocates the return struct at the size of its own kind", async () => {
+  for (const [method, size] of [
+    ["tick", TICK_RESULT_SIZE],
+    ["tickLive", LIVE_TICK_RESULT_SIZE],
+  ]) {
+    const { executor } = loadCore();
+    const cell = makeMemory();
+    let wroteTo = null;
+    // One parameter: the caller allocates the struct and passes its address.
+    function cell_tick(retptr) {
+      wroteTo = retptr;
+      cell.putU32s(retptr, [0, 0, 0, 0].slice(0, size / 4));
+    }
+    executor.modules.set("c", rawEntry(cell, { cell_tick }));
+
+    await executor[method]("c");
+
+    assert.deepEqual(cell.log.allocs, [size], `${method} allocates ${size} bytes`);
+    assert.deepEqual(cell.log.deallocs, [[wroteTo, size]], `${method} frees what it allocated`);
+  }
+});
+
+test("a trapping sret tick frees the struct it allocated", async () => {
+  const { executor } = loadCore();
+  const cell = makeMemory();
+  executor.modules.set(
+    "c",
+    rawEntry(cell, {
+      cell_tick(_retptr) {
+        throw new Error("unreachable");
+      },
+    }),
+  );
+
+  await assert.rejects(executor.tickLive("c"), /WASM tick trapped/);
+  assert.equal(cell.log.deallocs.length, 1);
+  assert.equal(cell.log.deallocs[0][1], LIVE_TICK_RESULT_SIZE);
+});
+
+test("both tick kinds report a failed return-struct alloc the same way", async () => {
+  for (const method of ["tick", "tickLive"]) {
+    const { executor } = loadCore();
+    const cell = makeMemory();
+    cell.failAlloc = true;
+    executor.modules.set("c", rawEntry(cell, { cell_tick(_retptr) {} }));
+    await assert.rejects(executor[method]("c"), /ironpad_alloc failed for tick return struct/);
+  }
+});
+
+test("bindgen ticks go through the glue's cell_tick and free with the right size", async () => {
+  const { executor } = loadCore();
+  const cell = makeMemory();
+  const retptr = writeTickResult(cell);
+  executor.modules.set("sim", bindgenEntry(cell, { cell_tick: async () => retptr }));
+
+  const frame = await executor.tick("sim");
+  assert.deepEqual(Array.from(frame.rgbBytes), [10, 20, 30]);
+  assert.deepEqual(cell.log.deallocs.at(-1), [retptr, TICK_RESULT_SIZE]);
+
+  const live = makeMemory();
+  const result = writeLiveTickResult(live, "hi");
+  // No glue wrapper: the raw export on `wasm` is the fallback.
+  executor.modules.set("live", bindgenEntry(live, {}, { cell_tick: () => result.ptr }));
+
+  assert.deepEqual(await executor.tickLive("live"), { kind: 1, content: "hi" });
+  assert.deepEqual(live.log.deallocs.at(-1), [result.ptr, LIVE_TICK_RESULT_SIZE]);
+});
+
+test("ticks reject for an unloaded cell and for a null result pointer", async () => {
+  const { executor } = loadCore();
+  await assert.rejects(executor.tick("missing"), /Cell missing not loaded/);
+  await assert.rejects(executor.tickLive("missing"), /Cell missing not loaded/);
+
+  const cell = makeMemory();
+  executor.modules.set("c", rawEntry(cell, { cell_tick: () => 0 }));
+  await assert.rejects(executor.tick("c"), /cell_tick returned null/);
+  executor.modules.set("b", bindgenEntry(cell, { cell_tick: async () => 0 }));
+  await assert.rejects(executor.tickLive("b"), /cell_tick returned null/);
+});
+
 // ── UTF-8 codecs and CellResult (review js-5) ───────────────────────────────
 
 test("the per-frame paths reuse the executor's codecs instead of building new ones", async () => {
