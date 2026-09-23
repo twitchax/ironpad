@@ -52,10 +52,7 @@ pub fn PublicNotebookPage() -> impl IntoView {
                 // Canonical form for `og:url` and the card path:
                 // extension-less (PRD-0048), even when the route was reached
                 // via a legacy `.ironpad` link.
-                let meta_name = filename
-                    .strip_suffix(".ironpad")
-                    .unwrap_or(&filename)
-                    .to_string();
+                let meta_name = ironpad_common::public_notebook_name(&filename).to_string();
                 Suspend::new(async move {
                     match notebook_resource.await {
                         Ok(notebook) => view! {
@@ -63,12 +60,7 @@ pub fn PublicNotebookPage() -> impl IntoView {
                                 title=notebook.title.clone()
                                 description=notebook.description.clone()
                                 path=format!("/public/{}", meta_name)
-                                image=notebook
-                                    .og_image_path()
-                                    .map_or_else(
-                                        || format!("/og/public/{meta_name}.png"),
-                                        str::to_string,
-                                    )
+                                image=notebook.og_image_for("public", &meta_name)
                                 image_size=notebook.og_image_dimensions()
                                 oembed=true
                             />

@@ -224,12 +224,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                         title=response.notebook.title.clone()
                                         description=response.notebook.description.clone()
                                         path=format!("/mutable/{id}")
-                                        image=response.notebook
-                                            .og_image_path()
-                                            .map_or_else(
-                                                || format!("/og/mutable/{id}.png"),
-                                                str::to_string,
-                                            )
+                                        image=response.notebook.og_image_for("mutable", &id)
                                         image_size=response.notebook.og_image_dimensions()
                                         oembed=true
                                         noindex=true

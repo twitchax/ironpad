@@ -39,7 +39,7 @@ fn canonical_path(spec: &str) -> Option<String> {
             // Canonical public URLs are extension-less (PRD-0048); specs from
             // pre-0048 embeds still carry `.ironpad`.
             spec.strip_prefix("public/")
-                .map(|f| format!("/public/{}", f.strip_suffix(".ironpad").unwrap_or(f)))
+                .map(|f| format!("/public/{}", ironpad_common::public_notebook_name(f)))
         })
 }
 

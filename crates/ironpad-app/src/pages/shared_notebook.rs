@@ -67,12 +67,7 @@ pub fn SharedNotebookPage() -> impl IntoView {
                                 title=notebook.title.clone()
                                 description=notebook.description.clone()
                                 path=format!("/shared/{meta_hash}")
-                                image=notebook
-                                    .og_image_path()
-                                    .map_or_else(
-                                        || format!("/og/shared/{meta_hash}.png"),
-                                        str::to_string,
-                                    )
+                                image=notebook.og_image_for("shared", &meta_hash)
                                 image_size=notebook.og_image_dimensions()
                                 oembed=true
                                 noindex=true

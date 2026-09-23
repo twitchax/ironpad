@@ -547,6 +547,19 @@ impl IronpadNotebook {
         (raw.starts_with('/') && !raw.starts_with("//")).then_some(raw)
     }
 
+    /// The `og:image` path for this notebook read from the storage class
+    /// `class` (`public`, `shared`, `mutable`) under `id`: the notebook's own
+    /// override when [`og_image_path`](Self::og_image_path) admits one, else
+    /// the generated card at the server's `/og/{class}/{id}.png` route.
+    ///
+    /// The one place the card path recipe is written on the app side, so the
+    /// three notebook pages cannot drift from each other or from the route.
+    #[must_use]
+    pub fn og_image_for(&self, class: &str, id: &str) -> String {
+        self.og_image_path()
+            .map_or_else(|| format!("/og/{class}/{id}.png"), str::to_string)
+    }
+
     /// The declared size of this notebook's override image, if it declares a
     /// usable one.
     ///
@@ -745,6 +758,38 @@ pub struct PublicNotebookSummary {
     pub cell_count: usize,
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+/// Extension every public notebook file carries on disk (`cannon.ironpad`).
+pub const PUBLIC_NOTEBOOK_EXT: &str = ".ironpad";
+
+/// The canonical public name of a notebook file: the filename without its
+/// extension, which is what `/public/{name}` routes on (PRD-0048).
+///
+/// Also normalizes a name that arrived in the legacy form (links and embed
+/// specs on third-party pages carry `.ironpad` forever), so every route,
+/// card and sitemap entry derives the same extension-less name. Strips one
+/// suffix only: `a.ironpad.ironpad` names the file `a.ironpad.ironpad`.
+#[must_use]
+pub fn public_notebook_name(filename: &str) -> &str {
+    filename
+        .strip_suffix(PUBLIC_NOTEBOOK_EXT)
+        .unwrap_or(filename)
+}
+
+/// Inverse of [`public_notebook_name`]: the on-disk filename for a public
+/// name, appending the extension when it is missing and borrowing when the
+/// name already carries it.
+///
+/// Appending is also what keeps a lookup inside notebook files: any other
+/// name resolves to `{name}.ironpad`, which will not exist.
+#[must_use]
+pub fn public_notebook_filename(name: &str) -> std::borrow::Cow<'_, str> {
+    if name.ends_with(PUBLIC_NOTEBOOK_EXT) {
+        std::borrow::Cow::Borrowed(name)
+    } else {
+        std::borrow::Cow::Owned(format!("{name}{PUBLIC_NOTEBOOK_EXT}"))
+    }
 }
 
 // ── Mutable Share Types (PRD-0049) ──────────────────────────────────────────
@@ -1195,6 +1240,62 @@ mod tests {
                 with(w, h).og_image_dimensions(),
                 None,
                 "should have rejected {w}x{h}"
+            );
+        }
+    }
+
+    #[test]
+    fn og_image_for_prefers_the_override_and_falls_back_to_the_card_route() {
+        let mut nb = IronpadNotebook::new("t");
+        assert_eq!(nb.og_image_for("public", "cannon"), "/og/public/cannon.png");
+        assert_eq!(nb.og_image_for("shared", "abc"), "/og/shared/abc.png");
+
+        nb.og_image = Some("/og-custom/mandelbrot.png".to_string());
+        assert_eq!(
+            nb.og_image_for("public", "cannon"),
+            "/og-custom/mandelbrot.png"
+        );
+
+        // A rejected override is the same as none: the card, never the
+        // attacker's origin.
+        nb.og_image = Some("https://evil.example/x.png".to_string());
+        assert_eq!(nb.og_image_for("mutable", "m1"), "/og/mutable/m1.png");
+    }
+
+    #[test]
+    fn public_notebook_name_strips_exactly_one_extension() {
+        assert_eq!(public_notebook_name("a.ironpad"), "a");
+        assert_eq!(public_notebook_name("a"), "a");
+        assert_eq!(public_notebook_name("a.ironpad.ironpad"), "a.ironpad");
+        // Mid-string occurrences are part of the name.
+        assert_eq!(public_notebook_name("a.ironpad-b"), "a.ironpad-b");
+    }
+
+    #[test]
+    fn public_notebook_filename_appends_the_extension_only_when_missing() {
+        assert!(matches!(
+            public_notebook_filename("a.ironpad"),
+            std::borrow::Cow::Borrowed("a.ironpad")
+        ));
+        assert_eq!(public_notebook_filename("a"), "a.ironpad");
+        assert_eq!(
+            public_notebook_filename("a.ironpad-b"),
+            "a.ironpad-b.ironpad"
+        );
+    }
+
+    #[test]
+    fn public_notebook_name_and_filename_round_trip() {
+        for name in ["welcome", "cannon", "fearless-simd", "a.ironpad-b"] {
+            assert_eq!(public_notebook_name(&public_notebook_filename(name)), name);
+        }
+        // Filename -> name -> filename holds for single-extension files,
+        // which is every file the scanner lists; a name that itself ends in
+        // the extension reads as already suffixed.
+        for filename in ["welcome.ironpad", "a.ironpad-b.ironpad"] {
+            assert_eq!(
+                public_notebook_filename(public_notebook_name(filename)),
+                filename
             );
         }
     }

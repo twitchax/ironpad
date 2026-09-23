@@ -348,10 +348,7 @@ fn LegacyPublicRedirect() -> impl IntoView {
         .read_untracked()
         .get("filename")
         .unwrap_or_default();
-    let name = filename
-        .strip_suffix(".ironpad")
-        .unwrap_or(&filename)
-        .to_string();
+    let name = ironpad_common::public_notebook_name(&filename);
     view! { <Redirect path=format!("/public/{name}")/> }
 }
 

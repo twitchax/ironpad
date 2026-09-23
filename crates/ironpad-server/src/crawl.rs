@@ -57,7 +57,7 @@ pub fn sitemap_xml(public_url: &str, filenames: &[String]) -> String {
     push_url(&mut out, public_url, "/");
 
     for filename in filenames {
-        let name = filename.strip_suffix(".ironpad").unwrap_or(filename);
+        let name = ironpad_common::public_notebook_name(filename);
         push_url(&mut out, public_url, &format!("/public/{name}"));
     }
 

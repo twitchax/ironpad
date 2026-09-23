@@ -110,7 +110,7 @@ pub fn embed_target(public_url: &str, url: &str) -> Option<EmbedTarget> {
 
     // The canonical public route is extension-less (PRD-0048), but the legacy
     // form still resolves and people paste what their address bar shows.
-    let id = id.strip_suffix(".ironpad").unwrap_or(id);
+    let id = ironpad_common::public_notebook_name(id);
 
     if !ironpad_common::is_safe_path_segment(id) {
         return None;

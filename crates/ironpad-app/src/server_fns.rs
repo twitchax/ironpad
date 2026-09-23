@@ -715,13 +715,9 @@ pub async fn get_public_notebook_core(
     // on third-party pages carry `.ironpad` forever. Appending the extension
     // when missing also keeps this endpoint serving ONLY notebook files —
     // any other name resolves to `{name}.ironpad`, which won't exist.
-    let filename = if filename.ends_with(".ironpad") {
-        filename.to_string()
-    } else {
-        format!("{filename}.ironpad")
-    };
+    let filename = ironpad_common::public_notebook_filename(filename);
 
-    let path = site_root.join("notebooks").join(filename);
+    let path = site_root.join("notebooks").join(filename.as_ref());
 
     let bytes = tokio::fs::read(&path)
         .await

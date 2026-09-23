@@ -574,7 +574,7 @@ fn NotebookCard(
             // Canonical public URLs are extension-less (PRD-0048).
             let href = format!(
                 "/public/{}",
-                filename.strip_suffix(".ironpad").unwrap_or(&filename)
+                ironpad_common::public_notebook_name(&filename)
             );
             let cell_text = format_cell_count(cell_count);
 
