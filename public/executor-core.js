@@ -126,6 +126,21 @@
     return raw + memHint;
   }
 
+  // ── Host -> cell copies ───────────────────────────────────────────────────
+
+  /// Allocate `4 + bytes.length` in the cell and write `[u32-LE length][bytes]`
+  /// there, the shape the sim-bus reads hand back to a cell. Returns the
+  /// pointer, or 0 if the allocation failed.
+  function _writeLengthPrefixed(memory, alloc, bytes) {
+    var ptr = alloc(4 + bytes.length);
+    if (ptr === 0) return 0;
+    // Views are built AFTER the alloc: a memory.grow inside it detaches the
+    // buffer any earlier view was made over.
+    new DataView(memory.buffer, ptr, 4).setUint32(0, bytes.length, true);
+    new Uint8Array(memory.buffer, ptr + 4, bytes.length).set(bytes);
+    return ptr;
+  }
+
   // ── CellExecutor ───────────────────────────────────────────────────────────
 
   function CellExecutor(globalRef) {
@@ -135,6 +150,22 @@
     this._simBus = new Map(); // key -> { latest: string|null, ring: string[] }
     this._blockingPayloads = new Map(); // cell_id -> { ok: bool, bytes: Uint8Array }
   }
+
+  // ── Loaded-cell exports ─────────────────────────────────────────────────
+
+  /// Raw WASM exports of a loaded cell (memory, ironpad_alloc, ...) from
+  /// whichever loading path it took, or null.
+  CellExecutor.prototype._cellExports = function (cellId) {
+    var e = this.modules.get(cellId);
+    if (!e) return null;
+    return (e.type === "bindgen" ? e.wasm : (e.instance && e.instance.exports)) || null;
+  };
+
+  /// Linear memory of a loaded cell (either loading path), or null.
+  CellExecutor.prototype._cellMemory = function (cellId) {
+    var x = this._cellExports(cellId);
+    return x ? x.memory || null : null;
+  };
 
   // ── Host message infrastructure ─────────────────────────────────────────
   //
@@ -153,13 +184,7 @@
   /// Read a JSON message from WASM memory and dispatch to the appropriate
   /// handler.  Called by the `ironpad_host_message` import at runtime.
   CellExecutor.prototype._dispatchHostMessage = function (cellId, ptr, len) {
-    var entry = this.modules.get(cellId);
-    if (!entry) return;
-
-    // Resolve WASM memory from whichever loading path was used.
-    var memory = entry.type === "bindgen"
-      ? (entry.wasm && entry.wasm.memory)
-      : (entry.instance && entry.instance.exports.memory);
+    var memory = this._cellMemory(cellId);
     if (!memory) return;
 
     var bytes = new Uint8Array(memory.buffer, ptr, len).slice();
@@ -188,49 +213,27 @@
   /// Allocates WASM memory via ironpad_alloc and writes [u32-LE length][JSON bytes].
   /// Returns the pointer, or 0 if the key has no value.
   CellExecutor.prototype._simRead = function (cellId, keyPtr, keyLen) {
-    var entry = this.modules.get(cellId);
-    if (!entry) return 0;
-    var memory = entry.type === "bindgen"
-      ? (entry.wasm && entry.wasm.memory)
-      : (entry.instance && entry.instance.exports.memory);
-    var alloc = entry.type === "bindgen"
-      ? (entry.wasm && entry.wasm.ironpad_alloc)
-      : (entry.instance && entry.instance.exports.ironpad_alloc);
-    if (!memory || !alloc) return 0;
+    var x = this._cellExports(cellId);
+    if (!x || !x.memory || !x.ironpad_alloc) return 0;
 
-    var keyBytes = new Uint8Array(memory.buffer, keyPtr, keyLen).slice();
+    var keyBytes = new Uint8Array(x.memory.buffer, keyPtr, keyLen).slice();
     var key = new TextDecoder().decode(keyBytes);
 
     var busEntry = this._simBus.get(key);
     if (!busEntry || busEntry.latest === null || busEntry.latest === undefined) return 0;
 
     var jsonBytes = new TextEncoder().encode(busEntry.latest);
-    var totalLen = 4 + jsonBytes.length;
-    var ptr = alloc(totalLen);
-    if (ptr === 0) return 0;
-
-    var view = new DataView(memory.buffer, ptr, 4);
-    view.setUint32(0, jsonBytes.length, true);
-    new Uint8Array(memory.buffer, ptr + 4, jsonBytes.length).set(jsonBytes);
-
-    return ptr;
+    return _writeLengthPrefixed(x.memory, x.ironpad_alloc, jsonBytes);
   };
 
   /// Read all buffered values for a sim bus key from WASM memory.
   /// Writes the ring buffer as a JSON array: [v0,v1,...].
   /// Returns the pointer, or 0 if the key has no entries.
   CellExecutor.prototype._simReadAll = function (cellId, keyPtr, keyLen) {
-    var entry = this.modules.get(cellId);
-    if (!entry) return 0;
-    var memory = entry.type === "bindgen"
-      ? (entry.wasm && entry.wasm.memory)
-      : (entry.instance && entry.instance.exports.memory);
-    var alloc = entry.type === "bindgen"
-      ? (entry.wasm && entry.wasm.ironpad_alloc)
-      : (entry.instance && entry.instance.exports.ironpad_alloc);
-    if (!memory || !alloc) return 0;
+    var x = this._cellExports(cellId);
+    if (!x || !x.memory || !x.ironpad_alloc) return 0;
 
-    var keyBytes = new Uint8Array(memory.buffer, keyPtr, keyLen).slice();
+    var keyBytes = new Uint8Array(x.memory.buffer, keyPtr, keyLen).slice();
     var key = new TextDecoder().decode(keyBytes);
 
     var busEntry = this._simBus.get(key);
@@ -238,15 +241,7 @@
 
     var json = "[" + busEntry.ring.join(",") + "]";
     var jsonBytes = new TextEncoder().encode(json);
-    var totalLen = 4 + jsonBytes.length;
-    var ptr = alloc(totalLen);
-    if (ptr === 0) return 0;
-
-    var view = new DataView(memory.buffer, ptr, 4);
-    view.setUint32(0, jsonBytes.length, true);
-    new Uint8Array(memory.buffer, ptr + 4, jsonBytes.length).set(jsonBytes);
-
-    return ptr;
+    return _writeLengthPrefixed(x.memory, x.ironpad_alloc, jsonBytes);
   };
 
   // ── GPU executor methods (resolve WASM memory per cell) ─────────────────
@@ -260,22 +255,14 @@
   };
 
   CellExecutor.prototype._gpuWriteBufferForCell = function (cellId, handle, ptr, len) {
-    var entry = this.modules.get(cellId);
-    if (!entry) return;
-    var memory = entry.type === "bindgen"
-      ? (entry.wasm && entry.wasm.memory)
-      : (entry.instance && entry.instance.exports.memory);
+    var memory = this._cellMemory(cellId);
     if (memory) Gpu.writeBuffer(handle, ptr, len, memory);
   };
 
   CellExecutor.prototype._gpuDispatchComputeForCell = function (
     cellId, shaderPtr, shaderLen, uniformHandle, outputHandle, width, height
   ) {
-    var entry = this.modules.get(cellId);
-    if (!entry) return 1;
-    var memory = entry.type === "bindgen"
-      ? (entry.wasm && entry.wasm.memory)
-      : (entry.instance && entry.instance.exports.memory);
+    var memory = this._cellMemory(cellId);
     if (!memory) return 1;
     return Gpu.dispatchComputeSync(
       shaderPtr, shaderLen, uniformHandle, outputHandle, width, height, memory
@@ -389,15 +376,6 @@
     return function () {
       throw new Error(JSPI_UNSUPPORTED_MSG);
     };
-  };
-
-  /// Linear memory of a loaded cell (either loading path), or null.
-  CellExecutor.prototype._cellMemory = function (cellId) {
-    var entry = this.modules.get(cellId);
-    if (!entry) return null;
-    return entry.type === "bindgen"
-      ? entry.wasm.memory
-      : entry.instance.exports.memory;
   };
 
   /// Suspending import: fetch the URL (read from WASM memory), stash the
