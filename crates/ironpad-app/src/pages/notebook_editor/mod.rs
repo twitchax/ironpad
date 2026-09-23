@@ -339,9 +339,14 @@ pub fn NotebookEditor(
                 ironpad_common::protocol::ClientId::browser(),
             );
 
-            // Flush every cell's pending content into the model, THEN
-            // persist: the flush effects run queued, so persisting in the
-            // same tick as the bump raced them for the write.
+            // Persist what the model already holds (the title above, and every
+            // cell flushed before this save) NOW: the flush below yields, and a
+            // navigation inside that window disposes the page and skips its
+            // persist, which lost a rename committed by blurring the title
+            // onto a link. Then flush every cell's pending content into the
+            // model and persist again: the flush effects run queued, so this
+            // first write cannot carry the last debounce window of typing.
+            persist_notebook(&state);
             leptos::task::spawn_local(async move {
                 if state.flush_cells().await.is_some() {
                     persist_notebook(&state);
