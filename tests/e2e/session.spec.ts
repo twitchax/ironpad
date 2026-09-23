@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import {
+  ADD_CODE,
   createNotebook,
   startSession,
   endSession,
@@ -206,6 +207,81 @@ test.describe.serial("Agent Session", () => {
     // Verify the cell source was updated in the daemon cache.
     const cell = cliExec(["cells", "get", cellId]);
     expect(cell.source).toContain("let x = 99;");
+  });
+
+  test("agent Cargo.toml edit reaches the host editor and survives a host save", async ({
+    page,
+  }) => {
+    // Regression (review editor-1): the host never refreshed its Cargo.toml
+    // pane from an agent edit, so a Run compiled the stale local manifest,
+    // and every save flush re-sent that stale copy over the agent's edit.
+    test.setTimeout(60_000);
+
+    const jsErrors = trackJsErrors(page);
+
+    await createNotebook(page);
+    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+    await page.locator(ADD_CODE).first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await waitForPersistedCells(page, 1);
+
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+    const cellId = cliExec(["cells", "list"])[0].id;
+
+    const marker = "agent-cargo-marker";
+    const update = cliExecRaw([
+      "cells",
+      "update",
+      cellId,
+      "--cargo-toml",
+      `[dependencies]\n# ${marker}\n`,
+    ]);
+    expect(update.exitCode).toBe(0);
+    await expect
+      .poll(() => cliExec(["cells", "get", cellId]).cargo_toml ?? "", {
+        timeout: 10_000,
+      })
+      .toContain(marker);
+
+    // The host's Cargo.toml pane shows the agent's manifest (the same
+    // refresh updates the signal a Run compiles from).
+    const cell = page.locator(".ironpad-cell-card").first();
+    await cell
+      .locator(".ironpad-cell-tab", { hasText: "Cargo.toml" })
+      .dispatchEvent("click");
+    await expect(
+      cell.locator(".ironpad-cell-editor-pane").nth(1).locator(".view-lines")
+    ).toContainText(marker, { timeout: 10_000 });
+
+    // A host save keeps it. The label rename after Ctrl+S is an ordering
+    // barrier: browser events reach the daemon in order, so once the new
+    // label is visible there, anything the save flush sent has landed too.
+    await page.keyboard.press("Control+s");
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Notebook saved" })
+    ).toBeVisible({ timeout: 5_000 });
+    const labelInput = cell.locator(".ironpad-cell-label-input");
+    await labelInput.fill("After Save");
+    await labelInput.blur();
+    await expect
+      .poll(() => cliExec(["cells", "get", cellId]).label, { timeout: 10_000 })
+      .toBe("After Save");
+    expect(cliExec(["cells", "get", cellId]).cargo_toml).toContain(marker);
+
+    // And the durable copy agrees.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async (id) => {
+            const nb = await (window as any).IronpadStorage.getNotebook(id);
+            return nb?.cells?.[0]?.cargo_toml ?? "";
+          }, notebookId),
+        { timeout: 10_000 },
+      )
+      .toContain(marker);
+
+    expect(jsErrors).toEqual([]);
   });
 
   test("agent updates notebook shared source and cargo", async ({ page }) => {

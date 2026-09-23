@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { trackJsErrors } from "./helpers/errors";
+import { setCellSource } from "./helpers/monaco";
 import { ADD_CODE } from "./helpers/session";
 
 test.describe("Keyboard shortcuts", () => {
@@ -112,6 +113,65 @@ test.describe("Keyboard shortcuts", () => {
     ).toBeVisible({ timeout: 5_000 });
 
     // Verify no JS errors occurred.
+    expect(jsErrors).toEqual([]);
+  });
+
+  test("Ctrl+S after a run leaves the cell fresh", async ({ page }) => {
+    // Regression (review editor-1): every save flush re-sent each cell's
+    // unchanged source, the model read "a field was sent" as "the content
+    // changed", and a plain Ctrl+S left every executed cell stale.
+    test.setTimeout(180_000);
+
+    const jsErrors = trackJsErrors(page);
+
+    await page.goto("/");
+    await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.waitForTimeout(3_000); // hydration (suite convention)
+    await page.locator("button", { hasText: "New Notebook" }).click();
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
+    await expect(page.locator(".ironpad-editor")).toBeVisible();
+    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+
+    await page.locator(ADD_CODE).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Same source as execution.spec.ts, so the compile cache is usually
+    // warm. Wait for the debounced save to land BEFORE running: a save
+    // landing after the run is a real edit and would (rightly) stale it.
+    await setCellSource(page, cell, 'CellOutput::text(format!("{}", 42))');
+    await expect(cell.locator(".ironpad-tab-dirty")).toHaveCount(0, {
+      timeout: 10_000,
+    });
+
+    await cell.locator('button[title="Run cell"]').click();
+    await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 120_000,
+    });
+    await expect(cell.locator(".ironpad-stale-indicator")).toHaveCount(0);
+
+    // Ctrl+S, then wait for the save's IndexedDB write. The cell flush runs
+    // in the effect ticks right after the save fires, well before that write
+    // resolves, so by then a flush that staled the cell has already rendered
+    // the indicator.
+    const savedAt = () =>
+      page.evaluate(async (id) => {
+        const nb = await (window as any).IronpadStorage.getNotebook(id);
+        return nb?.updated_at ?? "";
+      }, notebookId);
+    const before = await savedAt();
+    await cell.locator(".ironpad-cell-header").click();
+    await page.keyboard.press("Control+s");
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Notebook saved" })
+    ).toBeVisible({ timeout: 5_000 });
+    await expect.poll(savedAt, { timeout: 10_000 }).not.toBe(before);
+
+    await expect(cell.locator(".ironpad-stale-indicator")).toHaveCount(0);
+    await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible();
+
     expect(jsErrors).toEqual([]);
   });
 });

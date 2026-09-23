@@ -585,12 +585,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         });
     }
 
-    // ── Pull remote (agent) source edits into Monaco ────────────────────
+    // ── Pull remote (agent) content edits into the editor ───────────────
     //
     // When an agent edits this cell's content, the model bumps
-    // external_content_generation. Refresh Monaco from the model so the change
-    // is visible without a reload — but never overwrite the host's own unsaved
-    // edits (source_dirty), and skip if Monaco already matches.
+    // external_content_generation. Refresh each pane from the model so the
+    // change is visible without a reload, and so the local signal a Run
+    // compiles from is the agent's value rather than this editor's stale copy
+    // (the Cargo.toml pane was never refreshed, so a Run after an agent
+    // Cargo.toml edit built the old manifest). Each pane refreshes on its own,
+    // and never over the host's own unsaved edits in it.
 
     #[cfg(feature = "hydrate")]
     {
@@ -600,26 +603,25 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             // React to remote content edits.
             state.external_content_generation.get();
 
-            let Some(handle) = source_handle.get_untracked() else {
-                return;
-            };
-            // Don't clobber the host's in-progress local edits.
-            if source_dirty.get_untracked() {
-                return;
-            }
-
             let cid = cell_id_for_external.get_value();
             let latest = state.notebook.with_untracked(|nb_opt| {
                 nb_opt
                     .as_ref()
                     .and_then(|nb| nb.cells.iter().find(|c| c.id == cid))
-                    .map(|c| c.source.clone())
+                    .map(|c| (c.source.clone(), c.cargo_toml.clone().unwrap_or_default()))
             });
-            if let Some(latest) = latest {
-                if handle.get_value() != latest {
-                    handle.set_value(&latest);
-                    source.set(latest);
-                }
+            let Some((latest_source, latest_cargo_toml)) = latest else {
+                return;
+            };
+            if !source_dirty.get_untracked() {
+                refresh_pane(source, source_handle.get_untracked(), latest_source);
+            }
+            if !cargo_toml_dirty.get_untracked() {
+                refresh_pane(
+                    cargo_toml,
+                    cargo_toml_handle.get_untracked(),
+                    latest_cargo_toml,
+                );
             }
         });
     }
@@ -942,8 +944,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── Notebook-level save flush ───────────────────────────────────────
     //
     // When the user triggers a notebook save (Ctrl+S or save button),
-    // immediately flush this cell's current source and cargo_toml
-    // into the notebook signal (the page-level handler persists to IndexedDB).
+    // immediately flush this cell's UNSAVED source and cargo_toml into the
+    // notebook signal (the page-level handler persists to IndexedDB). Only
+    // the dirty panes are sent: every save, share, Push and Preview toggle
+    // fires this in every cell, and re-sending clean content bumped every
+    // cell's version, buffered a full-source event per cell for agents, and
+    // overwrote an agent's Cargo.toml edit with this editor's stale copy.
 
     #[cfg(feature = "hydrate")]
     {
@@ -957,19 +963,22 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             }
             prev_save_gen.set(gen);
 
-            let src = source.get_untracked();
-            let toml = cargo_toml.get_untracked();
+            let src_dirty = source_dirty.get_untracked();
+            let toml_dirty = cargo_toml_dirty.get_untracked();
+            if !src_dirty && !toml_dirty {
+                return;
+            }
             let cid = cid_flush.clone();
             let version = model.cell_version(&cid);
 
-            // Flush current editor content into the model.
+            // Flush the unsaved editor content into the model.
             if model
                 .apply(
                     ironpad_common::protocol::Mutation::CellUpdate {
                         cell_id: cid,
                         patch: CellPatch {
-                            source: Some(src),
-                            cargo_toml: Some(Some(toml)),
+                            source: src_dirty.then(|| source.get_untracked()),
+                            cargo_toml: toml_dirty.then(|| Some(cargo_toml.get_untracked())),
                             ..Default::default()
                         },
                         version,
@@ -978,8 +987,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 )
                 .is_ok()
             {
-                source_dirty.set(false);
-                cargo_toml_dirty.set(false);
+                if src_dirty {
+                    source_dirty.set(false);
+                }
+                if toml_dirty {
+                    cargo_toml_dirty.set(false);
+                }
             }
         });
     }
@@ -1520,5 +1533,22 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             </div>
         </div>
         </div>
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Pull the model's `latest` text into one editor pane: the Monaco buffer the
+/// host sees and the signal the run pipeline compiles from. Each is written
+/// only when it differs, since a Monaco write fires the pane's `on_change`.
+#[cfg(feature = "hydrate")]
+fn refresh_pane(signal: RwSignal<String>, handle: Option<MonacoEditorHandle>, latest: String) {
+    if let Some(handle) = handle {
+        if handle.get_value() != latest {
+            handle.set_value(&latest);
+        }
+    }
+    if signal.get_untracked() != latest {
+        signal.set(latest);
     }
 }

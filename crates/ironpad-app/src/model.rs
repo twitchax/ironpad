@@ -358,30 +358,34 @@ impl NotebookModel {
             });
         }
 
-        // Verify cell exists.
-        let exists = self.notebook.with_untracked(|nb_opt| {
-            nb_opt
-                .as_ref()
-                .is_some_and(|nb| nb.cells.iter().any(|c| c.id == cell_id))
-        });
-        if !exists {
+        // One read of the cell, BEFORE the update: it must exist, and both
+        // staling inputs are pre-update facts. `content_changed` compares
+        // values rather than asking whether a field was sent, because a
+        // CellUpdate carrying the text the cell already holds (a save flush,
+        // a debounce landing after one, an agent re-sending its source)
+        // changes no compilation input, and treating it as an edit marked
+        // every executed cell stale on a plain Ctrl+S. Shared-cell edits
+        // change EVERY cell's compilation input, not just downstream: shared
+        // source is global, so both "was shared" (source edited) and "became
+        // (un)shared" (flag toggled) widen the staling below.
+        let Some((was_shared, content_changed)) = self.notebook.with_untracked(|nb_opt| {
+            let cell = nb_opt.as_ref()?.cells.iter().find(|c| c.id == cell_id)?;
+            let content_changed = patch.source.as_ref().is_some_and(|s| *s != cell.source)
+                || patch
+                    .cargo_toml
+                    .as_ref()
+                    .is_some_and(|t| *t != cell.cargo_toml);
+            Some((cell.shared, content_changed))
+        }) else {
             return Err(ModelError {
                 code: ErrorCode::CellNotFound,
                 message: format!("Cell {cell_id} not found"),
             });
-        }
+        };
 
+        // The version bumps and the event goes out even for a no-op patch:
+        // the wire behaviour a peer sees does not depend on the comparison.
         let new_version = current + 1;
-        let content_changed = patch.source.is_some() || patch.cargo_toml.is_some();
-        // Shared-cell edits change EVERY cell's compilation input, not just
-        // downstream: shared source is global. Capture the flag before the
-        // update so both "was shared" (source edited) and "became (un)shared"
-        // (flag toggled) widen the staling below.
-        let was_shared = self.notebook.with_untracked(|nb_opt| {
-            nb_opt
-                .as_ref()
-                .is_some_and(|nb| nb.cells.iter().any(|c| c.id == cell_id && c.shared))
-        });
         let affects_shared =
             patch.shared.is_some_and(|s| s != was_shared) || (was_shared && content_changed);
 
@@ -713,6 +717,173 @@ mod collapse_tests {
                 }
                 other => panic!("unexpected event: {other:?}"),
             }
+        });
+    }
+
+    /// A model over [`notebook_with_one_cell`] plus a second, downstream code
+    /// cell `c2`, with the manifest list synced (staling walks it).
+    fn two_cell_model() -> (NotebookModel, RwSignal<HashMap<String, bool>>) {
+        let mut nb = notebook_with_one_cell();
+        let mut c2 = nb.cells[0].clone();
+        c2.id = "c2".into();
+        c2.order = 1;
+        nb.cells.push(c2);
+        let stale = RwSignal::new(HashMap::new());
+        let model = NotebookModel::new(
+            RwSignal::new(Some(nb)),
+            RwSignal::new(Vec::new()),
+            stale,
+            RwSignal::new(0),
+        );
+        model.sync_from_notebook();
+        (model, stale)
+    }
+
+    fn update(cell_id: &str, patch: CellPatch, version: u64) -> Mutation {
+        Mutation::CellUpdate {
+            cell_id: cell_id.into(),
+            patch,
+            version,
+        }
+    }
+
+    /// Regression (review editor-1): every save flush re-sent each cell's
+    /// unchanged source and Cargo.toml, and `cell_update` treated "a field was
+    /// sent" as "the content changed", so a plain Ctrl+S left every executed
+    /// cell stale (and re-ran the notebook in reactive mode). A patch that
+    /// carries the cell's current content is not an edit.
+    #[test]
+    fn identical_source_update_stales_nothing() {
+        Owner::new().with(|| {
+            let (model, stale) = two_cell_model();
+            let (result, event) = model
+                .apply(
+                    update(
+                        "c1",
+                        CellPatch {
+                            source: Some("42".into()),
+                            cargo_toml: Some(None),
+                            ..Default::default()
+                        },
+                        0,
+                    ),
+                    ClientId::browser(),
+                )
+                .expect("a no-op update still applies");
+
+            assert!(
+                stale.get_untracked().is_empty(),
+                "unchanged content must stale nothing: {:?}",
+                stale.get_untracked()
+            );
+            // The wire behaviour is unchanged: version bump, event echoed.
+            assert!(matches!(
+                result,
+                MutationResult::CellUpdated { version: 1, .. }
+            ));
+            assert!(matches!(event.event, Event::CellUpdated { version: 1, .. }));
+            assert_eq!(model.cell_version("c1"), 1);
+        });
+    }
+
+    /// The positive control for the test above: a real edit still stales the
+    /// edited cell and everything downstream of it.
+    #[test]
+    fn changed_source_update_stales_downstream() {
+        Owner::new().with(|| {
+            let (model, stale) = two_cell_model();
+            model
+                .apply(
+                    update(
+                        "c1",
+                        CellPatch {
+                            source: Some("43".into()),
+                            ..Default::default()
+                        },
+                        0,
+                    ),
+                    ClientId::browser(),
+                )
+                .expect("update applies");
+            let stale = stale.get_untracked();
+            assert_eq!(stale.get("c1"), Some(&true));
+            assert_eq!(stale.get("c2"), Some(&true));
+
+            // A Cargo.toml change is a content change too.
+            let (model, stale) = two_cell_model();
+            model
+                .apply(
+                    update(
+                        "c2",
+                        CellPatch {
+                            cargo_toml: Some(Some("[dependencies]".into())),
+                            ..Default::default()
+                        },
+                        0,
+                    ),
+                    ClientId::browser(),
+                )
+                .expect("update applies");
+            let stale = stale.get_untracked();
+            assert_eq!(stale.get("c1"), None, "upstream stays fresh");
+            assert_eq!(stale.get("c2"), Some(&true));
+        });
+    }
+
+    /// A shared cell's source feeds every cell, so a real edit stales them
+    /// all; re-sending the text it already holds must not.
+    #[test]
+    fn identical_update_to_a_shared_cell_stales_nothing() {
+        Owner::new().with(|| {
+            let (model, stale) = two_cell_model();
+            model
+                .apply(
+                    update(
+                        "c1",
+                        CellPatch {
+                            shared: Some(true),
+                            ..Default::default()
+                        },
+                        0,
+                    ),
+                    ClientId::browser(),
+                )
+                .expect("share toggle applies");
+            stale.set(HashMap::new());
+
+            model
+                .apply(
+                    update(
+                        "c1",
+                        CellPatch {
+                            source: Some("42".into()),
+                            ..Default::default()
+                        },
+                        1,
+                    ),
+                    ClientId::browser(),
+                )
+                .expect("no-op update applies");
+            assert!(stale.get_untracked().is_empty());
+
+            model
+                .apply(
+                    update(
+                        "c1",
+                        CellPatch {
+                            source: Some("pub fn helper() {}".into()),
+                            ..Default::default()
+                        },
+                        2,
+                    ),
+                    ClientId::browser(),
+                )
+                .expect("edit applies");
+            assert_eq!(
+                stale.get_untracked().get("c2"),
+                Some(&true),
+                "a real shared edit still stales every code cell"
+            );
         });
     }
 
