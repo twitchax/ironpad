@@ -175,8 +175,11 @@ pub(crate) fn bincode_encode_string(value: &str) -> Vec<u8> {
 
 // ── Sim bus JS bridge (hydrate-only) ─────────────────────────────────────────
 
+/// The one JS bridge to the executor's sim bus, for the widgets here and the
+/// simulation sliders in `animation_canvas.rs`. Guarded: the executor may not
+/// have loaded (or may predate `simBusWrite`), and a write then does nothing.
 #[cfg(feature = "hydrate")]
-mod sim_bus_js {
+pub(crate) mod sim_bus_js {
     use wasm_bindgen::prelude::*;
 
     #[wasm_bindgen(inline_js = "

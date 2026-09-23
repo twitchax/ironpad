@@ -192,4 +192,58 @@ test.describe("Notebook smoke tests", () => {
 
     expect(jsErrors).toEqual([]);
   });
+
+  ciTest("a pause and play faster than a frame keeps one render loop", async ({
+    page,
+  }) => {
+    // RafLoop::start is a no-op while a frame is already scheduled. Without
+    // that guard, every play clicked before the paused loop's pending frame
+    // fires schedules one MORE loop, and each reschedules itself forever. The
+    // frame counter cannot see it (the loops share one interval clock), so
+    // this counts requestAnimationFrame calls instead.
+    test.setTimeout(NOTEBOOK_TIMEOUT);
+    const jsErrors = trackJsErrors(page);
+    await page.addInitScript(() => {
+      const w = window as unknown as { __rafCalls: number };
+      w.__rafCalls = 0;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => {
+        w.__rafCalls += 1;
+        return raf(cb);
+      };
+    });
+
+    await page.goto("/notebook/public/fourier-series.ironpad");
+    const sim = page
+      .locator(".animation-canvas-container")
+      .filter({ has: page.locator(".animation-fps-display") })
+      .first();
+    const frame = async () =>
+      Number(
+        (await sim.locator(".animation-frame-counter").textContent())?.match(/\d+/)?.[0] ?? 0,
+      );
+    await expect.poll(frame, { timeout: CELL_OUTPUT_TIMEOUT }).toBeGreaterThanOrEqual(2);
+
+    const rafPerSecond = async () => {
+      const calls = () =>
+        page.evaluate(() => (window as unknown as { __rafCalls: number }).__rafCalls);
+      const start = await calls();
+      await page.waitForTimeout(2_000);
+      return ((await calls()) - start) / 2;
+    };
+    const baseline = await rafPerSecond();
+    expect(baseline, "the live loop is running").toBeGreaterThan(0);
+
+    // Pause/play twice inside ONE task, so no frame can fire in between.
+    await sim.locator(".animation-control-btn").first().evaluate((btn: HTMLElement) => {
+      for (let i = 0; i < 4; i++) btn.click();
+    });
+    const after = await rafPerSecond();
+    expect(after, `rAF calls/s went from ${baseline} to ${after}`).toBeLessThan(baseline * 1.5);
+
+    // And the one loop is still alive.
+    const n = await frame();
+    await expect.poll(frame, { timeout: 10_000 }).toBeGreaterThan(n);
+    expect(jsErrors).toEqual([]);
+  });
 });

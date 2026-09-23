@@ -49,15 +49,22 @@ pub(crate) fn render_live_content<'a>(kind: &str, text: &'a str) -> LiveContent<
     }
 }
 
-// ── Component ───────────────────────────────────────────────────────────────
-
-/// Cancel a `requestAnimationFrame` by ID (if present).
+/// Write a `LiveView` cell's content into its element, by kind, then let
+/// `KaTeX` render any maths an HTML or markdown kind brought in.
 #[cfg(feature = "hydrate")]
-fn cancel_raf(id: Option<i32>) {
-    if let Some(id) = id {
-        let _ = web_sys::window().unwrap().cancel_animation_frame(id);
+fn apply_live_content(el: &web_sys::HtmlElement, kind: &str, text: &str) {
+    match render_live_content(kind, text) {
+        LiveContent::Html(html) => {
+            el.set_inner_html(&html);
+            let _ = js::render_math_in(el);
+        }
+        LiveContent::Text(t) => {
+            el.set_text_content(Some(t));
+        }
     }
 }
+
+// ── Component ───────────────────────────────────────────────────────────────
 
 /// Renders live, tick-driven content from a LiveView cell.
 ///
@@ -74,219 +81,74 @@ pub fn LiveViewPanel(
 ) -> impl IntoView {
     #[cfg(feature = "hydrate")]
     {
-        use std::cell::RefCell;
+        use std::cell::Cell;
         use std::rc::Rc;
 
-        use wasm_bindgen::prelude::*;
-
-        type RafClosure = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+        use crate::components::raf_loop::RafLoop;
 
         let content_ref = NodeRef::<leptos::html::Div>::new();
         let playing = RwSignal::new(true);
         let frame_number = RwSignal::new(0u32);
-        let raf_id_signal = RwSignal::new(Option::<i32>::None);
-        // Owns the rAF closure (strong ref) for the component's lifetime.  The
-        // callback reschedules through a *weak* handle, so dropping this on
-        // dispose frees it — no self-referential Rc cycle to leak.
-        let cb_holder = StoredValue::new_local(Option::<RafClosure>::None);
-        let tick_in_flight: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
 
-        // Guarded (re)start of the loop, driven by the play button.  A paused
-        // loop stops rescheduling entirely (see the callback), so this brings
-        // it back.  No-op while a frame is already scheduled, so toggling
-        // faster than a frame fires can't start a second loop (2× ticks).
-        let start_loop: Rc<dyn Fn()> = Rc::new(move || {
-            if raf_id_signal.get_untracked().is_some() {
-                return;
-            }
-            cb_holder.try_with_value(|slot| {
-                if let Some(rc) = slot.as_ref() {
-                    if let Some(ref closure) = *rc.borrow() {
-                        if let Ok(id) = web_sys::window()
-                            .unwrap()
-                            .request_animation_frame(closure.as_ref().unchecked_ref())
-                        {
-                            raf_id_signal.set(Some(id));
-                        }
-                    }
+        // One tick: fetch the next content from the executor and render it.
+        // Shared by the loop and the Step button, and refused while a tick is
+        // still in flight (returning `false` so the loop retries on the next
+        // frame).
+        let tick_once: Rc<dyn Fn() -> bool> = {
+            let in_flight = Rc::new(Cell::new(false));
+            Rc::new(move || {
+                if in_flight.replace(true) {
+                    return false;
                 }
-            });
-        });
-
-        let kind_rc: Rc<str> = Rc::from(kind.as_str());
-
-        let cell_id_loop = cell_id.clone();
-        let cell_id_step = cell_id.clone();
-
-        // Apply content to the DOM element based on the content kind.
-        let apply_content = {
-            let kind_inner = kind_rc.clone();
-            Rc::new(
-                move |el: &web_sys::HtmlElement, kind_override: Option<&str>, text: &str| {
-                    let k = kind_override.unwrap_or(&kind_inner);
-                    match render_live_content(k, text) {
-                        LiveContent::Html(html) => {
-                            el.set_inner_html(&html);
-                            let _ = js::render_math_in(el);
-                        }
-                        LiveContent::Text(t) => {
-                            el.set_text_content(Some(t));
-                        }
-                    }
-                },
-            )
-        };
-
-        // Render initial content once mounted & start the rAF loop.
-        let tick_in_flight_effect = tick_in_flight.clone();
-        let apply_init = apply_content.clone();
-        let apply_step = apply_content.clone();
-        let initial_content = content;
-        let kind_for_init = kind_rc.clone();
-
-        Effect::new(move |_| {
-            let Some(el) = content_ref.get() else {
-                return;
-            };
-            let el: &web_sys::HtmlElement = &el;
-
-            // Draw initial content.
-            apply_init(el, Some(&kind_for_init), &initial_content);
-
-            let frame_interval_ms = if fps > 0 {
-                1000.0 / f64::from(fps)
-            } else {
-                1000.0
-            };
-
-            let last_time: Rc<RefCell<f64>> = Rc::new(RefCell::new(0.0));
-            let cell_id_inner = cell_id_loop.clone();
-            let tick_guard = tick_in_flight_effect.clone();
-            let content_ref_loop = content_ref;
-            let apply_loop = apply_content.clone();
-
-            let cb: RafClosure = Rc::new(RefCell::new(None));
-            // Reschedule through a *weak* handle: the strong owner is
-            // `cb_holder`, so no self-referential Rc cycle keeps the closure
-            // alive after dispose.
-            let cb_weak = Rc::downgrade(&cb);
-            cb_holder.set_value(Some(cb.clone()));
-
-            *cb.borrow_mut() = Some(Closure::new(move |timestamp: f64| {
-                if !playing.get_untracked() {
-                    // Paused: stop the loop instead of rescheduling ~60×/s.
-                    // The play button's `start_loop` brings it back.
-                    raf_id_signal.set(None);
-                    return;
-                }
-
-                let dt = timestamp - *last_time.borrow();
-                if dt >= frame_interval_ms && !*tick_guard.borrow() {
-                    *last_time.borrow_mut() = timestamp;
-                    *tick_guard.borrow_mut() = true;
-
-                    let cid = cell_id_inner.clone();
-                    let guard = tick_guard.clone();
-                    let content_ref_tick = content_ref_loop;
-                    let apply_tick = apply_loop.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        match crate::components::executor::tick_live_cell(&cid).await {
-                            Ok(live_result) => {
-                                let kind_str = match live_result.kind {
-                                    1 => "html",
-                                    2 => "markdown",
-                                    // 0 and anything else: plain text.
-                                    _ => "text",
-                                };
-                                // try_ read: this task resumes after a worker
-                                // round trip and the panel may have been
-                                // disposed (cell re-run, output collapse,
-                                // navigation) — a plain get_untracked on the
-                                // disposed NodeRef panics and halts hydration.
-                                if let Some(el) = content_ref_tick.try_get_untracked().flatten() {
-                                    let el: &web_sys::HtmlElement = &el;
-                                    apply_tick(el, Some(kind_str), &live_result.content);
-                                }
-                                frame_number.update(|n| *n += 1);
-                            }
-                            Err(_e) => {}
-                        }
-                        *guard.borrow_mut() = false;
-                    });
-                }
-
-                // Continue the loop through the weak handle.
-                if let Some(cb) = cb_weak.upgrade() {
-                    if let Some(ref closure) = *cb.borrow() {
-                        if let Ok(id) = web_sys::window()
-                            .unwrap()
-                            .request_animation_frame(closure.as_ref().unchecked_ref())
-                        {
-                            raf_id_signal.set(Some(id));
-                        }
-                    }
-                }
-            }));
-
-            // Kick off the loop (playing starts true).
-            if let Some(ref closure) = *cb.borrow() {
-                if let Ok(id) = web_sys::window()
-                    .unwrap()
-                    .request_animation_frame(closure.as_ref().unchecked_ref())
-                {
-                    raf_id_signal.set(Some(id));
-                }
-            };
-        });
-
-        // Cancel the pending frame on cleanup.  The arena drops `cb_holder`'s
-        // strong ref on dispose, which frees the closure (it holds only a weak
-        // self-ref), so there is no cycle to break here.
-        on_cleanup(move || {
-            cancel_raf(raf_id_signal.get_untracked());
-            raf_id_signal.set(None);
-        });
-
-        let toggle_play = move |_| {
-            playing.update(|p| *p = !*p);
-            if playing.get_untracked() {
-                // Resuming: restart the loop that paused itself.
-                start_loop();
-            }
-        };
-
-        let tick_in_flight_step = tick_in_flight;
-        let step = move |_| {
-            if *tick_in_flight_step.borrow() {
-                return;
-            }
-            *tick_in_flight_step.borrow_mut() = true;
-
-            let cid = cell_id_step.clone();
-            let guard = tick_in_flight_step.clone();
-            let content_ref_step = content_ref;
-            let apply_s = apply_step.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match crate::components::executor::tick_live_cell(&cid).await {
-                    Ok(live_result) => {
+                let in_flight = in_flight.clone();
+                let cid = cell_id.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(live_result) = crate::components::executor::tick_live_cell(&cid).await
+                    {
                         let kind_str = match live_result.kind {
                             1 => "html",
                             2 => "markdown",
                             // 0 and anything else: plain text.
                             _ => "text",
                         };
-                        // try_ read for the same disposal reason as the tick
-                        // handler above.
-                        if let Some(el) = content_ref_step.try_get_untracked().flatten() {
+                        // try_ read: this task resumes after a worker round
+                        // trip and the panel may have been disposed (cell
+                        // re-run, output collapse, navigation) — a plain
+                        // get_untracked on the disposed NodeRef panics and
+                        // halts hydration.
+                        if let Some(el) = content_ref.try_get_untracked().flatten() {
                             let el: &web_sys::HtmlElement = &el;
-                            apply_s(el, Some(kind_str), &live_result.content);
+                            apply_live_content(el, kind_str, &live_result.content);
                         }
                         frame_number.update(|n| *n += 1);
                     }
-                    Err(_e) => {}
-                }
-                *guard.borrow_mut() = false;
-            });
+                    in_flight.set(false);
+                });
+                true
+            })
+        };
+
+        let raf = {
+            let tick_once = tick_once.clone();
+            RafLoop::new(fps, playing, move || tick_once())
+        };
+
+        // Render initial content once mounted & start the loop.
+        let initial_content = content;
+        Effect::new(move |_| {
+            let Some(el) = content_ref.get() else {
+                return;
+            };
+            let el: &web_sys::HtmlElement = &el;
+            apply_live_content(el, &kind, &initial_content);
+
+            // Kick off the loop (playing starts true).
+            raf.start();
+        });
+
+        let toggle_play = move |_| raf.toggle(playing);
+        let step = move |_| {
+            tick_once();
         };
 
         view! {

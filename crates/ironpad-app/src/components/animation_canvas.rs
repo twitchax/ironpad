@@ -6,6 +6,8 @@
 
 use crate::components::icon::Icon;
 use crate::components::icons;
+#[cfg(feature = "hydrate")]
+use crate::components::output_render::sim_bus_js;
 use leptos::prelude::*;
 
 /// Mirror of `ironpad_cell::SimSliderMeta` for use within the app rendering pipeline.
@@ -108,32 +110,6 @@ mod draw {
     }
 }
 
-/// Cancel a `requestAnimationFrame` by ID (if present).
-#[cfg(feature = "hydrate")]
-fn cancel_raf(id: Option<i32>) {
-    if let Some(id) = id {
-        let _ = web_sys::window().unwrap().cancel_animation_frame(id);
-    }
-}
-
-// ── Sim bus JS interop (hydrate-only) ───────────────────────────────────────
-
-#[cfg(feature = "hydrate")]
-mod js {
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen(inline_js = "
-        export function sim_bus_write(key, value) {
-            if (window.IronpadExecutor && window.IronpadExecutor.simBusWrite) {
-                window.IronpadExecutor.simBusWrite(key, value);
-            }
-        }
-    ")]
-    extern "C" {
-        pub fn sim_bus_write(key: &str, value: f64);
-    }
-}
-
 // ── AnimationCanvas ─────────────────────────────────────────────────────────
 
 /// Renders a precomputed multi-frame animation on a `<canvas>` element.
@@ -155,42 +131,13 @@ pub fn AnimationCanvas(
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        use wasm_bindgen::prelude::*;
+        use wasm_bindgen::JsCast as _;
 
-        type RafClosure = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+        use crate::components::raf_loop::RafLoop;
 
         let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
         let playing = RwSignal::new(true);
         let current_frame = RwSignal::new(0u32);
-        let raf_id_signal = RwSignal::new(Option::<i32>::None);
-        // Owns the rAF closure (strong ref) for the component's lifetime.  The
-        // callback below reschedules through a *weak* handle, so dropping this
-        // on dispose frees the closure and its captured frame data — there is
-        // no self-referential Rc cycle to leak.
-        let cb_holder = StoredValue::new_local(Option::<RafClosure>::None);
-
-        // Guarded (re)start of the loop, driven by the play button.  A paused
-        // loop stops rescheduling entirely (see the callback), so this is what
-        // brings it back.  No-op while a frame is already scheduled, so
-        // toggling faster than a frame fires can't start a second loop (which
-        // would run the animation at 2× speed).
-        let start_loop: Rc<dyn Fn()> = Rc::new(move || {
-            if raf_id_signal.get_untracked().is_some() {
-                return;
-            }
-            cb_holder.try_with_value(|slot| {
-                if let Some(rc) = slot.as_ref() {
-                    if let Some(ref closure) = *rc.borrow() {
-                        if let Ok(id) = web_sys::window()
-                            .unwrap()
-                            .request_animation_frame(closure.as_ref().unchecked_ref())
-                        {
-                            raf_id_signal.set(Some(id));
-                        }
-                    }
-                }
-            });
-        });
 
         // Decode all frames to RGBA entirely in JS — never copies bulk pixel
         // data into WASM linear memory.
@@ -199,8 +146,24 @@ pub fn AnimationCanvas(
             draw::decode_frames(&data, frame_rgb_size, frame_count)
                 .unwrap_or_else(|_| js_sys::Array::new()),
         );
+        // Filled once the canvas mounts; the loop draws nothing before that.
+        let ctx_cell: Rc<RefCell<Option<web_sys::CanvasRenderingContext2d>>> =
+            Rc::new(RefCell::new(None));
 
-        let frames_effect = frames.clone();
+        let raf = {
+            let frames = frames.clone();
+            let ctx_cell = ctx_cell.clone();
+            let total = frames.length();
+            RafLoop::new(fps, playing, move || {
+                if let Some(ref ctx) = *ctx_cell.borrow() {
+                    let idx = current_frame.get_untracked();
+                    let _ = draw::draw_rgba(ctx, &frames.get(idx), width, height);
+                    current_frame.set((idx + 1) % total.max(1));
+                }
+                true
+            })
+        };
+
         Effect::new(move |_| {
             let Some(canvas) = canvas_ref.get() else {
                 return;
@@ -218,81 +181,16 @@ pub fn AnimationCanvas(
                 .expect("cast to CanvasRenderingContext2d");
 
             // Draw the first frame immediately.
-            if frames_effect.length() > 0 {
-                let _ = draw::draw_rgba(&ctx, &frames_effect.get(0), width, height);
+            if frames.length() > 0 {
+                let _ = draw::draw_rgba(&ctx, &frames.get(0), width, height);
             }
-
-            let frames_loop = frames_effect.clone();
-            let frame_interval_ms = if fps > 0 {
-                1000.0 / f64::from(fps)
-            } else {
-                1000.0
-            };
-            let last_time: Rc<RefCell<f64>> = Rc::new(RefCell::new(0.0));
-
-            let cb: RafClosure = Rc::new(RefCell::new(None));
-            // Reschedule through a *weak* handle: the strong owner is
-            // `cb_holder`, so no self-referential Rc cycle keeps the closure
-            // (and its captured frame data) alive after dispose.
-            let cb_weak = Rc::downgrade(&cb);
-            cb_holder.set_value(Some(cb.clone()));
-
-            let total = frames_loop.length();
-            *cb.borrow_mut() = Some(Closure::new(move |timestamp: f64| {
-                if !playing.get_untracked() {
-                    // Paused: stop the loop instead of rescheduling ~60×/s.
-                    // The play button's `start_loop` brings it back.
-                    raf_id_signal.set(None);
-                    return;
-                }
-
-                let dt = timestamp - *last_time.borrow();
-                if dt >= frame_interval_ms {
-                    *last_time.borrow_mut() = timestamp;
-                    let idx = current_frame.get_untracked();
-                    let _ = draw::draw_rgba(&ctx, &frames_loop.get(idx), width, height);
-                    current_frame.set((idx + 1) % total.max(1));
-                }
-
-                // Continue the loop through the weak handle.
-                if let Some(cb) = cb_weak.upgrade() {
-                    if let Some(ref closure) = *cb.borrow() {
-                        if let Ok(id) = web_sys::window()
-                            .unwrap()
-                            .request_animation_frame(closure.as_ref().unchecked_ref())
-                        {
-                            raf_id_signal.set(Some(id));
-                        }
-                    }
-                }
-            }));
+            *ctx_cell.borrow_mut() = Some(ctx);
 
             // Kick off the loop (playing starts true).
-            if let Some(ref closure) = *cb.borrow() {
-                if let Ok(id) = web_sys::window()
-                    .unwrap()
-                    .request_animation_frame(closure.as_ref().unchecked_ref())
-                {
-                    raf_id_signal.set(Some(id));
-                }
-            };
+            raf.start();
         });
 
-        // Cancel the pending frame on cleanup.  The arena drops `cb_holder`'s
-        // strong ref on dispose, which frees the closure (it holds only a weak
-        // self-ref), so there is no cycle to break here.
-        on_cleanup(move || {
-            cancel_raf(raf_id_signal.get_untracked());
-            raf_id_signal.set(None);
-        });
-
-        let toggle_play = move |_| {
-            playing.update(|p| *p = !*p);
-            if playing.get_untracked() {
-                // Resuming: restart the loop that paused itself.
-                start_loop();
-            }
-        };
+        let toggle_play = move |_| raf.toggle(playing);
 
         view! {
             <div class="animation-canvas-container">
@@ -351,53 +249,51 @@ pub fn SimulationCanvas(
 ) -> impl IntoView {
     #[cfg(feature = "hydrate")]
     {
-        use std::cell::RefCell;
+        use std::cell::{Cell, RefCell};
         use std::rc::Rc;
 
-        use wasm_bindgen::prelude::*;
+        use wasm_bindgen::JsCast as _;
 
-        type RafClosure = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+        use crate::components::raf_loop::RafLoop;
 
         let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
         let playing = RwSignal::new(true);
         let frame_number = RwSignal::new(0u32);
-        let raf_id_signal = RwSignal::new(Option::<i32>::None);
-        // Owns the rAF closure (strong ref) for the component's lifetime.  The
-        // callback reschedules through a *weak* handle, so dropping this on
-        // dispose frees it — no self-referential Rc cycle to leak.
-        let cb_holder = StoredValue::new_local(Option::<RafClosure>::None);
-        let tick_in_flight: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-
-        // Guarded (re)start of the loop, driven by the play button.  A paused
-        // loop stops rescheduling entirely (see the callback), so this brings
-        // it back.  No-op while a frame is already scheduled, so toggling
-        // faster than a frame fires can't start a second loop (2× ticks).
-        let start_loop: Rc<dyn Fn()> = Rc::new(move || {
-            if raf_id_signal.get_untracked().is_some() {
-                return;
-            }
-            cb_holder.try_with_value(|slot| {
-                if let Some(rc) = slot.as_ref() {
-                    if let Some(ref closure) = *rc.borrow() {
-                        if let Ok(id) = web_sys::window()
-                            .unwrap()
-                            .request_animation_frame(closure.as_ref().unchecked_ref())
-                        {
-                            raf_id_signal.set(Some(id));
-                        }
-                    }
-                }
-            });
-        });
-
+        // Filled once the canvas mounts; a tick before that draws nothing.
         let ctx_cell: Rc<RefCell<Option<web_sys::CanvasRenderingContext2d>>> =
             Rc::new(RefCell::new(None));
 
-        let cell_id_loop = cell_id.clone();
-        let cell_id_step = cell_id.clone();
+        // One tick: fetch a frame from the executor and draw it. Shared by
+        // the loop and the Step button, and refused while a tick is still in
+        // flight (returning `false` so the loop retries on the next frame).
+        let tick_once: Rc<dyn Fn() -> bool> = {
+            let ctx_cell = ctx_cell.clone();
+            let in_flight = Rc::new(Cell::new(false));
+            Rc::new(move || {
+                if in_flight.replace(true) {
+                    return false;
+                }
+                let ctx_cell = ctx_cell.clone();
+                let in_flight = in_flight.clone();
+                let cid = cell_id.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(tick) = crate::components::executor::tick_cell(&cid).await {
+                        if let Some(ref ctx) = *ctx_cell.borrow() {
+                            let _ = draw::draw_rgb(ctx, &tick.rgb_bytes, tick.width, tick.height);
+                        }
+                        frame_number.update(|n| *n += 1);
+                    }
+                    in_flight.set(false);
+                });
+                true
+            })
+        };
 
-        let ctx_cell_effect = ctx_cell.clone();
-        let tick_in_flight_effect = tick_in_flight.clone();
+        let raf = {
+            let tick_once = tick_once.clone();
+            RafLoop::new(fps, playing, move || tick_once())
+        };
+
         Effect::new(move |_| {
             let Some(canvas) = canvas_ref.get() else {
                 return;
@@ -416,129 +312,15 @@ pub fn SimulationCanvas(
 
             // Draw first frame entirely in JS (base64 → RGB → RGBA → putImageData).
             let _ = draw::draw_b64_rgb(&ctx, &first_frame_data, width, height);
-
-            *ctx_cell_effect.borrow_mut() = Some(ctx);
-
-            let frame_interval_ms = if fps > 0 {
-                1000.0 / f64::from(fps)
-            } else {
-                1000.0
-            };
-            let last_time: Rc<RefCell<f64>> = Rc::new(RefCell::new(0.0));
-            let ctx_loop = ctx_cell_effect.clone();
-            let cell_id_inner = cell_id_loop.clone();
-            let tick_guard = tick_in_flight_effect.clone();
-
-            let cb: RafClosure = Rc::new(RefCell::new(None));
-            // Reschedule through a *weak* handle: the strong owner is
-            // `cb_holder`, so no self-referential Rc cycle keeps the closure
-            // alive after dispose.
-            let cb_weak = Rc::downgrade(&cb);
-            cb_holder.set_value(Some(cb.clone()));
-
-            *cb.borrow_mut() = Some(Closure::new(move |timestamp: f64| {
-                if !playing.get_untracked() {
-                    // Paused: stop the loop instead of rescheduling ~60×/s.
-                    // The play button's `start_loop` brings it back.
-                    raf_id_signal.set(None);
-                    return;
-                }
-
-                let dt = timestamp - *last_time.borrow();
-                if dt >= frame_interval_ms && !*tick_guard.borrow() {
-                    *last_time.borrow_mut() = timestamp;
-                    *tick_guard.borrow_mut() = true;
-
-                    let ctx_tick = ctx_loop.clone();
-                    let cid = cell_id_inner.clone();
-                    let guard = tick_guard.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        match crate::components::executor::tick_cell(&cid).await {
-                            Ok(tick_result) => {
-                                if let Some(ref ctx) = *ctx_tick.borrow() {
-                                    let _ = draw::draw_rgb(
-                                        ctx,
-                                        &tick_result.rgb_bytes,
-                                        tick_result.width,
-                                        tick_result.height,
-                                    );
-                                }
-                                frame_number.update(|n| *n += 1);
-                            }
-                            Err(_e) => {}
-                        }
-                        *guard.borrow_mut() = false;
-                    });
-                }
-
-                // Continue the loop through the weak handle.
-                if let Some(cb) = cb_weak.upgrade() {
-                    if let Some(ref closure) = *cb.borrow() {
-                        if let Ok(id) = web_sys::window()
-                            .unwrap()
-                            .request_animation_frame(closure.as_ref().unchecked_ref())
-                        {
-                            raf_id_signal.set(Some(id));
-                        }
-                    }
-                }
-            }));
+            *ctx_cell.borrow_mut() = Some(ctx);
 
             // Kick off the loop (playing starts true).
-            if let Some(ref closure) = *cb.borrow() {
-                if let Ok(id) = web_sys::window()
-                    .unwrap()
-                    .request_animation_frame(closure.as_ref().unchecked_ref())
-                {
-                    raf_id_signal.set(Some(id));
-                }
-            };
+            raf.start();
         });
 
-        // Cancel the pending frame on cleanup.  The arena drops `cb_holder`'s
-        // strong ref on dispose, which frees the closure (it holds only a weak
-        // self-ref), so there is no cycle to break here.
-        on_cleanup(move || {
-            cancel_raf(raf_id_signal.get_untracked());
-            raf_id_signal.set(None);
-        });
-
-        let toggle_play = move |_| {
-            playing.update(|p| *p = !*p);
-            if playing.get_untracked() {
-                // Resuming: restart the loop that paused itself.
-                start_loop();
-            }
-        };
-
-        let ctx_step = ctx_cell;
-        let tick_in_flight_step = tick_in_flight;
+        let toggle_play = move |_| raf.toggle(playing);
         let step = move |_| {
-            if *tick_in_flight_step.borrow() {
-                return;
-            }
-            *tick_in_flight_step.borrow_mut() = true;
-
-            let ctx_s = ctx_step.clone();
-            let cid = cell_id_step.clone();
-            let guard = tick_in_flight_step.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match crate::components::executor::tick_cell(&cid).await {
-                    Ok(tick_result) => {
-                        if let Some(ref ctx) = *ctx_s.borrow() {
-                            let _ = draw::draw_rgb(
-                                ctx,
-                                &tick_result.rgb_bytes,
-                                tick_result.width,
-                                tick_result.height,
-                            );
-                        }
-                        frame_number.update(|n| *n += 1);
-                    }
-                    Err(_e) => {}
-                }
-                *guard.borrow_mut() = false;
-            });
+            tick_once();
         };
 
         // Create a signal for each slider's current value.
@@ -553,7 +335,7 @@ pub fn SimulationCanvas(
             sliders.iter().map(|s| (s.key.clone(), s.default)).collect();
         Effect::new(move |_| {
             for (key, val) in &defaults {
-                js::sim_bus_write(key, *val);
+                sim_bus_js::sim_bus_write_f64(key, *val);
             }
         });
 
@@ -606,7 +388,7 @@ pub fn SimulationCanvas(
                                             .parse()
                                             .unwrap_or(default);
                                         sig.set(v);
-                                        js::sim_bus_write(&key, v);
+                                        sim_bus_js::sim_bus_write_f64(&key, v);
                                     }
                                 />
                             </div>

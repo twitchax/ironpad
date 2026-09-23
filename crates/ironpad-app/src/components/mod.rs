@@ -16,6 +16,8 @@ pub mod monaco_editor;
 pub mod notebook_rail;
 pub(crate) mod notice;
 pub(crate) mod output_render;
+#[cfg(feature = "hydrate")]
+pub(crate) mod raf_loop;
 pub(crate) mod run_flow;
 pub mod session_panel;
 pub mod social_meta;
