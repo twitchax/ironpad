@@ -35,6 +35,12 @@ const DRAFT_SAVE_INFLIGHT_POLL_MS: i32 = 50;
 #[cfg(feature = "hydrate")]
 const DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS: i32 = 5000;
 
+/// Delay (ms) after bumping `save_generation` before the caller re-reads the
+/// notebook, giving the per-cell flush effects time to run. See
+/// [`NotebookState::flush_cells`], its only user.
+#[cfg(feature = "hydrate")]
+const CELL_FLUSH_YIELD_MS: i32 = 120;
+
 /// Lifetime (s) of the one toast a refused draft save gets. Long: it is shown
 /// once, it carries the limit and the remedy, and the alternative to reading
 /// it is losing work.
@@ -218,6 +224,24 @@ pub(crate) struct NotebookState {
 }
 
 // ── Cell flush (PRD-0032 T-007) ─────────────────────────────────────────────
+//
+// Share, Export HTML, and Download .ironpad all serialize the notebook from
+// `notebook`. Each cell's live editor content only reaches that signal on a
+// 1s debounce or when `save_generation` bumps (see the flush effect in
+// `cell_item.rs`). Bumping the generation alone isn't enough, though: Leptos
+// effects run queued, not synchronously on `signal.update()`, so callers
+// must yield before re-reading the notebook.
+
+/// Awaits a `setTimeout` so queued Leptos effects — in particular each
+/// cell's notebook-level save-flush effect (`cell_item.rs`) — get a chance
+/// to run before the caller re-reads `notebook`. The delay is a pragmatic
+/// yield for the effect queue, not a correctness guarantee. Private to
+/// [`NotebookState::flush_cells`]: an unrelated timer wants
+/// `run_flow::sleep_ms`, not a "cell flush" that flushes nothing.
+#[cfg(feature = "hydrate")]
+async fn yield_for_cell_flush() {
+    crate::components::run_flow::sleep_ms(CELL_FLUSH_YIELD_MS).await;
+}
 
 impl NotebookState {
     /// Flush every cell's unsaved editor content into the model (PRD-0032
@@ -232,7 +256,7 @@ impl NotebookState {
     pub(super) async fn flush_cells(&self) -> Option<()> {
         self.save_generation.try_update(|g| *g += 1)?;
         #[cfg(feature = "hydrate")]
-        super::yield_for_cell_flush(super::CELL_FLUSH_YIELD_MS).await;
+        yield_for_cell_flush().await;
         Some(())
     }
 
@@ -516,7 +540,7 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
         while state.draft_save_inflight.try_get_untracked().unwrap_or(0) > 0
             && waited_ms < DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS
         {
-            super::yield_for_cell_flush(DRAFT_SAVE_INFLIGHT_POLL_MS).await;
+            crate::components::run_flow::sleep_ms(DRAFT_SAVE_INFLIGHT_POLL_MS).await;
             waited_ms += DRAFT_SAVE_INFLIGHT_POLL_MS;
         }
         // Supersede any pending debounce so it can't double-write after us.
@@ -550,7 +574,7 @@ pub(super) fn schedule_draft_save(state: &NotebookState, after_ms: i32) {
         .wrapping_add(1);
     state.draft_save_epoch.update_untracked(|e| *e = epoch);
     leptos::task::spawn_local(async move {
-        super::yield_for_cell_flush(after_ms).await;
+        crate::components::run_flow::sleep_ms(after_ms).await;
         if state.draft_save_epoch.try_get_untracked() != Some(epoch) {
             return; // superseded by a newer edit or an immediate save
         }

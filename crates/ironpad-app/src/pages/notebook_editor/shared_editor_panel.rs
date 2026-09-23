@@ -134,7 +134,7 @@ fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
                 #[allow(clippy::cast_possible_truncation)]
                 let remaining = MIN_SAVING_MS - (js_sys::Date::now() - started) as i32;
                 if remaining > 0 {
-                    super::yield_for_cell_flush(remaining).await;
+                    crate::components::run_flow::sleep_ms(remaining).await;
                 }
                 // The panel may have been disposed mid-save (navigation,
                 // section collapse); try_set keeps this continuation

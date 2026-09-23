@@ -831,7 +831,7 @@ fn dispatch_live_check_with_retries(
             // state, so it degrades to a plain skip under sustained load.
             CheckStatus::Skipped => {
                 if retries_left > 0 {
-                    super::yield_for_cell_flush(CHECK_SKIP_RETRY_MS).await;
+                    crate::components::run_flow::sleep_ms(CHECK_SKIP_RETRY_MS).await;
                     // Disposed while waiting: nothing to check.
                     if check_generation.try_get_untracked().is_none() {
                         return;

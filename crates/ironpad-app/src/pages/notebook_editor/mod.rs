@@ -48,33 +48,6 @@ use self::sharing::{
 use self::skeleton::{AddCellButton, NotebookEditorSkeleton};
 use self::state::{persist_notebook, DraftSaveState, NotebookState, PublishButton};
 
-// ── Flush-before-serialize helper (PRD-0032 T-007) ──────────────────────────
-//
-// Share, Export HTML, and Download .ironpad all serialize the notebook from
-// `state.notebook`. Each cell's live editor content only reaches that signal
-// on a 1s debounce or when `state.save_generation` bumps (see the flush
-// effect in `cell_item.rs`). Bumping the generation alone isn't enough,
-// though: Leptos effects run queued, not synchronously on `signal.update()`,
-// so callers must yield before re-reading the notebook.
-
-/// Delay (ms) after bumping `state.save_generation` before re-reading the
-/// notebook, giving the per-cell flush effects time to run. Used by
-/// `NotebookState::flush_cells`, which only needs the in-memory model
-/// flushed.
-#[cfg(feature = "hydrate")]
-const CELL_FLUSH_YIELD_MS: i32 = 120;
-
-/// Awaits a `setTimeout` so queued Leptos effects — in particular each
-/// cell's notebook-level save-flush effect (`cell_item.rs`) — get a chance
-/// to run before the caller re-reads `state.notebook`. A thin semantic
-/// wrapper over the crate's one sleeper (`run_flow::sleep_ms`); the delay
-/// is a pragmatic yield for the effect queue, not a correctness guarantee —
-/// see the `CELL_FLUSH_YIELD_MS` docs.
-#[cfg(feature = "hydrate")]
-pub(super) async fn yield_for_cell_flush(ms: i32) {
-    crate::components::run_flow::sleep_ms(ms).await;
-}
-
 /// Call `.destroy()` on a stored `SortableJS` instance (if present) and clear the
 /// slot, so re-initialisation and unmount don't leave a second drag handler
 /// bound to the cell list.
