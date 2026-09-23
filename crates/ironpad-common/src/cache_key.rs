@@ -136,7 +136,27 @@ impl From<crate::types::CellType> for CellTarget {
 /// cached blob would keep running the old renderer and keep emitting text at
 /// 1.11:1 contrast in light theme. This epoch is the only lever that
 /// invalidates them.
-pub const CACHE_EPOCH: u32 = 11;
+///
+/// Bumped 11 -> 12 (fanout review, cell-runtime package), one bump for every
+/// behavior change inside `ironpad-cell` in that package, for the same reason
+/// as 10 -> 11: the runtime is outside this hash, so a cached blob keeps
+/// running the runtime it was linked against.
+/// - `sim::emit` (cell-sim-1) no longer panics on a value JSON cannot
+///   represent (a map with non-string keys); it drops the message, as
+///   `host_message_json` always meant to. A cached blob still traps the cell.
+/// - `GpuSimulation::tick` (cell-gpu-1) renders on the CPU unconditionally. A
+///   cached blob still dispatches a shader per tick in a WebGPU browser, shows
+///   the gray placeholder every frame and leaks three GPU buffers per frame.
+/// - The Enzyme `malloc`/`realloc` shims (cell-enzyme-1) return null for a
+///   size that would wrap the header addition or exceed `usize`, instead of
+///   handing back an undersized block.
+/// - Riding along, harmless to keep in old blobs but now what fresh builds
+///   run: an empty tick payload crosses as `(null, 0)` rather than a dangling
+///   pointer (cell-ffi-1), and `CellInputs` borrows the host's input buffer
+///   instead of copying every upstream output (cell-inputs-1). The JSON,
+///   animation, panel, widget and plot refactors in the same package are
+///   byte-identical in output and needed no bump of their own.
+pub const CACHE_EPOCH: u32 = 12;
 
 // ── Feature set ──────────────────────────────────────────────────────────────
 
@@ -903,7 +923,7 @@ mod tests {
         );
         assert_eq!(
             plain,
-            "cdcdecfc968af780798cf99f69562e87a367f89a1b52599d7e40328771ef4de8"
+            "25d1ed89955f7de1e4f55a60f6792d551689b5d61dab349057bac0d9fdd8f313"
         );
 
         // Every field populated: a rayon dependency (atomics) and a
@@ -920,7 +940,7 @@ mod tests {
         );
         assert_eq!(
             rayon_simd,
-            "2a5e6f6ea9ae989b1a75fcb5bdd709a102259276b9ceccf13bf034c27c3f6882"
+            "67db2312aa08f96b69c57328a813c7ebc9409e75fc032139de52c1279a886c5a"
         );
 
         // Autodiff on its own, so each flag byte is pinned in its position.
@@ -935,7 +955,7 @@ mod tests {
         );
         assert_eq!(
             autodiff,
-            "51b9f2488b6edbff36b9ff38cdbecdd50848e1fcd8fe27d4e05e128aaa781b6d"
+            "0d6551468585b304e77b00fc49f123b98506d3fa94b6d3da03ff21251659b5c9"
         );
 
         // A Linux cell that mentions `std::simd`: its key hashes the RAW
@@ -951,7 +971,7 @@ mod tests {
         );
         assert_eq!(
             linux,
-            "2f33973a365628e8d4d9a04c23460a5401b0d12f1a8b934784858f4341db9639"
+            "d2a95197bb3f21670318faa0436bd21b24ad2e524c09b72b2d05620bad0fac66"
         );
     }
 
