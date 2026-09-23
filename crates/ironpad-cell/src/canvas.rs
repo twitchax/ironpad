@@ -53,7 +53,7 @@ fn pixel_count(width: u32, height: u32) -> usize {
 /// Number of RGB bytes (`pixels × 3`) backing a `width × height` canvas.
 ///
 /// Saturates to `usize::MAX` on overflow, matching [`pixel_count`].
-fn rgb_byte_count(width: u32, height: u32) -> usize {
+pub(crate) fn rgb_byte_count(width: u32, height: u32) -> usize {
     pixel_count(width, height).saturating_mul(3)
 }
 
@@ -234,7 +234,7 @@ impl Canvas {
 /// A sequence of [`Canvas`] frames with a target frame rate.
 ///
 /// On conversion to [`CellOutput`](crate::CellOutput), all frames' raw RGB
-/// bytes are concatenated and base64-encoded into a single
+/// bytes are base64-encoded, as one concatenated stream, into a single
 /// [`DisplayPanel::Animation`](crate::DisplayPanel::Animation).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Animation {
@@ -263,9 +263,18 @@ impl Animation {
 
 /// Encode binary data as a base64 string (no external crate needed).
 pub(crate) fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    base64_encode_into(&mut out, data);
+    out
+}
+
+/// Append the base64 encoding of `data` to `out`, reserving nothing.
+///
+/// Encoding several buffers into one `out` equals encoding their
+/// concatenation exactly when every buffer but the last is a multiple of 3
+/// bytes long (no padding lands mid-stream), which holds for RGB frames.
+pub(crate) fn base64_encode_into(out: &mut String, data: &[u8]) {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     for chunk in data.chunks(3) {
         let b0 = u32::from(chunk[0]);
@@ -296,8 +305,6 @@ pub(crate) fn base64_encode(data: &[u8]) -> String {
             out.push('=');
         }
     }
-
-    out
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

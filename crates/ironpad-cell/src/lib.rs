@@ -752,11 +752,16 @@ impl IntoPanels for canvas::Animation {
         } else {
             return vec![];
         };
-        let mut rgb_bytes = Vec::with_capacity(self.frames().len() * (w * h * 3) as usize);
+        // Encode frame by frame instead of into a concatenated copy first: an
+        // animation is the largest output the crate makes (100 frames of
+        // 400x400 is 48 MB of RGB), and every frame is `w * h * 3` bytes, a
+        // multiple of 3, so the per-frame encodings join into exactly the
+        // encoding of the concatenation.
+        let frame_b64 = canvas::rgb_byte_count(w, h).div_ceil(3).saturating_mul(4);
+        let mut data = String::with_capacity(self.frames().len().saturating_mul(frame_b64));
         for frame in self.frames() {
-            rgb_bytes.extend_from_slice(frame.pixels());
+            canvas::base64_encode_into(&mut data, frame.pixels());
         }
-        let data = canvas::base64_encode(&rgb_bytes);
         vec![DisplayPanel::Animation {
             width: w,
             height: h,
@@ -2583,6 +2588,32 @@ mod tests {
             }
             other => panic!("expected Animation panel, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn animation_per_frame_base64_equals_concatenated() {
+        // Odd dimensions, so a frame's byte count (45) is a multiple of 3 but
+        // not of 4 or 2: a join that padded per frame would show up here.
+        let frames: Vec<canvas::Canvas> = (0..3u8)
+            .map(|k| {
+                canvas::Canvas::from_fn(5, 3, |x, y| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let v = (x * 7 + y * 13) as u8;
+                    (v.wrapping_add(k), v ^ k, k.wrapping_mul(31))
+                })
+            })
+            .collect();
+        let concatenated: Vec<u8> = frames
+            .iter()
+            .flat_map(|f| f.pixels().iter().copied())
+            .collect();
+        let expected = canvas::base64_encode(&concatenated);
+
+        let panels = canvas::Animation::new(frames, 12).into_panels();
+        let [DisplayPanel::Animation { data, .. }] = panels.as_slice() else {
+            panic!("expected one Animation panel, got {panels:?}");
+        };
+        assert_eq!(data, &expected);
     }
 
     #[test]
