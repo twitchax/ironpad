@@ -83,7 +83,20 @@ window.IronpadStorage = (function () {
         return db.transaction(HISTORY_STORE, mode).objectStore(HISTORY_STORE);
     }
 
-    /** All history entries for a notebook, newest first. */
+    /**
+     * Key range over every history entry of one notebook. The store's key
+     * is [notebookId, savedAt], so this is one notebook's whole ring, in
+     * ascending savedAt order.
+     */
+    function historyRange(notebookId) {
+        return IDBKeyRange.bound([notebookId, -Infinity], [notebookId, Infinity]);
+    }
+
+    /**
+     * All history entries for a notebook, newest first. Loads every
+     * snapshot's full notebook JSON, so only listHistory (which needs the
+     * titles) uses it; the save and delete paths read keys alone.
+     */
     async function historyEntries(db, notebookId) {
         const idx = historyTx(db, 'readonly').index('notebookId');
         const entries = await reqToPromise(idx.getAll(notebookId));
@@ -96,22 +109,31 @@ window.IronpadStorage = (function () {
      * write is skipped when the notebook's newest snapshot is younger than
      * the bucket (one snapshot per HISTORY_BUCKET_MS per notebook); every
      * write prunes the ring to HISTORY_CAP.
+     *
+     * Keys only: this runs on the 1s typing debounce, and usually writes
+     * nothing (still inside the bucket). Loading the entries to read one
+     * timestamp structured-cloned up to HISTORY_CAP whole notebooks per save.
      */
     async function writeHistorySnapshot(db, nb, force) {
-        const entries = await historyEntries(db, nb.id);
+        const keys = await reqToPromise(
+            historyTx(db, 'readonly').getAllKeys(historyRange(nb.id))
+        );
+        const newestSavedAt = keys.length > 0 ? keys[keys.length - 1][1] : null;
         const now = Date.now();
-        if (!force && entries.length > 0 && now - entries[0].savedAt < HISTORY_BUCKET_MS) {
+        if (!force && newestSavedAt !== null && now - newestSavedAt < HISTORY_BUCKET_MS) {
             return;
         }
         const store = historyTx(db, 'readwrite');
         await reqToPromise(store.put({
             notebookId: nb.id,
             // Nudge past an existing key on a same-millisecond force write.
-            savedAt: entries.length > 0 && entries[0].savedAt >= now ? entries[0].savedAt + 1 : now,
+            savedAt: newestSavedAt !== null && newestSavedAt >= now ? newestSavedAt + 1 : now,
             json: JSON.stringify(nb),
         }));
-        for (const stale of entries.slice(HISTORY_CAP - 1)) {
-            await reqToPromise(store.delete([stale.notebookId, stale.savedAt]));
+        // Keep the newest HISTORY_CAP - 1 old entries plus the one just
+        // written; `keys` is oldest first.
+        for (const key of keys.slice(0, Math.max(0, keys.length - (HISTORY_CAP - 1)))) {
+            await reqToPromise(store.delete(key));
         }
     }
 
@@ -200,12 +222,9 @@ window.IronpadStorage = (function () {
             try {
                 const store = tx(db, 'readwrite');
                 await reqToPromise(store.delete(id));
-                // The notebook's history dies with it (PRD-0058).
-                const entries = await historyEntries(db, id);
-                const history = historyTx(db, 'readwrite');
-                for (const entry of entries) {
-                    await reqToPromise(history.delete([entry.notebookId, entry.savedAt]));
-                }
+                // The notebook's history dies with it (PRD-0058): one ranged
+                // delete, never a load of every snapshot.
+                await reqToPromise(historyTx(db, 'readwrite').delete(historyRange(id)));
             } finally {
                 db.close();
             }

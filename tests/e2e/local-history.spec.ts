@@ -166,4 +166,73 @@ test.describe("Local version history (PRD-0058)", () => {
       "the last second of typing is in the pre-restore snapshot",
     ).toContain("typed_inside_the_debounce");
   });
+
+  // The ring's two limits, driven straight through IronpadStorage: the
+  // save path reads keys alone now, so the cap and the bucket are exactly
+  // what it has to get right without ever loading an entry.
+
+  test("the ring holds the newest 30 snapshots", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForFunction(() => (window as any).IronpadStorage);
+    const ring = await page.evaluate(async () => {
+      const S = (window as any).IronpadStorage;
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      await S.saveNotebook({
+        version: 1,
+        id,
+        title: "ring",
+        created_at: now,
+        updated_at: now,
+        cells: [],
+      });
+      const [first] = await S.listHistory(id);
+      for (let i = 0; i < 32; i++) await S.snapshotNow(id);
+      const savedAts = (await S.listHistory(id)).map(
+        (e: { savedAt: number }) => e.savedAt,
+      );
+      await S.deleteNotebook(id);
+      return { first: first.savedAt, savedAts };
+    });
+    expect(ring.savedAts).toHaveLength(30);
+    expect(ring.savedAts[0], "newest first").toBe(Math.max(...ring.savedAts));
+    expect(
+      ring.savedAts.every((v, i, a) => i === 0 || a[i - 1] > v),
+      "strictly newest-first",
+    ).toBe(true);
+    expect(ring.savedAts, "the oldest snapshot is the one pruned").not.toContain(
+      ring.first,
+    );
+  });
+
+  test("saves inside the five-minute bucket add no snapshot", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForFunction(() => (window as any).IronpadStorage);
+    const counts = await page.evaluate(async () => {
+      const S = (window as any).IronpadStorage;
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const nb = {
+        version: 1,
+        id,
+        title: "bucket",
+        created_at: now,
+        updated_at: now,
+        cells: [],
+      };
+      await S.saveNotebook(nb);
+      const before = (await S.listHistory(id)).length;
+      await S.saveNotebook({ ...nb, title: "again" });
+      await S.saveNotebook({ ...nb, title: "and again" });
+      const after = (await S.listHistory(id)).length;
+      await S.deleteNotebook(id);
+      const afterDelete = (await S.listHistory(id)).length;
+      return { before, after, afterDelete };
+    });
+    expect(counts.before, "the first save snapshots").toBe(1);
+    expect(counts.after, "later saves in the bucket do not").toBe(1);
+    expect(counts.afterDelete, "the ring dies with the notebook").toBe(0);
+  });
 });
