@@ -7,8 +7,8 @@
 //!
 //! [`AppLayout`]: crate::components::app_layout::AppLayout
 
-use crate::components::icon::Icon;
 use crate::components::icons;
+use crate::components::notice::{ErrorNotice, LoadingNotice};
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
@@ -147,11 +147,7 @@ pub fn EmbedMutablePage() -> impl IntoView {
 // ── Shared rendering ────────────────────────────────────────────────────────
 
 fn embed_loading() -> impl IntoView {
-    view! {
-        <div class="ironpad-loading">
-            <p>"Loading notebook..."</p>
-        </div>
-    }
+    view! { <LoadingNotice message="Loading notebook..."/> }
 }
 
 /// Render a fetched notebook in embed mode, or a compact error panel. The
@@ -176,10 +172,7 @@ fn embed_body(
         .into_any(),
 
         Err(e) => view! {
-            <div class="ironpad-error-boundary">
-                <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
-                <p class="ironpad-error-boundary-message">{format!("{not_found}: {e}")}</p>
-            </div>
+            <ErrorNotice icon=icons::WARNING message=format!("{not_found}: {e}")/>
         }
         .into_any(),
     }

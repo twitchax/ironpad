@@ -1,9 +1,9 @@
-use crate::components::icon::Icon;
 use crate::components::icons;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::notice::{ErrorNotice, LoadingNotice};
 use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::pages::load::load_shared;
@@ -34,13 +34,7 @@ pub fn SharedNotebookPage() -> impl IntoView {
     });
 
     view! {
-        <Suspense fallback=move || {
-            view! {
-                <div class="ironpad-loading">
-                    <p>"Loading shared notebook..."</p>
-                </div>
-            }
-        }>
+        <Suspense fallback=|| view! { <LoadingNotice message="Loading shared notebook..."/> }>
             {move || {
                 let meta_hash = hash.get();
                 // Spec handed to ViewOnlyNotebook so its Embed button can
@@ -72,15 +66,12 @@ pub fn SharedNotebookPage() -> impl IntoView {
 
                     Err(e) => view! {
                         {mark_not_found()}
-                        <div class="ironpad-error-boundary">
-                            <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
-                            <p class="ironpad-error-boundary-message">
-                                {format!("Shared notebook not found or expired: {e}")}
-                            </p>
-                            <p class="ironpad-error-boundary-hint">
-                                "The share link may have expired, or the notebook may have been removed."
-                            </p>
-                        </div>
+                        <ErrorNotice
+                            icon=icons::WARNING
+                            message=format!("Shared notebook not found or expired: {e}")
+                        >
+                            "The share link may have expired, or the notebook may have been removed."
+                        </ErrorNotice>
                     }.into_any(),
                 }
             })

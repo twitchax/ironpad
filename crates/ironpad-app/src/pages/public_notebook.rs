@@ -1,9 +1,9 @@
-use crate::components::icon::Icon;
 use crate::components::icons;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::notice::{ErrorNotice, LoadingNotice};
 use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::server_fns::get_public_notebook;
@@ -36,13 +36,7 @@ pub fn PublicNotebookPage() -> impl IntoView {
     });
 
     view! {
-        <Suspense fallback=move || {
-            view! {
-                <div class="ironpad-loading">
-                    <p>"Loading public notebook..."</p>
-                </div>
-            }
-        }>
+        <Suspense fallback=|| view! { <LoadingNotice message="Loading public notebook..."/> }>
             {move || {
                 let filename = filename.get();
                 // Spec handed to ViewOnlyNotebook so its Embed button can
@@ -75,12 +69,10 @@ pub fn PublicNotebookPage() -> impl IntoView {
 
                         Err(e) => view! {
                             {mark_not_found()}
-                            <div class="ironpad-error-boundary">
-                                <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
-                                <p class="ironpad-error-boundary-message">
-                                    {format!("Failed to load public notebook: {e}")}
-                                </p>
-                            </div>
+                            <ErrorNotice
+                                icon=icons::WARNING
+                                message=format!("Failed to load public notebook: {e}")
+                            />
                         }
                         .into_any(),
                     }

@@ -1,4 +1,4 @@
-use crate::components::icon::{Icon, IconLabel};
+use crate::components::icon::IconLabel;
 use crate::components::icons;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -6,6 +6,7 @@ use leptos_router::hooks::use_params_map;
 use ironpad_common::{MutableNotebookAccess, MutableNotebookResponse, ShareManifest};
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::notice::{ErrorNotice, LoadingNotice};
 use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 use crate::pages::load::load_mutable;
@@ -199,13 +200,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
             let id = share_id;
             let force_reader = force_reader.get();
             view! {
-                <Suspense fallback=move || {
-                    view! {
-                        <div class="ironpad-loading">
-                            <p>{LOADING_MESSAGE}</p>
-                        </div>
-                    }
-                }>
+                <Suspense fallback=|| view! { <LoadingNotice message=LOADING_MESSAGE/> }>
                     {move || {
                         let id = id.clone();
                         Suspend::new(async move {
@@ -232,27 +227,19 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                     // given to the right person works after
                                     // one sign-in (PRD-0061).
                                     {mark_not_found()}
-                                    <div class="ironpad-error-boundary">
-                                        <div class="ironpad-error-boundary-icon"><Icon icon=icons::LOCKED/></div>
-                                        <p class="ironpad-error-boundary-message">
-                                            "This notebook is private."
-                                        </p>
+                                    <ErrorNotice icon=icons::LOCKED message="This notebook is private.">
                                         {if signed_in {
                                             view! {
-                                                <p class="ironpad-error-boundary-hint">
-                                                    "Your account does not have access. Ask the author to grant your GitHub username."
-                                                </p>
+                                                "Your account does not have access. Ask the author to grant your GitHub username."
                                             }.into_any()
                                         } else {
                                             view! {
-                                                <p class="ironpad-error-boundary-hint">
-                                                    "If the author gave you access, "
-                                                    <a href="/auth/github" rel="external">"sign in with GitHub"</a>
-                                                    " to view it."
-                                                </p>
+                                                "If the author gave you access, "
+                                                <a href="/auth/github" rel="external">"sign in with GitHub"</a>
+                                                " to view it."
                                             }.into_any()
                                         }}
-                                    </div>
+                                    </ErrorNotice>
                                 }.into_any(),
                                 Ok((MutableNotebookAccess::NotFound, _, signed_in_hint)) => view! {
                                     // The 404 is unconditional and lives
@@ -275,33 +262,24 @@ pub fn MutableNotebookPage() -> impl IntoView {
                                             // this viewer may well own the
                                             // notebook, and the ownership probe
                                             // has not answered yet.
-                                            view! {
-                                                <div class="ironpad-loading">
-                                                    <p>{LOADING_MESSAGE}</p>
-                                                </div>
-                                            }.into_any()
+                                            view! { <LoadingNotice message=LOADING_MESSAGE/> }.into_any()
                                         } else {
                                             view! {
-                                                <div class="ironpad-error-boundary">
-                                                    <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
-                                                    <p class="ironpad-error-boundary-message">
-                                                        "This mutable notebook was not found."
-                                                    </p>
-                                                    <p class="ironpad-error-boundary-hint">
-                                                        "The link may be wrong, or the author may have unpublished it."
-                                                    </p>
-                                                </div>
+                                                <ErrorNotice
+                                                    icon=icons::WARNING
+                                                    message="This mutable notebook was not found."
+                                                >
+                                                    "The link may be wrong, or the author may have unpublished it."
+                                                </ErrorNotice>
                                             }.into_any()
                                         }
                                     }}
                                 }.into_any(),
                                 Err(e) => view! {
-                                    <div class="ironpad-error-boundary">
-                                        <div class="ironpad-error-boundary-icon"><Icon icon=icons::WARNING/></div>
-                                        <p class="ironpad-error-boundary-message">
-                                            {format!("Could not load notebook: {e}")}
-                                        </p>
-                                    </div>
+                                    <ErrorNotice
+                                        icon=icons::WARNING
+                                        message=format!("Could not load notebook: {e}")
+                                    />
                                 }.into_any(),
                             }
                         })
