@@ -1166,9 +1166,9 @@ impl Db {
             .query(
                 "SELECT record::id(id) AS id, notebook_json, draft_json, \
                     pushed_at, created_at \
-                 FROM mutable_share WHERE record::id(id) IN $ids",
+                 FROM $rids",
             )
-            .bind(("ids", ids))
+            .bind(("rids", share_record_ids(ids)))
             .await
             .context("owned share listing failed")?
             .take(0)
@@ -1239,9 +1239,9 @@ impl Db {
             .inner
             .query(
                 "SELECT math::sum(bytes + (draft_bytes ?? 0)) AS total \
-                 FROM mutable_share WHERE record::id(id) IN $ids GROUP ALL",
+                 FROM $rids GROUP ALL",
             )
-            .bind(("ids", ids))
+            .bind(("rids", share_record_ids(ids)))
             .await
             .context("per-user byte total failed")?
             .take(0)
@@ -1259,6 +1259,19 @@ impl Db {
 /// `None` means the row carries neither, which the account invariant forbids.
 fn resolve_content(draft_json: Option<String>, notebook_json: Option<String>) -> Option<String> {
     draft_json.or(notebook_json)
+}
+
+/// Share ids as record ids, so a query can select `FROM $rids`.
+///
+/// Selecting from record ids is a key fetch per id. The filter it replaces,
+/// `WHERE record::id(id) IN $ids`, wraps the key in a function, so no key
+/// lookup can serve it and it scanned (and decoded, notebook JSON and all)
+/// every share on the instance. A record id whose row is gone (a grant
+/// outliving its share) selects nothing rather than erroring.
+fn share_record_ids(ids: Vec<String>) -> Vec<surrealdb::types::RecordId> {
+    ids.into_iter()
+        .map(|id| surrealdb::types::RecordId::new("mutable_share", id))
+        .collect()
 }
 
 /// A fresh share id: the `/mutable/{id}` path segment.
@@ -1955,6 +1968,67 @@ mod tests {
         );
         // One account filling its allowance must not charge anyone else.
         assert_eq!(db.total_mutable_bytes_for_user("999").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn owner_scoped_reads_fetch_only_that_owners_rows() {
+        // Both owner-scoped reads select FROM the owner's record ids rather
+        // than filtering the whole table, so the scoping now rests on the id
+        // list alone. Pin it on one fixture for both reads.
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "alice", "").await.unwrap();
+        db.upsert_user("2", "bob", "").await.unwrap();
+
+        let a_pub = published_share(&db, "1", "12345", None).await;
+        let a_acct = db.create_account_notebook("1", "abcdefg").await.unwrap();
+        let b_pub = published_share(&db, "2", "1234567890", None).await;
+        db.create_account_notebook("2", "xyz").await.unwrap();
+
+        let mut mine: Vec<String> = db
+            .list_shares_owned_by("1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        mine.sort();
+        let mut expected = vec![a_pub, a_acct];
+        expected.sort();
+        assert_eq!(mine, expected, "only alice's rows, published or not");
+        assert_eq!(db.total_mutable_bytes_for_user("1").await.unwrap(), 5 + 7);
+
+        let theirs = db.list_shares_owned_by("2").await.unwrap();
+        assert_eq!(theirs.len(), 2);
+        assert!(theirs.iter().any(|r| r.id == b_pub));
+        assert_eq!(db.total_mutable_bytes_for_user("2").await.unwrap(), 10 + 3);
+    }
+
+    #[tokio::test]
+    async fn a_grant_outliving_its_share_is_skipped_by_owner_scoped_reads() {
+        // Share deletes are transactional, so a dangling OWNER grant should
+        // not exist. If one ever does, selecting FROM its record id must
+        // yield no row: the listing and the byte total both skip it rather
+        // than erroring or charging the account for a phantom.
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "alice", "").await.unwrap();
+        let kept = published_share(&db, "1", "12345", None).await;
+        let gone = published_share(&db, "1", "1234567890", None).await;
+        db.inner
+            .query("DELETE type::record('mutable_share', $id)")
+            .bind(("id", gone.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(
+            db.user_owns_share("1", &gone).await.unwrap(),
+            "the fixture must leave the grant behind"
+        );
+
+        let mine = db.list_shares_owned_by("1").await.unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].id, kept);
+        assert_eq!(db.total_mutable_bytes_for_user("1").await.unwrap(), 5);
     }
 
     #[tokio::test]
