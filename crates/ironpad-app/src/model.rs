@@ -270,8 +270,8 @@ impl NotebookModel {
             };
             self.cell_stale.update(|stale| {
                 for cell in &cells[my_idx..] {
-                    // Shared cells never execute, so they are never stale.
-                    if cell.cell_type == CellType::Code && !cell.shared {
+                    // Only a cell Run All executes can go stale.
+                    if cell.is_runnable() {
                         stale.insert(cell.id.clone(), true);
                     }
                 }
@@ -284,8 +284,8 @@ impl NotebookModel {
         self.cells.with_untracked(|cells| {
             self.cell_stale.update(|stale| {
                 for cell in cells {
-                    // Shared cells never execute, so they are never stale.
-                    if cell.cell_type == CellType::Code && !cell.shared {
+                    // Only a cell Run All executes can go stale.
+                    if cell.is_runnable() {
                         stale.insert(cell.id.clone(), true);
                     }
                 }

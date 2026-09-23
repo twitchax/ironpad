@@ -477,16 +477,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         ev.stop_propagation();
         menu_open.set(false);
         let cid = cell_id_for_run_all.get_value();
-        let cells = state.cells.get_untracked();
-        let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
-        let queue: Vec<String> = cells[my_idx..]
-            .iter()
-            .filter(|c| c.is_runnable())
-            .map(|c| c.id.clone())
-            .collect();
-        if !queue.is_empty() {
-            state.run_all_queue.set(queue);
-        }
+        state.enqueue_runnable_from(Some(&cid));
     };
 
     // The compile/execute pipeline lives in `pipeline.rs` (PRD-0055 T-001):

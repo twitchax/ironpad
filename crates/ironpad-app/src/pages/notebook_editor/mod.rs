@@ -270,16 +270,7 @@ pub fn NotebookEditor(
                 // Ctrl+Shift+Enter — run all cells from top.
                 if (e.ctrl_key() || e.meta_key()) && e.shift_key() && e.key() == "Enter" {
                     e.prevent_default();
-                    let cell_ids: Vec<String> = state
-                        .cells
-                        .get_untracked()
-                        .iter()
-                        .filter(|c| c.is_runnable())
-                        .map(|c| c.id.clone())
-                        .collect();
-                    if !cell_ids.is_empty() {
-                        state.run_all_queue.set(cell_ids);
-                    }
+                    state.enqueue_runnable_from(None);
                 }
 
                 // Ctrl+Shift+N — add new cell below the current active cell.
@@ -639,18 +630,7 @@ fn NotebookContent() -> impl IntoView {
                 <button
                     class="ironpad-run-all-button"
                     title="Run all code cells (Ctrl+Shift+Enter)"
-                    on:click=move |_| {
-                        let cell_ids: Vec<String> = state
-                            .cells
-                            .get_untracked()
-                            .iter()
-                            .filter(|c| c.is_runnable())
-                            .map(|c| c.id.clone())
-                            .collect();
-                        if !cell_ids.is_empty() {
-                            state.run_all_queue.set(cell_ids);
-                        }
-                    }
+                    on:click=move |_| state.enqueue_runnable_from(None)
                 >
                     <IconLabel icon=icons::RUN_ALL label="Run All"/>
                 </button>

@@ -227,7 +227,6 @@ impl NotebookState {
     /// closure serves every debounce and nothing is leaked per edit.
     #[cfg(feature = "hydrate")]
     pub(super) fn init_reactive_timer(&self) {
-        use ironpad_common::types::CellType;
         use wasm_bindgen::JsCast;
 
         if self.reactive_timer_fn.get_value().is_some() {
@@ -247,16 +246,12 @@ impl NotebookState {
                 return;
             }
 
-            // Collect stale Code cell IDs in notebook order.
+            // Collect stale runnable cell IDs in notebook order.
             let all_cells = cells.get_untracked();
             let stale_map = cell_stale.get_untracked();
             let stale_ids: Vec<String> = all_cells
                 .iter()
-                .filter(|c| {
-                    c.cell_type == CellType::Code
-                        && !c.shared
-                        && stale_map.get(&c.id).copied().unwrap_or(false)
-                })
+                .filter(|c| c.is_runnable() && stale_map.get(&c.id).copied().unwrap_or(false))
                 .map(|c| c.id.clone())
                 .collect();
 
@@ -274,6 +269,21 @@ impl NotebookState {
     /// No-op on the server side.
     #[cfg(not(feature = "hydrate"))]
     pub(super) fn init_reactive_timer(&self) {}
+
+    /// Run All from `from_id` down (the whole notebook for `None`, or when
+    /// the cell is gone): queue every runnable cell in notebook order, and
+    /// leave the queue alone when there is none.
+    pub(super) fn enqueue_runnable_from(&self, from_id: Option<&str>) {
+        let ids = self.cells.with_untracked(|cells| {
+            let start = from_id
+                .and_then(|id| cells.iter().position(|c| c.id == id))
+                .unwrap_or(0);
+            crate::components::executor::runnable_ids(&cells[start..])
+        });
+        if !ids.is_empty() {
+            self.run_all_queue.set(ids);
+        }
+    }
 
     /// Queue a cell for execution on behalf of a session agent (PRD-0052).
     ///

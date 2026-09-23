@@ -170,13 +170,8 @@ pub(crate) fn ViewOnlyNotebook(
                 }
                 auto_run_done.set(true);
 
-                let cell_ids: Vec<String> = notebook.with_value(|nb| {
-                    nb.cells
-                        .iter()
-                        .filter(|c| c.is_runnable())
-                        .map(|c| c.id.clone())
-                        .collect()
-                });
+                let cell_ids =
+                    notebook.with_value(|nb| crate::components::executor::runnable_ids(&nb.cells));
                 if !cell_ids.is_empty() {
                     run_all_queue.set(cell_ids);
                 }
@@ -189,13 +184,8 @@ pub(crate) fn ViewOnlyNotebook(
         if running_all.get_untracked() {
             return;
         }
-        let cell_ids: Vec<String> = notebook.with_value(|nb| {
-            nb.cells
-                .iter()
-                .filter(|c| c.is_runnable())
-                .map(|c| c.id.clone())
-                .collect()
-        });
+        let cell_ids =
+            notebook.with_value(|nb| crate::components::executor::runnable_ids(&nb.cells));
         if !cell_ids.is_empty() {
             run_all_queue.set(cell_ids);
         }

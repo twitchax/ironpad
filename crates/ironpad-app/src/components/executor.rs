@@ -412,6 +412,17 @@ impl PipingCell for ironpad_common::IronpadCell {
     }
 }
 
+/// Ids of the cells Run All executes, in notebook order — the one
+/// collection every Run All entry point (editor button, Ctrl+Shift+Enter,
+/// Run All Below, viewer autorun and Run All) enqueues.
+pub fn runnable_ids<C: PipingCell>(cells: &[C]) -> Vec<String> {
+    cells
+        .iter()
+        .filter(|c| c.is_runnable())
+        .map(|c| c.id().to_owned())
+        .collect()
+}
+
 /// Project `cells` + a source lookup into the dependency graph's shape.
 fn dep_cells<'a, C: PipingCell>(
     cells: &'a [C],
@@ -496,7 +507,8 @@ pub fn dependents_in_queue<C: PipingCell>(
 #[cfg(test)]
 mod tests {
     use super::{
-        assemble_cell_inputs, dependents_in_queue, encode_cell_inputs, unexecuted_dependencies,
+        assemble_cell_inputs, dependents_in_queue, encode_cell_inputs, runnable_ids,
+        unexecuted_dependencies,
     };
     use crate::components::output_render::CellOutputData;
     use ironpad_common::{CellManifest, CellType};
@@ -534,6 +546,20 @@ mod tests {
         let (buf, types) = assemble_cell_inputs(&cells, 3, &outputs);
         assert_eq!(types, vec!["u32".to_string(), String::new(), String::new()]);
         assert_eq!(buf, encode_cell_inputs(&[&[1u8, 2][..], &[], &[]]));
+    }
+
+    #[test]
+    fn runnable_ids_keep_order_and_skip_what_run_all_skips() {
+        let mut cells = vec![
+            manifest("a", CellType::Code),
+            manifest("md", CellType::Markdown),
+            manifest("shared", CellType::Code),
+            manifest("linux", CellType::Linux),
+            manifest("b", CellType::Code),
+        ];
+        cells[2].shared = true;
+        assert_eq!(runnable_ids(&cells), ["a", "b"]);
+        assert!(runnable_ids::<CellManifest>(&[]).is_empty());
     }
 
     #[test]
