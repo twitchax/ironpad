@@ -627,32 +627,44 @@ mod tests {
         AppState::for_tests(AppConfig::for_tests(Path::new("/tmp")), WsState::default())
     }
 
+    /// The notebook and host connection every [`hosted_session`] test uses.
+    const NB: &str = "nb-1";
+    const CONN: &str = "conn-1";
+
+    /// The common prelude: host `CONN` registered for `NB`, one session on it
+    /// with `perms`, and guest `"guest-1"` connected to that session. Returns
+    /// the host's receiver, the session id, and the guest's receiver. Tests
+    /// with more guests or sessions build theirs explicitly.
+    async fn hosted_session(
+        state: &AppState,
+        perms: Permissions,
+    ) -> (
+        mpsc::Receiver<axum::extract::ws::Utf8Bytes>,
+        String,
+        mpsc::Receiver<axum::extract::ws::Utf8Bytes>,
+    ) {
+        let (host_tx, host_rx) = mpsc::channel(WS_CHANNEL_BOUND);
+        state.ws.register_host(NB, CONN, host_tx).await;
+        let session = state
+            .ws
+            .sessions
+            .create_session(NB.into(), CONN.into(), perms)
+            .await;
+        let (guest_tx, guest_rx) = mpsc::channel(WS_CHANNEL_BOUND);
+        state
+            .ws
+            .register_guest(&session.session_id, "guest-1", guest_tx)
+            .await;
+        (host_rx, session.session_id, guest_rx)
+    }
+
     // ── Host message tests ──────────────────────────────────────────────
 
     #[tokio::test]
     async fn host_event_broadcasts_to_guests() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        // Register host.
-        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        // Create a session so `broadcast_to_notebook_guests` can find guests.
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        // Register a guest on that session.
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (_host_rx, _session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         // Host sends an event.
         let event_json = wire_msg(
@@ -665,7 +677,7 @@ mod tests {
             }),
         );
 
-        handle_host_message(&event_json, nb, conn, &state).await;
+        handle_host_message(&event_json, NB, CONN, &state).await;
 
         // Guest should receive the broadcast.
         let received = guest_rx.try_recv().expect("guest should receive event");
@@ -676,24 +688,8 @@ mod tests {
     #[tokio::test]
     async fn host_response_routes_to_querying_guest() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (_host_rx, _session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         // Simulate a tracked query from guest-1 with message id "q-42".
         state.ws.track_query("q-42", "guest-1").await;
@@ -704,7 +700,7 @@ mod tests {
             MessageKind::Response(Response::CellsList { cells: vec![] }),
         );
 
-        handle_host_message(&response_json, nb, conn, &state).await;
+        handle_host_message(&response_json, NB, CONN, &state).await;
 
         // Guest should receive the routed response.
         let received = guest_rx.try_recv().expect("guest should receive response");
@@ -719,24 +715,8 @@ mod tests {
     #[tokio::test]
     async fn host_response_untracked_is_dropped() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (_host_rx, _session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         // No tracked query — response with unknown id should be dropped.
         let response_json = wire_msg(
@@ -744,7 +724,7 @@ mod tests {
             MessageKind::Response(Response::CellsList { cells: vec![] }),
         );
 
-        handle_host_message(&response_json, nb, conn, &state).await;
+        handle_host_message(&response_json, NB, CONN, &state).await;
 
         assert!(
             guest_rx.try_recv().is_err(),
@@ -755,24 +735,8 @@ mod tests {
     #[tokio::test]
     async fn host_mutation_is_ignored() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (_host_rx, _session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         // Hosts should not send mutations; they should be silently ignored.
         let mutation_json = wire_msg(
@@ -780,7 +744,7 @@ mod tests {
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
 
-        handle_host_message(&mutation_json, nb, conn, &state).await;
+        handle_host_message(&mutation_json, NB, CONN, &state).await;
 
         assert!(
             guest_rx.try_recv().is_err(),
@@ -793,25 +757,8 @@ mod tests {
     #[tokio::test]
     async fn guest_mutation_error_routes_back_to_guest() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, mut host_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (mut host_rx, _session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         // Guest sends a mutation → forwarded to host and tracked for routing.
         let mutation_json = wire_msg(
@@ -820,7 +767,7 @@ mod tests {
         );
         handle_guest_message(
             &mutation_json,
-            nb,
+            NB,
             "guest-1",
             &Permissions::default(),
             &state,
@@ -839,7 +786,7 @@ mod tests {
                 message: "version conflict".into(),
             }),
         );
-        handle_host_message(&error_json, nb, conn, &state).await;
+        handle_host_message(&error_json, NB, CONN, &state).await;
 
         // The error must route back to the originating guest (dropped before C2).
         let received = guest_rx.try_recv().expect("guest should receive the error");
@@ -854,22 +801,8 @@ mod tests {
     #[tokio::test]
     async fn host_event_clears_tracked_mutation() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-        let (guest_tx, _guest_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (_host_rx, _session_id, _guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         // A mutation is in flight (tracked).
         state.ws.track_query("m-1", "guest-1").await;
@@ -884,7 +817,7 @@ mod tests {
                 },
             }),
         );
-        handle_host_message(&event_json, nb, conn, &state).await;
+        handle_host_message(&event_json, NB, CONN, &state).await;
 
         // The tracked entry must have been cleared (no leak on the success path).
         assert_eq!(state.ws.resolve_query("m-1").await, None);
@@ -893,31 +826,15 @@ mod tests {
     #[tokio::test]
     async fn write_only_originator_receives_mutation_ack_but_not_foreign_events() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
         // A write-only (read: false) "blind" agent session.
-        let session = state
-            .ws
-            .sessions
-            .create_session(
-                nb.into(),
-                conn.into(),
-                Permissions {
-                    read: false,
-                    write: true,
-                },
-            )
-            .await;
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (_host_rx, _session_id, mut guest_rx) = hosted_session(
+            &state,
+            Permissions {
+                read: false,
+                write: true,
+            },
+        )
+        .await;
 
         // The guest's mutation "m-1" is in flight (tracked for routing).
         state.ws.track_query("m-1", "guest-1").await;
@@ -932,7 +849,7 @@ mod tests {
                 },
             }),
         );
-        handle_host_message(&ack, nb, conn, &state).await;
+        handle_host_message(&ack, NB, CONN, &state).await;
 
         // The write-only originator receives its ack despite the read gate —
         // otherwise its client would strand on the 10s request timeout. (The
@@ -956,7 +873,7 @@ mod tests {
                 },
             }),
         );
-        handle_host_message(&foreign, nb, conn, &state).await;
+        handle_host_message(&foreign, NB, CONN, &state).await;
         assert!(
             guest_rx.try_recv().is_err(),
             "write-only guest must not receive events it did not originate"
@@ -1004,34 +921,18 @@ mod tests {
     #[tokio::test]
     async fn host_end_session_broadcasts_and_disconnects() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, _host_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (_host_rx, session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         // Host ends the session.
         let end_msg = wire_msg(
             "ctrl-2",
             MessageKind::Control(ControlMessage::EndSession {
-                session_id: session.session_id.clone(),
+                session_id: session_id.clone(),
             }),
         );
 
-        handle_host_message(&end_msg, nb, conn, &state).await;
+        handle_host_message(&end_msg, NB, CONN, &state).await;
 
         // Guest should receive SessionEnded.
         let received = guest_rx
@@ -1044,12 +945,7 @@ mod tests {
         ));
 
         // Session should be invalidated.
-        assert!(state
-            .ws
-            .sessions
-            .get_session(&session.session_id)
-            .await
-            .is_none());
+        assert!(state.ws.sessions.get_session(&session_id).await.is_none());
     }
 
     // ── Guest message tests ─────────────────────────────────────────────
@@ -1057,24 +953,8 @@ mod tests {
     #[tokio::test]
     async fn guest_mutation_forwarded_to_host() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, mut host_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        let (guest_tx, _guest_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (mut host_rx, _session_id, _guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         let perms = Permissions {
             read: true,
@@ -1095,7 +975,7 @@ mod tests {
             }),
         );
 
-        handle_guest_message(&mutation_json, nb, "guest-1", &perms, &state).await;
+        handle_guest_message(&mutation_json, NB, "guest-1", &perms, &state).await;
 
         // Host should receive the forwarded mutation.
         let received = host_rx.try_recv().expect("host should receive mutation");
@@ -1110,24 +990,8 @@ mod tests {
     #[tokio::test]
     async fn guest_query_forwarded_and_tracked() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, mut host_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        let (guest_tx, _guest_rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (mut host_rx, _session_id, _guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         let perms = Permissions {
             read: true,
@@ -1136,7 +1000,7 @@ mod tests {
 
         let query_json = wire_msg("q-1", MessageKind::Query(Query::CellsList));
 
-        handle_guest_message(&query_json, nb, "guest-1", &perms, &state).await;
+        handle_guest_message(&query_json, NB, "guest-1", &perms, &state).await;
 
         // Host should receive the forwarded query.
         let received = host_rx.try_recv().expect("host should receive query");
@@ -1152,25 +1016,8 @@ mod tests {
     #[tokio::test]
     async fn guest_mutation_denied_without_write() {
         let state = test_state();
-        let nb = "nb-1";
-        let conn = "conn-1";
-
-        let (host_tx, mut host_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, conn, host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), conn.into(), Permissions::default())
-            .await;
-
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (mut host_rx, _session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         // Read-only permissions — no write.
         let perms = Permissions {
@@ -1183,7 +1030,7 @@ mod tests {
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
 
-        handle_guest_message(&mutation_json, nb, "guest-1", &perms, &state).await;
+        handle_guest_message(&mutation_json, NB, "guest-1", &perms, &state).await;
 
         // Host should NOT receive it.
         assert!(
@@ -1209,24 +1056,8 @@ mod tests {
     #[tokio::test]
     async fn guest_query_denied_without_read() {
         let state = test_state();
-        let nb = "nb-1";
-
-        let (host_tx, mut host_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state.ws.register_host(nb, "conn-1", host_tx).await;
-
-        let session = state
-            .ws
-            .sessions
-            .create_session(nb.into(), "conn-1".into(), Permissions::default())
-            .await;
-
-        let (guest_tx, mut guest_rx) =
-            mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
-        state
-            .ws
-            .register_guest(&session.session_id, "guest-1", guest_tx)
-            .await;
+        let (mut host_rx, _session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
 
         let perms = Permissions {
             read: false,
@@ -1235,7 +1066,7 @@ mod tests {
 
         let query_json = wire_msg("q-1", MessageKind::Query(Query::NotebookGet));
 
-        handle_guest_message(&query_json, nb, "guest-1", &perms, &state).await;
+        handle_guest_message(&query_json, NB, "guest-1", &perms, &state).await;
 
         assert!(host_rx.try_recv().is_err(), "host should not receive query");
 

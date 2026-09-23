@@ -126,6 +126,46 @@ where
     .expect("recv close timed out")
 }
 
+/// A host socket split into its halves.
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsSink = futures::stream::SplitSink<WsStream, tungstenite::Message>;
+type WsSource = futures::stream::SplitStream<WsStream>;
+
+/// The common host handshake: connect to `/ws/host` for `notebook_id`, claim
+/// it with `secret`, and create one session with `perms`. Returns the host's
+/// socket halves, the session id, and the guest token.
+async fn connect_host_with_session(
+    base: &str,
+    notebook_id: &str,
+    secret: &str,
+    perms: Permissions,
+) -> (WsSink, WsSource, String, String) {
+    let (host_ws, _) =
+        tokio_tungstenite::connect_async(format!("{base}/ws/host?notebook_id={notebook_id}"))
+            .await
+            .expect("host ws connect");
+    let (mut sink, mut stream) = host_ws.split();
+    send_claim(&mut sink, secret).await;
+
+    let create_session = to_json(
+        "ctrl-1",
+        MessageKind::Control(ControlMessage::CreateSession { permissions: perms }),
+    );
+    sink.send(tungstenite::Message::Text(create_session.into()))
+        .await
+        .unwrap();
+
+    let created = parse_msg(&recv_text(&mut stream).await);
+    assert_eq!(created.id, "ctrl-1");
+    match created.kind {
+        MessageKind::Control(ControlMessage::SessionCreated { session_id, token }) => {
+            (sink, stream, session_id, token)
+        }
+        other => panic!("expected SessionCreated, got {other:?}"),
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 /// Full relay round-trip: host creates session → guest connects → guest
@@ -136,39 +176,18 @@ async fn relay_integration_round_trip() {
     let state = test_state();
     let base = start_server(state).await;
 
-    // 1. Host connects.
-    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
-    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
-        .await
-        .expect("host ws connect");
-    let (mut host_sink, mut host_stream) = host_ws.split();
-    send_claim(&mut host_sink, "host-secret").await;
-
-    // 2. Host sends CreateSession with read+write permissions.
-    let create_session = to_json(
-        "ctrl-1",
-        MessageKind::Control(ControlMessage::CreateSession {
-            permissions: Permissions {
-                read: true,
-                write: true,
-            },
-        }),
-    );
-    host_sink
-        .send(tungstenite::Message::Text(create_session.into()))
-        .await
-        .unwrap();
-
-    // 3. Host receives SessionCreated with token.
-    let resp_json = recv_text(&mut host_stream).await;
-    let resp = parse_msg(&resp_json);
-    assert_eq!(resp.id, "ctrl-1");
-    let (session_id, token) = match resp.kind {
-        MessageKind::Control(ControlMessage::SessionCreated { session_id, token }) => {
-            (session_id, token)
-        }
-        other => panic!("expected SessionCreated, got {other:?}"),
-    };
+    // 1-3. Host connects, claims the notebook, and creates a read+write
+    // session, receiving its token.
+    let (mut host_sink, mut host_stream, session_id, token) = connect_host_with_session(
+        &base,
+        "test-nb",
+        "host-secret",
+        Permissions {
+            read: true,
+            write: true,
+        },
+    )
+    .await;
     assert!(!session_id.is_empty());
     assert!(!token.is_empty());
 
@@ -335,31 +354,16 @@ async fn permission_denied_mutation_replies_with_error() {
     let base = start_server(state).await;
 
     // Host connects and creates a READ-ONLY session (write denied).
-    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
-    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
-        .await
-        .expect("host ws connect");
-    let (mut host_sink, mut host_stream) = host_ws.split();
-    send_claim(&mut host_sink, "host-secret").await;
-
-    let create_session = to_json(
-        "ctrl-1",
-        MessageKind::Control(ControlMessage::CreateSession {
-            permissions: Permissions {
-                read: true,
-                write: false,
-            },
-        }),
-    );
-    host_sink
-        .send(tungstenite::Message::Text(create_session.into()))
-        .await
-        .unwrap();
-
-    let token = match parse_msg(&recv_text(&mut host_stream).await).kind {
-        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
-        other => panic!("expected SessionCreated, got {other:?}"),
-    };
+    let (_host_sink, mut host_stream, _session_id, token) = connect_host_with_session(
+        &base,
+        "test-nb",
+        "host-secret",
+        Permissions {
+            read: true,
+            write: false,
+        },
+    )
+    .await;
 
     // Guest connects and attempts a mutation it isn't allowed to make.
     let guest_url = format!("{base}/ws/connect?token={token}");
@@ -405,30 +409,8 @@ async fn host_disconnect_ends_guest_session() {
     let state = test_state();
     let base = start_server(state).await;
 
-    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
-    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
-        .await
-        .expect("host ws connect");
-    let (mut host_sink, mut host_stream) = host_ws.split();
-    send_claim(&mut host_sink, "host-secret").await;
-
-    let create_session = to_json(
-        "ctrl-1",
-        MessageKind::Control(ControlMessage::CreateSession {
-            permissions: Permissions::default(),
-        }),
-    );
-    host_sink
-        .send(tungstenite::Message::Text(create_session.into()))
-        .await
-        .unwrap();
-
-    let (session_id, token) = match parse_msg(&recv_text(&mut host_stream).await).kind {
-        MessageKind::Control(ControlMessage::SessionCreated { session_id, token }) => {
-            (session_id, token)
-        }
-        other => panic!("expected SessionCreated, got {other:?}"),
-    };
+    let (host_sink, mut host_stream, session_id, token) =
+        connect_host_with_session(&base, "test-nb", "host-secret", Permissions::default()).await;
 
     let guest_url = format!("{base}/ws/connect?token={token}");
     let (guest_ws, _) = tokio_tungstenite::connect_async(&guest_url)
@@ -468,32 +450,17 @@ async fn read_denied_guest_does_not_receive_content_events() {
     let state = test_state();
     let base = start_server(state).await;
 
-    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
-    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
-        .await
-        .expect("host ws connect");
-    let (mut host_sink, mut host_stream) = host_ws.split();
-    send_claim(&mut host_sink, "host-secret").await;
-
     // Write-only session: read denied.
-    let create_session = to_json(
-        "ctrl-1",
-        MessageKind::Control(ControlMessage::CreateSession {
-            permissions: Permissions {
-                read: false,
-                write: true,
-            },
-        }),
-    );
-    host_sink
-        .send(tungstenite::Message::Text(create_session.into()))
-        .await
-        .unwrap();
-
-    let token = match parse_msg(&recv_text(&mut host_stream).await).kind {
-        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
-        other => panic!("expected SessionCreated, got {other:?}"),
-    };
+    let (mut host_sink, mut host_stream, _session_id, token) = connect_host_with_session(
+        &base,
+        "test-nb",
+        "host-secret",
+        Permissions {
+            read: false,
+            write: true,
+        },
+    )
+    .await;
 
     let guest_url = format!("{base}/ws/connect?token={token}");
     let (guest_ws, _) = tokio_tungstenite::connect_async(&guest_url)
@@ -535,31 +502,16 @@ async fn write_only_guest_receives_ack_but_no_foreign_content() {
     let base = start_server(state).await;
 
     // Host connects and creates a WRITE-ONLY session (read denied).
-    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
-    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
-        .await
-        .expect("host ws connect");
-    let (mut host_sink, mut host_stream) = host_ws.split();
-    send_claim(&mut host_sink, "host-secret").await;
-
-    let create_session = to_json(
-        "ctrl-1",
-        MessageKind::Control(ControlMessage::CreateSession {
-            permissions: Permissions {
-                read: false,
-                write: true,
-            },
-        }),
-    );
-    host_sink
-        .send(tungstenite::Message::Text(create_session.into()))
-        .await
-        .unwrap();
-
-    let token = match parse_msg(&recv_text(&mut host_stream).await).kind {
-        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
-        other => panic!("expected SessionCreated, got {other:?}"),
-    };
+    let (mut host_sink, mut host_stream, _session_id, token) = connect_host_with_session(
+        &base,
+        "test-nb",
+        "host-secret",
+        Permissions {
+            read: false,
+            write: true,
+        },
+    )
+    .await;
 
     // Guest connects with the write-only token.
     let guest_url = format!("{base}/ws/connect?token={token}");
@@ -796,27 +748,8 @@ async fn host_claim_mismatch_rejected_without_evicting_incumbent() {
 async fn host_can_reply_with_a_notebook_larger_than_four_mib() {
     let base = start_server(test_state()).await;
 
-    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
-    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
-        .await
-        .expect("host ws connect");
-    let (mut host_sink, mut host_stream) = host_ws.split();
-    send_claim(&mut host_sink, "host-secret").await;
-
-    let create_session = to_json(
-        "ctrl-1",
-        MessageKind::Control(ControlMessage::CreateSession {
-            permissions: Permissions::default(),
-        }),
-    );
-    host_sink
-        .send(tungstenite::Message::Text(create_session.into()))
-        .await
-        .unwrap();
-    let token = match parse_msg(&recv_text(&mut host_stream).await).kind {
-        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
-        other => panic!("expected SessionCreated, got {other:?}"),
-    };
+    let (mut host_sink, mut host_stream, _session_id, token) =
+        connect_host_with_session(&base, "test-nb", "host-secret", Permissions::default()).await;
 
     let (guest_ws, _) =
         tokio_tungstenite::connect_async(&format!("{base}/ws/connect?token={token}"))
