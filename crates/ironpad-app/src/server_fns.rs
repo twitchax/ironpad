@@ -732,6 +732,24 @@ pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, Se
 /// derives its framework-level body cap from this — keep them coupled.
 pub const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
 
+/// The ONE notebook-upload gate: size cap, then parse. Every path that
+/// stores a caller's notebook JSON runs it first — the immutable share, the
+/// account save and the draft autosave — so the next rule added here reaches
+/// all three instead of whichever one it was written into.
+#[cfg(feature = "ssr")]
+fn validate_notebook_upload(notebook_json: &str) -> anyhow::Result<IronpadNotebook> {
+    // Reject oversized uploads before parsing: an arbitrarily large body would
+    // CPU-block the runtime in serde and fill disk with distinct large writes.
+    // 4 MiB is generous for a notebook (many cells of source plus outputs).
+    if notebook_json.len() > MAX_SHARE_BYTES {
+        anyhow::bail!(
+            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
+            notebook_json.len()
+        );
+    }
+    serde_json::from_str(notebook_json).map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))
+}
+
 /// Aggregate cap on the whole shares directory. Even with the per-upload cap, an
 /// attacker could otherwise post many *distinct* notebooks to fill the disk;
 /// beyond this total the endpoint refuses new distinct shares. Idempotent
@@ -740,11 +758,14 @@ pub const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(feature = "ssr")]
 const MAX_TOTAL_SHARE_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Validate and store an immutable share. Returns the content hash AND the
+/// parsed notebook, because the caller snapshots blobs from it and a second
+/// parse of a body of up to 4 MiB is pure waste.
 #[cfg(feature = "ssr")]
 pub(crate) async fn share_notebook_core(
     data_dir: &std::path::Path,
     notebook_json: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, IronpadNotebook)> {
     share_notebook_core_capped(data_dir, notebook_json, MAX_TOTAL_SHARE_BYTES).await
 }
 
@@ -781,20 +802,8 @@ async fn share_notebook_core_capped(
     data_dir: &std::path::Path,
     notebook_json: &str,
     max_total_bytes: u64,
-) -> anyhow::Result<String> {
-    // Reject oversized uploads before parsing: an arbitrarily large body would
-    // CPU-block the runtime in serde and fill disk with distinct large writes.
-    // 4 MiB is generous for a notebook (many cells of source plus outputs).
-    if notebook_json.len() > MAX_SHARE_BYTES {
-        anyhow::bail!(
-            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
-            notebook_json.len()
-        );
-    }
-
-    // Validate the JSON is a valid IronpadNotebook.
-    let _: IronpadNotebook = serde_json::from_str(notebook_json)
-        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+) -> anyhow::Result<(String, IronpadNotebook)> {
+    let notebook = validate_notebook_upload(notebook_json)?;
 
     // Compute blake3 hash (first 16 hex chars).
     let hash = blake3::hash(notebook_json.as_bytes());
@@ -832,7 +841,7 @@ async fn share_notebook_core_capped(
 
     tracing::info!(hash = %hash_hex, "notebook shared");
 
-    Ok(hash_hex.to_string())
+    Ok((hash_hex.to_string(), notebook))
 }
 
 /// Uploads a notebook for sharing. Returns the blake3 content hash (16 hex chars).
@@ -857,28 +866,24 @@ pub async fn share_notebook(
     use ironpad_common::AppConfig;
 
     let config = expect_context::<AppConfig>();
-    let hash = share_notebook_core(&config.data_dir, &notebook_json)
+    let (hash, notebook) = share_notebook_core(&config.data_dir, &notebook_json)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
-    // The JSON parsed inside share_notebook_core, so a failure here is
-    // unreachable in practice; treat it as "nothing to snapshot".
-    if let Ok(notebook) = serde_json::from_str::<IronpadNotebook>(&notebook_json) {
-        match snapshot_share_blobs(
-            &config.data_dir,
-            &config.cache_dir,
-            &notebook,
-            &cell_type_tags.unwrap_or_default(),
-            &hash,
-        )
-        .await
-        {
-            Ok(count) => {
-                tracing::info!(share = %hash, cells = count, "share blob snapshot written");
-            }
-            Err(e) => {
-                tracing::warn!(share = %hash, error = %e, "share blob snapshot failed; share is live-compile only");
-            }
+    match snapshot_share_blobs(
+        &config.data_dir,
+        &config.cache_dir,
+        &notebook,
+        &cell_type_tags.unwrap_or_default(),
+        &hash,
+    )
+    .await
+    {
+        Ok(count) => {
+            tracing::info!(share = %hash, cells = count, "share blob snapshot written");
+        }
+        Err(e) => {
+            tracing::warn!(share = %hash, error = %e, "share blob snapshot failed; share is live-compile only");
         }
     }
 
@@ -1396,16 +1401,9 @@ pub(crate) async fn save_notebook_to_account_core(
     notebook_json: &str,
     quota: MutableQuota,
 ) -> anyhow::Result<String> {
-    if notebook_json.len() > MAX_SHARE_BYTES {
-        anyhow::bail!(
-            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
-            notebook_json.len()
-        );
-    }
     // Parse to reject garbage before anything is stored; only the publish
     // path needs the notebook itself (for the blob snapshot).
-    let _: IronpadNotebook = serde_json::from_str(notebook_json)
-        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+    validate_notebook_upload(notebook_json)?;
 
     admit_mutable_write(db, owner_github_id, notebook_json.len() as u64, quota).await?;
 
@@ -1474,14 +1472,7 @@ pub(crate) async fn save_mutable_draft_core(
     notebook_json: &str,
     quota: MutableQuota,
 ) -> anyhow::Result<()> {
-    if notebook_json.len() > MAX_SHARE_BYTES {
-        anyhow::bail!(
-            "notebook too large: {} bytes (max {MAX_SHARE_BYTES})",
-            notebook_json.len()
-        );
-    }
-    let _: IronpadNotebook = serde_json::from_str(notebook_json)
-        .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
+    validate_notebook_upload(notebook_json)?;
     ensure_share_owner(db, github_id, id).await?;
     // Drafts count toward both caps: they are the one write path an owner
     // can drive at will, and uncounted, N tiny shares each autosaving a
@@ -2976,16 +2967,47 @@ mod tests {
         serde_json::to_string(&IronpadNotebook::new("Second")).unwrap()
     }
 
+    // ── validate_notebook_upload ─────────────────────────────────────
+
+    #[test]
+    fn the_upload_gate_caps_then_parses() {
+        // Every upload path reports through this one gate, so these prefixes
+        // are what the share, account-save and draft-save errors all start
+        // with.
+        let oversized = "x".repeat(MAX_SHARE_BYTES + 1);
+        let err = validate_notebook_upload(&oversized)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("notebook too large: "),
+            "oversize must be refused before parsing: {err}"
+        );
+
+        let err = validate_notebook_upload("not json")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("invalid notebook JSON: "),
+            "garbage must be refused by the parse: {err}"
+        );
+
+        let notebook = validate_notebook_upload(VALID_NOTEBOOK_JSON).expect("a valid notebook");
+        assert_eq!(notebook.title, "Test Notebook");
+    }
+
     // ── share_notebook_core ──────────────────────────────────────────
 
     #[tokio::test]
     async fn server_fn_core_share_notebook_creates_file() {
         let dir = tempfile::tempdir().unwrap();
-        let hash = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+        let (hash, notebook) = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
             .await
             .unwrap();
 
         assert_eq!(hash.len(), 16, "hash should be 16 hex chars");
+        // The parse the upload gate already did comes back with the hash, so
+        // the blob snapshot never parses the body a second time.
+        assert_eq!(notebook.title, "Test Notebook");
         let path = dir.path().join("shares").join(format!("{hash}.json"));
         assert!(path.exists(), "share file should exist on disk");
     }
@@ -3013,7 +3035,7 @@ mod tests {
         // Cap chosen so the first notebook exactly fills the store; a second
         // *distinct* notebook then pushes the total over the cap.
         let cap = VALID_NOTEBOOK_JSON.len() as u64;
-        let h1 = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap)
+        let (h1, _) = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap)
             .await
             .expect("first share fits within the cap");
 
@@ -3031,7 +3053,7 @@ mod tests {
 
         // Re-sharing an already-stored notebook overwrites in place and is still
         // allowed even at/over the cap (it adds no bytes).
-        let h1_again = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap)
+        let (h1_again, _) = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap)
             .await
             .expect("idempotent re-share is allowed at the cap");
         assert_eq!(h1, h1_again);
@@ -3040,10 +3062,10 @@ mod tests {
     #[tokio::test]
     async fn server_fn_core_share_notebook_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
-        let h1 = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+        let (h1, _) = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
             .await
             .unwrap();
-        let h2 = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+        let (h2, _) = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
             .await
             .unwrap();
 
@@ -3053,10 +3075,10 @@ mod tests {
     #[tokio::test]
     async fn server_fn_core_share_notebook_different_content_different_hash() {
         let dir = tempfile::tempdir().unwrap();
-        let h1 = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+        let (h1, _) = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
             .await
             .unwrap();
-        let h2 = share_notebook_core(dir.path(), &second_notebook_json())
+        let (h2, _) = share_notebook_core(dir.path(), &second_notebook_json())
             .await
             .unwrap();
 
@@ -3080,7 +3102,7 @@ mod tests {
     #[tokio::test]
     async fn server_fn_core_get_shared_notebook_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let hash = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+        let (hash, _) = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
             .await
             .unwrap();
 
