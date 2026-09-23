@@ -8,9 +8,13 @@ use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use std::time::Duration;
+
+use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use ironpad_common::protocol::{
     self, ClientId, ControlMessage, ErrorCode, MessageKind, Permissions, Response,
@@ -132,7 +136,7 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
         }
     }
 
-    let (tx, mut rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
+    let (tx, rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
     tracing::info!(
         notebook_id = %notebook_id,
         connection_id = %connection_id,
@@ -144,14 +148,7 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
         .register_host(&notebook_id, &connection_id, tx)
         .await;
 
-    // Forward channel → WebSocket.
-    let mut send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if ws_sender.send(Message::Text(msg)).await.is_err() {
-                break;
-            }
-        }
-    });
+    let mut send_task = spawn_forwarder(ws_sender, rx);
 
     // Read WebSocket → process.
     let nb_id = notebook_id.clone();
@@ -159,24 +156,16 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
     let st = state.clone();
     let mut recv_task = tokio::spawn(async move {
         loop {
-            let next = tokio::time::timeout(HOST_IDLE_TIMEOUT, ws_receiver.next()).await;
-            // Stream end (`Ok(None)`), a WS error (`Ok(Some(Err))`), or the idle
-            // timeout (`Err`) all mean we're done reading from this connection.
-            let Ok(Some(Ok(msg))) = next else {
-                if next.is_err() {
+            match next_text(&mut ws_receiver, HOST_IDLE_TIMEOUT).await {
+                Ok(text) => handle_host_message(&text, &nb_id, &conn_id, &st).await,
+                Err(ReadEnd::Idle) => {
                     tracing::warn!(
                         notebook_id = %nb_id,
                         "host idle timeout — closing half-open connection"
                     );
+                    break;
                 }
-                break;
-            };
-            match msg {
-                Message::Text(text) => {
-                    handle_host_message(&text, &nb_id, &conn_id, &st).await;
-                }
-                Message::Close(_) => break,
-                _ => {}
+                Err(ReadEnd::Closed) => break,
             }
         }
     });
@@ -206,6 +195,47 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
     state.ws.forget_secret_if_idle(&notebook_id).await;
 }
 
+// ── Socket pumps (shared by host and guest) ─────────────────────────────────
+
+/// Forward a connection's outbound channel onto its socket until either side
+/// closes.
+fn spawn_forwarder(
+    mut sink: SplitSink<WebSocket, Message>,
+    mut rx: mpsc::Receiver<Utf8Bytes>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if sink.send(Message::Text(msg)).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
+/// Why a read loop stopped. Kept apart so each role logs the idle case with
+/// its own context (the notebook for a host, the client for a guest).
+enum ReadEnd {
+    /// Stream end, a WS error, or a Close frame.
+    Closed,
+    /// Nothing arrived within the idle window: a half-open connection (a
+    /// network drop with no FIN).
+    Idle,
+}
+
+/// The next text frame from `rx`. Every inbound frame restarts the `idle`
+/// window, including the non-text ones skipped here (a Ping is proof of life
+/// even though it carries no protocol message).
+async fn next_text(rx: &mut SplitStream<WebSocket>, idle: Duration) -> Result<Utf8Bytes, ReadEnd> {
+    loop {
+        match tokio::time::timeout(idle, rx.next()).await {
+            Err(_) => return Err(ReadEnd::Idle),
+            Ok(Some(Ok(Message::Text(text)))) => return Ok(text),
+            Ok(None | Some(Err(_) | Ok(Message::Close(_)))) => return Err(ReadEnd::Closed),
+            Ok(Some(Ok(_))) => {}
+        }
+    }
+}
+
 /// Parse a first-frame `ClaimHost`, returning its secret if that's what it is.
 fn parse_claim_secret(text: &str) -> Option<String> {
     match serde_json::from_str::<protocol::Message>(text).ok()?.kind {
@@ -215,11 +245,7 @@ fn parse_claim_secret(text: &str) -> Option<String> {
 }
 
 /// Close a host socket with an application close code + reason before dropping it.
-async fn close_host(
-    ws_sender: &mut futures::stream::SplitSink<WebSocket, Message>,
-    code: u16,
-    reason: &str,
-) {
+async fn close_host(ws_sender: &mut SplitSink<WebSocket, Message>, code: u16, reason: &str) {
     use axum::extract::ws::CloseFrame;
     let _ = ws_sender
         .send(Message::Close(Some(CloseFrame {
@@ -425,8 +451,8 @@ async fn handle_guest(
     permissions: Permissions,
     state: AppState,
 ) {
-    let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (tx, mut rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
+    let (ws_sender, mut ws_receiver) = socket.split();
+    let (tx, rx) = mpsc::channel::<axum::extract::ws::Utf8Bytes>(WS_CHANNEL_BOUND);
 
     tracing::info!(
         session_id = %session_id,
@@ -445,20 +471,11 @@ async fn handle_guest(
     );
     state.ws.send_to_host(&notebook_id, connected_msg).await;
 
-    // Forward channel → WebSocket.
-    let mut send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if ws_sender.send(Message::Text(msg)).await.is_err() {
-                break;
-            }
-        }
-    });
+    let mut send_task = spawn_forwarder(ws_sender, rx);
 
     // Read WebSocket → process.
     let cid = client_id.clone();
-    let sid = session_id.clone();
     let nid = notebook_id.clone();
-    let perms = permissions;
     let st = state.clone();
     let idle_timeout = state.ws.guest_idle_timeout();
     let mut recv_task = tokio::spawn(async move {
@@ -466,24 +483,16 @@ async fn handle_guest(
         // Guests don't heartbeat, so this window is generous (see `WsState`);
         // any inbound frame resets it.
         loop {
-            let next = tokio::time::timeout(idle_timeout, ws_receiver.next()).await;
-            // Stream end (`Ok(None)`), a WS error (`Ok(Some(Err))`), or the idle
-            // timeout (`Err`) all mean we're done reading this connection.
-            let Ok(Some(Ok(msg))) = next else {
-                if next.is_err() {
+            match next_text(&mut ws_receiver, idle_timeout).await {
+                Ok(text) => handle_guest_message(&text, &nid, &cid, &permissions, &st).await,
+                Err(ReadEnd::Idle) => {
                     tracing::warn!(
                         client_id = %cid,
                         "guest idle timeout — closing half-open connection"
                     );
+                    break;
                 }
-                break;
-            };
-            match msg {
-                Message::Text(text) => {
-                    handle_guest_message(&text, &nid, &sid, &cid, &perms, &st).await;
-                }
-                Message::Close(_) => break,
-                _ => {}
+                Err(ReadEnd::Closed) => break,
             }
         }
     });
@@ -512,7 +521,6 @@ async fn handle_guest(
 async fn handle_guest_message(
     text: &Utf8Bytes,
     notebook_id: &str,
-    _session_id: &str,
     client_id: &str,
     permissions: &Permissions,
     state: &AppState,
@@ -608,20 +616,11 @@ mod tests {
     async fn handle_guest_message(
         text: &str,
         notebook_id: &str,
-        session_id: &str,
         client_id: &str,
         permissions: &Permissions,
         state: &AppState,
     ) {
-        super::handle_guest_message(
-            &text.into(),
-            notebook_id,
-            session_id,
-            client_id,
-            permissions,
-            state,
-        )
-        .await;
+        super::handle_guest_message(&text.into(), notebook_id, client_id, permissions, state).await;
     }
 
     /// Build a minimal `AppState` suitable for WS handler tests.
@@ -836,7 +835,6 @@ mod tests {
         handle_guest_message(
             &mutation_json,
             nb,
-            &session.session_id,
             "guest-1",
             &Permissions::default(),
             &state,
@@ -1111,15 +1109,7 @@ mod tests {
             }),
         );
 
-        handle_guest_message(
-            &mutation_json,
-            nb,
-            &session.session_id,
-            "guest-1",
-            &perms,
-            &state,
-        )
-        .await;
+        handle_guest_message(&mutation_json, nb, "guest-1", &perms, &state).await;
 
         // Host should receive the forwarded mutation.
         let received = host_rx.try_recv().expect("host should receive mutation");
@@ -1160,15 +1150,7 @@ mod tests {
 
         let query_json = wire_msg("q-1", MessageKind::Query(Query::CellsList));
 
-        handle_guest_message(
-            &query_json,
-            nb,
-            &session.session_id,
-            "guest-1",
-            &perms,
-            &state,
-        )
-        .await;
+        handle_guest_message(&query_json, nb, "guest-1", &perms, &state).await;
 
         // Host should receive the forwarded query.
         let received = host_rx.try_recv().expect("host should receive query");
@@ -1215,15 +1197,7 @@ mod tests {
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
 
-        handle_guest_message(
-            &mutation_json,
-            nb,
-            &session.session_id,
-            "guest-1",
-            &perms,
-            &state,
-        )
-        .await;
+        handle_guest_message(&mutation_json, nb, "guest-1", &perms, &state).await;
 
         // Host should NOT receive it.
         assert!(
@@ -1275,15 +1249,7 @@ mod tests {
 
         let query_json = wire_msg("q-1", MessageKind::Query(Query::NotebookGet));
 
-        handle_guest_message(
-            &query_json,
-            nb,
-            &session.session_id,
-            "guest-1",
-            &perms,
-            &state,
-        )
-        .await;
+        handle_guest_message(&query_json, nb, "guest-1", &perms, &state).await;
 
         assert!(host_rx.try_recv().is_err(), "host should not receive query");
 
@@ -1320,7 +1286,7 @@ mod tests {
         let perms = Permissions::default();
 
         // Malformed JSON — should be silently ignored.
-        handle_guest_message("{bad", "nb-1", "sess-1", "guest-1", &perms, &state).await;
+        handle_guest_message("{bad", "nb-1", "guest-1", &perms, &state).await;
     }
 
     #[tokio::test]
@@ -1367,15 +1333,7 @@ mod tests {
             MessageKind::Mutation(Mutation::CellReorder { cell_ids: vec![] }),
         );
 
-        handle_guest_message(
-            &mutation_json,
-            nb,
-            &session.session_id,
-            "guest-1",
-            &perms,
-            &state,
-        )
-        .await;
+        handle_guest_message(&mutation_json, nb, "guest-1", &perms, &state).await;
 
         // Guest should receive a SessionNotFound error.
         let received = guest_rx
@@ -1416,15 +1374,7 @@ mod tests {
 
         let query_json = wire_msg("q-1", MessageKind::Query(Query::CellsList));
 
-        handle_guest_message(
-            &query_json,
-            nb,
-            &session.session_id,
-            "guest-1",
-            &perms,
-            &state,
-        )
-        .await;
+        handle_guest_message(&query_json, nb, "guest-1", &perms, &state).await;
 
         // Guest should receive a SessionNotFound error.
         let received = guest_rx.try_recv().expect("guest should receive error");
