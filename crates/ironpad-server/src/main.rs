@@ -26,8 +26,8 @@ use tracing_subscriber::Layer as _;
 
 use ironpad_app::*;
 use ironpad_common::AppConfig;
+use ironpad_server::routes;
 use ironpad_server::state::{AppState, WsState};
-use ironpad_server::{crawl, oembed, og, ws};
 
 use crate::cache_valve::{cache_pressure_valve, fs_usage};
 use crate::config::CliArgs;
@@ -211,21 +211,14 @@ async fn main() {
         // Sign-in surface (PRD-0053). nest_service because the auth router
         // carries its own state; paths inside are prefix-stripped.
         .nest_service("/auth", auth_router)
-        .route("/ws/host", get(ws::ws_host_handler))
-        .route("/ws/connect", get(ws::ws_connect_handler))
+        .merge(routes::ws_routes())
         .route(
             &format!("{}{{file}}", ironpad_common::SHARE_BLOBS_PREFIX),
             get(share_blob_handler),
         )
-        // Social-preview cards and crawler files (PRD-0050). These sit outside
-        // the Leptos routes because a crawler wants bytes, not an SSR page.
-        .route("/og/ironpad.png", get(og::site_card_handler))
-        .route("/og/{class}/{file}", get(og::notebook_card_handler))
-        .route("/robots.txt", get(crawl::robots_handler))
-        .route("/sitemap.xml", get(crawl::sitemap_handler))
-        // oEmbed provider (PRD-0051): consumers that support discovery embed
-        // the live notebook instead of the static card.
-        .route("/oembed", get(oembed::oembed_handler))
+        // Social-preview cards, crawler files and oEmbed; see
+        // `routes::crawler_routes` for why they sit outside the Leptos routes.
+        .merge(routes::crawler_routes())
         .leptos_routes_with_context(
             &app_state,
             routes,

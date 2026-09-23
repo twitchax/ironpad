@@ -11,6 +11,7 @@ pub mod crawl;
 pub mod notebook_class;
 pub mod oembed;
 pub mod og;
+pub mod routes;
 pub mod sessions;
 pub mod state;
 pub mod ws;

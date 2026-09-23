@@ -6,7 +6,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::routing::get;
 use axum::Router;
 use futures::{SinkExt, StreamExt};
 use ironpad_common::protocol::{
@@ -16,7 +15,6 @@ use ironpad_common::protocol::{
 use ironpad_common::types::CellType;
 use ironpad_common::AppConfig;
 use ironpad_server::state::{AppState, WsState};
-use ironpad_server::ws;
 use leptos::config::LeptosOptions;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -50,12 +48,9 @@ fn test_state() -> AppState {
     state_with_ws(WsState::default())
 }
 
-/// Build an Axum router with only the WS routes (no Leptos/SSR).
+/// Build an Axum router with only the production WS routes (no Leptos/SSR).
 fn ws_router(state: AppState) -> Router {
-    Router::new()
-        .route("/ws/host", get(ws::ws_host_handler))
-        .route("/ws/connect", get(ws::ws_connect_handler))
-        .with_state(state)
+    ironpad_server::routes::ws_routes().with_state(state)
 }
 
 /// Start a test server on a random port, returning the base URL.

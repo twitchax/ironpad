@@ -40,12 +40,11 @@
 
 use std::path::PathBuf;
 
-use axum::routing::get;
 use axum::Router;
 use ironpad_app::db::Db;
 use ironpad_common::AppConfig;
+use ironpad_server::routes;
 use ironpad_server::state::{AppState, WsState};
-use ironpad_server::{crawl, oembed, og};
 use leptos::config::LeptosOptions;
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -100,13 +99,10 @@ fn app_state(data_dir: PathBuf, cache_dir: PathBuf) -> AppState {
     }
 }
 
-/// The three crawler-facing handlers, wired exactly as `main.rs` wires them,
-/// including the DB `Extension` the OG handler reads.
+/// The production crawler routes, with the DB `Extension` the OG and oEmbed
+/// handlers read.
 fn router(state: AppState, db: Db) -> Router {
-    Router::new()
-        .route("/og/{class}/{file}", get(og::notebook_card_handler))
-        .route("/oembed", get(oembed::oembed_handler))
-        .route("/sitemap.xml", get(crawl::sitemap_handler))
+    routes::crawler_routes()
         .with_state(state)
         .layer(axum::Extension(db))
 }
@@ -236,6 +232,31 @@ async fn an_unpublished_account_notebook_is_invisible_on_every_anonymous_surface
     .await;
     assert_eq!(status, 200, "oEmbed resolves once published");
     assert!(body.contains(SECRET_TITLE), "oEmbed carries the title");
+}
+
+/// Every route in the production crawler table answers through it, so a path
+/// dropped from `routes::crawler_routes` fails here rather than only in prod.
+/// (`/og/{class}/{file}`, `/oembed` and `/sitemap.xml` are reached above.)
+#[tokio::test]
+async fn the_crawler_table_serves_robots_and_the_site_card() {
+    let dbdir = tempfile::tempdir().expect("db dir");
+    let data = tempfile::tempdir().expect("data dir");
+    let cache = tempfile::tempdir().expect("cache dir");
+    let db = Db::open(&dbdir.path().join("test.db"))
+        .await
+        .expect("open accounts db");
+    let base = serve(app_state(data.path().into(), cache.path().into()), db).await;
+
+    let (status, body) = get_raw(&format!("{base}/robots.txt"), None).await;
+    assert_eq!(status, 200, "robots.txt is routed");
+    assert!(body.contains("Sitemap: "), "{body}");
+
+    let res = reqwest::get(format!("{base}/og/ironpad.png"))
+        .await
+        .expect("request");
+    assert_eq!(res.status().as_u16(), 200, "the site card is routed");
+    let png = res.bytes().await.expect("body");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 }
 
 /// Percent-encode a URL for use as a query-string value. `reqwest`'s builder
