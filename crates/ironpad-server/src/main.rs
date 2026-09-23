@@ -101,8 +101,6 @@ async fn main() {
             None
         }
     };
-    // Refuses combinations that are individually valid but unsafe together.
-    // Fail at startup rather than serve a compromised instance.
     let test_auth = args.test_auth;
     let config: AppConfig = args.into();
 

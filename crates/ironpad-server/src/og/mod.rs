@@ -36,8 +36,9 @@ use svg::Card;
 const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Low-water mark the reaper evicts down to once [`MAX_CACHE_BYTES`] is hit.
-/// Reclaiming a quarter at a time amortizes the directory walk instead of
-/// paying it on every write once the cache is warm.
+/// Reclaiming a quarter at a time amortizes the deletions; the size walk
+/// itself runs on every render miss, which is cheap beside the rasterize that
+/// miss is already paying.
 const EVICT_TO_BYTES: u64 = MAX_CACHE_BYTES * 3 / 4;
 
 /// Lines of source pulled from the notebook. More than the panel can show, so

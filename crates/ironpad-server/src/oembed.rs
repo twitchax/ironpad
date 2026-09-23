@@ -36,7 +36,9 @@ const MIN_HEIGHT: u32 = 150;
 const MAX_HEIGHT: u32 = 4000;
 
 /// How long a consumer may cache this response, in seconds. Public notebooks
-/// change only at deploy; shared ones are immutable.
+/// change only at deploy and shared ones are immutable; a mutable notebook's
+/// title can change on Push (or it can go private), and a day of staleness
+/// there is an accepted trade-off rather than an oversight.
 const CACHE_AGE: u32 = 86_400;
 
 // ── Request ─────────────────────────────────────────────────────────────────

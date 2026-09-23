@@ -21,9 +21,6 @@ use ironpad_common::absolute_url;
 use crate::escape::markup_escape;
 use crate::state::AppState;
 
-/// `/embed/*` renders the same notebooks as `/public` and `/shared` without
-/// the surrounding chrome. Indexing both would be duplicate content, and the
-/// embed variant is the one no human should land on from a search result.
 /// Paths kept out of search results by `robots.txt`.
 ///
 /// `/embed/` is duplicate content. `/admin` is disallowed here rather than
