@@ -1482,9 +1482,7 @@ pub(crate) async fn save_mutable_draft_core(
     }
     let _: IronpadNotebook = serde_json::from_str(notebook_json)
         .map_err(|e| anyhow::anyhow!("invalid notebook JSON: {e}"))?;
-    if !db.user_owns_share(github_id, id).await? {
-        anyhow::bail!("unauthorized: you do not own this share");
-    }
+    ensure_share_owner(db, github_id, id).await?;
     // Drafts count toward both caps: they are the one write path an owner
     // can drive at will, and uncounted, N tiny shares each autosaving a
     // 4 MiB draft would grow storage unboundedly.
@@ -1505,11 +1503,8 @@ pub(crate) async fn push_mutable_core(
     id: &str,
     cell_type_tags: &[String],
 ) -> anyhow::Result<bool> {
-    // The OWNER grant gates the push, before any blob work. A share that
-    // doesn't exist reads the same as one you don't own — deliberately.
-    if !db.user_owns_share(github_id, id).await? {
-        anyhow::bail!("unauthorized: you do not own this share");
-    }
+    // The OWNER grant gates the push, before any blob work.
+    ensure_share_owner(db, github_id, id).await?;
     let edit = db
         .get_share_for_edit(id)
         .await?
@@ -1586,11 +1581,7 @@ pub(crate) async fn unpublish_mutable_core(
     github_id: &str,
     id: &str,
 ) -> anyhow::Result<()> {
-    // Same gate, same non-oracle as every other owner action: a share you do
-    // not own reads exactly like one that does not exist.
-    if !db.user_owns_share(github_id, id).await? {
-        anyhow::bail!("unauthorized: you do not own this share");
-    }
+    ensure_share_owner(db, github_id, id).await?;
     db.unpublish_share(id).await?;
     tracing::info!(id = %id, "mutable share unpublished");
     Ok(())
@@ -1602,9 +1593,7 @@ pub(crate) async fn delete_mutable_core(
     github_id: &str,
     id: &str,
 ) -> anyhow::Result<()> {
-    if !db.user_owns_share(github_id, id).await? {
-        anyhow::bail!("unauthorized: you do not own this share");
-    }
+    ensure_share_owner(db, github_id, id).await?;
     // The content-addressed blobs are shared across every share that
     // references them and bounded by the blob-store cap, so (like immutable
     // unshares) they are left in place; only the record + grants go.
@@ -1924,6 +1913,20 @@ pub async fn unpublish_mutable_share(id: String) -> Result<(), ServerFnError> {
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
+/// The OWNER gate: every owner-only action on a share runs it, whether it
+/// is checked in a `*_core` or in the `#[server]` wrapper.
+///
+/// A share you do not own reads exactly like one that does not exist,
+/// deliberately: both produce this one message, so an owner-only call is
+/// not an oracle for which ids exist.
+#[cfg(feature = "ssr")]
+async fn ensure_share_owner(db: &crate::db::Db, github_id: &str, id: &str) -> anyhow::Result<()> {
+    if !db.user_owns_share(github_id, id).await? {
+        anyhow::bail!("unauthorized: you do not own this share");
+    }
+    Ok(())
+}
+
 /// Require the caller to hold the OWNER grant on `id`, resolving them first.
 #[cfg(feature = "ssr")]
 async fn require_share_owner(
@@ -1931,15 +1934,9 @@ async fn require_share_owner(
     id: &str,
 ) -> Result<crate::db::AuthUser, ServerFnError> {
     let user = require_login(db).await?;
-    if !db
-        .user_owns_share(&user.github_id, id)
+    ensure_share_owner(db, &user.github_id, id)
         .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
-    {
-        return Err(ServerFnError::new(
-            "unauthorized: you do not own this share",
-        ));
-    }
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
     Ok(user)
 }
 
@@ -3806,6 +3803,39 @@ mod tests {
         assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_some());
         delete_mutable_core(&db, "1", &id).await.unwrap();
         assert!(get_mutable_notebook_core(&db, &id).await.unwrap().is_none());
+    }
+
+    /// The OWNER gate's non-oracle property, pinned in the one place it is
+    /// written: a share someone else owns and an id that does not exist
+    /// must be indistinguishable to the caller, byte for byte.
+    #[tokio::test]
+    async fn the_owner_gate_cannot_tell_a_strangers_share_from_a_missing_one() {
+        let (_dbdir, db) = accounts_db().await;
+        let alices = db
+            .create_account_notebook("1", VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
+
+        ensure_share_owner(&db, "1", &alices)
+            .await
+            .expect("the owner passes the gate");
+
+        let not_yours = ensure_share_owner(&db, "2", &alices)
+            .await
+            .unwrap_err()
+            .to_string();
+        let missing = ensure_share_owner(&db, "2", "0000000000000000")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            not_yours, missing,
+            "the gate must not reveal which ids exist"
+        );
+        assert!(
+            not_yours.contains("unauthorized"),
+            "unexpected: {not_yours}"
+        );
     }
 
     /// Unpublish is in place (PRD-0064): the published copy goes, the
