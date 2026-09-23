@@ -263,14 +263,14 @@
    "label": "CellInputs",
    "insert": "CellInputs",
    "kind": "struct",
-   "detail": "pub struct CellInputs",
+   "detail": "pub struct CellInputs<'a>",
    "doc": "Container for all previous cell outputs, passed to a cell's `cell_main` function."
   },
   {
    "label": "CellInputs::from_raw",
    "insert": "CellInputs::from_raw",
    "kind": "method",
-   "detail": "pub fn from_raw(bytes: &[u8]) -> Self",
+   "detail": "pub fn from_raw(bytes: &'a [u8]) -> Self",
    "doc": "Decode from the length-prefixed wire format. If `bytes` is empty, returns an empty `CellInputs`."
   },
   {
@@ -284,14 +284,14 @@
    "label": "CellInputs::get",
    "insert": "get",
    "kind": "method",
-   "detail": "pub fn get(&self, index: usize) -> CellInput<'_>",
+   "detail": "pub fn get(&self, index: usize) -> CellInput<'a>",
    "doc": "Get the output at `index` as a `CellInput`. Returns an empty `CellInput` if `index` is out of bounds."
   },
   {
    "label": "CellInputs::last",
    "insert": "last",
    "kind": "method",
-   "detail": "pub fn last(&self) -> CellInput<'_>",
+   "detail": "pub fn last(&self) -> CellInput<'a>",
    "doc": "Get the last output as a `CellInput`. Returns an empty `CellInput` if there are no outputs."
   },
   {

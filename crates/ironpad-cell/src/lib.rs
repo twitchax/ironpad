@@ -148,14 +148,19 @@ impl<'a> CellInput<'a> {
 ///
 /// Uses a simple length-prefixed binary wire format:
 /// `[u32 LE: count][u32 LE: len0][bytes0...][u32 LE: len1][bytes1...]...`
-pub struct CellInputs {
-    data: Vec<Vec<u8>>,
+///
+/// Borrows the host's input buffer rather than copying each output out of it:
+/// the executor frees that buffer only after `cell_main` resolves (async cells
+/// included), and every scaffold binding deserializes into an owned value up
+/// front, so a copy per upstream output would buy nothing.
+pub struct CellInputs<'a> {
+    data: Vec<&'a [u8]>,
 }
 
-impl CellInputs {
+impl<'a> CellInputs<'a> {
     /// Decode from the length-prefixed wire format.
     /// If `bytes` is empty, returns an empty `CellInputs`.
-    pub fn from_raw(bytes: &[u8]) -> Self {
+    pub fn from_raw(bytes: &'a [u8]) -> Self {
         // Bounds-checked wire-format parse: `[count:u32]([len:u32][data:len])*`.
         // Every read goes through `slice::get` and a checked add, so a
         // truncated or malformed buffer (or an out-of-range count/len) yields
@@ -187,7 +192,7 @@ impl CellInputs {
             let Some(segment) = bytes.get(offset..seg_end) else {
                 break;
             };
-            data.push(segment.to_vec());
+            data.push(segment);
             offset = seg_end;
         }
 
@@ -212,20 +217,14 @@ impl CellInputs {
 
     /// Get the output at `index` as a `CellInput`.
     /// Returns an empty `CellInput` if `index` is out of bounds.
-    pub fn get(&self, index: usize) -> CellInput<'_> {
-        match self.data.get(index) {
-            Some(bytes) => CellInput::new(bytes),
-            None => CellInput::new(&[]),
-        }
+    pub fn get(&self, index: usize) -> CellInput<'a> {
+        CellInput::new(self.data.get(index).copied().unwrap_or_default())
     }
 
     /// Get the last output as a `CellInput`.
     /// Returns an empty `CellInput` if there are no outputs.
-    pub fn last(&self) -> CellInput<'_> {
-        match self.data.last() {
-            Some(bytes) => CellInput::new(bytes),
-            None => CellInput::new(&[]),
-        }
+    pub fn last(&self) -> CellInput<'a> {
+        CellInput::new(self.data.last().copied().unwrap_or_default())
     }
 
     /// Number of cell outputs.
@@ -1488,10 +1487,7 @@ mod tests {
         // Chop the buffer mid-second-segment: parsing must stop cleanly.
         raw.truncate(raw.len() - 3);
         let inputs = CellInputs::from_raw(&raw);
-        assert_eq!(
-            inputs.data.first().map(Vec::as_slice),
-            Some(b"hello".as_slice())
-        );
+        assert_eq!(inputs.data.first().copied(), Some(b"hello".as_slice()));
     }
 
     #[test]
@@ -1920,6 +1916,26 @@ mod tests {
 
         let last: u32 = inputs.last().deserialize().expect("deserialize last");
         assert_eq!(last, 99);
+    }
+
+    #[test]
+    fn cell_inputs_borrow_the_wire_buffer() {
+        // Every slot must point INTO the host's input buffer: a copy per
+        // upstream output (a large Canvas, a big Vec<f64>) is pure waste,
+        // since every binding deserializes into an owned value at once.
+        let wire = CellInputs::serialize(&[b"alpha".as_slice(), b"", b"omega".as_slice()]);
+        let range = wire.as_ptr_range();
+        let inputs = CellInputs::from_raw(&wire);
+        for (i, expected) in [(0, b"alpha"), (2, b"omega")] {
+            let input = inputs.get(i);
+            assert_eq!(input.raw(), expected);
+            assert!(
+                range.contains(&input.raw().as_ptr()),
+                "slot {i} was copied out of the wire buffer"
+            );
+        }
+        let last = inputs.last();
+        assert!(range.contains(&last.raw().as_ptr()));
     }
 
     #[test]
