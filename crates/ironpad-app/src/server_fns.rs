@@ -4,11 +4,31 @@
 //! Each `#[server]` fn compiles to a network call on the client (hydrate) and to
 //! the real implementation on the server (ssr). Server-only logic lives in
 //! `ssr`-gated `*_core` helpers so it stays unit-testable without a Leptos
-//! context. Endpoints: [`compile_cell`] and [`check_cell`] (the WASM
-//! compilation pipeline), [`list_public_notebooks`] and [`get_public_notebook`]
-//! (static `*.ironpad` notebooks under the site root), and [`share_notebook`],
-//! [`get_shared_notebook`], and [`get_shared_manifest`] (content-addressed
-//! shared notebooks plus their blob-snapshot sidecars under the data dir).
+//! context. The domains, in file order:
+//!
+//! - **Compile and check**: [`compile_cell`] and [`check_cell`], the WASM
+//!   compilation pipeline and live check-on-type (PRD-0045).
+//! - **Public notebooks**: [`list_public_notebooks`] and
+//!   [`get_public_notebook`], static `*.ironpad` files under the site root.
+//! - **Immutable shares and blob snapshots**: [`share_notebook`],
+//!   [`get_shared_notebook`] and [`get_shared_manifest`], content-addressed
+//!   shares plus their blob-snapshot sidecars under the data dir (PRD-0047).
+//! - **Toolchain fingerprint and `BrowserPod` key**:
+//!   [`get_toolchain_fingerprint`] (client cache keys, PRD-0047) and
+//!   [`get_browserpod_key`] (Linux cells, PRD-0066).
+//! - **Mutable and account shares**: the save, draft, push, unpublish,
+//!   delete, privacy and listing set behind the OWNER gate (PRD-0054,
+//!   PRD-0061, PRD-0064), plus the reader-facing access cores.
+//! - **Admin panel**: the `admin_*` fns, every one gated by
+//!   [`crate::auth::admin_user`] (PRD-0063).
+//! - **Auth info**: [`get_auth_info`], the header's sign-in surface
+//!   (PRD-0053).
+//!
+//! A `#[server]` fn's default endpoint URL is derived from this module's
+//! path, so moving one into another module changes its URL. A tab left open
+//! across that deploy would then fail every call to it (a draft autosave
+//! retrying forever) until reloaded. Splitting this file therefore means
+//! pinning `#[server(endpoint = "...")]` on each fn first, in its own deploy.
 
 use ironpad_common::{
     CheckResponse, CompileRequest, CompileResponse, IronpadNotebook, PublicNotebookSummary,
