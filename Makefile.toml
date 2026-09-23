@@ -221,8 +221,15 @@ echo "    Target dir: $TARGET_DIR"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
+mkdir -p "$TMPDIR/crates"
 cp -r crates/ironpad-cell "$TMPDIR/crates/ironpad-cell"
 cp docker/warmup-atomics-Cargo.toml "$TMPDIR/Cargo.toml"
+# The toolchain must be CELL_TOOLCHAIN, which rust-toolchain.toml's channel is
+# asserted to equal. Artifacts from any other nightly are fingerprinted stale
+# by the runtime rayon build and rebuilt from scratch, so a floating `+nightly`
+# would warm nothing. The RUSTFLAGS below are held to compose_rustflags by
+# `atomics_warmup_flags_match_the_runtime` in compiler/build.rs.
+cp rust-toolchain.toml "$TMPDIR/"
 mkdir -p "$TMPDIR/src"
 echo "" > "$TMPDIR/src/lib.rs"
 
@@ -236,7 +243,7 @@ CARGO_TARGET_DIR="$TARGET_DIR" \
                -C link-arg=--export=__tls_size \
                -C link-arg=--export=__tls_align \
                -C link-arg=--export=__tls_base" \
-    cargo +nightly build --target wasm32-unknown-unknown --release \
+    cargo build --target wasm32-unknown-unknown --release \
     -Zbuild-std=std,panic_abort
 
 echo "==> Atomics sysroot pre-built at: $TARGET_DIR"

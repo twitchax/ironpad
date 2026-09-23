@@ -1144,7 +1144,6 @@ mod tests {
             format!("browserpod-{version}"),
             "BROWSERPOD_TOOLCHAIN must name the toolchain docker/browserpod.env installs"
         );
-
         // No unknown pin hiding anywhere: every nightly date literal in the
         // install environments must be `CELL_TOOLCHAIN` or the BrowserPod
         // pack's recorded nightly (the pack pulls its own, recorded in that
@@ -1163,6 +1162,75 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Read a file by its workspace-relative path.
+    fn read_workspace_file(rel: &str) -> String {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"))
+    }
+
+    /// Both atomics warmups (the image's and `cargo make warmup-atomics`)
+    /// exist only to leave behind artifacts a runtime rayon build reuses, and
+    /// cargo fingerprints those by toolchain, RUSTFLAGS and the `-Zbuild-std`
+    /// set. A warmup that differs in any of the three produces a sysroot the
+    /// runtime silently rebuilds from scratch, which can blow the build
+    /// timeout, and nothing fails to say so. The flags are hand copies of
+    /// [`compose_rustflags`]' output (shell cannot call Rust), so they are held
+    /// to it here, token for token, extras included.
+    #[test]
+    fn atomics_warmup_flags_match_the_runtime() {
+        let runtime_flags = compose_rustflags(true, false, false).expect("atomics sets flags");
+        let runtime_tokens: Vec<&str> = runtime_flags.split_whitespace().collect();
+        let build_std = configured_args(CellTarget::Executor, true, false, false)
+            .into_iter()
+            .find(|a| a.starts_with("-Zbuild-std"))
+            .expect("atomics builds rebuild std");
+
+        for file in ["docker/Dockerfile", "Makefile.toml"] {
+            let text = read_workspace_file(file);
+            let mut warmups = 0;
+            for (idx, _) in text.match_indices("RUSTFLAGS=\"") {
+                let body_start = idx + "RUSTFLAGS=\"".len();
+                let body_end = text[body_start..]
+                    .find('"')
+                    .map(|i| body_start + i)
+                    .expect("RUSTFLAGS value is closed");
+                let body = &text[body_start..body_end];
+                if !body.contains("+atomics") {
+                    continue;
+                }
+                warmups += 1;
+                // Shell line continuations are layout, not flags.
+                let tokens: Vec<&str> = body.split_whitespace().filter(|t| *t != "\\").collect();
+                assert_eq!(
+                    tokens, runtime_tokens,
+                    "{file}'s atomics warmup RUSTFLAGS differ from compose_rustflags(atomics)"
+                );
+            }
+            assert_eq!(warmups, 1, "{file} should carry exactly one atomics warmup");
+            assert!(
+                text.contains(&build_std),
+                "{file}'s atomics warmup must pass {build_std}, as the runtime build does"
+            );
+        }
+
+        // The local warmup resolves its toolchain from a copied
+        // rust-toolchain.toml (whose channel is CELL_TOOLCHAIN, asserted
+        // above). A `+nightly` there would float to whatever nightly the dev
+        // box last updated, which is the stale-artifact case this test exists
+        // for.
+        let makefile = read_workspace_file("Makefile.toml");
+        assert!(
+            !makefile.contains("cargo +nightly "),
+            "Makefile.toml invokes a floating `cargo +nightly`; cell artifacts are \
+             only reusable when built on CELL_TOOLCHAIN ({CELL_TOOLCHAIN})"
+        );
+        assert!(
+            makefile.contains("cp rust-toolchain.toml"),
+            "warmup-atomics must copy rust-toolchain.toml into its temp crate so \
+             rustup resolves CELL_TOOLCHAIN there"
+        );
     }
 
     /// The executor's env host-import table must list exactly the imports
