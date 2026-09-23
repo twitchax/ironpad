@@ -529,16 +529,31 @@ impl Db {
             return Ok(None);
         }
 
-        let renewed = row.expires_at - now < SESSION_TTL_SECS - SESSION_RENEW_AFTER_SECS;
+        let mut renewed = row.expires_at - now < SESSION_TTL_SECS - SESSION_RENEW_AFTER_SECS;
         if renewed {
-            self.inner
-                .query("UPDATE type::record('session', $key) SET expires_at = $exp")
-                .bind(("key", key))
-                .bind(("exp", now + SESSION_TTL_SECS))
-                .await
-                .context("session renewal failed")?
-                .check()
-                .context("session renewal returned an error")?;
+            // One page load resolves the same cookie from several concurrent
+            // requests, and past the threshold every one of them UPDATEs this
+            // record. The losers get a retryable conflict; unretried, it
+            // propagated and `current_user` read a valid user as anonymous.
+            let renewal = with_conflict_retry(|| async {
+                self.inner
+                    .query("UPDATE type::record('session', $key) SET expires_at = $exp")
+                    .bind(("key", key.clone()))
+                    .bind(("exp", now + SESSION_TTL_SECS))
+                    .await
+                    .context("session renewal failed")?
+                    .check()
+                    .context("session renewal returned an error")?;
+                Ok(())
+            })
+            .await;
+            // The session is still valid either way; only the slide failed.
+            // Report no renewal so the cookie is not re-issued for a row that
+            // did not move.
+            if let Err(e) = renewal {
+                tracing::warn!(error = %e, "session renewal failed; session still valid");
+                renewed = false;
+            }
         }
 
         Ok(Some((
@@ -2292,5 +2307,75 @@ mod concurrency_tests {
             "{} of {WRITERS} concurrent sign-ins failed: {errors:?}",
             errors.len()
         );
+    }
+
+    /// Every request of one page load resolves the same cookie at once, and
+    /// when the session has aged past the renewal threshold each of them
+    /// UPDATEs the same session record. The losers of that race must still
+    /// resolve the user: `current_user` maps an error to anonymous, so an
+    /// unretried conflict signed a valid user out of every losing request
+    /// once per session every 12h.
+    ///
+    /// `multi_thread` for the same reason as the test above: a current-thread
+    /// runtime never runs the UPDATEs in parallel and the conflict never opens.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_lookups_at_the_renewal_boundary_all_resolve_the_user() {
+        const LOOKUPS: usize = 8;
+
+        #[derive(SurrealValue)]
+        struct Row {
+            expires_at: i64,
+        }
+
+        let dir = tempfile::tempdir().expect("tmp");
+        let db = Db::open(&dir.path().join("r.db")).await.expect("open");
+        db.upsert_user("9", "renewer", "").await.expect("seed user");
+        let token = db.create_session("9").await.expect("seed session");
+
+        // Aged exactly as the single-caller renewal test ages it: past the
+        // threshold, nowhere near expiry.
+        let aged = now_secs() + SESSION_TTL_SECS - SESSION_RENEW_AFTER_SECS - 60;
+        db.inner
+            .query("UPDATE session SET expires_at = $exp")
+            .bind(("exp", aged))
+            .await
+            .expect("age session")
+            .check()
+            .expect("age session");
+
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..LOOKUPS {
+            let (db, token) = (db.clone(), token.clone());
+            set.spawn(async move { db.session_user(&token).await });
+        }
+        let mut failures = Vec::new();
+        let mut renewals = 0;
+        while let Some(res) = set.join_next().await {
+            match res.expect("join") {
+                Ok(Some((user, renewed))) => {
+                    assert_eq!(user.github_id, "9");
+                    renewals += usize::from(renewed);
+                }
+                Ok(None) => failures.push("resolved as anonymous".to_string()),
+                Err(e) => failures.push(format!("{e:#}")),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {LOOKUPS} concurrent lookups lost the user: {failures:?}",
+            failures.len()
+        );
+        assert!(renewals >= 1, "at least one lookup must report the renewal");
+
+        let row: Option<Row> = db
+            .inner
+            .query("SELECT expires_at FROM ONLY type::record('session', $key)")
+            .bind(("key", hash_token(&token)))
+            .await
+            .expect("read back")
+            .take(0)
+            .expect("session row");
+        let slid = row.expect("the session survives the race").expires_at;
+        assert!(slid > aged, "expires_at must slide: {slid} <= {aged}");
     }
 }
