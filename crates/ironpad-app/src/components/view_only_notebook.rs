@@ -20,7 +20,7 @@ use crate::components::notebook_rail::{
     cell_anchor_id, rail_cells, rail_deps, NotebookRail, RailCellRun, RailCellStatus, RailRunState,
 };
 use crate::components::output_render::{
-    render_display_panel, CellOutputData, DisplayPanel, PanelMode, WidgetSink,
+    parse_panels, render_display_panel, CellOutputData, MainThreadBadge, PanelMode, WidgetSink,
     VIEW_ONLY_PANEL_CLASSES,
 };
 
@@ -1125,9 +1125,7 @@ fn ViewOnlyCodeCell(
                 if execution_result.get().is_some() || error_message.get().is_some() {
                     return None;
                 }
-                let saved = cell.with_value(|c| c.saved_output.clone())?;
-                let panels: Vec<DisplayPanel> = serde_json::from_str(&saved)
-                    .unwrap_or_else(|_| vec![DisplayPanel::Text(saved)]);
+                let panels = cell.with_value(|c| c.saved_output.as_deref().map(parse_panels))?;
                 let preview_cell_id = cell.with_value(|c| c.id.clone());
                 let panel_note = match panels.len() {
                     1 => "1 panel".to_string(),
@@ -1337,12 +1335,11 @@ fn ViewOnlyOutput(
     run_all_queue: RwSignal<Vec<String>>,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
 ) -> impl IntoView {
-    let panels: Vec<DisplayPanel> = match &result.display_text {
-        Some(json) => {
-            serde_json::from_str(json).unwrap_or_else(|_| vec![DisplayPanel::Text(json.clone())])
-        }
-        None => vec![],
-    };
+    let panels = result
+        .display_text
+        .as_deref()
+        .map(parse_panels)
+        .unwrap_or_default();
 
     // Build the widget side-effect sink. The read-only viewer has no reactive
     // runner, so `cell_stale` is `None`: a widget change updates outputs directly
@@ -1373,18 +1370,7 @@ fn ViewOnlyOutput(
                 note=format!("{output_len} bytes · {exec_time:.1} ms")
                 on_click=Callback::new(move |()| collapsed.update(|c| *c = !*c))
                 toggle=Signal::derive(move || !collapsed.get())
-                extra={if ran_on_main_thread {
-                    Some(view! {
-                        <span
-                            class="ironpad-output-fallback-badge"
-                            title="This cell was re-executed on the main thread because it requires DOM access (e.g. plotters font measurement)"
-                        >
-                            <IconLabel icon=icons::WARNING label="main thread"/>
-                        </span>
-                    }.into_any())
-                } else {
-                    None
-                }}
+                extra=ran_on_main_thread.then(|| view! { <MainThreadBadge/> }.into_any())
             />
             <div class="view-only-output-body" style:display=move || {
                 if collapsed.get() { "none" } else { "block" }

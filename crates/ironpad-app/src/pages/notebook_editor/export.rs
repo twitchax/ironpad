@@ -9,7 +9,9 @@ use ironpad_common::{CellType, IronpadNotebook};
 #[cfg(any(feature = "hydrate", test))]
 use crate::components::markdown_cell::render_markdown;
 #[cfg(any(feature = "hydrate", test))]
-use crate::components::output_render::{html_escape, render_table_html, DisplayPanel};
+use crate::components::output_render::{
+    html_escape, parse_panels, render_table_html, DisplayPanel,
+};
 
 // ── Export HTML helpers ─────────────────────────────────────────────────────
 
@@ -143,7 +145,8 @@ pub(super) fn build_export_html(
 
                 // Include cached output if available.
                 if let Some(display_json) = display_texts.get(&cell.id) {
-                    if let Ok(panels) = serde_json::from_str::<Vec<DisplayPanel>>(display_json) {
+                    let panels = parse_panels(display_json);
+                    if !panels.is_empty() {
                         html.push_str("<div class=\"cell-output\">\n");
                         html.push_str("<div class=\"output-label\">Output</div>\n");
                         for panel in &panels {

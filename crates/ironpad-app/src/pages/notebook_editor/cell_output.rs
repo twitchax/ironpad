@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use crate::components::icon::{Chevron, IconLabel};
-use crate::components::icons;
+use crate::components::icon::Chevron;
 use ironpad_common::{CellManifest, Diagnostic, ExecutionResult, Severity};
 use leptos::prelude::*;
 
 use crate::components::error_panel::ErrorPanel;
 use crate::components::output_render::{
-    render_display_panel, DisplayPanel, PanelMode, WidgetSink, EDITOR_PANEL_CLASSES,
+    parse_panels, render_display_panel, MainThreadBadge, PanelMode, WidgetSink,
+    EDITOR_PANEL_CLASSES,
 };
 
 use super::pipeline::CompileSummary;
@@ -169,13 +169,11 @@ pub(super) fn CellOutputPanel(
             let Some((time_ms, byte_count, ran_on_main_thread, panels, hex)) =
                 execution_result.with(|result| {
                     result.as_ref().map(|result| {
-                        // Parse display panels from JSON, with backward-compat fallback.
-                        let panels: Vec<DisplayPanel> = match &result.display_text {
-                            Some(json) => serde_json::from_str(json).unwrap_or_else(|_| {
-                                vec![DisplayPanel::Text(json.clone())]
-                            }),
-                            None => vec![],
-                        };
+                        let panels = result
+                            .display_text
+                            .as_deref()
+                            .map(parse_panels)
+                            .unwrap_or_default();
                         let hex = (!collapsed && !result.output_bytes.is_empty())
                             .then(|| format_hex_dump(&result.output_bytes));
                         (
@@ -209,14 +207,7 @@ pub(super) fn CellOutputPanel(
                             {format!("{byte_count} byte{} · {time_ms:.1}ms", if byte_count == 1 { "" } else { "s" })}
                         </span>
                         {if ran_on_main_thread {
-                            view! {
-                                <span
-                                    class="ironpad-output-fallback-badge"
-                                    title="This cell was re-executed on the main thread because it requires DOM access (e.g. plotters font measurement)"
-                                >
-                                    <IconLabel icon=icons::WARNING label="main thread"/>
-                                </span>
-                            }.into_any()
+                            view! { <MainThreadBadge/> }.into_any()
                         } else {
                             view! { <span /> }.into_any()
                         }}

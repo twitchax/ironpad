@@ -20,6 +20,8 @@ use leptos::prelude::*;
 use crate::components::animation_canvas::{AnimationCanvas, SimSliderMeta, SimulationCanvas};
 use crate::components::blob_url::{create_blob_url, revoke_blob_url};
 use crate::components::copy_button::CopyButton;
+use crate::components::icon::IconLabel;
+use crate::components::icons;
 use crate::components::live_view_panel::LiveViewPanel;
 use crate::components::markdown_cell::render_markdown;
 
@@ -73,6 +75,32 @@ pub(crate) enum DisplayPanel {
         kind: String,
         content: String,
     },
+}
+
+/// Parse a cell's display text into its panels.
+///
+/// The display text is a JSON array of [`DisplayPanel`]s; anything that does
+/// not parse as one is the pre-panel plain-text form and renders as a single
+/// `Text` panel. That backward-compat rule is written here once, for the
+/// editor, the viewer (live and saved outputs) and the HTML export.
+pub(crate) fn parse_panels(display_text: &str) -> Vec<DisplayPanel> {
+    serde_json::from_str(display_text)
+        .unwrap_or_else(|_| vec![DisplayPanel::Text(display_text.to_owned())])
+}
+
+/// The badge an output header wears when the cell ran on the main thread
+/// rather than in the executor's Web Worker. One copy of its wording for the
+/// editor and the viewer.
+#[component]
+pub(crate) fn MainThreadBadge() -> impl IntoView {
+    view! {
+        <span
+            class="ironpad-output-fallback-badge"
+            title="This cell was re-executed on the main thread because it requires DOM access (e.g. plotters font measurement)"
+        >
+            <IconLabel icon=icons::WARNING label="main thread"/>
+        </span>
+    }
 }
 
 // ── Per-cell output data ────────────────────────────────────────────────────
@@ -919,6 +947,22 @@ mod tests {
     fn render_table_tsv_handles_no_rows() {
         let headers = vec!["a".to_string(), "b".to_string()];
         assert_eq!(render_table_tsv(&headers, &[]), "a\tb");
+    }
+
+    #[test]
+    fn parse_panels_reads_a_panel_array() {
+        let panels = parse_panels(r#"[{"Text":"a"},{"Html":"<b>b</b>"}]"#);
+        assert_eq!(panels.len(), 2);
+        assert!(matches!(panels[0], DisplayPanel::Text(ref t) if t == "a"));
+        assert!(matches!(panels[1], DisplayPanel::Html(ref h) if h == "<b>b</b>"));
+        assert!(parse_panels("[]").is_empty());
+    }
+
+    #[test]
+    fn parse_panels_reads_legacy_plain_text_as_one_text_panel() {
+        let panels = parse_panels("hello, world");
+        assert_eq!(panels.len(), 1);
+        assert!(matches!(panels[0], DisplayPanel::Text(ref t) if t == "hello, world"));
     }
 
     #[test]
