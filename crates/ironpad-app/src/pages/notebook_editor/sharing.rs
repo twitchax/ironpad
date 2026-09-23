@@ -45,25 +45,25 @@ async fn flush_serialize_tags(
             return None;
         }
     };
-    // Positional type tags (one per cell, empty when unrun/non-code) let the
-    // server snapshot compiled blobs. Tags come from the editor's live
-    // outputs — the same source the compile path hashes with, so the
-    // server-side keys line up with warm cache entries.
-    let tags: Vec<String> = state.cell_outputs.try_get_untracked().map_or_else(
-        || vec![String::new(); nb.cells.len()],
-        |outputs| {
-            nb.cells
-                .iter()
-                .map(|c| {
-                    outputs
-                        .get(&c.id)
-                        .and_then(|d| d.type_tag.clone())
-                        .unwrap_or_default()
-                })
-                .collect()
-        },
-    );
+    let tags = state
+        .cell_outputs
+        .try_with_untracked(|outputs| share_tags(&nb.cells, outputs))
+        .unwrap_or_else(|| vec![String::new(); nb.cells.len()]);
     Some((json, tags))
+}
+
+/// Positional type tags for a share or Push (one per cell, empty when
+/// unrun/non-code), which let the server snapshot compiled blobs.
+///
+/// The server keys cell `i` with `tags[..i]`, so these must be EXACTLY the
+/// tags the compile path cache-keyed with: THE shared projection
+/// (`previous_cell_types`) over the whole notebook, never a hand-rolled copy
+/// that could drift from it (the old one skipped its `is_code` gate).
+fn share_tags<C: crate::components::executor::PipingCell, S: std::hash::BuildHasher>(
+    cells: &[C],
+    outputs: &std::collections::HashMap<String, super::state::CellOutputData, S>,
+) -> Vec<String> {
+    crate::components::executor::previous_cell_types(cells, cells.len(), outputs)
 }
 
 /// The window origin (empty during SSR, where none of these flows run).
@@ -574,6 +574,70 @@ pub(super) fn download_current_notebook(state: &NotebookState, toaster: Toaster)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::HashMap;
+
+    use ironpad_common::{CellManifest, CellType};
+
+    use crate::components::executor::previous_cell_types;
+    use crate::components::output_render::CellOutputData;
+
+    fn manifest(id: &str, cell_type: CellType, shared: bool) -> CellManifest {
+        CellManifest {
+            id: id.to_string(),
+            order: 0,
+            label: id.to_string(),
+            cell_type,
+            shared,
+            collapsed: false,
+            output_collapsed: false,
+        }
+    }
+
+    fn tagged(tag: &str) -> CellOutputData {
+        CellOutputData {
+            bytes: vec![1],
+            type_tag: Some(tag.to_string()),
+        }
+    }
+
+    /// The server snapshots cell `i` under the key it hashes from
+    /// `tags[..i]`; a share tag that differs from what the compile path
+    /// cache-keyed with makes every snapshot miss. Every prefix must be the
+    /// compile path's `previous_cell_types` for that cell.
+    #[test]
+    fn share_tags_prefixes_are_the_compile_path_projection() {
+        let cells = vec![
+            manifest("code", CellType::Code, false),
+            // Only Code cells ever carry a tag: an output entry on anything
+            // else is exactly what a hand-rolled projection would leak.
+            manifest("md", CellType::Markdown, false),
+            manifest("linux", CellType::Linux, false),
+            manifest("shared", CellType::Code, true),
+            manifest("unrun", CellType::Code, false),
+            manifest("last", CellType::Code, false),
+        ];
+        let outputs: HashMap<String, CellOutputData> = [
+            ("code", tagged("u32")),
+            ("md", tagged("leaked")),
+            ("linux", tagged("leaked")),
+            ("last", tagged("String")),
+        ]
+        .into_iter()
+        .map(|(id, data)| (id.to_string(), data))
+        .collect();
+
+        let tags = share_tags(&cells, &outputs);
+        assert_eq!(tags.len(), cells.len(), "one tag per cell");
+        for i in 0..=cells.len() {
+            assert_eq!(
+                tags[..i],
+                previous_cell_types(&cells, i, &outputs)[..],
+                "prefix {i} forks from the compile path's cache key"
+            );
+        }
+        assert_eq!(tags, ["u32", "", "", "", "", "String"]);
+    }
 
     /// Save to Account is a MOVE, and one thing it moves is unrecoverable:
     /// `deleteNotebook` in `storage.js` takes the notebook's history ring with
