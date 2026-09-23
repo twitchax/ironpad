@@ -1204,7 +1204,8 @@ mod tests {
     /// to it here, token for token, extras included.
     #[test]
     fn atomics_warmup_flags_match_the_runtime() {
-        let runtime_flags = compose_rustflags(true, false, false).expect("atomics sets flags");
+        let runtime_flags =
+            compose_rustflags(features(true, false, false)).expect("atomics sets flags");
         let runtime_tokens: Vec<&str> = runtime_flags.split_whitespace().collect();
         let build_std = configured_args(CellTarget::Executor, true, false, false)
             .into_iter()
