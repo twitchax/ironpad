@@ -514,8 +514,8 @@ mod pipeline_tests {
 
     // ── Cache round-trip with content hash ──────────────────────────────
 
-    #[test]
-    fn cache_round_trip_with_pipeline_hash() {
+    #[tokio::test]
+    async fn cache_round_trip_with_pipeline_hash() {
         use super::cache::{store_blob, try_cache_hit};
 
         let source = "    CellOutput::text(\"cached\")";
@@ -527,11 +527,15 @@ mod pipeline_tests {
         let fake_js_glue = "export function init() {}";
 
         // Cache miss before storing.
-        assert!(try_cache_hit(&cache_dir, &hash).is_none());
+        assert!(try_cache_hit(&cache_dir, &hash).await.is_none());
 
         // Store and verify cache hit.
-        store_blob(&cache_dir, &hash, fake_wasm, Some(fake_js_glue), &[]).unwrap();
-        let hit = try_cache_hit(&cache_dir, &hash).expect("should be a cache hit");
+        store_blob(&cache_dir, &hash, fake_wasm, Some(fake_js_glue), &[])
+            .await
+            .unwrap();
+        let hit = try_cache_hit(&cache_dir, &hash)
+            .await
+            .expect("should be a cache hit");
         assert_eq!(hit.wasm_bytes, fake_wasm);
         assert_eq!(hit.js_glue.as_deref(), Some(fake_js_glue));
 
@@ -544,7 +548,7 @@ mod pipeline_tests {
             None,
             CellTarget::Executor,
         );
-        assert!(try_cache_hit(&cache_dir, &different_hash).is_none());
+        assert!(try_cache_hit(&cache_dir, &different_hash).await.is_none());
     }
 
     // ── Test Helpers ────────────────────────────────────────────────────
@@ -1448,7 +1452,7 @@ pub struct AlsoUnusedHere {
         // Step 1: Hash the input (should be a cache miss).
         let hash = content_hash(source, cargo_toml, &[], None, None, CellTarget::Executor);
         assert!(
-            try_cache_hit(&cache_dir, &hash).is_none(),
+            try_cache_hit(&cache_dir, &hash).await.is_none(),
             "should be a cache miss before compilation",
         );
 
@@ -1496,10 +1500,13 @@ pub struct AlsoUnusedHere {
 
         // Step 3: Store in cache (WASM blob + JS glue).
         store_blob(&cache_dir, &hash, &wasm_bytes, Some(&js_glue), &[])
+            .await
             .expect("store_blob should succeed");
 
         // Step 4: Verify cache hit returns identical bytes and JS glue.
-        let cached = try_cache_hit(&cache_dir, &hash).expect("should be a cache hit after storing");
+        let cached = try_cache_hit(&cache_dir, &hash)
+            .await
+            .expect("should be a cache hit after storing");
         assert_eq!(
             cached.wasm_bytes, wasm_bytes,
             "cached blob should match the compiled blob byte-for-byte",
@@ -1520,7 +1527,7 @@ pub struct AlsoUnusedHere {
             CellTarget::Executor,
         );
         assert!(
-            try_cache_hit(&cache_dir, &different_hash).is_none(),
+            try_cache_hit(&cache_dir, &different_hash).await.is_none(),
             "different source should not hit the cache",
         );
     }

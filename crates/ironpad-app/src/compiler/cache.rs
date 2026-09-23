@@ -75,11 +75,14 @@ pub struct CacheHit {
 /// Returns `Some(CacheHit)` on cache hit, `None` on miss.
 /// Filesystem errors (permission denied, corrupt reads) are treated as misses
 /// and logged at warn level.
+///
+/// Async fs: this is the compile hot path (a repeat Run of an unchanged cell),
+/// and a whole blob read must not park a runtime worker.
 #[tracing::instrument(name = "cache_lookup", level = "info", skip_all, fields(hash = %hash, hit = tracing::field::Empty))]
-pub fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
+pub async fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
     let path = cache_blob_path(cache_dir, hash);
 
-    let wasm_bytes = match std::fs::read(&path) {
+    let wasm_bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::Span::current().record("hit", false);
@@ -96,11 +99,12 @@ pub fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
 
     // JS glue is optional — older cache entries may not have it.
     let js_glue_path = cache_js_glue_path(cache_dir, hash);
-    let js_glue = std::fs::read_to_string(&js_glue_path).ok();
+    let js_glue = tokio::fs::read_to_string(&js_glue_path).await.ok();
 
     // Diagnostics are optional too (older entries, or a clean compile). A
     // malformed file is treated as "no diagnostics" rather than a cache miss.
-    let diagnostics = std::fs::read(cache_diag_path(cache_dir, hash))
+    let diagnostics = tokio::fs::read(cache_diag_path(cache_dir, hash))
+        .await
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
@@ -119,21 +123,56 @@ pub fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
     })
 }
 
-/// Write `contents` to `path` atomically: write a uniquely-named temp sibling,
-/// then rename it into place. `rename` is atomic on the same filesystem, so a
-/// concurrent [`try_cache_hit`] reader sees either the old file or the fully
-/// written new one — never the truncated partial write `std::fs::write` exposes.
-fn atomic_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+/// A uniquely-named temp sibling of `path`, for the write-then-rename
+/// discipline below.
+fn temp_sibling(path: &Path) -> PathBuf {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".tmp.{}", uuid::Uuid::new_v4()));
-    let tmp = PathBuf::from(tmp);
+    PathBuf::from(tmp)
+}
 
-    std::fs::write(&tmp, contents)?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp); // best-effort cleanup on failure
-        return Err(e.into());
+/// Move a fully written `tmp` into place at `path`, removing `tmp` if the
+/// rename fails so no `.tmp.` sidecar survives to be mistaken for an entry.
+async fn rename_into_place(tmp: &Path, path: &Path) -> anyhow::Result<()> {
+    if let Err(e) = tokio::fs::rename(tmp, path).await {
+        let _ = tokio::fs::remove_file(tmp).await; // best-effort cleanup
+        return Err(anyhow::anyhow!(
+            "failed to rename into {}: {e}",
+            path.display()
+        ));
     }
     Ok(())
+}
+
+/// Write `contents` to `path` atomically: write a uniquely-named temp sibling,
+/// then rename it into place. `rename` is atomic on the same filesystem, so a
+/// concurrent reader ([`try_cache_hit`], the `/share-blobs/` route, another
+/// in-flight share) sees either the old file or the fully written new one —
+/// never the truncated partial write a plain write exposes.
+///
+/// The ONE implementation of that discipline: the compile cache and the
+/// share store both write through it.
+pub(crate) async fn atomic_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let tmp = temp_sibling(path);
+    tokio::fs::write(&tmp, contents)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", tmp.display()))?;
+    rename_into_place(&tmp, path).await
+}
+
+/// Copy `src` to `dst` with the same temp-sibling-and-rename discipline as
+/// [`atomic_write`], without buffering the file in memory.
+pub(crate) async fn atomic_copy(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    let tmp = temp_sibling(dst);
+    if let Err(e) = tokio::fs::copy(src, &tmp).await {
+        let _ = tokio::fs::remove_file(&tmp).await; // a partial copy may exist
+        return Err(anyhow::anyhow!(
+            "failed to copy {} to {}: {e}",
+            src.display(),
+            tmp.display()
+        ));
+    }
+    rename_into_place(&tmp, dst).await
 }
 
 /// Store a compiled WASM blob (plus optional JS glue and any diagnostics) in
@@ -142,7 +181,7 @@ fn atomic_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
 /// Creates the `blobs/` directory if it doesn't already exist. Diagnostics
 /// (warnings from a successful compile) are cached so they survive a cache hit.
 #[tracing::instrument(name = "cache_store", level = "info", skip_all, fields(hash = %hash, bytes = wasm_bytes.len()))]
-pub fn store_blob(
+pub async fn store_blob(
     cache_dir: &Path,
     hash: &str,
     wasm_bytes: &[u8],
@@ -152,21 +191,21 @@ pub fn store_blob(
     let path = cache_blob_path(cache_dir, hash);
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
     }
 
-    atomic_write(&path, wasm_bytes)?;
+    atomic_write(&path, wasm_bytes).await?;
 
     if let Some(glue) = js_glue {
         let js_path = cache_js_glue_path(cache_dir, hash);
-        atomic_write(&js_path, glue.as_bytes())?;
+        atomic_write(&js_path, glue.as_bytes()).await?;
         tracing::info!(hash, js_bytes = glue.len(), "cached JS glue");
     }
 
     // Only write a diagnostics file when there's something to remember.
     if !diagnostics.is_empty() {
         let json = serde_json::to_vec(diagnostics)?;
-        atomic_write(&cache_diag_path(cache_dir, hash), &json)?;
+        atomic_write(&cache_diag_path(cache_dir, hash), &json).await?;
         tracing::info!(
             hash,
             diagnostic_count = diagnostics.len(),
@@ -383,56 +422,60 @@ mod tests {
         assert_eq!(path, PathBuf::from("/cache/blobs/abc123.js"));
     }
 
-    // ── try_cache_hit / store_blob (integration) ────────────────────────
+    // ── try_cache_hit / store_blob (integration).await ────────────────────────
 
-    #[test]
-    fn miss_on_empty_dir() {
+    #[tokio::test]
+    async fn miss_on_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(try_cache_hit(dir.path(), "nonexistent").is_none());
+        assert!(try_cache_hit(dir.path(), "nonexistent").await.is_none());
     }
 
-    #[test]
-    fn store_and_hit() {
+    #[tokio::test]
+    async fn store_and_hit() {
         let dir = tempfile::tempdir().unwrap();
         let hash = "deadbeef01234567deadbeef01234567deadbeef01234567deadbeef01234567";
         let blob = b"\x00asm\x01\x00\x00\x00";
 
-        store_blob(dir.path(), hash, blob, None, &[]).unwrap();
+        store_blob(dir.path(), hash, blob, None, &[]).await.unwrap();
 
-        let hit = try_cache_hit(dir.path(), hash);
+        let hit = try_cache_hit(dir.path(), hash).await;
         assert!(hit.is_some());
         let hit = hit.unwrap();
         assert_eq!(hit.wasm_bytes, blob);
         assert!(hit.js_glue.is_none());
     }
 
-    #[test]
-    fn store_and_hit_with_js_glue() {
+    #[tokio::test]
+    async fn store_and_hit_with_js_glue() {
         let dir = tempfile::tempdir().unwrap();
         let hash = "deadbeef01234567deadbeef01234567deadbeef01234567deadbeef01234567";
         let blob = b"\x00asm\x01\x00\x00\x00";
         let glue = "export function init() {}";
 
-        store_blob(dir.path(), hash, blob, Some(glue), &[]).unwrap();
+        store_blob(dir.path(), hash, blob, Some(glue), &[])
+            .await
+            .unwrap();
 
-        let hit = try_cache_hit(dir.path(), hash).unwrap();
+        let hit = try_cache_hit(dir.path(), hash).await.unwrap();
         assert_eq!(hit.wasm_bytes, blob);
         assert_eq!(hit.js_glue.as_deref(), Some(glue));
     }
 
-    #[test]
-    fn store_creates_blobs_dir() {
+    #[tokio::test]
+    async fn store_creates_blobs_dir() {
         let dir = tempfile::tempdir().unwrap();
         let blobs_dir = dir.path().join("blobs");
         assert!(!blobs_dir.exists());
 
-        store_blob(dir.path(), "aabbccdd", b"wasm", None, &[]).unwrap();
+        store_blob(dir.path(), "aabbccdd", b"wasm", None, &[])
+            .await
+            .unwrap();
 
         assert!(blobs_dir.exists());
     }
 
-    #[test]
-    fn round_trip_with_real_hash() {
+    #[tokio::test]
+    async fn round_trip_with_real_hash() {
         let dir = tempfile::tempdir().unwrap();
         let source = "let x = 42;";
         let cargo = "[dependencies]";
@@ -440,9 +483,11 @@ mod tests {
         let blob = vec![0u8; 256];
         let glue = "// js glue content";
 
-        store_blob(dir.path(), &hash, &blob, Some(glue), &[]).unwrap();
+        store_blob(dir.path(), &hash, &blob, Some(glue), &[])
+            .await
+            .unwrap();
 
-        let hit = try_cache_hit(dir.path(), &hash).unwrap();
+        let hit = try_cache_hit(dir.path(), &hash).await.unwrap();
         assert_eq!(hit.wasm_bytes, blob);
         assert_eq!(hit.js_glue.as_deref(), Some(glue));
     }
@@ -464,26 +509,32 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    #[test]
-    fn store_overwrites_existing_blob() {
+    #[tokio::test]
+    async fn store_overwrites_existing_blob() {
         let dir = tempfile::tempdir().unwrap();
         let hash = "aabbccdd";
         let blob_v1 = b"version-1";
         let blob_v2 = b"version-2-longer";
 
-        store_blob(dir.path(), hash, blob_v1, None, &[]).unwrap();
-        let hit1 = try_cache_hit(dir.path(), hash).unwrap();
+        store_blob(dir.path(), hash, blob_v1, None, &[])
+            .await
+            .unwrap();
+        let hit1 = try_cache_hit(dir.path(), hash).await.unwrap();
         assert_eq!(hit1.wasm_bytes, blob_v1);
 
-        store_blob(dir.path(), hash, blob_v2, None, &[]).unwrap();
-        let hit2 = try_cache_hit(dir.path(), hash).unwrap();
+        store_blob(dir.path(), hash, blob_v2, None, &[])
+            .await
+            .unwrap();
+        let hit2 = try_cache_hit(dir.path(), hash).await.unwrap();
         assert_eq!(hit2.wasm_bytes, blob_v2);
     }
 
-    #[test]
-    fn store_leaves_no_temp_files() {
+    #[tokio::test]
+    async fn store_leaves_no_temp_files() {
         let dir = tempfile::tempdir().unwrap();
-        store_blob(dir.path(), "deadbeef", b"wasm", Some("glue()"), &[]).unwrap();
+        store_blob(dir.path(), "deadbeef", b"wasm", Some("glue()"), &[])
+            .await
+            .unwrap();
 
         // The atomic write renames the temp into place — no `.tmp.*` sidecar
         // should survive to be mistaken for (or read as) a cache entry.
@@ -500,24 +551,66 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cache_hit_without_js_glue_then_with() {
+    /// The cleanup arm: a rename that fails must not leave its `.tmp.`
+    /// sidecar behind (review compiler-9). A directory at the destination
+    /// makes the rename fail on every platform we run on.
+    #[tokio::test]
+    async fn a_failed_rename_leaves_no_temp_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        let src = dir.path().join("src.wasm");
+        std::fs::write(&src, b"wasm").unwrap();
+
+        assert!(atomic_write(&blocked, b"wasm").await.is_err());
+        assert!(atomic_copy(&src, &blocked).await.is_err());
+
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_copy_copies_the_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.wasm");
+        let dst = dir.path().join("dst.wasm");
+        std::fs::write(&src, b"\x00asm-bytes").unwrap();
+
+        atomic_copy(&src, &dst).await.unwrap();
+
+        assert_eq!(std::fs::read(&dst).unwrap(), b"\x00asm-bytes");
+    }
+
+    #[tokio::test]
+    async fn cache_hit_without_js_glue_then_with() {
         let dir = tempfile::tempdir().unwrap();
         let hash = "test1234";
 
         // Store without JS glue.
-        store_blob(dir.path(), hash, b"wasm", None, &[]).unwrap();
-        let hit = try_cache_hit(dir.path(), hash).unwrap();
+        store_blob(dir.path(), hash, b"wasm", None, &[])
+            .await
+            .unwrap();
+        let hit = try_cache_hit(dir.path(), hash).await.unwrap();
         assert!(hit.js_glue.is_none());
 
         // Store again with JS glue.
-        store_blob(dir.path(), hash, b"wasm", Some("glue()"), &[]).unwrap();
-        let hit = try_cache_hit(dir.path(), hash).unwrap();
+        store_blob(dir.path(), hash, b"wasm", Some("glue()"), &[])
+            .await
+            .unwrap();
+        let hit = try_cache_hit(dir.path(), hash).await.unwrap();
         assert_eq!(hit.js_glue.as_deref(), Some("glue()"));
     }
 
-    #[test]
-    fn diagnostics_survive_cache_round_trip() {
+    #[tokio::test]
+    async fn diagnostics_survive_cache_round_trip() {
         use ironpad_common::{Diagnostic, Severity};
         let dir = tempfile::tempdir().unwrap();
         let hash = "cafef00d";
@@ -528,23 +621,27 @@ mod tests {
             code: Some("unused_variables".into()),
         }];
 
-        store_blob(dir.path(), hash, b"wasm", Some("glue()"), &diags).unwrap();
-        let hit = try_cache_hit(dir.path(), hash).unwrap();
+        store_blob(dir.path(), hash, b"wasm", Some("glue()"), &diags)
+            .await
+            .unwrap();
+        let hit = try_cache_hit(dir.path(), hash).await.unwrap();
 
         assert_eq!(hit.diagnostics.len(), 1, "warnings survive a cache hit");
         assert_eq!(hit.diagnostics[0].message, "unused variable: `x`");
         assert_eq!(hit.diagnostics[0].severity, Severity::Warning);
     }
 
-    #[test]
-    fn empty_diagnostics_writes_no_file_and_reads_empty() {
+    #[tokio::test]
+    async fn empty_diagnostics_writes_no_file_and_reads_empty() {
         let dir = tempfile::tempdir().unwrap();
-        store_blob(dir.path(), "beefbeef", b"wasm", None, &[]).unwrap();
+        store_blob(dir.path(), "beefbeef", b"wasm", None, &[])
+            .await
+            .unwrap();
         assert!(
             !cache_diag_path(dir.path(), "beefbeef").exists(),
             "no diag file when there are no diagnostics"
         );
-        let hit = try_cache_hit(dir.path(), "beefbeef").unwrap();
+        let hit = try_cache_hit(dir.path(), "beefbeef").await.unwrap();
         assert!(hit.diagnostics.is_empty());
     }
 

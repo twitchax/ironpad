@@ -129,24 +129,37 @@ fn prepare_cell(request: &CompileRequest) -> Result<(CellTarget, CellFeatures), 
 }
 
 /// Scaffold the request's micro-crate into the shared workspace session.
+///
+/// The scaffold is synchronous filesystem work (canonicalize, directory
+/// creation, several writes), and it runs on every live-check debounce, so it goes to
+/// the blocking pool rather than parking a runtime worker. The owned copies
+/// that costs are cheaper than a stalled worker. (`block_in_place` is not an
+/// option: it panics on the current-thread runtimes the tests run on.)
 #[cfg(feature = "ssr")]
-fn scaffold_request(
+async fn scaffold_request(
     config: &ironpad_common::AppConfig,
     request: &CompileRequest,
     target: CellTarget,
 ) -> Result<crate::compiler::scaffold::Scaffolded, ServerFnError> {
-    crate::compiler::scaffold::scaffold_micro_crate(
-        &config.cache_dir,
-        &config.ironpad_cell_path,
-        crate::compiler::WORKSPACE_SESSION,
-        &request.cell_id,
-        &request.source,
-        &request.cargo_toml,
-        &request.previous_cell_types,
-        request.shared_cargo_toml.as_deref(),
-        request.shared_source.as_deref(),
-        target,
-    )
+    let cache_dir = config.cache_dir.clone();
+    let ironpad_cell_path = config.ironpad_cell_path.clone();
+    let request = request.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::compiler::scaffold::scaffold_micro_crate(
+            &cache_dir,
+            &ironpad_cell_path,
+            crate::compiler::WORKSPACE_SESSION,
+            &request.cell_id,
+            &request.source,
+            &request.cargo_toml,
+            &request.previous_cell_types,
+            request.shared_cargo_toml.as_deref(),
+            request.shared_source.as_deref(),
+            target,
+        )
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("scaffold task failed: {e}")))?
     .map_err(|e| ServerFnError::new(format!("scaffold failed: {e}")))
 }
 
@@ -239,7 +252,7 @@ async fn compile_cell_core(
     // Cache check (skipped when force-recompile is requested).
 
     if !request.force {
-        if let Some(cache_hit) = try_cache_hit(&config.cache_dir, &hash) {
+        if let Some(cache_hit) = try_cache_hit(&config.cache_dir, &hash).await {
             tracing::Span::current().record("cache", "hit");
             tracing::info!(cell_id = %request.cell_id, blob_size = cache_hit.wasm_bytes.len(), "cache hit");
             return Ok(CompileResponse {
@@ -280,7 +293,7 @@ async fn compile_cell_core(
     let Scaffolded {
         crate_dir,
         preamble_lines,
-    } = scaffold_request(config, &request, target)?;
+    } = scaffold_request(config, &request, target).await?;
 
     // Build.
 
@@ -338,7 +351,9 @@ async fn compile_cell_core(
                 &wasm_blob,
                 js_glue.as_deref(),
                 &diagnostics,
-            ) {
+            )
+            .await
+            {
                 tracing::warn!(error = %e, "failed to cache compiled blob");
             }
 
@@ -513,7 +528,7 @@ async fn check_cell_core(
     let Scaffolded {
         crate_dir,
         preamble_lines,
-    } = scaffold_request(config, &request, target)?;
+    } = scaffold_request(config, &request, target).await?;
 
     let result = check_micro_crate(
         &crate_dir,
@@ -810,8 +825,9 @@ async fn share_notebook_core_capped(
     // existing hash overwrites in place, so a plain write truncates the live
     // file to zero first and a concurrent reader of that hash could read a
     // partial/empty file ("invalid shared notebook") for a share that is
-    // perfectly valid. The blobs and manifest already use this helper.
-    atomic_write_async(&path, notebook_json.as_bytes())
+    // perfectly valid. The manifest uses this helper too, and the blobs its
+    // `atomic_copy` twin.
+    crate::compiler::cache::atomic_write(&path, notebook_json.as_bytes())
         .await
         .map_err(|e| anyhow::anyhow!("failed to write shared notebook: {e}"))?;
 
@@ -956,29 +972,6 @@ fn share_manifest_path(data_dir: &std::path::Path, share_hash: &str) -> std::pat
         .join(format!("{share_hash}.manifest.json"))
 }
 
-/// Write `contents` atomically: a uniquely-named temp sibling, then rename.
-/// Async flavor of `compiler::cache`'s atomic write — a concurrent reader
-/// (the `/share-blobs/` route, another in-flight share) sees either the old
-/// file or the fully written new one, never a truncated partial.
-#[cfg(feature = "ssr")]
-async fn atomic_write_async(path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".tmp.{}", uuid::Uuid::new_v4()));
-    let tmp = std::path::PathBuf::from(tmp);
-
-    tokio::fs::write(&tmp, contents)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", tmp.display()))?;
-    if let Err(e) = tokio::fs::rename(&tmp, path).await {
-        let _ = tokio::fs::remove_file(&tmp).await; // best-effort cleanup
-        return Err(anyhow::anyhow!(
-            "failed to rename into {}: {e}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
 /// Snapshot the compiled artifacts of a shared notebook (PRD-0047).
 ///
 /// For each runnable cell, recompute the cache key from the notebook content
@@ -1036,7 +1029,7 @@ async fn write_cell_blobs_capped(
     cell_type_tags: &[String],
     max_total_bytes: u64,
 ) -> anyhow::Result<std::collections::BTreeMap<String, ironpad_common::ShareBlobEntry>> {
-    use crate::compiler::cache::{content_hash, try_cache_hit};
+    use crate::compiler::cache::{cache_blob_path, cache_js_glue_path, content_hash};
     use ironpad_common::ShareBlobEntry;
 
     // One positional tag per cell is the contract (empty = no tag); a
@@ -1086,13 +1079,13 @@ async fn write_cell_blobs_capped(
         if !cell.cell_type.compiles() || cell.shared {
             continue;
         }
-        let cargo_toml = cell.cargo_toml.clone().unwrap_or_default();
         let hash = content_hash(
             &cell.source,
-            &cargo_toml,
+            cell.cargo_toml.as_deref().unwrap_or(""),
             &cell_type_tags[..idx],
             shared_cargo_toml,
-            shared_source, // From the cell, not assumed. Since PRD-0067 this loop DOES
+            shared_source,
+            // From the cell, not assumed. Since PRD-0067 this loop DOES
             // see Linux cells, so the target is load-bearing rather than
             // defensive: assume `Executor` here and every Linux cell gets
             // snapshotted under an ordinary cell's key, which is a blob
@@ -1100,26 +1093,46 @@ async fn write_cell_blobs_capped(
             CellTarget::from(cell.cell_type),
         );
 
-        let Some(hit) = try_cache_hit(cache_dir, &hash) else {
+        // Existence checks and file copies, never a read: the snapshot only
+        // moves bytes, so buffering each blob (and parsing its cached
+        // diagnostics) the way a compile's cache hit does bought nothing.
+        let cached_wasm = cache_blob_path(cache_dir, &hash);
+        if !tokio::fs::try_exists(&cached_wasm).await.unwrap_or(false) {
             tracing::debug!(cell_id = %cell.id, hash = %hash, "share snapshot: cache miss, skipping cell");
             continue;
-        };
+        }
+        let cached_glue = cache_js_glue_path(cache_dir, &hash);
+        let has_js_glue = tokio::fs::try_exists(&cached_glue).await.unwrap_or(false);
 
-        atomic_write_async(&blobs_dir.join(format!("{hash}.wasm")), &hit.wasm_bytes).await?;
-        if let Some(glue) = hit.js_glue.as_deref() {
-            atomic_write_async(&blobs_dir.join(format!("{hash}.js")), glue.as_bytes()).await?;
+        // Content-addressed and immutable (`/share-blobs/` is served that
+        // way), so a copy another share already made is final: re-copying it
+        // on every Push re-wrote megabytes to change nothing.
+        copy_unless_present(&cached_wasm, &blobs_dir.join(format!("{hash}.wasm"))).await?;
+        if has_js_glue {
+            copy_unless_present(&cached_glue, &blobs_dir.join(format!("{hash}.js"))).await?;
         }
         fresh_entries.insert(
             cell.id.clone(),
             ShareBlobEntry {
                 blob: hash,
-                has_js_glue: hit.js_glue.is_some(),
+                has_js_glue,
             },
         );
     }
 
     tracing::Span::current().record("snapshotted", fresh_entries.len());
     Ok(fresh_entries)
+}
+
+/// Copy a compiled artifact into the share store unless its content-addressed
+/// copy is already there. Every file in that store arrived by an atomic
+/// rename, so one that exists is complete.
+#[cfg(feature = "ssr")]
+async fn copy_unless_present(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
+    if tokio::fs::try_exists(dst).await.unwrap_or(false) {
+        return Ok(());
+    }
+    crate::compiler::cache::atomic_copy(src, dst).await
 }
 
 /// Core snapshot logic with an explicit blob-dir cap (so tests can exercise
@@ -1170,7 +1183,8 @@ async fn snapshot_share_blobs_capped(
     }
 
     if !manifest.cells.is_empty() {
-        atomic_write_async(&manifest_path, &serde_json::to_vec(&manifest)?).await?;
+        crate::compiler::cache::atomic_write(&manifest_path, &serde_json::to_vec(&manifest)?)
+            .await?;
     }
     Ok(manifest.cells.len())
 }
@@ -2456,15 +2470,17 @@ mod tests {
         let source = "    40 + 2";
         let cargo_toml = "[dependencies]";
 
-        let seed = |target, blob: &[u8]| {
+        let seed = async |target, blob: &[u8]| {
             let hash = content_hash(source, cargo_toml, &[], None, None, target);
-            store_blob(cache.path(), &hash, blob, None, &[]).unwrap();
+            store_blob(cache.path(), &hash, blob, None, &[])
+                .await
+                .unwrap();
             hash
         };
         let executor_blob = b"\x00asm\x01\x00\x00\x00executor".as_slice();
         let linux_blob = b"\x00asm\x01\x00\x00\x00linux".as_slice();
-        let executor_hash = seed(CellTarget::Executor, executor_blob);
-        let linux_hash = seed(CellTarget::Linux, linux_blob);
+        let executor_hash = seed(CellTarget::Executor, executor_blob).await;
+        let linux_hash = seed(CellTarget::Linux, linux_blob).await;
         assert_ne!(
             executor_hash, linux_hash,
             "identical source must not share a cache key across targets"
@@ -2692,6 +2708,7 @@ mod tests {
             Some("export function init() {}"),
             &[],
         )
+        .await
         .unwrap();
 
         let config = AppConfig {
@@ -2797,6 +2814,7 @@ mod tests {
             None,
             &[],
         )
+        .await
         .unwrap();
 
         let config = AppConfig {
@@ -3126,7 +3144,7 @@ mod tests {
 
     /// Compute the cache key exactly as `snapshot_share_blobs` will for a
     /// plain cell of `notebook` at `idx`, and seed the cache with a blob.
-    fn seed_cache(
+    async fn seed_cache(
         cache_dir: &std::path::Path,
         notebook: &IronpadNotebook,
         tags: &[String],
@@ -3144,7 +3162,7 @@ mod tests {
             notebook.effective_shared_source().as_deref(),
             CellTarget::Executor,
         );
-        store_blob(cache_dir, &hash, blob, glue, &[]).unwrap();
+        store_blob(cache_dir, &hash, blob, glue, &[]).await.unwrap();
         hash
     }
 
@@ -3157,8 +3175,8 @@ mod tests {
             code_cell("cell-2", "let b = last.unwrap_or(0) + 1;"),
         ]);
         let tags: Vec<String> = vec!["u32".into(), String::new()];
-        let h1 = seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None);
-        let h2 = seed_cache(cache.path(), &nb, &tags, 1, b"wasm-2", Some("glue()"));
+        let h1 = seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None).await;
+        let h2 = seed_cache(cache.path(), &nb, &tags, 1, b"wasm-2", Some("glue()")).await;
 
         let count = snapshot_share_blobs(data.path(), cache.path(), &nb, &tags, "aabbccdd00112233")
             .await
@@ -3183,6 +3201,45 @@ mod tests {
         assert!(manifest.cells["cell-2"].has_js_glue);
     }
 
+    /// A blob already in the content-addressed share store is final: a
+    /// re-share or Push must not re-copy it (review server-fns-11). The
+    /// sentinel bytes would be overwritten by the cache's copy otherwise.
+    #[tokio::test]
+    async fn snapshot_keeps_a_blob_the_share_store_already_holds() {
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let nb = snapshot_notebook(vec![code_cell("cell-1", "let a = 1;")]);
+        let tags: Vec<String> = vec![String::new()];
+        let hash = seed_cache(cache.path(), &nb, &tags, 0, b"wasm-cache", Some("glue()")).await;
+
+        let blobs = data.path().join("shares").join("blobs");
+        tokio::fs::create_dir_all(&blobs).await.unwrap();
+        tokio::fs::write(blobs.join(format!("{hash}.wasm")), b"already-shared")
+            .await
+            .unwrap();
+
+        let entries = write_cell_blobs_capped(data.path(), cache.path(), &nb, &tags, u64::MAX)
+            .await
+            .unwrap();
+
+        assert_eq!(entries["cell-1"].blob, hash);
+        assert!(entries["cell-1"].has_js_glue);
+        assert_eq!(
+            tokio::fs::read(blobs.join(format!("{hash}.wasm")))
+                .await
+                .unwrap(),
+            b"already-shared",
+            "an existing content-addressed copy must not be rewritten"
+        );
+        // The glue was not in the store yet, so it is copied.
+        assert_eq!(
+            tokio::fs::read(blobs.join(format!("{hash}.js")))
+                .await
+                .unwrap(),
+            b"glue()"
+        );
+    }
+
     #[tokio::test]
     async fn snapshot_skips_cache_misses_and_writes_partial_manifest() {
         let data = tempfile::tempdir().unwrap();
@@ -3192,7 +3249,7 @@ mod tests {
             code_cell("cell-2", "let b = 2;"),
         ]);
         let tags: Vec<String> = vec![String::new(), String::new()];
-        seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None);
+        seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None).await;
         // cell-2 deliberately not seeded: a cache miss must be skipped, never
         // compiled at share time.
 
@@ -3234,7 +3291,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let nb = snapshot_notebook(vec![code_cell("cell-1", "let a = 1;")]);
         let tags: Vec<String> = vec![String::new()];
-        let h1 = seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None);
+        let h1 = seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None).await;
 
         // Pre-existing manifest from an earlier share of the same notebook,
         // covering a cell this snapshot won't touch. Blobs are immutable, so
@@ -3282,7 +3339,7 @@ mod tests {
         let nb = snapshot_notebook(vec![code_cell("cell-1", "let a = 1;")]);
         let tags: Vec<String> = vec![String::new()];
         // Seed the cache so this snapshot WOULD produce a fresh cell-1 entry.
-        let fresh = seed_cache(cache.path(), &nb, &tags, 0, b"wasm-fresh", None);
+        let fresh = seed_cache(cache.path(), &nb, &tags, 0, b"wasm-fresh", None).await;
 
         // A prior share already froze cell-1 to a DIFFERENT blob pointer.
         let shares = data.path().join("shares");
@@ -3329,7 +3386,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let nb = snapshot_notebook(vec![code_cell("cell-1", "let a = 1;")]);
         let tags: Vec<String> = vec![String::new()];
-        seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None);
+        seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None).await;
 
         // Pre-fill the blobs dir past a tiny cap.
         let blobs = data.path().join("shares").join("blobs");

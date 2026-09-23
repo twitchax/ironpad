@@ -328,7 +328,7 @@ pub async fn build_micro_crate(
 
     // Post-process with wasm-bindgen to generate JS glue + transformed WASM.
     let wasm_bindgen_out_dir = crate_dir.join("wasm-bindgen-out");
-    std::fs::create_dir_all(&wasm_bindgen_out_dir)?;
+    tokio::fs::create_dir_all(&wasm_bindgen_out_dir).await?;
 
     let mut wb_cmd = tokio::process::Command::new("wasm-bindgen");
     wb_cmd
@@ -365,8 +365,9 @@ pub async fn build_micro_crate(
     let js_glue_path = wasm_bindgen_out_dir.join(format!("{cell_crate_name}.js"));
     let bg_wasm_path = wasm_bindgen_out_dir.join(format!("{cell_crate_name}_bg.wasm"));
 
-    let js_glue =
-        std::fs::read_to_string(&js_glue_path).context("Failed to read wasm-bindgen JS glue")?;
+    let js_glue = tokio::fs::read_to_string(&js_glue_path)
+        .await
+        .context("Failed to read wasm-bindgen JS glue")?;
 
     anyhow::ensure!(
         bg_wasm_path.exists(),
