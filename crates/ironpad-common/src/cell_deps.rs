@@ -127,24 +127,28 @@ pub fn referenced_slots(source: &str) -> SlotRefs {
 /// blank out and trailing blanks truncate — an independent cell hashes
 /// identically at index 7 of one notebook and index 2 of another, which is
 /// what lets share snapshots and warm caches serve it anywhere.
+///
+/// Borrows rather than clones: the cache key only reads the tags, and it runs
+/// on every compile, every browser blob-cache probe and every cell of every
+/// share.
 #[must_use]
-pub fn normalize_previous_types(source: &str, previous_types: &[String]) -> Vec<String> {
+pub fn normalize_previous_types<'a>(source: &str, previous_types: &'a [String]) -> Vec<&'a str> {
     let refs = referenced_slots(source);
     if refs.depends_on_all() {
-        return previous_types.to_vec();
+        return previous_types.iter().map(String::as_str).collect();
     }
-    let mut out: Vec<String> = previous_types
+    let mut out: Vec<&str> = previous_types
         .iter()
         .enumerate()
         .map(|(i, tag)| {
             if refs.slots.contains(&i) {
-                tag.clone()
+                tag.as_str()
             } else {
-                String::new()
+                ""
             }
         })
         .collect();
-    while out.last().is_some_and(String::is_empty) {
+    while out.last().is_some_and(|tag| tag.is_empty()) {
         out.pop();
     }
     out
@@ -248,7 +252,7 @@ mod tests {
         let types = vec!["u32".to_string(), String::new()];
         assert_eq!(
             normalize_previous_types("__ironpad_inputs__.len()", &types),
-            types
+            vec!["u32", ""]
         );
 
         let cells = vec![
@@ -276,19 +280,22 @@ mod tests {
         // Only slot 1 referenced: slot 0 blanks, trailing slots truncate.
         assert_eq!(
             normalize_previous_types("cell1 * 2", &types),
-            vec![String::new(), "String".to_string()]
+            vec!["", "String"]
         );
         // Nothing referenced: fully empty — position-independent identity.
         assert_eq!(
             normalize_previous_types("40 + 2", &types),
-            Vec::<String>::new()
+            Vec::<&str>::new()
         );
         // `last` keeps everything (dynamic alias target).
-        assert_eq!(normalize_previous_types("*last", &types), types);
+        assert_eq!(
+            normalize_previous_types("*last", &types),
+            vec!["u32", "String", "f64", "Vec<u8>"]
+        );
         // Referencing a slot past the end changes nothing.
         assert_eq!(
             normalize_previous_types("cell9", &types),
-            Vec::<String>::new()
+            Vec::<&str>::new()
         );
     }
 
