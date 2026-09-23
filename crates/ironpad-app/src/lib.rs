@@ -73,7 +73,8 @@ pub mod db;
 /// their DEFAULT toolchain was (nightly on dev, stable in the image), so
 /// nightly-only code validated green locally and failed on prod. Keep
 /// `docker/Dockerfile` and the CI workflow in sync when bumping this; the
-/// `toolchain_pins_are_installed_by_the_image` test checks that they are.
+/// `toolchain_pins_are_in_sync_across_dockerfile_ci_and_toolchain_toml` test
+/// checks that they are.
 ///
 /// Ungated (not `ssr`-only) because the client footer displays it too — one
 /// source of truth for the toolchain cells compile on.

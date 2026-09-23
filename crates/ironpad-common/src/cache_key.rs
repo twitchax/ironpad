@@ -74,11 +74,11 @@ impl From<crate::types::CellType> for CellTarget {
 /// the key should invalidate all pre-existing blobs once, since their
 /// toolchain provenance is unknown.
 ///
-/// Caveat: the fingerprint tracks only `CELL_TOOLCHAIN`, so bumping
-/// `CELL_TOOLCHAIN` invalidates every blob automatically, but bumping the
-/// split-out pins (`AUTODIFF_TOOLCHAIN` or `ATOMICS_TOOLCHAIN` in
-/// `compiler/build.rs`) does NOT — bump this epoch when you change one of those
-/// so their cells rebuild against the new toolchain.
+/// Caveat: the fingerprint tracks only `CELL_TOOLCHAIN`'s rustc (plus the
+/// wasm-bindgen CLI), so bumping `CELL_TOOLCHAIN` invalidates every blob
+/// automatically. `BROWSERPOD_TOOLCHAIN` (`compiler/build.rs`) is NOT in it:
+/// bumping the `BrowserPod` pack does not invalidate Linux blobs by itself, so
+/// bump this epoch with it.
 ///
 /// Bumped 2 -> 3 for PRD-0036 T-008: `ironpad-cell`'s `CellInputs::from_raw`
 /// gained bounds checking, so cached cells should rebuild against the safer

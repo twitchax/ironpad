@@ -102,7 +102,7 @@ const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
 /// Toolchain for Linux cells (PRD-0066), which target
 /// `wasm32-browserpod-linux-musl`.
 ///
-/// Unlike the other three pins this is not a nightly date: it is a vendor
+/// Unlike `CELL_TOOLCHAIN` this is not a nightly date: it is a vendor
 /// toolchain (`BrowserPod` 3.0.0, pinning `nightly-2026-05-19` beneath) that
 /// installs as an ordinary rustup toolchain and carries the target spec, a
 /// musl sysroot, a prebuilt std, and cargo/rustc wrappers that inject its
@@ -148,12 +148,6 @@ const fn cell_toolchain(target: CellTarget) -> &'static str {
         CELL_TOOLCHAIN
     }
 }
-
-// The default toolchain for cell builds is [`crate::CELL_TOOLCHAIN`] — every
-// cell except rayon/atomics ones compiles on that pin (autodiff cells
-// additionally get `-Zautodiff=Enable`, SIMD cells `+simd128`; plain cells
-// just run on it). See the const's docs for the rationale and the deploy-image
-// requirements.
 
 /// Hard timeout for a single `cargo build` invocation.
 /// Override with `IRONPAD_BUILD_TIMEOUT_SECS` env var (default: 300s).
@@ -541,9 +535,9 @@ fn compose_rustflags(features: CellFeatures) -> Option<String> {
 
 /// Check (type-check only) a scaffolded micro-crate without full codegen.
 ///
-/// Runs `cargo check --target wasm32-unknown-unknown --release
-/// --message-format=json`.  Much faster than [`build_micro_crate`] because it
-/// skips LLVM codegen, WASM linking, and wasm-bindgen post-processing.
+/// Runs `cargo check --target {triple} --release --message-format=json` for
+/// the cell's [`CellTarget`]. Much faster than [`build_micro_crate`] because
+/// it skips LLVM codegen, WASM linking, and wasm-bindgen post-processing.
 ///
 /// Two consumers with different patience: the notebook gate passes
 /// [`build_timeout`] (a cold dep tree is legitimate there), and the live
@@ -1096,7 +1090,7 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "done");
     }
 
-    /// The three cell-toolchain pins are string literals that must appear in
+    /// The cell-toolchain pins are string literals that must appear in
     /// every environment that installs toolchains. Drift here has shipped
     /// breakage before (a pin bumped in Rust but not in the image leaves the
     /// fingerprint on the default rustc and every cell build failing in
@@ -1132,7 +1126,7 @@ mod tests {
             "rust-toolchain.toml channel must match CELL_TOOLCHAIN"
         );
 
-        // The fourth pin installs from a vendored tarball rather than
+        // The BrowserPod pin installs from a vendored tarball rather than
         // `rustup toolchain install`, so it is not in the loop above — but it
         // has the same failure mode (constant bumped in Rust, image left
         // behind) and `docker/browserpod.env` is the ONE place its version,
@@ -1152,9 +1146,9 @@ mod tests {
         );
 
         // No unknown pin hiding anywhere: every nightly date literal in the
-        // install environments must be one of the three nightly constants.
-        // The browserpod pack pulls its own nightly, recorded in that same
-        // env file, so it is a known one too.
+        // install environments must be `CELL_TOOLCHAIN` or the BrowserPod
+        // pack's recorded nightly (the pack pulls its own, recorded in that
+        // same env file).
         let browserpod_nightly = env_file
             .lines()
             .find_map(|line| line.trim().strip_prefix("BROWSERPOD_NIGHTLY="))

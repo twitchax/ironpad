@@ -286,9 +286,8 @@ async fn compile_cell_core(
         .await
         .map_err(|denied| ServerFnError::new(denied.to_string()))?;
 
-    // Cache miss (or forced recompile): scaffold the micro-crate now — the
-    // on-disk work a cache hit skips. Its returned `needs_atomics` matches the
-    // value hashed above (both derive from the same inputs), so we keep ours.
+    // Cache miss (or forced recompile): scaffold the micro-crate now, the
+    // on-disk work a cache hit skips.
 
     let Scaffolded {
         crate_dir,

@@ -1,12 +1,8 @@
 //! Blake3 content-hash caching for compiled WASM blobs.
 //!
-//! Hashes `source || cargo_toml || target_triple || previous_types
-//! || toolchain_fingerprint` with blake3 and stores/retrieves compiled
-//! `.wasm` blobs under `{cache_dir}/blobs/{hash}.wasm`. The toolchain
-//! fingerprint (rustc version + host wasm-bindgen CLI version, see
-//! `compiler/toolchain.rs`) ensures a toolchain upgrade invalidates stale
-//! cached blobs instead of silently serving output built against a
-//! different, possibly incompatible, toolchain.
+//! Stores and retrieves compiled blobs (plus JS glue and diagnostics) under
+//! `{cache_dir}/blobs/{hash}.*`; the key recipe is
+//! `ironpad_common::cache_key` (see [`content_hash`]).
 
 use std::path::{Path, PathBuf};
 
