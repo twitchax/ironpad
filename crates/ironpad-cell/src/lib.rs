@@ -1343,6 +1343,58 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
 
+    // ── FFI reclaim helpers ──────────────────────────────────────────────
+
+    /// A [`CellResult`] taken back into owned memory: what the host reads out
+    /// of linear memory, decoded, with every leaked buffer reclaimed.
+    struct Taken {
+        bytes: Vec<u8>,
+        panels: Option<Vec<DisplayPanel>>,
+        tag: Option<String>,
+    }
+
+    /// Reclaim one leaked `(ptr, len)` buffer as an owned `Vec`, empty for a
+    /// null pointer.
+    ///
+    /// Asserts the FFI's null-iff-empty convention, which the JS readers rely
+    /// on (they only read, and only free, a buffer whose length is non-zero).
+    ///
+    /// # Safety
+    ///
+    /// A non-null `ptr` must come from [`vec_into_raw`] (or a sibling that
+    /// guarantees capacity == `len`, the same contract as [`ironpad_dealloc`])
+    /// and must not be reclaimed twice.
+    unsafe fn reclaim(ptr: *mut u8, len: usize) -> Vec<u8> {
+        assert_eq!(ptr.is_null(), len == 0, "a buffer is null iff it is empty");
+        if ptr.is_null() {
+            return Vec::new();
+        }
+        Vec::from_raw_parts(ptr, len, len)
+    }
+
+    /// Reclaim and decode every buffer a [`CellResult`] leaked.
+    ///
+    /// By value on purpose: consuming the result is what stops a test from
+    /// reclaiming the same buffers twice.
+    #[allow(clippy::needless_pass_by_value)]
+    fn take(result: CellResult) -> Taken {
+        // SAFETY: all three pairs come from `vec_into_raw`, and `result` is
+        // consumed here, so each buffer is reclaimed exactly once.
+        let (bytes, display, tag) = unsafe {
+            (
+                reclaim(result.output_ptr, result.output_len),
+                reclaim(result.display_ptr, result.display_len),
+                reclaim(result.type_tag_ptr, result.type_tag_len),
+            )
+        };
+        Taken {
+            bytes,
+            panels: (!display.is_empty())
+                .then(|| serde_json::from_slice(&display).expect("display JSON parses as panels")),
+            tag: (!tag.is_empty()).then(|| String::from_utf8(tag).expect("type tag is UTF-8")),
+        }
+    }
+
     // ── Canvas panel rendering ───────────────────────────────────────────
 
     #[test]
@@ -1450,7 +1502,7 @@ mod tests {
         // SAFETY: `ptr`/`len` came from `vec_into_raw`, which guarantees
         // capacity == len, so reclaiming with cap == len (as `ironpad_dealloc`
         // does) is sound.
-        let reclaimed = unsafe { Vec::from_raw_parts(ptr, len, len) };
+        let reclaimed = unsafe { reclaim(ptr, len) };
         assert_eq!(reclaimed, b"payload");
     }
 
@@ -1467,24 +1519,12 @@ mod tests {
         let original = Point { x: 1.5, y: -3.0 };
         let output = CellOutput::new(&original).expect("serialize");
 
-        let result: CellResult = output.into();
-        assert!(!result.output_ptr.is_null());
-        assert!(result.output_len > 0);
+        let t = take(output.into());
+        assert!(!t.bytes.is_empty());
 
-        // Reconstruct the bytes to feed into CellInput.
-        let bytes = unsafe { std::slice::from_raw_parts(result.output_ptr, result.output_len) };
-        let input = CellInput::new(bytes);
-        let decoded: Point = input.deserialize().expect("deserialize");
+        // Feed the reclaimed bytes into CellInput.
+        let decoded: Point = CellInput::new(&t.bytes).deserialize().expect("deserialize");
         assert_eq!(decoded, original);
-
-        // Clean up leaked memory.
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-        }
     }
 
     #[test]
@@ -1492,19 +1532,9 @@ mod tests {
         let data: Vec<i32> = vec![10, 20, 30];
         let output = CellOutput::new(&data).expect("serialize");
 
-        let result: CellResult = output.into();
-        let bytes = unsafe { std::slice::from_raw_parts(result.output_ptr, result.output_len) };
-        let input = CellInput::new(bytes);
-        let decoded: Vec<i32> = input.deserialize().expect("deserialize");
+        let t = take(output.into());
+        let decoded: Vec<i32> = CellInput::new(&t.bytes).deserialize().expect("deserialize");
         assert_eq!(decoded, data);
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-        }
     }
 
     #[test]
@@ -1518,23 +1548,13 @@ mod tests {
         }));
 
         let output: CellOutput = original.clone().into();
-        let result: CellResult = output.into();
+        let t = take(output.into());
+        assert!(!t.bytes.is_empty());
 
-        assert!(!result.output_ptr.is_null());
-        assert!(result.output_len > 0);
-
-        let bytes = unsafe { std::slice::from_raw_parts(result.output_ptr, result.output_len) };
-        let input = CellInput::new(bytes);
-        let decoded: Json = input.deserialize().expect("Json bincode round-trip");
+        let decoded: Json = CellInput::new(&t.bytes)
+            .deserialize()
+            .expect("Json bincode round-trip");
         assert_eq!(decoded.0, original.0);
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-        }
     }
 
     // ── CellInput helpers ────────────────────────────────────────────────
@@ -1560,13 +1580,11 @@ mod tests {
     fn output_empty() {
         let output = CellOutput::empty();
         assert!(output.type_tag.is_none());
-        let result: CellResult = output.into();
-        assert!(result.output_ptr.is_null());
-        assert_eq!(result.output_len, 0);
-        assert!(result.display_ptr.is_null());
-        assert_eq!(result.display_len, 0);
-        assert!(result.type_tag_ptr.is_null());
-        assert_eq!(result.type_tag_len, 0);
+        // `take` asserts each empty buffer crossed the FFI as a null pointer.
+        let t = take(output.into());
+        assert!(t.bytes.is_empty());
+        assert!(t.panels.is_none());
+        assert!(t.tag.is_none());
     }
 
     #[test]
@@ -1577,33 +1595,14 @@ mod tests {
             output.panels,
             vec![DisplayPanel::Text("hello world".into())]
         );
-        let result: CellResult = output.into();
+        let t = take(output.into());
 
-        assert!(result.output_ptr.is_null());
-        assert_eq!(result.output_len, 0);
-
-        assert!(!result.display_ptr.is_null());
-        assert!(result.display_len > 0);
-        assert!(result.type_tag_ptr.is_null());
-        assert_eq!(result.type_tag_len, 0);
-
-        let display = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-            ))
-            .to_string()
-        };
-        let panels: Vec<DisplayPanel> = serde_json::from_str(&display).expect("parse JSON panels");
-        assert_eq!(panels, vec![DisplayPanel::Text("hello world".into())]);
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-                result.display_len,
-            ));
-        }
+        assert!(t.bytes.is_empty());
+        assert!(t.tag.is_none());
+        assert_eq!(
+            t.panels,
+            Some(vec![DisplayPanel::Text("hello world".into())])
+        );
     }
 
     #[test]
@@ -1618,38 +1617,14 @@ mod tests {
             output.panels,
             vec![DisplayPanel::Text("The answer is 42".into())]
         );
-        let result: CellResult = output.into();
+        let t = take(output.into());
 
-        assert!(!result.output_ptr.is_null());
-        assert!(result.output_len > 0);
-        assert!(!result.display_ptr.is_null());
-        assert!(result.display_len > 0);
-        assert!(result.type_tag_ptr.is_null());
-        assert_eq!(result.type_tag_len, 0);
-
-        let display = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-            ))
-            .to_string()
-        };
-        let panels: Vec<DisplayPanel> = serde_json::from_str(&display).expect("parse JSON panels");
-        assert_eq!(panels, vec![DisplayPanel::Text("The answer is 42".into())]);
-
-        // Clean up.
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-                result.display_len,
-            ));
-        }
+        assert!(!t.bytes.is_empty());
+        assert!(t.tag.is_none());
+        assert_eq!(
+            t.panels,
+            Some(vec![DisplayPanel::Text("The answer is 42".into())])
+        );
     }
 
     // ── CellResult layout ────────────────────────────────────────────────
@@ -1697,56 +1672,17 @@ mod tests {
         let output = CellOutput::from(42i32);
         assert_eq!(output.type_tag.as_deref(), Some("i32"));
         assert_eq!(output.panels, vec![DisplayPanel::Text("42".into())]);
-        let result: CellResult = output.into();
+        let t = take(output.into());
 
-        // Should have serialized bytes.
-        assert!(!result.output_ptr.is_null());
-        assert!(result.output_len > 0);
+        // Display JSON carries the panels, and the tag crosses intact.
+        assert_eq!(t.panels, Some(vec![DisplayPanel::Text("42".into())]));
+        assert_eq!(t.tag.as_deref(), Some("i32"));
 
-        // Verify display JSON contains panels.
-        let display = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-            ))
-            .to_string()
-        };
-        let panels: Vec<DisplayPanel> = serde_json::from_str(&display).expect("parse JSON panels");
-        assert_eq!(panels, vec![DisplayPanel::Text("42".into())]);
-
-        // Verify type tag.
-        let tag = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.type_tag_ptr,
-                result.type_tag_len,
-            ))
-            .to_string()
-        };
-        assert_eq!(tag, "i32");
-
-        // Verify round-trip via CellInput.
-        let bytes = unsafe { std::slice::from_raw_parts(result.output_ptr, result.output_len) };
-        let input = CellInput::new(bytes);
-        let decoded: i32 = input.deserialize().expect("deserialize i32");
+        // Round-trip via CellInput.
+        let decoded: i32 = CellInput::new(&t.bytes)
+            .deserialize()
+            .expect("deserialize i32");
         assert_eq!(decoded, 42);
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-                result.display_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.type_tag_ptr,
-                result.type_tag_len,
-                result.type_tag_len,
-            ));
-        }
     }
 
     #[test]
@@ -1754,40 +1690,13 @@ mod tests {
         let output = CellOutput::from(42.5f64);
         assert_eq!(output.type_tag.as_deref(), Some("f64"));
         assert_eq!(output.panels, vec![DisplayPanel::Text("42.5".into())]);
-        let result: CellResult = output.into();
+        let t = take(output.into());
 
-        let display = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-            ))
-            .to_string()
-        };
-        let panels: Vec<DisplayPanel> = serde_json::from_str(&display).expect("parse JSON panels");
-        assert_eq!(panels, vec![DisplayPanel::Text("42.5".into())]);
-
-        let bytes = unsafe { std::slice::from_raw_parts(result.output_ptr, result.output_len) };
-        let input = CellInput::new(bytes);
-        let decoded: f64 = input.deserialize().expect("deserialize f64");
+        assert_eq!(t.panels, Some(vec![DisplayPanel::Text("42.5".into())]));
+        let decoded: f64 = CellInput::new(&t.bytes)
+            .deserialize()
+            .expect("deserialize f64");
         assert!((decoded - 42.5).abs() < f64::EPSILON);
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-                result.display_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.type_tag_ptr,
-                result.type_tag_len,
-                result.type_tag_len,
-            ));
-        }
     }
 
     #[test]
@@ -1795,35 +1704,9 @@ mod tests {
         let output = CellOutput::from(true);
         assert_eq!(output.type_tag.as_deref(), Some("bool"));
         assert_eq!(output.panels, vec![DisplayPanel::Text("true".into())]);
-        let result: CellResult = output.into();
+        let t = take(output.into());
 
-        let display = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-            ))
-            .to_string()
-        };
-        let panels: Vec<DisplayPanel> = serde_json::from_str(&display).expect("parse JSON panels");
-        assert_eq!(panels, vec![DisplayPanel::Text("true".into())]);
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-                result.display_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.type_tag_ptr,
-                result.type_tag_len,
-                result.type_tag_len,
-            ));
-        }
+        assert_eq!(t.panels, Some(vec![DisplayPanel::Text("true".into())]));
     }
 
     #[test]
@@ -1834,40 +1717,16 @@ mod tests {
             output.panels,
             vec![DisplayPanel::Text("hello world".into())]
         );
-        let result: CellResult = output.into();
+        let t = take(output.into());
 
-        let display = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-            ))
-            .to_string()
-        };
-        let panels: Vec<DisplayPanel> = serde_json::from_str(&display).expect("parse JSON panels");
-        assert_eq!(panels, vec![DisplayPanel::Text("hello world".into())]);
-
-        let bytes = unsafe { std::slice::from_raw_parts(result.output_ptr, result.output_len) };
-        let input = CellInput::new(bytes);
-        let decoded: String = input.deserialize().expect("deserialize String");
+        assert_eq!(
+            t.panels,
+            Some(vec![DisplayPanel::Text("hello world".into())])
+        );
+        let decoded: String = CellInput::new(&t.bytes)
+            .deserialize()
+            .expect("deserialize String");
         assert_eq!(decoded, "hello world");
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-                result.display_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.type_tag_ptr,
-                result.type_tag_len,
-                result.type_tag_len,
-            ));
-        }
     }
 
     #[test]
@@ -1875,49 +1734,20 @@ mod tests {
         let output = CellOutput::from("hello");
         assert_eq!(output.type_tag.as_deref(), Some("String"));
         assert_eq!(output.panels, vec![DisplayPanel::Text("hello".into())]);
-        let result: CellResult = output.into();
+        let t = take(output.into());
 
-        let display = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-            ))
-            .to_string()
-        };
-        let panels: Vec<DisplayPanel> = serde_json::from_str(&display).expect("parse JSON panels");
-        assert_eq!(panels, vec![DisplayPanel::Text("hello".into())]);
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-                result.display_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.type_tag_ptr,
-                result.type_tag_len,
-                result.type_tag_len,
-            ));
-        }
+        assert_eq!(t.panels, Some(vec![DisplayPanel::Text("hello".into())]));
     }
 
     #[test]
     fn from_unit_produces_empty_output() {
         let output = CellOutput::from(());
         assert!(output.type_tag.is_none());
-        let result: CellResult = output.into();
-
-        assert!(result.output_ptr.is_null());
-        assert_eq!(result.output_len, 0);
-        assert!(result.display_ptr.is_null());
-        assert_eq!(result.display_len, 0);
-        assert!(result.type_tag_ptr.is_null());
-        assert_eq!(result.type_tag_len, 0);
+        // `take` asserts each empty buffer crossed the FFI as a null pointer.
+        let t = take(output.into());
+        assert!(t.bytes.is_empty());
+        assert!(t.panels.is_none());
+        assert!(t.tag.is_none());
     }
 
     #[test]
@@ -1940,52 +1770,20 @@ mod tests {
             output.panels,
             vec![DisplayPanel::Text("[10, 20, 30]".into())]
         );
-        let result: CellResult = output.into();
+        let t = take(output.into());
 
-        // Verify display JSON contains panels with Debug format.
-        let display = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-            ))
-            .to_string()
-        };
-        let panels: Vec<DisplayPanel> = serde_json::from_str(&display).expect("parse JSON panels");
-        assert_eq!(panels, vec![DisplayPanel::Text("[10, 20, 30]".into())]);
+        // Display JSON carries the Debug-formatted panel; the tag crosses intact.
+        assert_eq!(
+            t.panels,
+            Some(vec![DisplayPanel::Text("[10, 20, 30]".into())])
+        );
+        assert_eq!(t.tag.as_deref(), Some("Vec<i32>"));
 
-        // Verify type tag through CellResult.
-        let tag = unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(
-                result.type_tag_ptr,
-                result.type_tag_len,
-            ))
-            .to_string()
-        };
-        assert_eq!(tag, "Vec<i32>");
-
-        // Verify round-trip via CellInput.
-        let bytes = unsafe { std::slice::from_raw_parts(result.output_ptr, result.output_len) };
-        let input = CellInput::new(bytes);
-        let decoded: Vec<i32> = input.deserialize().expect("deserialize Vec<i32>");
+        // Round-trip via CellInput.
+        let decoded: Vec<i32> = CellInput::new(&t.bytes)
+            .deserialize()
+            .expect("deserialize Vec<i32>");
         assert_eq!(decoded, data);
-
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.output_ptr,
-                result.output_len,
-                result.output_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.display_ptr,
-                result.display_len,
-                result.display_len,
-            ));
-            drop(Vec::from_raw_parts(
-                result.type_tag_ptr,
-                result.type_tag_len,
-                result.type_tag_len,
-            ));
-        }
     }
 
     // ── Type tag tests ──────────────────────────────────────────────────
@@ -2763,13 +2561,11 @@ mod tests {
         let tr = TickResult::from(c);
         assert_eq!(tr.width, 2);
         assert_eq!(tr.height, 2);
-        assert_eq!(tr.rgb_len, 2 * 2 * 3);
-        assert!(!tr.rgb_ptr.is_null());
 
-        // Clean up leaked memory.
-        unsafe {
-            drop(Vec::from_raw_parts(tr.rgb_ptr, tr.rgb_len, tr.rgb_len));
-        }
+        // SAFETY: the pixel buffer was leaked by `From<Canvas> for TickResult`.
+        let rgb = unsafe { reclaim(tr.rgb_ptr, tr.rgb_len) };
+        assert_eq!(rgb.len(), 2 * 2 * 3);
+        assert_eq!(&rgb[..3], &[255, 128, 64]);
     }
 
     // ── LiveView / LiveTickResult ──────────────────────────────────────────
@@ -2801,16 +2597,9 @@ mod tests {
         let content = LiveContent::Text("hello world".into());
         let result = LiveTickResult::from(content);
         assert_eq!(result.kind, 0);
-        assert_eq!(result.content_len, 11);
-        assert!(!result.content_ptr.is_null());
-        // Clean up leaked memory.
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.content_ptr,
-                result.content_len,
-                result.content_len,
-            ));
-        }
+        // SAFETY: the content was leaked by `From<LiveContent>`.
+        let bytes = unsafe { reclaim(result.content_ptr, result.content_len) };
+        assert_eq!(bytes, b"hello world");
     }
 
     #[test]
@@ -2818,14 +2607,9 @@ mod tests {
         let content = LiveContent::Html("<b>hi</b>".into());
         let result = LiveTickResult::from(content);
         assert_eq!(result.kind, 1);
-        // Clean up.
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.content_ptr,
-                result.content_len,
-                result.content_len,
-            ));
-        }
+        // SAFETY: the content was leaked by `From<LiveContent>`.
+        let bytes = unsafe { reclaim(result.content_ptr, result.content_len) };
+        assert_eq!(bytes, b"<b>hi</b>");
     }
 
     #[test]
@@ -2833,13 +2617,8 @@ mod tests {
         let content = LiveContent::Markdown("# Title".into());
         let result = LiveTickResult::from(content);
         assert_eq!(result.kind, 2);
-        // Clean up.
-        unsafe {
-            drop(Vec::from_raw_parts(
-                result.content_ptr,
-                result.content_len,
-                result.content_len,
-            ));
-        }
+        // SAFETY: the content was leaked by `From<LiveContent>`.
+        let bytes = unsafe { reclaim(result.content_ptr, result.content_len) };
+        assert_eq!(bytes, b"# Title");
     }
 }
