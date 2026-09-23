@@ -24,29 +24,25 @@ use super::state::{persist_notebook, CellStatus, NotebookState};
 pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let state = expect_context::<NotebookState>();
     let model = expect_context::<NotebookModel>();
-    let cell_id = cell.id.clone();
-    let cell_id_for_click = cell.id.clone();
-    let cell_id_for_delete = cell.id.clone();
-    let cell_id_for_delete_cleanup = cell.id.clone();
-    let cell_id_for_focus = cell.id.clone();
-    #[cfg(feature = "hydrate")]
-    let cell_id_for_flush = cell.id.clone();
-    let cell_id_for_stale_header = cell.id.clone();
-    let cell_id_for_output = cell.id.clone();
+    // The ONE handle on this cell's id: `StoredValue` is `Copy`, so every
+    // closure below shares it instead of carrying its own String clone.
+    // `with_value` for comparisons, `get_value` where an owned id is needed.
+    let cell_id = StoredValue::new(cell.id.clone());
 
     // Live-derived order: after T-001, NotebookContent (and this CellItem) is
     // built once and not rebuilt on reorder, so the `cell.order` captured by
     // value would go stale. Look it up from state.cells (kept live by
     // sync_from_notebook) on every render instead, falling back to the
     // initially-captured order if the cell is momentarily missing (e.g. mid-delete).
-    let cell_id_for_order = cell.id.clone();
     let initial_order = cell.order;
     let order_display = Signal::derive(move || {
-        state.cells.with(|cells| {
-            cells
-                .iter()
-                .find(|c| c.id == cell_id_for_order)
-                .map_or(initial_order, |c| c.order)
+        cell_id.with_value(|id| {
+            state.cells.with(|cells| {
+                cells
+                    .iter()
+                    .find(|c| c.id == *id)
+                    .map_or(initial_order, |c| c.order)
+            })
         })
     });
 
@@ -61,21 +57,32 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // Shared flag, looked up live from the manifest list (like `order_display`)
     // so the toggle below re-renders this cell without a rebuild.
-    let cell_id_for_shared = cell.id.clone();
     let initial_shared = cell.shared;
     let is_shared = Signal::derive(move || {
-        state.cells.with(|cells| {
-            cells
-                .iter()
-                .find(|c| c.id == cell_id_for_shared)
-                .map_or(initial_shared, |c| c.shared)
+        cell_id.with_value(|id| {
+            state.cells.with(|cells| {
+                cells
+                    .iter()
+                    .find(|c| c.id == *id)
+                    .map_or(initial_shared, |c| c.shared)
+            })
         })
     });
 
-    let is_active = move || state.active_cell.get().as_deref() == Some(cell_id.as_str());
+    // `try_with_value`: `cell_class` below reads this, and that closure can
+    // be flushed after the cell (and so this id) is gone.
+    let is_active = move || {
+        cell_id
+            .try_with_value(|id| {
+                state
+                    .active_cell
+                    .with(|a| a.as_deref() == Some(id.as_str()))
+            })
+            .unwrap_or(false)
+    };
 
     let on_click = move |_| {
-        state.active_cell.set(Some(cell_id_for_click.clone()));
+        state.active_cell.set(Some(cell_id.get_value()));
     };
 
     // ── Cell status & compile result ────────────────────────────────────
@@ -142,17 +149,15 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── Delete action ───────────────────────────────────────────────────
 
-    let cell_id_for_delete_sv = StoredValue::new(cell_id_for_delete);
-    let cell_id_for_delete_cleanup_sv = StoredValue::new(cell_id_for_delete_cleanup);
-
     let delete_cell_fn = move || {
-        let cid = cell_id_for_delete_sv.get_value();
-        let cid_cleanup = cell_id_for_delete_cleanup_sv.get_value();
+        // Read before the delete: the scrub below must not depend on this
+        // cell (and its stored id) outliving its own removal.
+        let cid = cell_id.get_value();
         let version = model.cell_version(&cid);
         if model
             .apply(
                 ironpad_common::protocol::Mutation::CellDelete {
-                    cell_id: cid,
+                    cell_id: cid.clone(),
                     version,
                 },
                 ironpad_common::protocol::ClientId::browser(),
@@ -161,7 +166,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         {
             // Clean up execution state (UI concern, not model concern) —
             // the shared scrub, same as the agent CellDelete path.
-            state.scrub_deleted_cell(&cid_cleanup);
+            state.scrub_deleted_cell(&cid);
             persist_notebook(&state);
         }
     };
@@ -169,11 +174,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── Rename action ───────────────────────────────────────────────────
 
     let label = RwSignal::new(cell.label.clone());
-    let cell_id_for_rename = cell.id.clone();
 
     let on_label_blur = move |_| {
         let current = label.get_untracked();
-        let cid = cell_id_for_rename.clone();
+        let cid = cell_id.get_value();
         let version = model.cell_version(&cid);
         if model
             .apply(
@@ -198,9 +202,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // Explicit authoring controls, distinct from the transient chevrons:
     // they set the cell's saved load-state, snap the live state to match,
     // and ride CellUpdate so agents and every surface see the same default.
-    let cell_id_for_collapse = StoredValue::new(cell.id.clone());
     let persist_collapse_default = move |code: Option<bool>, output: Option<bool>| {
-        let cid = cell_id_for_collapse.get_value();
+        let cid = cell_id.get_value();
         let version = model.cell_version(&cid);
         if model
             .apply(
@@ -241,8 +244,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── Move (reorder) action ───────────────────────────────────────────
 
-    let cell_id_for_move = StoredValue::new(cell.id.clone());
-
     let reorder_cells_fn = move |new_ids: Vec<String>| {
         if model
             .apply(
@@ -259,9 +260,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_move_up = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         menu_open.set(false);
-        let cid = cell_id_for_move.get_value();
         let cells = state.cells.get_untracked();
-        let Some(my_idx) = cells.iter().position(|c| c.id == cid) else {
+        let Some(my_idx) = cell_id.with_value(|cid| cells.iter().position(|c| c.id == *cid)) else {
             return;
         };
         if my_idx == 0 {
@@ -276,9 +276,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_move_down = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         menu_open.set(false);
-        let cid = cell_id_for_move.get_value();
         let cells = state.cells.get_untracked();
-        let Some(my_idx) = cells.iter().position(|c| c.id == cid) else {
+        let Some(my_idx) = cell_id.with_value(|cid| cells.iter().position(|c| c.id == *cid)) else {
             return;
         };
         if my_idx + 1 >= cells.len() {
@@ -291,13 +290,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── Duplicate action ────────────────────────────────────────────────
 
-    let cell_id_for_dup = StoredValue::new(cell.id.clone());
-
     let on_duplicate = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         menu_open.set(false);
 
-        let cid = cell_id_for_dup.get_value();
+        let cid = cell_id.get_value();
 
         // Read the original cell from the notebook.
         let original = state.notebook.with_untracked(|nb_opt| {
@@ -346,22 +343,26 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── Move boundary checks ────────────────────────────────────────────
 
-    let cell_id_for_boundary = StoredValue::new(cell.id.clone());
     let is_first = Signal::derive(move || {
-        let cid = cell_id_for_boundary.get_value();
-        state.cells.get().first().is_none_or(|c| c.id == cid)
+        cell_id.with_value(|cid| {
+            state
+                .cells
+                .with(|cells| cells.first().is_none_or(|c| c.id == *cid))
+        })
     });
 
     let is_last = Signal::derive(move || {
-        let cid = cell_id_for_boundary.get_value();
-        state.cells.get().last().is_none_or(|c| c.id == cid)
+        cell_id.with_value(|cid| {
+            state
+                .cells
+                .with(|cells| cells.last().is_none_or(|c| c.id == *cid))
+        })
     });
 
     // ── Run cell action (compile flow) ──────────────────────────────────
 
     // Trigger signal: incrementing this dispatches a compile.
     let run_trigger = RwSignal::new(0u64);
-    let cell_id_for_run = StoredValue::new(cell.id.clone());
 
     // ── Session execution events (PRD-0052) ─────────────────────────────
     //
@@ -375,10 +376,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // When this cell appears at the front of the run-all queue, trigger
     // its compile flow.  Non-front cells show a "Queued" status badge.
 
-    let cell_id_for_queue = StoredValue::new(cell.id.clone());
-
     Effect::new(move || {
-        let cid = cell_id_for_queue.get_value();
+        let cid = cell_id.get_value();
         // Borrowed, and released before the match: the `Some(0)` arm writes
         // the queue (`advance_queue`), which a live borrow would forbid.
         let my_pos = state
@@ -429,14 +428,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // When it is removed (e.g. the blocking cell re-runs successfully, or
     // reactive mode is toggled off), revert to Idle.
 
-    let cell_id_for_blocked = StoredValue::new(cell.id.clone());
-
     Effect::new(move || {
-        let cid = cell_id_for_blocked.get_value();
-        if state
-            .cell_blocked_by
-            .with(|blocked| blocked.contains_key(&cid))
-        {
+        let blocked = cell_id.with_value(|cid| {
+            state
+                .cell_blocked_by
+                .with(|blocked| blocked.contains_key(cid))
+        });
+        if blocked {
             cell_status.set(CellStatus::Blocked);
         } else if cell_status.get_untracked() == CellStatus::Blocked {
             cell_status.set(CellStatus::Idle);
@@ -445,11 +443,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── Shared-cell toggle (PRD-0044) ───────────────────────────────────
 
-    let cell_id_for_shared_toggle = StoredValue::new(cell.id.clone());
     let on_toggle_shared = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         menu_open.set(false);
-        let cid = cell_id_for_shared_toggle.get_value();
+        let cid = cell_id.get_value();
         let version = model.cell_version(&cid);
         let next = !is_shared.get_untracked();
         if model
@@ -472,12 +469,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     // ── Run All Below trigger ───────────────────────────────────────────
 
-    let cell_id_for_run_all = StoredValue::new(cell.id.clone());
     let on_run_all_below = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         menu_open.set(false);
-        let cid = cell_id_for_run_all.get_value();
-        state.enqueue_runnable_from(Some(&cid));
+        state.enqueue_runnable_from(Some(&cell_id.get_value()));
     };
 
     // The compile/execute pipeline lives in `pipeline.rs` (PRD-0055 T-001):
@@ -485,7 +480,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let run_ctx = pipeline::CellRunCtx {
         state,
         model,
-        cell_id: cell_id_for_run,
+        cell_id,
         cell_type,
         is_shared,
         cell_status,
@@ -509,8 +504,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     {
         use wasm_bindgen::prelude::*;
 
-        let cell_id_for_keys = StoredValue::new(cell.id.clone());
-
         Effect::new(move || {
             // `try_get` (not `get`): this effect can be queued and then run
             // during the cell's disposal teardown, when the signal's arena slot
@@ -520,7 +513,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             };
 
             // Register this cell's editor handle for cross-cell focus.
-            let cid = cell_id_for_keys.get_value();
+            let cid = cell_id.get_value();
             state.editor_handles.update(|m| {
                 m.insert(cid, handle);
             });
@@ -543,10 +536,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 run_trigger.update(|g| *g += 1);
 
                 // Find and focus the next cell's editor.
-                let cid = cell_id_for_keys.get_value();
                 let cells = state.cells.get_untracked();
                 // If this cell was removed, don't advance to the wrong index — bail.
-                let Some(my_idx) = cells.iter().position(|c| c.id == cid) else {
+                let Some(my_idx) =
+                    cell_id.with_value(|cid| cells.iter().position(|c| c.id == *cid))
+                else {
                     return;
                 };
                 let handles = state.editor_handles.get_untracked();
@@ -568,10 +562,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
         // Drop this cell's editor handle when the cell is disposed so handles
         // for deleted cells don't accumulate in the shared map.
-        let cid_handle_cleanup = cell_id_for_keys.get_value();
         on_cleanup(move || {
-            state.editor_handles.try_update(|m| {
-                m.remove(&cid_handle_cleanup);
+            cell_id.try_with_value(|cid| {
+                state.editor_handles.try_update(|m| {
+                    m.remove(cid);
+                })
             });
         });
     }
@@ -588,18 +583,17 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     #[cfg(feature = "hydrate")]
     {
-        let cell_id_for_external = StoredValue::new(cell.id.clone());
-
         Effect::new(move || {
             // React to remote content edits.
             state.external_content_generation.get();
 
-            let cid = cell_id_for_external.get_value();
-            let latest = state.notebook.with_untracked(|nb_opt| {
-                nb_opt
-                    .as_ref()
-                    .and_then(|nb| nb.cells.iter().find(|c| c.id == cid))
-                    .map(|c| (c.source.clone(), c.cargo_toml.clone().unwrap_or_default()))
+            let latest = cell_id.with_value(|cid| {
+                state.notebook.with_untracked(|nb_opt| {
+                    nb_opt
+                        .as_ref()
+                        .and_then(|nb| nb.cells.iter().find(|c| c.id == *cid))
+                        .map(|c| (c.source.clone(), c.cargo_toml.clone().unwrap_or_default()))
+                })
             });
             let Some((latest_source, latest_cargo_toml)) = latest else {
                 return;
@@ -624,8 +618,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     #[cfg(feature = "hydrate")]
     {
-        let cell_id_for_ctx = StoredValue::new(cell.id.clone());
-
         Effect::new(move || {
             // `try_get` (not `get`): this effect can be queued and then run
             // during the cell's disposal teardown, when the signal's arena slot
@@ -638,11 +630,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             // The tags memo, not `cell_outputs`: every byte-only write (a
             // widget drag) used to deep-clone the whole outputs map in every
             // cell just to rebuild an identical context.
-            let cid = cell_id_for_ctx.get_value();
-            let variables = state.type_tags.with(|tags| {
-                state
-                    .cells
-                    .with_untracked(|cells| completion_variables(cells, tags, &cid))
+            let variables = cell_id.with_value(|cid| {
+                state.type_tags.with(|tags| {
+                    state
+                        .cells
+                        .with_untracked(|cells| completion_variables(cells, tags, cid))
+                })
             });
 
             let context = js_sys::Object::new();
@@ -717,15 +710,13 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_source_change = {
         use wasm_bindgen::prelude::*;
 
-        let cid_save = cell.id.clone();
         let debounce_handle: RwSignal<i32> = RwSignal::new(0);
 
         // Build a reusable JS function that reads the *current* source from
         // the signal and persists it via the model.
-        let cid_check = cell.id.clone();
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = source.get_untracked();
-            let cid = cid_save.clone();
+            let cid = cell_id.get_value();
             let version = model.cell_version(&cid);
             if model
                 .apply(
@@ -749,7 +740,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // honest moment to type-check what the user sees.
                 pipeline::dispatch_live_check(
                     &state,
-                    cid_check.clone(),
+                    cell_id.get_value(),
                     cell_type,
                     is_shared,
                     cell_status,
@@ -803,12 +794,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_cargo_toml_change = {
         use wasm_bindgen::prelude::*;
 
-        let cid_save = cell.id.clone();
         let debounce_handle: RwSignal<i32> = RwSignal::new(0);
 
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = cargo_toml.get_untracked();
-            let cid = cid_save.clone();
+            let cid = cell_id.get_value();
             let version = model.cell_version(&cid);
             if model
                 .apply(
@@ -877,7 +867,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     #[cfg(feature = "hydrate")]
     {
-        let cid_flush = cell_id_for_flush;
         let prev_save_gen = RwSignal::new(state.save_generation.get_untracked());
 
         Effect::new(move || {
@@ -892,7 +881,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             if !src_dirty && !toml_dirty {
                 return;
             }
-            let cid = cid_flush.clone();
+            let cid = cell_id.get_value();
             let version = model.cell_version(&cid);
 
             // Flush the unsaved editor content into the model.
@@ -932,11 +921,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     #[cfg(feature = "hydrate")]
     {
-        let cid_invalidate = StoredValue::new(cell.id.clone());
         Effect::new(move || {
-            let has_output = state
-                .cell_outputs
-                .with(|m| m.contains_key(&cid_invalidate.get_value()));
+            let has_output =
+                cell_id.with_value(|cid| state.cell_outputs.with(|m| m.contains_key(cid)));
             if !has_output
                 && execution_result.get_untracked().is_some()
                 && !matches!(
@@ -986,7 +973,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     Effect::new(move || {
         let pending = state.pending_focus_cell.get();
-        if pending.as_deref() != Some(cell_id_for_focus.as_str()) {
+        // `try_`: a new cell's focus request can queue this effect while this
+        // cell is being torn down; a gone cell is simply not the target.
+        if cell_id.try_with_value(|id| pending.as_deref() == Some(id.as_str())) != Some(true) {
             return;
         }
 
@@ -1070,8 +1059,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         if !runs_in_editor || is_shared.get() {
                             return view! { <span /> }.into_any();
                         }
-                        let is_stale = state.cell_stale.with(|stale| {
-                            stale.get(&cell_id_for_stale_header).copied().unwrap_or(false)
+                        let is_stale = cell_id.with_value(|id| {
+                            state
+                                .cell_stale
+                                .with(|stale| stale.get(id).copied().unwrap_or(false))
                         });
                         if is_stale && state.reactive_mode.get() {
                             view! { <span class="ironpad-stale-indicator ironpad-stale-indicator--pending" title="Pending re-execution (reactive mode)"><Icon icon=icons::PENDING/></span> }.into_any()
@@ -1278,7 +1269,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                     // ── Execution output panel ──────────────────────────────────
                     <CellOutputPanel
                         execution_result=execution_result
-                        cell_id=cell_id_for_output.clone()
+                        cell_id=cell_id.get_value()
                         cell_outputs=state.cell_outputs
                         cell_stale=state.cell_stale
                         cells=state.cells
