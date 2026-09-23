@@ -9,9 +9,19 @@ use axum::extract::FromRef;
 use leptos::config::LeptosOptions;
 use tokio::sync::{mpsc, RwLock};
 
+use ironpad_common::protocol::{self, ControlMessage, MessageKind};
 use ironpad_common::AppConfig;
 
 use crate::sessions::SessionStore;
+
+/// Serialize a protocol message to JSON for the wire.
+pub(crate) fn wire_msg(id: &str, kind: MessageKind) -> String {
+    serde_json::to_string(&protocol::Message {
+        id: id.to_string(),
+        kind,
+    })
+    .expect("protocol message serialization should never fail")
+}
 
 // ── App state ───────────────────────────────────────────────────────────────
 
@@ -387,11 +397,30 @@ impl WsState {
         false
     }
 
-    /// Disconnect all guests on a session, sending them a close reason.
+    /// Drops all guest senders on a session (closing their sockets); callers
+    /// send the reason first, see [`end_session_guests`](Self::end_session_guests).
     pub async fn disconnect_guests(&self, session_id: &str) {
         self.guests.write().await.remove(session_id);
         // Dropping the senders closes the channels, which causes the
         // send tasks to exit and the WebSocket connections to close.
+    }
+
+    /// End a session for its guests: tell them it ended, then drop them.
+    ///
+    /// The ONE place that order is written, because it is load-bearing: the
+    /// `SessionEnded` notice rides the very senders `disconnect_guests` drops,
+    /// so disconnecting first would close each socket with no reason and the
+    /// guest could not tell a revoked session from a network drop. `msg_id`
+    /// echoes the host's `EndSession` id; server-initiated ends pass `""`.
+    pub async fn end_session_guests(&self, session_id: &str, msg_id: &str) {
+        let close_msg = wire_msg(
+            msg_id,
+            MessageKind::Control(ControlMessage::SessionEnded {
+                session_id: session_id.to_string(),
+            }),
+        );
+        self.broadcast_to_guests(session_id, &close_msg).await;
+        self.disconnect_guests(session_id).await;
     }
 
     /// Sweep expired sessions AND disconnect their guests.
@@ -405,16 +434,7 @@ impl WsState {
     pub async fn sweep_expired_sessions(&self) -> usize {
         let removed = self.sessions.sweep_expired().await;
         for session_id in &removed {
-            let close_msg = crate::ws::wire_msg(
-                "",
-                ironpad_common::protocol::MessageKind::Control(
-                    ironpad_common::protocol::ControlMessage::SessionEnded {
-                        session_id: session_id.clone(),
-                    },
-                ),
-            );
-            self.broadcast_to_guests(session_id, &close_msg).await;
-            self.disconnect_guests(session_id).await;
+            self.end_session_guests(session_id, "").await;
         }
         removed.len()
     }
@@ -875,8 +895,6 @@ mod tests {
 
     #[tokio::test]
     async fn sweeping_an_expired_session_notifies_and_disconnects_its_guests() {
-        use ironpad_common::protocol::{ControlMessage, MessageKind, Permissions};
-
         let ws = WsState::default();
         let created = ws
             .sessions
@@ -903,6 +921,27 @@ mod tests {
         ));
         assert!(rx.recv().await.is_none(), "channel closes after the notice");
         assert!(!ws.guests.read().await.contains_key(&created.session_id));
+    }
+
+    #[tokio::test]
+    async fn end_session_guests_notifies_before_disconnecting() {
+        let ws = WsState::default();
+        let (tx, mut rx) = mpsc::channel(64);
+        ws.register_guest("sess-1", "client-1", tx).await;
+
+        ws.end_session_guests("sess-1", "ctrl-9").await;
+
+        // The notice arrives first, carrying the caller's message id...
+        let ended = rx.recv().await.expect("guest gets a SessionEnded");
+        let msg: protocol::Message = serde_json::from_str(&ended).unwrap();
+        assert_eq!(msg.id, "ctrl-9");
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Control(ControlMessage::SessionEnded { session_id }) if session_id == "sess-1"
+        ));
+        // ...and only then does the channel close.
+        assert!(rx.recv().await.is_none(), "channel closes after the notice");
+        assert!(!ws.guests.read().await.contains_key("sess-1"));
     }
 
     #[tokio::test]

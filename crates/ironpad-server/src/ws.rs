@@ -17,16 +17,7 @@ use ironpad_common::protocol::{
 };
 
 use crate::sessions::{check_permission, ValidateError};
-use crate::state::{AppState, ClaimOutcome, HostDelivery};
-
-/// Serialize a protocol message to JSON for the wire.
-pub(crate) fn wire_msg(id: &str, kind: MessageKind) -> String {
-    serde_json::to_string(&protocol::Message {
-        id: id.to_string(),
-        kind,
-    })
-    .expect("protocol message serialization should never fail")
-}
+use crate::state::{wire_msg, AppState, ClaimOutcome, HostDelivery};
 
 /// Cap on a single inbound WebSocket message so a malicious peer can't send a
 /// giant frame that balloons server memory.
@@ -207,14 +198,7 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
         .invalidate_by_connection(&connection_id)
         .await;
     for session_id in &removed {
-        let close_msg = wire_msg(
-            "",
-            MessageKind::Control(ControlMessage::SessionEnded {
-                session_id: session_id.clone(),
-            }),
-        );
-        state.ws.broadcast_to_guests(session_id, &close_msg).await;
-        state.ws.disconnect_guests(session_id).await;
+        state.ws.end_session_guests(session_id, "").await;
     }
 
     // Forget the host secret if the notebook is now idle (no host, no sessions),
@@ -349,15 +333,7 @@ async fn handle_host_control(
         ControlMessage::EndSession { session_id } => {
             tracing::info!(session_id = %session_id, "session ended by host");
             state.ws.sessions.invalidate_session(session_id).await;
-
-            let close_msg = wire_msg(
-                msg_id,
-                MessageKind::Control(ControlMessage::SessionEnded {
-                    session_id: session_id.clone(),
-                }),
-            );
-            state.ws.broadcast_to_guests(session_id, &close_msg).await;
-            state.ws.disconnect_guests(session_id).await;
+            state.ws.end_session_guests(session_id, msg_id).await;
         }
 
         // Host keep-alive (Heartbeat) is a no-op here — simply receiving it
@@ -611,7 +587,8 @@ mod tests {
 
     use crate::state::{AppState, WsState};
 
-    use super::{handle_guest_message, handle_host_message, wire_msg, WS_CHANNEL_BOUND};
+    use super::{handle_guest_message, handle_host_message, WS_CHANNEL_BOUND};
+    use crate::state::wire_msg;
 
     /// Build a minimal `AppState` suitable for WS handler tests.
     fn test_state() -> AppState {
