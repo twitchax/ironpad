@@ -85,16 +85,11 @@ pub(crate) fn ViewOnlyNotebook(
     /// Option-props strip to the bare inner type).
     #[prop(default = None)]
     share_manifest: Option<ironpad_common::ShareManifest>,
-    /// Page-specific actions, rendered inside a "☰" dropdown at the end of
-    /// the toolbar (the mutable reader's rebind entry, PRD-0049). `None`
-    /// hides the menu entirely; same `default`-not-`optional` reasoning as
-    /// `share_manifest`.
-    #[prop(default = None)]
-    menu: Option<AnyView>,
-    /// Page-specific toolbar controls, rendered inline before the "☰" menu
-    /// (the mutable reader's "✎ Edit" link for the authoring device). The
-    /// slot itself is static; put reactivity *inside* the `AnyView` when the
-    /// control appears from hydrate-time state.
+    /// Page-specific toolbar controls, rendered inline at the end of the
+    /// toolbar (the mutable reader's Edit link for the owner). The slot
+    /// itself is static; put reactivity *inside* the `AnyView` when the
+    /// control appears from hydrate-time state. Same `default`-not-`optional`
+    /// reasoning as `share_manifest`.
     #[prop(default = None)]
     controls: Option<AnyView>,
 ) -> impl IntoView {
@@ -130,6 +125,28 @@ pub(crate) fn ViewOnlyNotebook(
     }
 
     let notebook = StoredValue::new(notebook);
+
+    // Notebook-wide data every cell reads, built ONCE here and handed down as
+    // `StoredValue`s. Cloning these per cell made this body O(n^2) in cells
+    // (each carrying its source and up to 256 KiB of `saved_output`), and it
+    // runs on every SSR request for every notebook route.
+    let all_cells: StoredValue<Vec<IronpadCell>> =
+        StoredValue::new(notebook.with_value(|nb| nb.cells.clone()));
+    let shared_cargo_toml: StoredValue<Option<String>> =
+        StoredValue::new(notebook.with_value(|nb| nb.shared_cargo_toml.clone()));
+    // Notebook-level shared source plus every shared cell, in notebook order
+    // (PRD-0044): what the compiler must see.
+    let shared_source: StoredValue<Option<String>> =
+        StoredValue::new(notebook.with_value(IronpadNotebook::effective_shared_source));
+    // `(id, runnable)` per cell, the projection a widget's `WidgetSink` walks.
+    // Fixed for a read-only notebook, so computed once rather than per render.
+    let sink_cells: StoredValue<Vec<(String, bool)>> =
+        StoredValue::new(all_cells.with_value(|cells| {
+            cells
+                .iter()
+                .map(|c| (c.id.clone(), c.is_runnable()))
+                .collect()
+        }));
 
     // Shared state: execution outputs keyed by cell ID (for piping between
     // cells) — the caller's map when provided (editor view mode), else local.
@@ -410,35 +427,6 @@ pub(crate) fn ViewOnlyNotebook(
                     </div>
                 })}
                 {controls}
-                {menu.map(|items| {
-                    let menu_open = RwSignal::new(false);
-                    view! {
-                        <div class="ironpad-toolbar-dropdown view-only-menu">
-                            <button
-                                class="ironpad-toolbar-dropdown-toggle"
-                                title="Notebook menu"
-                                aria-label="Notebook menu"
-                                on:click=move |_| menu_open.update(|v| *v = !*v)
-                            >
-                                <Icon icon=icons::MENU/>
-                            </button>
-                            // Display-toggled rather than conditionally
-                            // rendered: the slot's AnyView is consumed once,
-                            // so it can't be rebuilt per open the way the
-                            // editor's inline menu is. Any click inside
-                            // (i.e. choosing an item) closes it.
-                            <div
-                                class="ironpad-toolbar-dropdown-menu"
-                                style:display=move || {
-                                    if menu_open.get() { "block" } else { "none" }
-                                }
-                                on:click=move |_| menu_open.set(false)
-                            >
-                                {items}
-                            </div>
-                        </div>
-                    }
-                })}
                 </div>
             </div>
             {threaded_cells_blocked.then(|| view! {
@@ -447,41 +435,17 @@ pub(crate) fn ViewOnlyNotebook(
                 </div>
             })}
             <div class="view-only-cells">
-                {notebook.with_value(|nb| {
-                    let cells = nb.cells.clone();
-                    let shared_cargo_toml = nb.shared_cargo_toml.clone();
-                    // Notebook-level shared source plus every shared cell, in
-                    // notebook order (PRD-0044) — what the compiler must see.
-                    let shared_source = nb.effective_shared_source();
-                    let notebook_id = nb.id.to_string();
+                {
+                    let notebook_id = notebook.with_value(|nb| nb.id.to_string());
+                    // One clone per cell (the cell itself), taken before any
+                    // cell component runs so no borrow of `all_cells` is held
+                    // while they are built.
+                    let rows: Vec<(IronpadCell, Option<usize>)> = all_cells.with_value(|cells| {
+                        cells.iter().cloned().zip(frame_indices(cells)).collect()
+                    });
 
-                    // Frame numbering (PRD-0065 T-005) counts only the cells
-                    // that draw a frame, so the `[1] [2] [3]` a reader sees
-                    // has no gaps. Markdown is prose, not a numbered step,
-                    // and 51% of the cells in `public/notebooks/` are
-                    // markdown — numbering by notebook position would show
-                    // `[2] [5] [9]`.
-                    let frame_indices: Vec<Option<usize>> = {
-                        let mut next = 0usize;
-                        cells
-                            .iter()
-                            .map(|c| {
-                                // Mirrors ViewOnlyCell's dispatch: a shared
-                                // cell frames whatever its type says.
-                                (c.shared || c.cell_type == CellType::Code).then(|| {
-                                    next += 1;
-                                    next
-                                })
-                            })
-                            .collect()
-                    };
-
-                    cells.iter().zip(frame_indices).map(|(cell, index)| {
-                        let cell = cell.clone();
+                    rows.into_iter().map(|(cell, index)| {
                         let anchor_id = cell_anchor_id(&cell.id);
-                        let all_cells = cells.clone();
-                        let shared = shared_cargo_toml.clone();
-                        let shared_src = shared_source.clone();
                         let nid = notebook_id.clone();
                         // Snapshotted blob for this cell, if the share
                         // manifest has one (PRD-0047).
@@ -496,8 +460,9 @@ pub(crate) fn ViewOnlyNotebook(
                                 anchor_id=anchor_id
                                 index=index
                                 all_cells=all_cells
-                                shared_cargo_toml=shared
-                                shared_source=shared_src
+                                sink_cells=sink_cells
+                                shared_cargo_toml=shared_cargo_toml
+                                shared_source=shared_source
                                 notebook_id=nid
                                 cell_outputs=cell_outputs
                                 run_all_queue=run_all_queue
@@ -507,7 +472,7 @@ pub(crate) fn ViewOnlyNotebook(
                             />
                         }
                     }).collect_view()
-                })}
+                }
                 // `.into_any()` erases this block's view type: the extra
                 // nesting otherwise pushes the whole-page tachys type past
                 // rustc's query depth limit on the SSR build.
@@ -540,6 +505,26 @@ pub(crate) fn ViewOnlyNotebook(
             </div>
         </div>
     }
+}
+
+/// Frame numbering (PRD-0065 T-005): the `[n]` each cell's header shows,
+/// counting only the cells that draw a frame, so the `[1] [2] [3]` a reader
+/// sees has no gaps. Markdown is prose, not a numbered step, and 51% of the
+/// cells in `public/notebooks/` are markdown — numbering by notebook position
+/// would show `[2] [5] [9]`.
+fn frame_indices(cells: &[IronpadCell]) -> Vec<Option<usize>> {
+    let mut next = 0usize;
+    cells
+        .iter()
+        .map(|c| {
+            // Mirrors ViewOnlyCell's dispatch: a shared cell frames whatever
+            // its type says.
+            (c.shared || c.cell_type == CellType::Code).then(|| {
+                next += 1;
+                next
+            })
+        })
+        .collect()
 }
 
 // ── Shared appendix ─────────────────────────────────────────────────────────
@@ -597,9 +582,12 @@ fn ViewOnlyCell(
     /// `[n]` in the cell header. `None` for markdown, which renders as bare
     /// prose.
     index: Option<usize>,
-    all_cells: Vec<IronpadCell>,
-    shared_cargo_toml: Option<String>,
-    shared_source: Option<String>,
+    /// The notebook's cells, owned once by [`ViewOnlyNotebook`].
+    all_cells: StoredValue<Vec<IronpadCell>>,
+    /// `(id, runnable)` per cell, for output widgets' [`WidgetSink`].
+    sink_cells: StoredValue<Vec<(String, bool)>>,
+    shared_cargo_toml: StoredValue<Option<String>>,
+    shared_source: StoredValue<Option<String>>,
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
@@ -622,6 +610,7 @@ fn ViewOnlyCell(
                 index=index
                 anchor_id=anchor_id
                 all_cells=all_cells
+                sink_cells=sink_cells
                 shared_cargo_toml=shared_cargo_toml
                 shared_source=shared_source
                 notebook_id=notebook_id
@@ -680,9 +669,10 @@ fn ViewOnlyCodeCell(
     cell: IronpadCell,
     index: Option<usize>,
     anchor_id: String,
-    all_cells: Vec<IronpadCell>,
-    shared_cargo_toml: Option<String>,
-    shared_source: Option<String>,
+    all_cells: StoredValue<Vec<IronpadCell>>,
+    sink_cells: StoredValue<Vec<(String, bool)>>,
+    shared_cargo_toml: StoredValue<Option<String>>,
+    shared_source: StoredValue<Option<String>>,
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
     run_all_queue: RwSignal<Vec<String>>,
@@ -691,9 +681,6 @@ fn ViewOnlyCodeCell(
     share_blob: Option<ironpad_common::ShareBlobEntry>,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
-    let all_cells = StoredValue::new(all_cells);
-    let stored_cargo_toml = StoredValue::new(shared_cargo_toml);
-    let stored_source = StoredValue::new(shared_source);
     let stored_notebook_id = StoredValue::new(notebook_id);
     let stored_share_blob = StoredValue::new(share_blob);
 
@@ -716,10 +703,11 @@ fn ViewOnlyCodeCell(
             return; // a run is already in flight; the queue owns execution
         }
         let cid = cell.with_value(|c| c.id.clone());
-        let outputs = cell_outputs.get_untracked();
-        let mut prereqs = all_cells.with_value(|cells| {
-            crate::components::executor::unexecuted_dependencies(cells, &cid, &outputs, |id| {
-                cells.iter().find(|c| c.id == id).map(|c| c.source.clone())
+        let mut prereqs = cell_outputs.with_untracked(|outputs| {
+            all_cells.with_value(|cells| {
+                crate::components::executor::unexecuted_dependencies(cells, &cid, outputs, |id| {
+                    cells.iter().find(|c| c.id == id).map(|c| c.source.clone())
+                })
             })
         });
         if prereqs.is_empty() {
@@ -781,15 +769,18 @@ fn ViewOnlyCodeCell(
             leptos::task::spawn_local(async move {
                 let cell_data = cell.get_value();
                 let cell_id = cell_id_for_exec.get_value();
-                let cells = all_cells.get_value();
-                let my_idx = cells.iter().position(|c| c.id == cell_data.id).unwrap_or(0);
 
                 // Positional piping slots + type tags — the one shared
                 // recipe (`assemble_cell_inputs`), identical to the editor's,
                 // so cache identity cannot fork between the two surfaces.
-                let outputs = cell_outputs.get_untracked();
-                let (input_buf, types) =
-                    crate::components::executor::assemble_cell_inputs(&cells, my_idx, &outputs);
+                // Borrowed: neither the cell list nor the outputs map (piping
+                // bytes included) is copied per run.
+                let (input_buf, types) = all_cells.with_value(|cells| {
+                    cell_outputs.with_untracked(|outputs| {
+                        let my_idx = cells.iter().position(|c| c.id == cell_data.id).unwrap_or(0);
+                        crate::components::executor::assemble_cell_inputs(cells, my_idx, outputs)
+                    })
+                });
 
                 let request = CompileRequest {
                     // Code-only by construction: the viewer dispatches Linux cells to
@@ -800,8 +791,8 @@ fn ViewOnlyCodeCell(
                     source: cell_data.source.clone(),
                     cargo_toml: cell_data.cargo_toml.clone().unwrap_or_default(),
                     previous_cell_types: types,
-                    shared_cargo_toml: stored_cargo_toml.get_value(),
-                    shared_source: stored_source.get_value(),
+                    shared_cargo_toml: shared_cargo_toml.get_value(),
+                    shared_source: shared_source.get_value(),
                     force: force_recompile.get_untracked(),
                     shared_check: None,
                 };
@@ -1100,8 +1091,7 @@ fn ViewOnlyCodeCell(
                     }.into_any();
                 }
                 let cell_id = cell.with_value(|c| c.id.clone());
-                let all_cells_vec = all_cells.get_value();
-                view! { <ViewOnlyOutput result=result cell_id=cell_id all_cells=all_cells_vec run_all_queue=run_all_queue cell_outputs=cell_outputs /> }.into_any()
+                view! { <ViewOnlyOutput result=result cell_id=cell_id sink_cells=sink_cells run_all_queue=run_all_queue cell_outputs=cell_outputs /> }.into_any()
             })}
         </div>
     }
@@ -1288,7 +1278,8 @@ fn ViewOnlyOutputCaption(
 fn ViewOnlyOutput(
     result: ExecutionResult,
     #[prop(into)] cell_id: String,
-    all_cells: Vec<IronpadCell>,
+    /// `(id, runnable)` per cell, owned once by [`ViewOnlyNotebook`].
+    sink_cells: StoredValue<Vec<(String, bool)>>,
     run_all_queue: RwSignal<Vec<String>>,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
 ) -> impl IntoView {
@@ -1305,12 +1296,7 @@ fn ViewOnlyOutput(
     let sink = Some(WidgetSink {
         cell_outputs,
         run_all_queue,
-        cells: Signal::derive(move || {
-            all_cells
-                .iter()
-                .map(|c| (c.id.clone(), c.is_runnable()))
-                .collect()
-        }),
+        cells: Signal::derive(move || sink_cells.get_value()),
         cell_stale: None,
     });
 

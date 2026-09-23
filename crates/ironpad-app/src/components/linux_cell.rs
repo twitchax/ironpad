@@ -339,8 +339,9 @@ pub(crate) fn ViewOnlyLinuxCell(
     cell: IronpadCell,
     index: Option<usize>,
     anchor_id: String,
-    shared_cargo_toml: Option<String>,
-    shared_source: Option<String>,
+    /// Notebook-wide, owned once by `ViewOnlyNotebook`.
+    shared_cargo_toml: StoredValue<Option<String>>,
+    shared_source: StoredValue<Option<String>>,
     notebook_id: String,
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
@@ -350,8 +351,6 @@ pub(crate) fn ViewOnlyLinuxCell(
     embed: bool,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
-    let stored_cargo_toml = StoredValue::new(shared_cargo_toml);
-    let stored_source = StoredValue::new(shared_source);
     let stored_notebook_id = StoredValue::new(notebook_id);
     let stored_share_blob = StoredValue::new(share_blob);
 
@@ -462,8 +461,8 @@ pub(crate) fn ViewOnlyLinuxCell(
                     // `cellN` bindings to bind, because the pod's filesystem
                     // is how one program hands another its output.
                     previous_cell_types: Vec::new(),
-                    shared_cargo_toml: stored_cargo_toml.get_value(),
-                    shared_source: stored_source.get_value(),
+                    shared_cargo_toml: shared_cargo_toml.get_value(),
+                    shared_source: shared_source.get_value(),
                     force: force_recompile.get_untracked(),
                     shared_check: None,
                     // Derived from the cell, never asserted about it. This
