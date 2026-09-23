@@ -153,19 +153,22 @@ impl NotebookModel {
                 Ok(Response::Notebook { notebook: nb })
             }
             Query::CellGet { cell_id } => {
-                let nb = self.notebook.get_untracked().ok_or(ModelError {
-                    code: ErrorCode::NotebookNotFound,
-                    message: "No notebook loaded".into(),
-                })?;
-                let cell = nb
-                    .cells
-                    .iter()
-                    .find(|c| c.id == cell_id)
+                // Borrow the notebook and clone only the one cell asked for.
+                let cell = self
+                    .notebook
+                    .with_untracked(|nb| {
+                        nb.as_ref()
+                            .map(|nb| nb.cells.iter().find(|c| c.id == cell_id).cloned())
+                    })
+                    .ok_or(ModelError {
+                        code: ErrorCode::NotebookNotFound,
+                        message: "No notebook loaded".into(),
+                    })?
                     .ok_or(ModelError {
                         code: ErrorCode::CellNotFound,
                         message: format!("Cell {cell_id} not found"),
                     })?;
-                Ok(Response::Cell { cell: cell.clone() })
+                Ok(Response::Cell { cell })
             }
             Query::CellsList => {
                 let cells = self.cells.get_untracked();
@@ -181,9 +184,7 @@ impl NotebookModel {
     /// Get the current OCC version for a cell.
     pub(crate) fn cell_version(&self, cell_id: &str) -> u64 {
         self.cell_versions
-            .get_untracked()
-            .get(cell_id)
-            .copied()
+            .with_untracked(|v| v.get(cell_id).copied())
             .unwrap_or(0)
     }
 
@@ -224,7 +225,12 @@ impl NotebookModel {
     /// Rebuild the `cells` signal (ordered `CellManifest` list) from the
     /// canonical `notebook` signal, and sync version tracking.
     pub(crate) fn sync_from_notebook(&self) {
-        if let Some(nb) = self.notebook.get_untracked() {
+        // Borrowed, not cloned: this runs on every structural mutation, and
+        // the notebook carries every cell's source and saved output. Writing
+        // `cells` and `cell_versions` inside the borrow is fine, since they
+        // are different signals.
+        self.notebook.with_untracked(|nb_opt| {
+            let Some(nb) = nb_opt else { return };
             self.cells.set(
                 nb.cells
                     .iter()
@@ -248,39 +254,42 @@ impl NotebookModel {
                     versions.entry(c.id.clone()).or_insert(c.version);
                 }
             });
-        }
+        });
     }
 
     /// Mark this cell and all downstream Code cells as stale.
     fn mark_downstream_stale(&self, from_cell_id: &str) {
-        let cells = self.cells.get_untracked();
-        // Policy: if the origin cell isn't in the derived list (e.g. it was
-        // already removed), mark nothing. The alternative — treating "not found"
-        // as index 0 via `unwrap_or(0)` — would silently mark *every* Code cell
-        // stale on a lookup miss, over-invalidating downstream compiles.
-        let Some(my_idx) = cells.iter().position(|c| c.id == from_cell_id) else {
-            return;
-        };
-        self.cell_stale.update(|stale| {
-            for cell in &cells[my_idx..] {
-                // Shared cells never execute, so they are never stale.
-                if cell.cell_type == CellType::Code && !cell.shared {
-                    stale.insert(cell.id.clone(), true);
+        self.cells.with_untracked(|cells| {
+            // Policy: if the origin cell isn't in the derived list (e.g. it was
+            // already removed), mark nothing. The alternative — treating "not
+            // found" as index 0 via `unwrap_or(0)` — would silently mark
+            // *every* Code cell stale on a lookup miss, over-invalidating
+            // downstream compiles.
+            let Some(my_idx) = cells.iter().position(|c| c.id == from_cell_id) else {
+                return;
+            };
+            self.cell_stale.update(|stale| {
+                for cell in &cells[my_idx..] {
+                    // Shared cells never execute, so they are never stale.
+                    if cell.cell_type == CellType::Code && !cell.shared {
+                        stale.insert(cell.id.clone(), true);
+                    }
                 }
-            }
+            });
         });
     }
 
     /// Mark all Code cells as stale (e.g. shared deps changed).
     fn mark_all_code_cells_stale(&self) {
-        self.cell_stale.update(|stale| {
-            let cells = self.cells.get_untracked();
-            for cell in &cells {
-                // Shared cells never execute, so they are never stale.
-                if cell.cell_type == CellType::Code && !cell.shared {
-                    stale.insert(cell.id.clone(), true);
+        self.cells.with_untracked(|cells| {
+            self.cell_stale.update(|stale| {
+                for cell in cells {
+                    // Shared cells never execute, so they are never stale.
+                    if cell.cell_type == CellType::Code && !cell.shared {
+                        stale.insert(cell.id.clone(), true);
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -982,6 +991,65 @@ mod collapse_tests {
                 )
                 .expect("deleting an existing cell must succeed");
             assert!(nb_signal.get_untracked().unwrap().cells.is_empty());
+        });
+    }
+
+    /// `CellGet` answers with the one cell asked for, and tells an unknown
+    /// cell apart from a missing notebook.
+    #[test]
+    fn query_cell_get_returns_the_cell_or_not_found() {
+        Owner::new().with(|| {
+            let (model, _) = two_cell_model();
+            match model.query(Query::CellGet {
+                cell_id: "c2".into(),
+            }) {
+                Ok(Response::Cell { cell }) => assert_eq!(cell.id, "c2"),
+                other => panic!("expected the cell, got {other:?}"),
+            }
+
+            let err = model
+                .query(Query::CellGet {
+                    cell_id: "ghost".into(),
+                })
+                .expect_err("an unknown cell must error");
+            assert_eq!(err.code, ErrorCode::CellNotFound);
+
+            let empty = NotebookModel::new(
+                RwSignal::new(None),
+                RwSignal::new(Vec::new()),
+                RwSignal::new(HashMap::new()),
+                RwSignal::new(0),
+            );
+            let err = empty
+                .query(Query::CellGet {
+                    cell_id: "c1".into(),
+                })
+                .expect_err("no notebook must error");
+            assert_eq!(err.code, ErrorCode::NotebookNotFound);
+        });
+    }
+
+    /// `cell_version` reads the tracked OCC version, and an unknown id is 0.
+    #[test]
+    fn cell_version_reads_the_tracked_version() {
+        Owner::new().with(|| {
+            let (model, _) = two_cell_model();
+            model
+                .apply(
+                    update(
+                        "c2",
+                        CellPatch {
+                            label: Some("x".into()),
+                            ..Default::default()
+                        },
+                        0,
+                    ),
+                    ClientId::browser(),
+                )
+                .expect("update applies");
+            assert_eq!(model.cell_version("c2"), 1);
+            assert_eq!(model.cell_version("c1"), 0);
+            assert_eq!(model.cell_version("ghost"), 0);
         });
     }
 

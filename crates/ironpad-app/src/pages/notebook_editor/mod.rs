@@ -232,15 +232,18 @@ pub fn NotebookEditor(
 
     let layout = expect_context::<LayoutContext>();
 
+    // Tracked, but borrowed: `get()` deep-cloned the whole notebook on every
+    // structural mutation just to read these few fields.
     Effect::new(move || {
-        if let Some(nb) = state.notebook.get() {
+        state.notebook.with(|nb| {
+            let Some(nb) = nb else { return };
             layout.notebook_title.set(Some(nb.title.clone()));
             layout.cell_count.set(nb.cells.len());
             state.notebook_id.set(nb.id.to_string());
             state.shared_cargo_toml.set(nb.shared_cargo_toml.clone());
             state.shared_source.set(nb.shared_source.clone());
             state.reactive_mode.set(nb.reactive_mode.unwrap_or(false));
-        }
+        });
     });
 
     // Clear blocked-by state when reactive mode is turned off.

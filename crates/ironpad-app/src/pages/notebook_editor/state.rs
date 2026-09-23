@@ -459,13 +459,16 @@ pub(crate) fn persist_notebook(state: &NotebookState) {
 /// draft the server never received would publish stale content.
 #[cfg(feature = "hydrate")]
 pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
-    let Some(mut nb) = state.notebook.try_get_untracked().flatten() else {
+    // Stamp the model in place: cloning the whole notebook to set one field
+    // and cloning it again to write it back cost two deep copies per save.
+    let stamped = state.notebook.try_update_untracked(|nb| {
+        nb.as_mut()
+            .map(|nb| nb.updated_at = chrono::Utc::now())
+            .is_some()
+    });
+    if stamped != Some(true) {
         return false;
-    };
-    nb.updated_at = chrono::Utc::now();
-    state
-        .notebook
-        .update_untracked(|existing| *existing = Some(nb.clone()));
+    }
     if state.server_draft_share.get_untracked().is_some() {
         let _ = state.draft_dirty.try_set(true);
         // Drain any autosave POST already on the wire so ours lands last —
@@ -482,11 +485,18 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
         // Supersede any pending debounce so it can't double-write after us.
         state.draft_save_epoch.update_untracked(|e| *e += 1);
         save_draft_now(state, true).await
-    } else if let Err(e) = crate::storage::client::save_notebook(&nb).await {
-        leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
-        false
     } else {
-        true
+        // The one copy this path needs: the IndexedDB write awaits, so it
+        // cannot borrow the signal across it.
+        let Some(nb) = state.notebook.try_get_untracked().flatten() else {
+            return false;
+        };
+        if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+            leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
+            false
+        } else {
+            true
+        }
     }
 }
 
@@ -570,15 +580,28 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
     let Some(share_id) = state.server_draft_share.try_get_untracked().flatten() else {
         return false;
     };
-    let Some(mut nb) = state.notebook.try_get_untracked().flatten() else {
-        return false;
-    };
-    if enrich_outputs {
+    let serialized = if enrich_outputs {
+        // Enrichment edits the outgoing copy, never the model, so this path
+        // needs its own clone.
+        let Some(mut nb) = state.notebook.try_get_untracked().flatten() else {
+            return false;
+        };
         if let Some(texts) = state.cell_display_texts.try_get_untracked() {
             nb.embed_saved_outputs(&texts, ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES);
         }
-    }
-    let json = match serde_json::to_string(&nb) {
+        serde_json::to_string(&nb)
+    } else {
+        // The debounced autosave serializes straight from the model.
+        let Some(serialized) = state
+            .notebook
+            .try_with_untracked(|nb| nb.as_ref().map(serde_json::to_string))
+            .flatten()
+        else {
+            return false;
+        };
+        serialized
+    };
+    let json = match serialized {
         Ok(json) => json,
         Err(e) => {
             leptos::logging::error!("draft serialize failed: {e}");
