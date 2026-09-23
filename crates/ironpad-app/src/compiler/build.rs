@@ -268,13 +268,18 @@ pub async fn build_micro_crate(
     .instrument(tracing::info_span!("cargo_build", cell_id = %cell_id))
     .await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let std::process::Output {
+        status,
+        stdout,
+        stderr,
+    } = output;
+    let stdout = into_string_lossy(stdout);
+    let stderr = into_string_lossy(stderr);
 
-    if !output.status.success() {
+    if !status.success() {
         tracing::warn!(
             cell_id = %cell_id,
-            exit_code = ?output.status.code(),
+            exit_code = ?status.code(),
             stdout = %stdout,
             stderr = %stderr,
             "cargo build failed",
@@ -586,14 +591,23 @@ pub async fn check_micro_crate(
         .await?
         .ok_or(CheckTimedOut(timeout))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
+    // A clean check is most rounds once the code compiles, and cargo's JSON
+    // stdout carries a record per dependency, so decode nothing unless there
+    // is a failure to report.
     if output.status.success() {
-        Ok(CheckResult::Ok)
-    } else {
-        Ok(CheckResult::Failure { stdout, stderr })
+        return Ok(CheckResult::Ok);
     }
+    Ok(CheckResult::Failure {
+        stdout: into_string_lossy(output.stdout),
+        stderr: into_string_lossy(output.stderr),
+    })
+}
+
+/// Decode subprocess output, taking ownership so valid UTF-8 (the normal
+/// case) becomes the `String` without a copy; invalid bytes still decode
+/// lossily (U+FFFD) rather than failing.
+fn into_string_lossy(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 /// Marker error for a check that exceeded its time budget, so callers can
@@ -936,6 +950,12 @@ mod tests {
             .as_std()
             .get_args()
             .any(|a| a.to_string_lossy().starts_with("-Zbuild-std")));
+    }
+
+    #[test]
+    fn into_string_lossy_keeps_valid_utf8_and_replaces_invalid_bytes() {
+        assert_eq!(into_string_lossy("héllo".as_bytes().to_vec()), "héllo");
+        assert_eq!(into_string_lossy(vec![b'a', 0xff, b'b']), "a\u{fffd}b");
     }
 
     // ── cargo_home_dir ──────────────────────────────────────────────────
