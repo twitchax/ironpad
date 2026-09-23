@@ -28,10 +28,16 @@ pub(crate) fn wire_msg(id: &str, kind: MessageKind) -> String {
     .expect("protocol message serialization should never fail")
 }
 
-/// Cap on a single WebSocket message so a malicious peer can't send a giant
-/// frame that balloons server memory. Generous for protocol messages (a single
-/// mutation/event carries at most one cell's source + metadata).
-const MAX_WS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Cap on a single inbound WebSocket message so a malicious peer can't send a
+/// giant frame that balloons server memory.
+///
+/// The largest legitimate frame is the host's `Response::Notebook` reply to a
+/// `NotebookGet` (the CLI daemon sends one on every connect): the WHOLE
+/// notebook plus its envelope, not one cell. So the cap is derived from the
+/// per-share cap with the same 2x headroom `main.rs` gives request bodies, and
+/// any shareable notebook fits in one frame. Exceeding it tears down the host
+/// connection, and with it every one of its sessions.
+const MAX_WS_MESSAGE_BYTES: usize = 2 * ironpad_app::server_fns::MAX_SHARE_BYTES;
 
 /// Per-connection outbound queue depth. Bounding it (vs. an unbounded channel)
 /// caps memory when a peer stops reading: once full, `try_send` drops the

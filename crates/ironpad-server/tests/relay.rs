@@ -807,6 +807,104 @@ async fn host_claim_mismatch_rejected_without_evicting_incumbent() {
     );
 }
 
+/// The host's reply to `NotebookGet` carries the WHOLE notebook, so it is the
+/// largest legitimate frame on the relay. A notebook over the old 4 MiB cap
+/// used to tear the host connection down (and end every one of its sessions)
+/// the moment the CLI daemon asked for it on connect.
+#[tokio::test]
+async fn host_can_reply_with_a_notebook_larger_than_four_mib() {
+    let base = start_server(test_state()).await;
+
+    let host_url = format!("{base}/ws/host?notebook_id=test-nb");
+    let (host_ws, _) = tokio_tungstenite::connect_async(&host_url)
+        .await
+        .expect("host ws connect");
+    let (mut host_sink, mut host_stream) = host_ws.split();
+    send_claim(&mut host_sink, "host-secret").await;
+
+    let create_session = to_json(
+        "ctrl-1",
+        MessageKind::Control(ControlMessage::CreateSession {
+            permissions: Permissions::default(),
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(create_session.into()))
+        .await
+        .unwrap();
+    let token = match parse_msg(&recv_text(&mut host_stream).await).kind {
+        MessageKind::Control(ControlMessage::SessionCreated { token, .. }) => token,
+        other => panic!("expected SessionCreated, got {other:?}"),
+    };
+
+    let (guest_ws, _) =
+        tokio_tungstenite::connect_async(&format!("{base}/ws/connect?token={token}"))
+            .await
+            .expect("guest ws connect");
+    let (mut guest_sink, mut guest_stream) = guest_ws.split();
+    let _ = recv_text(&mut host_stream).await; // GuestConnected
+
+    // The daemon's init query.
+    let query = to_json("q-1", MessageKind::Query(protocol::Query::NotebookGet));
+    guest_sink
+        .send(tungstenite::Message::Text(query.into()))
+        .await
+        .unwrap();
+    assert_eq!(parse_msg(&recv_text(&mut host_stream).await).id, "q-1");
+
+    // A notebook whose one cell alone is ~5 MiB, over the old 4 MiB frame cap.
+    let big_source = "x".repeat(5 * 1024 * 1024);
+    let mut notebook = ironpad_common::IronpadNotebook::new("big");
+    notebook.cells.push(ironpad_common::IronpadCell {
+        id: "cell-1".into(),
+        order: 0,
+        label: "Cell 1".into(),
+        cell_type: CellType::Code,
+        source: big_source.clone(),
+        cargo_toml: None,
+        shared: false,
+        collapsed: false,
+        output_collapsed: false,
+        version: 0,
+        saved_output: None,
+    });
+    let reply = to_json(
+        "q-1",
+        MessageKind::Response(Response::Notebook { notebook }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(reply.into()))
+        .await
+        .unwrap();
+
+    let got = parse_msg(&recv_text(&mut guest_stream).await);
+    assert_eq!(got.id, "q-1");
+    match got.kind {
+        MessageKind::Response(Response::Notebook { notebook }) => {
+            assert_eq!(notebook.cells[0].source.len(), big_source.len());
+        }
+        other => panic!("expected the Notebook response, got {other:?}"),
+    }
+
+    // The host survived the frame: it can still create sessions.
+    let again = to_json(
+        "ctrl-2",
+        MessageKind::Control(ControlMessage::CreateSession {
+            permissions: Permissions::default(),
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(again.into()))
+        .await
+        .unwrap();
+    let created = parse_msg(&recv_text(&mut host_stream).await);
+    assert_eq!(created.id, "ctrl-2");
+    assert!(matches!(
+        created.kind,
+        MessageKind::Control(ControlMessage::SessionCreated { .. })
+    ));
+}
+
 /// Extract the HTTP status code from a tungstenite handshake error, if any.
 fn http_status(err: &tungstenite::Error) -> Option<u16> {
     match err {
