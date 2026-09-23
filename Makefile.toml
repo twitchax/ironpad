@@ -179,8 +179,12 @@ args = ["nextest", "run", "--run-ignored=ignored-only", "--no-tests=pass"]
 # cover terminate-during-boot, terminate-during-write, the stale-boot race,
 # the reporting horizon and the teardown grace. Left out of the gate they
 # would be a file rather than coverage.
+#
+# The executor scripts (core, worker entry, bridge fallback) get the same
+# treatment: tests/js/executor-harness.mjs loads them against fake loaded
+# cells and a TextDecoder that rejects shared memory the way browsers do.
 [tasks.test-js]
-description = "Run the JS unit tests for the pod runtime (no browser, no pod boots)"
+description = "Run the JS unit tests for the pod runtime and the cell executor (no browser, no pod boots)"
 command = "node"
 args = ["--test", "tests/js/*.test.mjs"]
 
