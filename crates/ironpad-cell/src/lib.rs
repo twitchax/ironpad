@@ -201,7 +201,9 @@ impl<'a> CellInputs<'a> {
     }
 
     /// Encode a list of output byte slices into the wire format.
-    /// This is used by the frontend to package all previous cell outputs.
+    ///
+    /// The runtime counterpart of ironpad-app's `encode_cell_inputs`; the app's
+    /// contract test holds them byte-identical.
     #[allow(clippy::cast_possible_truncation)]
     pub fn serialize(outputs: &[&[u8]]) -> Vec<u8> {
         let total_len = 4 + outputs.iter().map(|o| 4 + o.len()).sum::<usize>();

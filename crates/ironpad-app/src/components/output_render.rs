@@ -31,6 +31,8 @@ use crate::components::markdown_cell::render_markdown;
 ///
 /// Kept separate from the cell crate so the UI doesn't depend on the cell
 /// runtime; deserialized from the JSON a cell emits as its display text.
+/// `components/cell_contract_tests.rs` round-trips every cell-side variant
+/// through it, so a field added on one side fails a test, not a render.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DisplayPanel {
     Text(String),
@@ -482,6 +484,22 @@ pub(crate) fn render_display_panel(
 }
 
 // ── Interactive widget component ─────────────────────────────────────────────
+
+/// Every widget kind the [`InteractiveWidget`] dispatch below renders. The
+/// match arms and this list must agree: `cell_contract_tests` asserts it equals
+/// the set of kinds `ironpad_cell::ui` emits, so a widget added on one side
+/// fails a test instead of rendering as "unknown widget".
+#[cfg(test)]
+pub(crate) const WIDGET_KINDS: &[&str] = &[
+    "slider",
+    "dropdown",
+    "checkbox",
+    "text_input",
+    "number",
+    "switch",
+    "button",
+    "progress",
+];
 
 /// Renders an interactive UI widget (slider, dropdown, checkbox, etc.) with
 /// live value-change callbacks that update cell outputs (and, in the editor,

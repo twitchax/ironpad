@@ -13,7 +13,8 @@ use leptos::prelude::*;
 /// Mirror of `ironpad_cell::SimSliderMeta` for use within the app rendering pipeline.
 ///
 /// Defined here to avoid introducing `ironpad-cell` as a direct dependency of `ironpad-app`.
-/// Serializes/deserializes identically to the cell-side type.
+/// Serializes/deserializes identically to the cell-side type, which
+/// `components/cell_contract_tests.rs` checks through the `Simulation` panel.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SimSliderMeta {
     pub key: String,

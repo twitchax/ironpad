@@ -2560,6 +2560,7 @@ dependencies = [
  "http",
  "icondata_core",
  "icondata_lu",
+ "ironpad-cell",
  "ironpad-common",
  "js-sys",
  "leptos",

@@ -1,6 +1,8 @@
 pub mod animation_canvas;
 pub mod app_layout;
 pub mod blob_url;
+#[cfg(test)]
+mod cell_contract_tests;
 pub mod collapsible_section;
 pub mod copy_button;
 pub(crate) mod dialog;

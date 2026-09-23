@@ -278,7 +278,7 @@
    "insert": "CellInputs::serialize",
    "kind": "method",
    "detail": "pub fn serialize(outputs: &[&[u8]]) -> Vec<u8>",
-   "doc": "Encode a list of output byte slices into the wire format. This is used by the frontend to package all previous cell outputs."
+   "doc": "Encode a list of output byte slices into the wire format."
   },
   {
    "label": "CellInputs::get",

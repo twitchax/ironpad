@@ -39,6 +39,10 @@ rand = { workspace = true, optional = true }
 ammonia = "4"
 
 [dev-dependencies]
+# Contract tests only (`components/cell_contract_tests.rs`): the app mirrors
+# the cell runtime's wire types rather than depending on it, and these hold the
+# mirrors to the real thing.
+ironpad-cell.workspace = true
 tempfile = "3"
 tracing.workspace = true
 tracing-subscriber.workspace = true

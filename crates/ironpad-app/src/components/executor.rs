@@ -295,8 +295,9 @@ pub async fn tick_live_cell(_cell_id: &str) -> Result<LiveTickResult, String> {
 /// `[count: u32 LE][len0: u32 LE][bytes0]...` — one entry per preceding
 /// cell, empty for markdown/failed cells so indices stay positional.
 ///
-/// The decoder counterpart is `CellInputs::from_raw` in `ironpad-cell`
-/// (`input.rs`); the two must stay in sync.
+/// The decoder counterpart is `CellInputs::from_raw` in
+/// `ironpad-cell/src/lib.rs`; `components/cell_contract_tests.rs` holds this
+/// encoder byte-identical to `CellInputs::serialize` and decodable by it.
 #[allow(clippy::cast_possible_truncation)] // Cell counts/sizes fit u32 by construction.
 pub fn encode_cell_inputs<T: AsRef<[u8]>>(outputs: &[T]) -> Vec<u8> {
     let total: usize = outputs.iter().map(|o| o.as_ref().len() + 4).sum();
