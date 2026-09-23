@@ -227,6 +227,47 @@ where
     serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
+// ── Cell patch ──────────────────────────────────────────────────────────────
+
+/// The per-cell fields one cell update can change. Every field is optional:
+/// `None` leaves it alone.
+///
+/// Flattened into both [`Mutation::CellUpdate`] and [`Event::CellUpdated`] for
+/// the reason [`NotebookMetaPatch`] is: a connected guest rebuilds its cached
+/// cell from the event, so a field the mutation carries and the event drops is
+/// silent data loss. They were two hand-maintained copies of the same list,
+/// plus a third in the model and a borrowed fourth in `notebook_ops`.
+/// Flattening leaves the wire format byte-identical, since the fields still
+/// sit directly beside `cell_id` (`cell_update_flatten_left_the_wire_format_alone`).
+/// [`CellPatch::apply_to`] lives in [`crate::notebook_ops`], beside the other
+/// structural cell operations the model and the CLI daemon share.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CellPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// `Some(None)` is an explicit clear. Without the custom deserializer the
+    /// wire's `"cargo_toml": null` decoded as the OUTER `None` ("unchanged")
+    /// and the clear was silently dropped.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_null_is_a_clear"
+    )]
+    pub cargo_toml: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Toggle the shared-cell flag (PRD-0044).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<bool>,
+    /// Default collapse state for the code body (set from the cell's header
+    /// toggle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapsed: Option<bool>,
+    /// Output panel starts collapsed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_collapsed: Option<bool>,
+}
+
 // ── Mutations (client → model) ──────────────────────────────────────────────
 
 /// A request to change notebook state. Any client can send these
@@ -241,29 +282,8 @@ pub enum Mutation {
     },
     CellUpdate {
         cell_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source: Option<String>,
-        /// `Some(None)` is an explicit clear. Without the custom
-        /// deserializer the wire's `"cargo_toml": null` decoded as the
-        /// OUTER `None` ("unchanged") and the clear was silently dropped.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            deserialize_with = "explicit_null_is_a_clear"
-        )]
-        cargo_toml: Option<Option<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        label: Option<String>,
-        /// Toggle the shared-cell flag (PRD-0044). `None` leaves it unchanged.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        shared: Option<bool>,
-        /// Default collapse state for the code body (set from the cell's
-        /// header toggle). `None` leaves it unchanged.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        collapsed: Option<bool>,
-        /// Output panel starts collapsed. `None` leaves it unchanged.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output_collapsed: Option<bool>,
+        #[serde(flatten)]
+        patch: CellPatch,
         /// Expected current version (optimistic concurrency control).
         version: u64,
     },
@@ -361,27 +381,8 @@ pub enum Event {
     },
     CellUpdated {
         cell_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source: Option<String>,
-        /// `Some(None)` is an explicit clear. Without the custom
-        /// deserializer the wire's `"cargo_toml": null` decoded as the
-        /// OUTER `None` ("unchanged") and the clear was silently dropped.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            deserialize_with = "explicit_null_is_a_clear"
-        )]
-        cargo_toml: Option<Option<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        label: Option<String>,
-        /// Shared-cell flag change (PRD-0044). `None` = unchanged.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        shared: Option<bool>,
-        /// Default collapse-state changes. `None` = unchanged.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        collapsed: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output_collapsed: Option<bool>,
+        #[serde(flatten)]
+        patch: CellPatch,
         version: u64,
     },
     CellDeleted {
@@ -619,12 +620,10 @@ mod tests {
             id: "req-2".into(),
             kind: MessageKind::Mutation(Mutation::CellUpdate {
                 cell_id: "cell-1".into(),
-                source: Some("let x = 99;".into()),
-                cargo_toml: None,
-                label: None,
-                shared: None,
-                collapsed: None,
-                output_collapsed: None,
+                patch: CellPatch {
+                    source: Some("let x = 99;".into()),
+                    ..Default::default()
+                },
                 version: 3,
             }),
         };
@@ -750,11 +749,9 @@ mod tests {
         )
         .unwrap();
         match m {
-            Mutation::CellUpdate {
-                cargo_toml, source, ..
-            } => {
-                assert_eq!(cargo_toml, Some(None), "explicit null is a clear");
-                assert_eq!(source, None, "absent key stays unchanged");
+            Mutation::CellUpdate { patch, .. } => {
+                assert_eq!(patch.cargo_toml, Some(None), "explicit null is a clear");
+                assert_eq!(patch.source, None, "absent key stays unchanged");
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -764,9 +761,95 @@ mod tests {
         )
         .unwrap();
         match e {
-            Event::CellUpdated { cargo_toml, .. } => assert_eq!(cargo_toml, Some(None)),
+            Event::CellUpdated { patch, .. } => assert_eq!(patch.cargo_toml, Some(None)),
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn cell_update_flatten_left_the_wire_format_alone() {
+        // The seven fields moved into `CellPatch` for the Rust API's sake; a
+        // peer built before that must still read these frames, so the fields
+        // have to stay beside `cell_id` rather than nesting under a `patch`
+        // key, and untouched ones stay off the wire entirely.
+        let label_only = CellPatch {
+            label: Some("L".into()),
+            ..Default::default()
+        };
+        let mutation = serde_json::to_value(Message {
+            id: "m".into(),
+            kind: MessageKind::Mutation(Mutation::CellUpdate {
+                cell_id: "c1".into(),
+                patch: label_only.clone(),
+                version: 3,
+            }),
+        })
+        .unwrap();
+        let event = serde_json::to_value(Message {
+            id: "e".into(),
+            kind: MessageKind::Event(EventEnvelope {
+                by: ClientId::browser(),
+                event: Event::CellUpdated {
+                    cell_id: "c1".into(),
+                    patch: label_only,
+                    version: 4,
+                },
+            }),
+        })
+        .unwrap();
+
+        for (payload, tag, value) in [
+            (&mutation["payload"], "action", "CellUpdate"),
+            (&event["payload"]["event"], "event", "CellUpdated"),
+        ] {
+            assert_eq!(payload[tag], value, "{payload}");
+            assert_eq!(payload["cell_id"], "c1", "{payload}");
+            assert_eq!(payload["label"], "L", "{payload}");
+            assert!(
+                payload.get("patch").is_none(),
+                "the patch must be flattened, not nested: {payload}"
+            );
+            for untouched in [
+                "source",
+                "cargo_toml",
+                "shared",
+                "collapsed",
+                "output_collapsed",
+            ] {
+                assert!(payload.get(untouched).is_none(), "{untouched}: {payload}");
+            }
+        }
+
+        // Byte-identical, key order included, to the pre-flatten frame with
+        // every field set (the order the fields were declared in the variant).
+        let full = Mutation::CellUpdate {
+            cell_id: "c1".into(),
+            patch: CellPatch {
+                source: Some("s".into()),
+                cargo_toml: Some(None),
+                label: Some("l".into()),
+                shared: Some(true),
+                collapsed: Some(false),
+                output_collapsed: Some(true),
+            },
+            version: 9,
+        };
+        assert_eq!(
+            serde_json::to_string(&full).unwrap(),
+            r#"{"action":"CellUpdate","cell_id":"c1","source":"s","cargo_toml":null,"label":"l","shared":true,"collapsed":false,"output_collapsed":true,"version":9}"#
+        );
+        let label_event = Event::CellUpdated {
+            cell_id: "c1".into(),
+            patch: CellPatch {
+                label: Some("L".into()),
+                ..Default::default()
+            },
+            version: 4,
+        };
+        assert_eq!(
+            serde_json::to_string(&label_event).unwrap(),
+            r#"{"event":"CellUpdated","cell_id":"c1","label":"L","version":4}"#
+        );
     }
 
     #[test]
@@ -830,12 +913,10 @@ mod tests {
                 by: ClientId::agent("abc123"),
                 event: Event::CellUpdated {
                     cell_id: "cell-1".into(),
-                    source: Some("let x = 99;".into()),
-                    cargo_toml: None,
-                    label: None,
-                    shared: None,
-                    collapsed: None,
-                    output_collapsed: None,
+                    patch: CellPatch {
+                        source: Some("let x = 99;".into()),
+                        ..Default::default()
+                    },
                     version: 4,
                 },
             }),
@@ -1063,12 +1144,11 @@ mod tests {
             id: "req-collapse".into(),
             kind: MessageKind::Mutation(Mutation::CellUpdate {
                 cell_id: "cell-1".into(),
-                source: None,
-                cargo_toml: None,
-                label: None,
-                shared: None,
-                collapsed: Some(true),
-                output_collapsed: Some(false),
+                patch: CellPatch {
+                    collapsed: Some(true),
+                    output_collapsed: Some(false),
+                    ..Default::default()
+                },
                 version: 3,
             }),
         };
@@ -1087,12 +1167,10 @@ mod tests {
             id: "req-plain".into(),
             kind: MessageKind::Mutation(Mutation::CellUpdate {
                 cell_id: "cell-1".into(),
-                source: Some("42".into()),
-                cargo_toml: None,
-                label: None,
-                shared: None,
-                collapsed: None,
-                output_collapsed: None,
+                patch: CellPatch {
+                    source: Some("42".into()),
+                    ..Default::default()
+                },
                 version: 1,
             }),
         };

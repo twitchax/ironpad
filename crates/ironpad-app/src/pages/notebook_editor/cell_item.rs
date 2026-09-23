@@ -1,5 +1,6 @@
 use crate::components::icon::{Chevron, Icon, IconLabel};
 use crate::components::icons;
+use ironpad_common::protocol::CellPatch;
 use ironpad_common::{CellManifest, CellType, CompileResponse, Diagnostic, ExecutionResult};
 use leptos::prelude::*;
 
@@ -178,12 +179,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             .apply(
                 ironpad_common::protocol::Mutation::CellUpdate {
                     cell_id: cid,
-                    source: None,
-                    cargo_toml: None,
-                    label: Some(current),
-                    shared: None,
-                    collapsed: None,
-                    output_collapsed: None,
+                    patch: CellPatch {
+                        label: Some(current),
+                        ..Default::default()
+                    },
                     version,
                 },
                 ironpad_common::protocol::ClientId::browser(),
@@ -207,12 +206,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             .apply(
                 ironpad_common::protocol::Mutation::CellUpdate {
                     cell_id: cid,
-                    source: None,
-                    cargo_toml: None,
-                    label: None,
-                    shared: None,
-                    collapsed: code,
-                    output_collapsed: output,
+                    patch: CellPatch {
+                        collapsed: code,
+                        output_collapsed: output,
+                        ..Default::default()
+                    },
                     version,
                 },
                 ironpad_common::protocol::ClientId::browser(),
@@ -458,12 +456,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             .apply(
                 ironpad_common::protocol::Mutation::CellUpdate {
                     cell_id: cid,
-                    source: None,
-                    cargo_toml: None,
-                    label: None,
-                    shared: Some(next),
-                    collapsed: None,
-                    output_collapsed: None,
+                    patch: CellPatch {
+                        shared: Some(next),
+                        ..Default::default()
+                    },
                     version,
                 },
                 ironpad_common::protocol::ClientId::browser(),
@@ -809,12 +805,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 .apply(
                     ironpad_common::protocol::Mutation::CellUpdate {
                         cell_id: cid,
-                        source: Some(val),
-                        cargo_toml: None,
-                        label: None,
-                        shared: None,
-                        collapsed: None,
-                        output_collapsed: None,
+                        patch: CellPatch {
+                            source: Some(val),
+                            ..Default::default()
+                        },
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),
@@ -894,12 +888,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 .apply(
                     ironpad_common::protocol::Mutation::CellUpdate {
                         cell_id: cid,
-                        source: None,
-                        cargo_toml: Some(Some(val)),
-                        label: None,
-                        shared: None,
-                        collapsed: None,
-                        output_collapsed: None,
+                        patch: CellPatch {
+                            cargo_toml: Some(Some(val)),
+                            ..Default::default()
+                        },
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),
@@ -975,12 +967,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 .apply(
                     ironpad_common::protocol::Mutation::CellUpdate {
                         cell_id: cid,
-                        source: Some(src),
-                        cargo_toml: Some(Some(toml)),
-                        label: None,
-                        shared: None,
-                        collapsed: None,
-                        output_collapsed: None,
+                        patch: CellPatch {
+                            source: Some(src),
+                            cargo_toml: Some(Some(toml)),
+                            ..Default::default()
+                        },
                         version,
                     },
                     ironpad_common::protocol::ClientId::browser(),

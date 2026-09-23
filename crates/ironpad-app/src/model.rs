@@ -51,21 +51,6 @@ pub(crate) struct NotebookModel {
     external_content_generation: RwSignal<u64>,
 }
 
-/// Field bundle for [`NotebookModel::cell_update`] — mirrors
-/// [`Mutation::CellUpdate`] so the handler stays readable as per-cell
-/// attributes grow instead of accreting positional arguments.
-#[allow(clippy::option_option)] // None = unchanged, Some(None) = clear, Some(Some(v)) = set.
-struct CellUpdateFields {
-    cell_id: String,
-    source: Option<String>,
-    cargo_toml: Option<Option<String>>,
-    label: Option<String>,
-    shared: Option<bool>,
-    collapsed: Option<bool>,
-    output_collapsed: Option<bool>,
-    version: u64,
-}
-
 impl NotebookModel {
     /// Create a model backed by the given reactive signals.
     pub(crate) fn new(
@@ -108,23 +93,9 @@ impl NotebookModel {
             } => self.cell_add(cell, after_cell_id)?,
             Mutation::CellUpdate {
                 cell_id,
-                source,
-                cargo_toml,
-                label,
-                shared,
-                collapsed,
-                output_collapsed,
+                patch,
                 version,
-            } => self.cell_update(CellUpdateFields {
-                cell_id,
-                source,
-                cargo_toml,
-                label,
-                shared,
-                collapsed,
-                output_collapsed,
-                version,
-            })?,
+            } => self.cell_update(cell_id, patch, version)?,
             Mutation::CellDelete { cell_id, version } => self.cell_delete(cell_id, version)?,
             Mutation::CellReorder { cell_ids } => self.cell_reorder(cell_ids)?,
             Mutation::NotebookUpdateMeta { meta } => self.notebook_update_meta(meta)?,
@@ -372,17 +343,12 @@ impl NotebookModel {
         ))
     }
 
-    fn cell_update(&self, fields: CellUpdateFields) -> Result<(MutationResult, Event), ModelError> {
-        let CellUpdateFields {
-            cell_id,
-            source,
-            cargo_toml,
-            label,
-            shared,
-            collapsed,
-            output_collapsed,
-            version,
-        } = fields;
+    fn cell_update(
+        &self,
+        cell_id: String,
+        patch: CellPatch,
+        version: u64,
+    ) -> Result<(MutationResult, Event), ModelError> {
         // OCC check.
         let current = self.cell_version(&cell_id);
         if version != current {
@@ -406,7 +372,7 @@ impl NotebookModel {
         }
 
         let new_version = current + 1;
-        let content_changed = source.is_some() || cargo_toml.is_some();
+        let content_changed = patch.source.is_some() || patch.cargo_toml.is_some();
         // Shared-cell edits change EVERY cell's compilation input, not just
         // downstream: shared source is global. Capture the flag before the
         // update so both "was shared" (source edited) and "became (un)shared"
@@ -417,7 +383,7 @@ impl NotebookModel {
                 .is_some_and(|nb| nb.cells.iter().any(|c| c.id == cell_id && c.shared))
         });
         let affects_shared =
-            shared.is_some_and(|s| s != was_shared) || (was_shared && content_changed);
+            patch.shared.is_some_and(|s| s != was_shared) || (was_shared && content_changed);
 
         // Use update_untracked for content-only changes (performance: avoids
         // triggering the notebook-level Effect that syncs layout title, etc.).
@@ -428,15 +394,7 @@ impl NotebookModel {
             };
             // Shared per-field application — one definition with the
             // daemon's event applier.
-            notebook_ops::CellPatch {
-                source: source.as_ref(),
-                cargo_toml: cargo_toml.as_ref(),
-                label: label.as_ref(),
-                shared,
-                collapsed,
-                output_collapsed,
-            }
-            .apply_to(cell, new_version);
+            patch.apply_to(cell, new_version);
         });
 
         self.cell_versions.update(|v| {
@@ -453,7 +411,10 @@ impl NotebookModel {
         // CellManifest, so sync the derived list. (The cell list rebuilds
         // its rows from these manifests on remount — e.g. returning from
         // view mode — so a stale manifest resurrects old header state.)
-        if label.is_some() || shared.is_some() || collapsed.is_some() || output_collapsed.is_some()
+        if patch.label.is_some()
+            || patch.shared.is_some()
+            || patch.collapsed.is_some()
+            || patch.output_collapsed.is_some()
         {
             self.sync_from_notebook();
         }
@@ -465,12 +426,7 @@ impl NotebookModel {
             },
             Event::CellUpdated {
                 cell_id,
-                source,
-                cargo_toml,
-                label,
-                shared,
-                collapsed,
-                output_collapsed,
+                patch,
                 version: new_version,
             },
         ))
@@ -598,10 +554,16 @@ fn is_remote_content_edit(by: &ClientId, mutation: &Mutation) -> bool {
         && matches!(
             mutation,
             Mutation::CellUpdate {
-                source: Some(_),
+                patch: CellPatch {
+                    source: Some(_),
+                    ..
+                },
                 ..
             } | Mutation::CellUpdate {
-                cargo_toml: Some(_),
+                patch: CellPatch {
+                    cargo_toml: Some(_),
+                    ..
+                },
                 ..
             }
         )
@@ -610,17 +572,16 @@ fn is_remote_content_edit(by: &ClientId, mutation: &Mutation) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_remote_content_edit;
-    use ironpad_common::protocol::{ClientId, Mutation};
+    use ironpad_common::protocol::{CellPatch, ClientId, Mutation};
 
     fn source_update(source: Option<&str>, label: Option<&str>) -> Mutation {
         Mutation::CellUpdate {
             cell_id: "c1".into(),
-            source: source.map(Into::into),
-            cargo_toml: None,
-            label: label.map(Into::into),
-            shared: None,
-            collapsed: None,
-            output_collapsed: None,
+            patch: CellPatch {
+                source: source.map(Into::into),
+                label: label.map(Into::into),
+                ..Default::default()
+            },
             version: 0,
         }
     }
@@ -637,12 +598,10 @@ mod tests {
     fn agent_cargo_toml_edit_is_remote_content_edit() {
         let m = Mutation::CellUpdate {
             cell_id: "c1".into(),
-            source: None,
-            cargo_toml: Some(Some("[package]".into())),
-            label: None,
-            shared: None,
-            collapsed: None,
-            output_collapsed: None,
+            patch: CellPatch {
+                cargo_toml: Some(Some("[package]".into())),
+                ..Default::default()
+            },
             version: 0,
         };
         assert!(is_remote_content_edit(&ClientId::agent("a"), &m));
@@ -723,12 +682,11 @@ mod collapse_tests {
                 .apply(
                     Mutation::CellUpdate {
                         cell_id: "c1".into(),
-                        source: None,
-                        cargo_toml: None,
-                        label: None,
-                        shared: None,
-                        collapsed: Some(true),
-                        output_collapsed: Some(true),
+                        patch: CellPatch {
+                            collapsed: Some(true),
+                            output_collapsed: Some(true),
+                            ..Default::default()
+                        },
                         version: 0,
                     },
                     ClientId::browser(),
@@ -749,16 +707,69 @@ mod collapse_tests {
             );
             assert!(matches!(result, MutationResult::CellUpdated { .. }));
             match event.event {
-                Event::CellUpdated {
-                    collapsed,
-                    output_collapsed,
-                    ..
-                } => {
-                    assert_eq!(collapsed, Some(true));
-                    assert_eq!(output_collapsed, Some(true));
+                Event::CellUpdated { patch, .. } => {
+                    assert_eq!(patch.collapsed, Some(true));
+                    assert_eq!(patch.output_collapsed, Some(true));
                 }
                 other => panic!("unexpected event: {other:?}"),
             }
+        });
+    }
+
+    /// The event must echo EVERY field the mutation carried: a guest (the CLI
+    /// daemon) rebuilds its cached cell from the event alone, so a field the
+    /// mutation changes and the event drops is silent drift. Replaying the
+    /// event onto the pre-update cell must land exactly where the model did.
+    #[test]
+    fn cell_updated_event_echoes_the_whole_patch() {
+        Owner::new().with(|| {
+            let before = notebook_with_one_cell();
+            let nb_signal = RwSignal::new(Some(before.clone()));
+            let model = NotebookModel::new(
+                nb_signal,
+                RwSignal::new(Vec::new()),
+                RwSignal::new(HashMap::new()),
+                RwSignal::new(0),
+            );
+            model.sync_from_notebook();
+
+            let patch = CellPatch {
+                source: Some("43".into()),
+                cargo_toml: Some(Some("[dependencies]".into())),
+                label: Some("Renamed".into()),
+                shared: Some(true),
+                collapsed: Some(true),
+                output_collapsed: Some(true),
+            };
+            let (_, envelope) = model
+                .apply(
+                    Mutation::CellUpdate {
+                        cell_id: "c1".into(),
+                        patch: patch.clone(),
+                        version: 0,
+                    },
+                    ClientId::agent("a"),
+                )
+                .expect("update should apply");
+
+            let Event::CellUpdated {
+                cell_id,
+                patch: echoed,
+                version,
+            } = envelope.event
+            else {
+                panic!("unexpected event: {:?}", envelope.event);
+            };
+            assert_eq!(cell_id, "c1");
+            assert_eq!(echoed, patch, "the event must carry the whole patch");
+
+            let mut replayed = before.cells[0].clone();
+            echoed.apply_to(&mut replayed, version);
+            assert_eq!(
+                replayed,
+                nb_signal.get_untracked().unwrap().cells[0],
+                "replaying the event must reproduce the model's cell"
+            );
         });
     }
 

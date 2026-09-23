@@ -339,24 +339,11 @@ async fn update_cache_from_event(event: &protocol::Event, state: &DaemonState) {
         } => notebook_ops::insert_cell(&mut nb.cells, cell.clone(), after_cell_id.as_deref()),
         protocol::Event::CellUpdated {
             cell_id,
-            source,
-            cargo_toml,
-            label,
-            shared,
-            collapsed,
-            output_collapsed,
+            patch,
             version,
         } => {
             if let Some(cell) = nb.cells.iter_mut().find(|c| &c.id == cell_id) {
-                notebook_ops::CellPatch {
-                    source: source.as_ref(),
-                    cargo_toml: cargo_toml.as_ref(),
-                    label: label.as_ref(),
-                    shared: *shared,
-                    collapsed: *collapsed,
-                    output_collapsed: *output_collapsed,
-                }
-                .apply_to(cell, *version);
+                patch.apply_to(cell, *version);
             }
         }
         protocol::Event::CellDeleted { cell_id } => {
@@ -911,12 +898,14 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
 
             Ok(MessageKind::Mutation(protocol::Mutation::CellUpdate {
                 cell_id,
-                source,
-                cargo_toml,
-                label,
-                shared,
-                collapsed,
-                output_collapsed,
+                patch: protocol::CellPatch {
+                    source,
+                    cargo_toml,
+                    label,
+                    shared,
+                    collapsed,
+                    output_collapsed,
+                },
                 version,
             }))
         }
@@ -1477,21 +1466,18 @@ mod tests {
         match kind {
             MessageKind::Mutation(protocol::Mutation::CellUpdate {
                 cell_id,
-                source,
-                cargo_toml,
-                label,
-                shared,
-                collapsed,
-                output_collapsed,
+                patch,
                 version,
             }) => {
                 assert_eq!(cell_id, "c1");
-                assert_eq!(source.as_deref(), Some("new code"));
-                assert!(cargo_toml.is_none());
-                assert!(label.is_none());
-                assert!(shared.is_none());
-                assert!(collapsed.is_none());
-                assert!(output_collapsed.is_none());
+                assert_eq!(
+                    patch,
+                    protocol::CellPatch {
+                        source: Some("new code".to_string()),
+                        ..Default::default()
+                    },
+                    "only the named field is set"
+                );
                 assert_eq!(version, 3);
             }
             other => panic!("expected CellUpdate, got {other:?}"),

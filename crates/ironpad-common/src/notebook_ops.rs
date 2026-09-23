@@ -10,6 +10,7 @@
 //!
 //! [`NotebookMetaPatch::apply_to`]: crate::protocol::NotebookMetaPatch::apply_to
 
+use crate::protocol::CellPatch;
 use crate::types::IronpadCell;
 
 /// Insert `cell` relative to `after_cell_id`, then renumber:
@@ -56,30 +57,22 @@ pub fn renumber(cells: &mut [IronpadCell]) {
     }
 }
 
-/// The changed-field bundle of `Mutation::CellUpdate` / `Event::CellUpdated`,
-/// borrowed from either side's fields.
-///
-/// `cargo_toml` is the doubled option from the wire: `Some(None)` is an
-/// explicit clear, `None` untouched.
-pub struct CellPatch<'a> {
-    pub source: Option<&'a String>,
-    pub cargo_toml: Option<&'a Option<String>>,
-    pub label: Option<&'a String>,
-    pub shared: Option<bool>,
-    pub collapsed: Option<bool>,
-    pub output_collapsed: Option<bool>,
-}
-
-impl CellPatch<'_> {
+// The bundle `Mutation::CellUpdate` and `Event::CellUpdated` both flatten:
+// the model applies the mutation and the daemon replays the event through
+// this one body.
+impl CellPatch {
     /// Apply the changed fields to `cell` and stamp `version`.
+    ///
+    /// `cargo_toml` is the doubled option from the wire: `Some(None)` is an
+    /// explicit clear, `None` untouched.
     pub fn apply_to(&self, cell: &mut IronpadCell, version: u64) {
-        if let Some(src) = self.source {
+        if let Some(src) = &self.source {
             cell.source.clone_from(src);
         }
-        if let Some(ct) = self.cargo_toml {
+        if let Some(ct) = &self.cargo_toml {
             cell.cargo_toml.clone_from(ct);
         }
-        if let Some(lbl) = self.label {
+        if let Some(lbl) = &self.label {
             cell.label.clone_from(lbl);
         }
         if let Some(sh) = self.shared {
@@ -172,15 +165,12 @@ mod tests {
     fn patch_applies_only_changed_fields_and_stamps_version() {
         let mut c = cell("a");
         c.cargo_toml = Some("[dependencies]".to_string());
-        let new_source = "43".to_string();
         CellPatch {
-            source: Some(&new_source),
+            source: Some("43".to_string()),
             // Some(None): the explicit clear must actually clear.
-            cargo_toml: Some(&None),
-            label: None,
+            cargo_toml: Some(None),
             shared: Some(true),
-            collapsed: None,
-            output_collapsed: None,
+            ..Default::default()
         }
         .apply_to(&mut c, 7);
         assert_eq!(c.source, "43");
