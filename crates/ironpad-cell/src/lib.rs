@@ -962,16 +962,11 @@ pub struct TickResult {
 
 impl From<canvas::Canvas> for TickResult {
     fn from(canvas: canvas::Canvas) -> Self {
-        let width = canvas.width();
-        let height = canvas.height();
-        let rgb = canvas.into_pixels();
-        let mut boxed = rgb.into_boxed_slice();
-        let ptr = boxed.as_mut_ptr();
-        let len = boxed.len();
-        std::mem::forget(boxed);
+        let (width, height) = (canvas.width(), canvas.height());
+        let (rgb_ptr, rgb_len) = vec_into_raw(canvas.into_pixels());
         TickResult {
-            rgb_ptr: ptr,
-            rgb_len: len,
+            rgb_ptr,
+            rgb_len,
             width,
             height,
         }
@@ -1033,14 +1028,11 @@ impl From<LiveContent> for LiveTickResult {
             LiveContent::Html(s) => (1, s),
             LiveContent::Markdown(s) => (2, s),
         };
-        let mut bytes = s.into_bytes().into_boxed_slice();
-        let ptr = bytes.as_mut_ptr();
-        let len = bytes.len();
-        std::mem::forget(bytes);
+        let (content_ptr, content_len) = vec_into_raw(s.into_bytes());
         LiveTickResult {
             kind,
-            content_ptr: ptr,
-            content_len: len,
+            content_ptr,
+            content_len,
         }
     }
 }
@@ -1257,6 +1249,10 @@ pub struct CellResult {
 /// Leak a `Vec<u8>` and return its (pointer, length).
 ///
 /// Returns `(null, 0)` for an empty vector.
+///
+/// The one leak path for all three FFI result types ([`CellResult`],
+/// [`TickResult`], [`LiveTickResult`]), so the soundness argument below is
+/// written once rather than kept identical across three unsafe blocks.
 fn vec_into_raw(v: Vec<u8>) -> (*mut u8, usize) {
     if v.is_empty() {
         return (std::ptr::null_mut(), 0);
@@ -1264,8 +1260,7 @@ fn vec_into_raw(v: Vec<u8>) -> (*mut u8, usize) {
 
     // `into_boxed_slice` *guarantees* capacity == length, which the reclaim path
     // (`Vec::from_raw_parts(ptr, len, len)` in `ironpad_dealloc`) relies on for
-    // a sound deallocation.  `shrink_to_fit` is only *allowed* to reach that, so
-    // this matches the sibling `TickResult`/`LiveTickResult` FFI conversions.
+    // a sound deallocation.  `shrink_to_fit` is only *allowed* to reach that.
     let mut boxed = v.into_boxed_slice();
     let ptr = boxed.as_mut_ptr();
     let len = boxed.len();
@@ -2568,6 +2563,15 @@ mod tests {
         assert_eq!(&rgb[..3], &[255, 128, 64]);
     }
 
+    #[test]
+    fn empty_canvas_tick_result_is_null_zero() {
+        // A 0x0 frame crosses as (null, 0), the same empty-case contract as
+        // `CellResult`, not as a dangling pointer to a zero-length box.
+        let tr = TickResult::from(canvas::Canvas::new(0, 0));
+        assert!(tr.rgb_ptr.is_null());
+        assert_eq!(tr.rgb_len, 0);
+    }
+
     // ── LiveView / LiveTickResult ──────────────────────────────────────────
 
     #[test]
@@ -2620,5 +2624,13 @@ mod tests {
         // SAFETY: the content was leaked by `From<LiveContent>`.
         let bytes = unsafe { reclaim(result.content_ptr, result.content_len) };
         assert_eq!(bytes, b"# Title");
+    }
+
+    #[test]
+    fn empty_live_content_is_null_zero() {
+        let result = LiveTickResult::from(LiveContent::Text(String::new()));
+        assert_eq!(result.kind, 0);
+        assert!(result.content_ptr.is_null());
+        assert_eq!(result.content_len, 0);
     }
 }
