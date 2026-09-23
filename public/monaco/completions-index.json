@@ -592,7 +592,7 @@
    "label": "sim::emit",
    "insert": "sim::emit",
    "kind": "function",
-   "detail": "pub fn emit<T: serde::Serialize>(key: &str, value: &T)",
+   "detail": "pub fn emit<T: serde::Serialize + ?Sized>(key: &str, value: &T)",
    "doc": "Emit a named value to the simulation bus."
   },
   {

@@ -24,17 +24,32 @@ extern "C" {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/// The `sim_emit` host message, serialized straight from borrows: `emit` runs
+/// several times per frame in the simulation notebooks, and building a
+/// `serde_json::Value` tree first cost a map, three key strings and a full
+/// copy of `value` each time.
+#[derive(serde::Serialize)]
+struct SimEmit<'a, T: ?Sized + serde::Serialize> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    key: &'a str,
+    value: &'a T,
+}
+
 /// Emit a named value to the simulation bus.
 ///
 /// Serialises `value` as JSON and sends it to the JS executor via the
 /// `host_message` channel with `{"type": "sim_emit", "key": key, "value": …}`.
 /// The executor maintains a ring buffer of the last 1 000 values per key.
-pub fn emit<T: serde::Serialize>(key: &str, value: &T) {
-    crate::host_message_json(&serde_json::json!({
-        "type": "sim_emit",
-        "key": key,
-        "value": value,
-    }));
+///
+/// A value that cannot serialize to JSON (a map with non-string keys, say) is
+/// dropped rather than panicking the cell.
+pub fn emit<T: serde::Serialize + ?Sized>(key: &str, value: &T) {
+    crate::host_message_json(&SimEmit {
+        kind: "sim_emit",
+        key,
+        value,
+    });
 }
 
 /// Read the latest value emitted for `key`.
@@ -153,6 +168,34 @@ mod tests {
         emit("temperature", &42.0_f64);
         emit("label", &"hello");
         emit("nested", &serde_json::json!({"a": 1, "b": [2, 3]}));
+    }
+
+    #[test]
+    fn emit_drops_unserializable_values_instead_of_panicking() {
+        // JSON object keys must be strings, so this map cannot serialize. The
+        // message is dropped, as `host_message_json` intends; `json!`'s
+        // interpolation unwrapped the conversion and trapped the whole cell.
+        emit("k", &std::collections::HashMap::from([((1, 2), 3.0)]));
+    }
+
+    #[test]
+    fn sim_emit_message_shape_is_unchanged() {
+        // The executor dispatches on this exact shape.
+        let msg = SimEmit {
+            kind: "sim_emit",
+            key: "k",
+            value: &[1, 2],
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({"type": "sim_emit", "key": "k", "value": [1, 2]})
+        );
+    }
+
+    #[test]
+    fn emit_accepts_unsized_values() {
+        emit("label", "a str, not a &&str");
+        emit("slice", [1.0_f64, 2.0].as_slice());
     }
 
     #[test]

@@ -552,14 +552,23 @@ impl ProgressHandle {
 
     /// Update the progress bar to the given percentage (0.0–100.0).
     pub fn update(&self, value: f64) {
-        let clamped = value.clamp(0.0, 100.0);
-        let msg = serde_json::json!({
-            "type": "progress_update",
-            "id": self.id,
-            "value": clamped,
+        crate::host_message_json(&ProgressUpdate {
+            kind: "progress_update",
+            id: &self.id,
+            value: value.clamp(0.0, 100.0),
         });
-        crate::host_message_json(&msg);
     }
+}
+
+/// The `progress_update` host message, serialized straight from borrows:
+/// `update` is called from inside user loops, and a `serde_json::Value` tree
+/// per call was a map, three key strings and a copy of the id.
+#[derive(serde::Serialize)]
+struct ProgressUpdate<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    id: &'a str,
+    value: f64,
 }
 
 // ── SimSlider ────────────────────────────────────────────────────────────────
@@ -1143,6 +1152,20 @@ mod tests {
         let json = serde_json::to_string(&pb).expect("serialize");
         let decoded: String = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, expected_id);
+    }
+
+    #[test]
+    fn progress_update_message_shape_is_unchanged() {
+        // The executor dispatches on this exact shape.
+        let msg = ProgressUpdate {
+            kind: "progress_update",
+            id: "progress-1",
+            value: 42.5,
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({"type": "progress_update", "id": "progress-1", "value": 42.5})
+        );
     }
 
     #[test]
