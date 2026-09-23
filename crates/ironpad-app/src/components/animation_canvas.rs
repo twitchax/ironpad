@@ -25,117 +25,87 @@ pub struct SimSliderMeta {
 // ── JS-side helpers (hydrate-only) ──────────────────────────────────────────
 //
 // All heavy pixel work (base64 decode, RGB→RGBA expansion, ImageData creation)
-// is done in a single JS call to avoid copying large buffers across the WASM
-// boundary.
+// happens JS-side, so bulk pixel data never crosses the WASM boundary. One
+// `inline_js` module compiled once at load: these run once per animation
+// frame and per simulation tick, which is too hot for `new Function(..)`.
+// Every entry `catch`es so a malformed frame (a length that does not match
+// its dimensions) is skipped rather than thrown through the rAF loop.
 
-/// Draw a base64-encoded RGB frame to a canvas entirely in JS.
-///
-/// Decodes base64, expands RGB→RGBA, builds an `ImageData`, and calls
-/// `putImageData` — all without crossing the WASM boundary.
 #[cfg(feature = "hydrate")]
-fn draw_b64_rgb_to_canvas(
-    ctx: &web_sys::CanvasRenderingContext2d,
-    b64: &str,
-    width: u32,
-    height: u32,
-) {
-    use js_sys::Function;
-    use wasm_bindgen::JsValue;
+mod draw {
+    use wasm_bindgen::prelude::*;
 
-    let func = Function::new_with_args(
-        "ctx,b64,w,h",
-        "var s=atob(b64),n=s.length,a=new Uint8ClampedArray(n/3*4);\
-         for(var i=0,j=0;i<n;i+=3,j+=4){a[j]=s.charCodeAt(i);a[j+1]=s.charCodeAt(i+1);a[j+2]=s.charCodeAt(i+2);a[j+3]=255;}\
-         ctx.putImageData(new ImageData(a,w,h),0,0)",
-    );
-    let _ = func.call4(
-        &JsValue::NULL,
-        ctx,
-        &JsValue::from_str(b64),
-        &JsValue::from_f64(f64::from(width)),
-        &JsValue::from_f64(f64::from(height)),
-    );
-}
+    #[wasm_bindgen(inline_js = "
+        export function draw_rgba(ctx, a, w, h) {
+            ctx.putImageData(new ImageData(a, w, h), 0, 0);
+        }
+        export function draw_rgb(ctx, rgb, w, h) {
+            var n = rgb.length, a = new Uint8ClampedArray(n / 3 * 4);
+            for (var i = 0, j = 0; i < n; i += 3, j += 4) {
+                a[j] = rgb[i]; a[j + 1] = rgb[i + 1]; a[j + 2] = rgb[i + 2]; a[j + 3] = 255;
+            }
+            ctx.putImageData(new ImageData(a, w, h), 0, 0);
+        }
+        export function draw_b64_rgb(ctx, b64, w, h) {
+            var s = atob(b64), n = s.length, a = new Uint8ClampedArray(n / 3 * 4);
+            for (var i = 0, j = 0; i < n; i += 3, j += 4) {
+                a[j] = s.charCodeAt(i); a[j + 1] = s.charCodeAt(i + 1);
+                a[j + 2] = s.charCodeAt(i + 2); a[j + 3] = 255;
+            }
+            ctx.putImageData(new ImageData(a, w, h), 0, 0);
+        }
+        export function decode_frames(b64, fsz, fc) {
+            var s = atob(b64), out = [];
+            for (var f = 0; f < fc; f++) {
+                var off = f * fsz, a = new Uint8ClampedArray(fsz / 3 * 4);
+                for (var i = 0, j = 0; i < fsz; i += 3, j += 4) {
+                    var p = off + i;
+                    a[j] = s.charCodeAt(p); a[j + 1] = s.charCodeAt(p + 1);
+                    a[j + 2] = s.charCodeAt(p + 2); a[j + 3] = 255;
+                }
+                out.push(a);
+            }
+            return out;
+        }
+    ")]
+    extern "C" {
+        /// Draw a pre-decoded RGBA `Uint8ClampedArray` frame.
+        #[wasm_bindgen(catch)]
+        pub fn draw_rgba(
+            ctx: &web_sys::CanvasRenderingContext2d,
+            rgba: &JsValue,
+            width: u32,
+            height: u32,
+        ) -> Result<(), JsValue>;
 
-/// Draw raw RGB bytes (already in WASM memory) to a canvas.
-///
-/// Expands RGB→RGBA and calls `putImageData` in one JS call.  The
-/// `Uint8Array` view is zero-copy into JS.
-#[cfg(feature = "hydrate")]
-fn draw_rgb_to_canvas(
-    ctx: &web_sys::CanvasRenderingContext2d,
-    rgb: &[u8],
-    width: u32,
-    height: u32,
-) {
-    use js_sys::Function;
-    use wasm_bindgen::JsValue;
+        /// Expand an RGB frame that already lives in JS memory (a simulation
+        /// tick's `rgbBytes`) to RGBA and draw it.
+        #[wasm_bindgen(catch)]
+        pub fn draw_rgb(
+            ctx: &web_sys::CanvasRenderingContext2d,
+            rgb: &js_sys::Uint8Array,
+            width: u32,
+            height: u32,
+        ) -> Result<(), JsValue>;
 
-    let js_rgb = js_sys::Uint8Array::from(rgb);
-    let func = Function::new_with_args(
-        "ctx,rgb,w,h",
-        "var n=rgb.length,a=new Uint8ClampedArray(n/3*4);\
-         for(var i=0,j=0;i<n;i+=3,j+=4){a[j]=rgb[i];a[j+1]=rgb[i+1];a[j+2]=rgb[i+2];a[j+3]=255;}\
-         ctx.putImageData(new ImageData(a,w,h),0,0)",
-    );
-    let _ = func.call4(
-        &JsValue::NULL,
-        ctx,
-        &js_rgb,
-        &JsValue::from_f64(f64::from(width)),
-        &JsValue::from_f64(f64::from(height)),
-    );
-}
+        /// Decode a base64 RGB frame, expand it to RGBA and draw it.
+        #[wasm_bindgen(catch)]
+        pub fn draw_b64_rgb(
+            ctx: &web_sys::CanvasRenderingContext2d,
+            b64: &str,
+            width: u32,
+            height: u32,
+        ) -> Result<(), JsValue>;
 
-/// Decode a base64 RGB blob into per-frame RGBA `Uint8Array`s entirely in JS.
-///
-/// Returns a `js_sys::Array` of `Uint8Array` (one per frame, already RGBA).
-/// All work happens JS-side to avoid copying the full animation buffer into
-/// WASM linear memory.
-#[cfg(feature = "hydrate")]
-fn decode_animation_frames(b64: &str, frame_rgb_size: u32, frame_count: u32) -> js_sys::Array {
-    use js_sys::Function;
-    use wasm_bindgen::JsValue;
-
-    let func = Function::new_with_args(
-        "b64,fsz,fc",
-        "var s=atob(b64),out=[];\
-         for(var f=0;f<fc;f++){\
-           var off=f*fsz,a=new Uint8ClampedArray(fsz/3*4);\
-           for(var i=0,j=0;i<fsz;i+=3,j+=4){var p=off+i;a[j]=s.charCodeAt(p);a[j+1]=s.charCodeAt(p+1);a[j+2]=s.charCodeAt(p+2);a[j+3]=255;}\
-           out.push(a);}\
-         return out",
-    );
-    let result = func
-        .call3(
-            &JsValue::NULL,
-            &JsValue::from_str(b64),
-            &JsValue::from_f64(f64::from(frame_rgb_size)),
-            &JsValue::from_f64(f64::from(frame_count)),
-        )
-        .unwrap_or_else(|_| JsValue::from(js_sys::Array::new()));
-    js_sys::Array::from(&result)
-}
-
-/// Draw a pre-decoded RGBA `Uint8ClampedArray` frame to a canvas context.
-#[cfg(feature = "hydrate")]
-fn draw_js_frame_to_canvas(
-    ctx: &web_sys::CanvasRenderingContext2d,
-    rgba_clamped: &wasm_bindgen::JsValue,
-    width: u32,
-    height: u32,
-) {
-    use js_sys::Function;
-    use wasm_bindgen::JsValue;
-
-    let func = Function::new_with_args("ctx,a,w,h", "ctx.putImageData(new ImageData(a,w,h),0,0)");
-    let _ = func.call4(
-        &JsValue::NULL,
-        ctx,
-        rgba_clamped,
-        &JsValue::from_f64(f64::from(width)),
-        &JsValue::from_f64(f64::from(height)),
-    );
+        /// Decode a base64 blob of concatenated RGB frames into one RGBA
+        /// `Uint8ClampedArray` per frame.
+        #[wasm_bindgen(catch)]
+        pub fn decode_frames(
+            b64: &str,
+            frame_rgb_size: u32,
+            frame_count: u32,
+        ) -> Result<js_sys::Array, JsValue>;
+    }
 }
 
 /// Cancel a `requestAnimationFrame` by ID (if present).
@@ -225,8 +195,10 @@ pub fn AnimationCanvas(
         // Decode all frames to RGBA entirely in JS — never copies bulk pixel
         // data into WASM linear memory.
         let frame_rgb_size = width * height * 3;
-        let frames: Rc<js_sys::Array> =
-            Rc::new(decode_animation_frames(&data, frame_rgb_size, frame_count));
+        let frames: Rc<js_sys::Array> = Rc::new(
+            draw::decode_frames(&data, frame_rgb_size, frame_count)
+                .unwrap_or_else(|_| js_sys::Array::new()),
+        );
 
         let frames_effect = frames.clone();
         Effect::new(move |_| {
@@ -247,7 +219,7 @@ pub fn AnimationCanvas(
 
             // Draw the first frame immediately.
             if frames_effect.length() > 0 {
-                draw_js_frame_to_canvas(&ctx, &frames_effect.get(0), width, height);
+                let _ = draw::draw_rgba(&ctx, &frames_effect.get(0), width, height);
             }
 
             let frames_loop = frames_effect.clone();
@@ -278,7 +250,7 @@ pub fn AnimationCanvas(
                 if dt >= frame_interval_ms {
                     *last_time.borrow_mut() = timestamp;
                     let idx = current_frame.get_untracked();
-                    draw_js_frame_to_canvas(&ctx, &frames_loop.get(idx), width, height);
+                    let _ = draw::draw_rgba(&ctx, &frames_loop.get(idx), width, height);
                     current_frame.set((idx + 1) % total.max(1));
                 }
 
@@ -443,7 +415,7 @@ pub fn SimulationCanvas(
                 .expect("cast to CanvasRenderingContext2d");
 
             // Draw first frame entirely in JS (base64 → RGB → RGBA → putImageData).
-            draw_b64_rgb_to_canvas(&ctx, &first_frame_data, width, height);
+            let _ = draw::draw_b64_rgb(&ctx, &first_frame_data, width, height);
 
             *ctx_cell_effect.borrow_mut() = Some(ctx);
 
@@ -484,7 +456,7 @@ pub fn SimulationCanvas(
                         match crate::components::executor::tick_cell(&cid).await {
                             Ok(tick_result) => {
                                 if let Some(ref ctx) = *ctx_tick.borrow() {
-                                    draw_rgb_to_canvas(
+                                    let _ = draw::draw_rgb(
                                         ctx,
                                         &tick_result.rgb_bytes,
                                         tick_result.width,
@@ -554,7 +526,7 @@ pub fn SimulationCanvas(
                 match crate::components::executor::tick_cell(&cid).await {
                     Ok(tick_result) => {
                         if let Some(ref ctx) = *ctx_s.borrow() {
-                            draw_rgb_to_canvas(
+                            let _ = draw::draw_rgb(
                                 ctx,
                                 &tick_result.rgb_bytes,
                                 tick_result.width,

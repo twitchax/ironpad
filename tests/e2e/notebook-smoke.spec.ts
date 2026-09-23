@@ -152,6 +152,40 @@ test.describe("Notebook smoke tests", () => {
       timeout: CELL_OUTPUT_TIMEOUT,
     });
 
+    // The live simulation's tick path: every tick's frame is drawn by the
+    // shared JS draw shim straight from the tick's `rgbBytes`. The fps
+    // readout is what a live SimulationCanvas has and a saved snapshot's
+    // one-frame replay does not.
+    const sim = page
+      .locator(".animation-canvas-container")
+      .filter({ has: page.locator(".animation-fps-display") })
+      .first();
+    const frame = async () =>
+      Number(
+        (await sim.locator(".animation-frame-counter").textContent())?.match(/\d+/)?.[0] ?? 0,
+      );
+    await expect.poll(frame, { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
+
+    // Pause, let any in-flight tick land, then Step once: the counter moves
+    // by exactly one and the frame the tick drew replaces the previous one.
+    const controls = sim.locator(".animation-control-btn");
+    await controls.nth(0).click();
+    await page.waitForTimeout(1_000);
+    const paused = await frame();
+    const pixels = () =>
+      sim.locator("canvas").evaluate((c: HTMLCanvasElement) => c.toDataURL());
+    const before = await pixels();
+    await controls.nth(1).click();
+    await expect.poll(frame, { timeout: 10_000 }).toBe(paused + 1);
+    expect(await pixels(), "the stepped frame was drawn").not.toBe(before);
+    const alpha = await sim
+      .locator("canvas")
+      .evaluate(
+        (c: HTMLCanvasElement) =>
+          c.getContext("2d")!.getImageData(c.width / 2, c.height / 2, 1, 1).data[3],
+      );
+    expect(alpha, "a drawn pixel is opaque").toBe(255);
+
     // No errors should be visible.
     const errorPanels = page.locator(".view-only-error");
     expect(await errorPanels.count()).toBe(0);

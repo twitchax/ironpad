@@ -208,10 +208,16 @@ pub struct LiveTickResult {
 }
 
 /// Result of ticking a simulation cell: frame dimensions and RGB pixel data.
+///
+/// `rgb_bytes` stays a JS `Uint8Array`: the frame is only ever handed back to
+/// JS to draw, so copying it into WASM memory and straight back out cost two
+/// full-frame copies per tick. Hydrate-only for that reason (`js-sys` is a
+/// hydrate dependency), which is also the only place a tick can happen.
+#[cfg(feature = "hydrate")]
 pub struct TickResult {
     pub width: u32,
     pub height: u32,
-    pub rgb_bytes: Vec<u8>,
+    pub rgb_bytes: js_sys::Uint8Array,
 }
 
 /// Tick a simulation cell, returning one frame of pixel data.
@@ -245,19 +251,13 @@ pub async fn tick_cell(cell_id: &str) -> Result<TickResult, String> {
     // Extract `rgbBytes` (Uint8Array).
     let rgb_val =
         js_sys::Reflect::get(&result, &"rgbBytes".into()).map_err(|e| format!("{e:?}"))?;
-    let rgb_bytes = js_sys::Uint8Array::new(&rgb_val).to_vec();
+    let rgb_bytes = js_sys::Uint8Array::new(&rgb_val);
 
     Ok(TickResult {
         width,
         height,
         rgb_bytes,
     })
-}
-
-#[cfg(not(feature = "hydrate"))]
-#[allow(clippy::unused_async)]
-pub async fn tick_cell(_cell_id: &str) -> Result<TickResult, String> {
-    Err("tick_cell is only available in hydrate mode".into())
 }
 
 // ── Tick (LiveView cells) ───────────────────────────────────────────────────
