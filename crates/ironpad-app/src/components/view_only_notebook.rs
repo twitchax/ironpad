@@ -43,6 +43,29 @@ fn canonical_path(spec: &str) -> Option<String> {
         })
 }
 
+/// Whether any cell of `nb` builds with atomics (a rayon worker pool), which
+/// is what needs `SharedArrayBuffer` and so cannot run in a cross-origin
+/// embed.
+///
+/// Asks the compiler's own rayon recipe (`merged_deps_contain_rayon`, the
+/// `atomics` half of `CellFeatures::detect`) per runnable code cell, so the
+/// banner cannot disagree with the build: a `features = ["rayon"]` on another
+/// crate, a comment, or a Linux cell (native threads, never atomics) builds
+/// without atomics and runs fine in an embed.
+// Only the hydrate build can probe isolation, so SSR alone never calls this.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn notebook_needs_atomics(nb: &IronpadNotebook) -> bool {
+    nb.cells
+        .iter()
+        .filter(|c| !c.shared && c.cell_type == CellType::Code)
+        .any(|c| {
+            ironpad_common::cache_key::merged_deps_contain_rayon(
+                nb.shared_cargo_toml.as_deref(),
+                c.cargo_toml.as_deref().unwrap_or(""),
+            )
+        })
+}
+
 /// Read-only notebook view. Displays cells (code + markdown), supports
 /// execution, and provides a fork button to clone the notebook.
 #[allow(clippy::needless_pass_by_value)]
@@ -105,15 +128,6 @@ pub(crate) fn ViewOnlyNotebook(
     let mut threaded_cells_blocked = false;
     #[cfg(feature = "hydrate")]
     if embed {
-        let mentions_rayon = notebook
-            .shared_cargo_toml
-            .as_deref()
-            .unwrap_or("")
-            .contains("rayon")
-            || notebook
-                .cells
-                .iter()
-                .any(|c| c.cargo_toml.as_deref().unwrap_or("").contains("rayon"));
         let isolated = leptos::web_sys::window()
             .and_then(|w| {
                 js_sys::Reflect::get(&w, &"crossOriginIsolated".into())
@@ -121,7 +135,7 @@ pub(crate) fn ViewOnlyNotebook(
                     .and_then(|v| v.as_bool())
             })
             .unwrap_or(false);
-        threaded_cells_blocked = mentions_rayon && !isolated;
+        threaded_cells_blocked = !isolated && notebook_needs_atomics(&notebook);
     }
 
     let notebook = StoredValue::new(notebook);
@@ -1376,5 +1390,80 @@ fn ViewOnlyOutput(
                 }).collect_view()}
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(cell_type: CellType, cargo_toml: Option<&str>) -> IronpadCell {
+        IronpadCell {
+            id: "c".to_string(),
+            order: 0,
+            label: "c".to_string(),
+            cell_type,
+            source: String::new(),
+            cargo_toml: cargo_toml.map(str::to_string),
+            shared: false,
+            collapsed: false,
+            output_collapsed: false,
+            version: 0,
+            saved_output: None,
+        }
+    }
+
+    fn notebook(shared_cargo_toml: Option<&str>, cells: Vec<IronpadCell>) -> IronpadNotebook {
+        let mut nb = IronpadNotebook::new("t");
+        nb.shared_cargo_toml = shared_cargo_toml.map(str::to_string);
+        nb.cells = cells;
+        nb
+    }
+
+    #[test]
+    fn a_rayon_dependency_on_a_code_cell_needs_atomics() {
+        let nb = notebook(
+            None,
+            vec![cell(
+                CellType::Code,
+                Some("[dependencies]\nrayon = \"1\"\n"),
+            )],
+        );
+        assert!(notebook_needs_atomics(&nb));
+    }
+
+    #[test]
+    fn a_shared_rayon_dependency_reaches_every_code_cell() {
+        let nb = notebook(
+            Some("[dependencies]\nrayon = \"1\"\n"),
+            vec![cell(CellType::Code, None)],
+        );
+        assert!(notebook_needs_atomics(&nb));
+    }
+
+    #[test]
+    fn rayon_that_is_not_a_rayon_dependency_does_not() {
+        // A feature named rayon on another crate, and a comment: the compiler
+        // builds both without atomics, so the embed banner must not fire.
+        for manifest in [
+            "[dependencies]\nndarray = { version = \"0.16\", features = [\"rayon\"] }\n",
+            "[dependencies]\n# rayon would be nice here\nserde = \"1\"\n",
+        ] {
+            let nb = notebook(None, vec![cell(CellType::Code, Some(manifest))]);
+            assert!(!notebook_needs_atomics(&nb), "{manifest}");
+        }
+    }
+
+    #[test]
+    fn only_runnable_code_cells_count() {
+        let rayon = Some("[dependencies]\nrayon = \"1\"\n");
+        // A Linux cell uses native threads, never wasm atomics.
+        let linux = notebook(None, vec![cell(CellType::Linux, rayon)]);
+        assert!(!notebook_needs_atomics(&linux));
+        // A shared rayon manifest with no code cell has nothing to build.
+        let prose = notebook(rayon, vec![cell(CellType::Markdown, None)]);
+        assert!(!notebook_needs_atomics(&prose));
+        let empty = notebook(rayon, Vec::new());
+        assert!(!notebook_needs_atomics(&empty));
     }
 }
