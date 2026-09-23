@@ -38,8 +38,9 @@ use self::shared_editor_panel::{SharedEditorKind, SharedEditorSection};
 
 #[cfg(feature = "hydrate")]
 use self::sharing::{
-    delete_mutable_current_notebook, discard_draft_current_notebook, download_current_notebook,
-    export_html_current_notebook, save_to_account_current_notebook, unpublish_current_notebook,
+    delete_local_current_notebook, delete_mutable_current_notebook, discard_draft_current_notebook,
+    download_current_notebook, export_html_current_notebook, save_to_account_current_notebook,
+    unpublish_current_notebook,
 };
 use self::sharing::{
     push_mutable_current_notebook, share_current_notebook, share_mutable_current_notebook,
@@ -918,19 +919,10 @@ fn NotebookContent() -> impl IntoView {
                                                 on:click=move |_| {
                                                     hamburger_open.set(false);
                                                     #[cfg(feature = "hydrate")]
-                                                    {
-                                                        let id = state.notebook_id.get_untracked();
-                                                        if crate::components::dialog::confirm(
-                                                            crate::components::dialog::DELETE_NOTEBOOK_CONFIRM,
-                                                        ) {
-                                                            let navigate = navigate.get_value();
-                                                            leptos::task::spawn_local(async move {
-                                                                crate::storage::client::delete_notebook(&id)
-                                                                    .await;
-                                                                navigate("/", NavigateOptions::default());
-                                                            });
-                                                        }
-                                                    }
+                                                    delete_local_current_notebook(
+                                                        &state,
+                                                        navigate.get_value(),
+                                                    );
                                                 }
                                             >
                                                 <IconLabel icon=icons::DELETE label="Delete"/>

@@ -1,11 +1,12 @@
 //! Notebook lifecycle workflows: Share Immutable, Save to Account, Share
-//! Mutable, Push, Discard Draft, Unpublish, Delete, Export HTML, and
-//! Download .ironpad.
+//! Mutable, Push, Discard Draft, Unpublish, Delete (both storage classes),
+//! Export HTML, and Download .ironpad.
 //!
 //! Extracted from the editor component (`mod.rs`) so every serialize-flow
 //! shares the same flush discipline (PRD-0032 T-007) — the one inline flow
 //! that predated this module (Unpublish) was also the one that missed the
-//! flush and could drop the last debounce-window of typing.
+//! flush and could drop the last debounce-window of typing. The toolbar's
+//! menu items only call into here: no workflow is written in view code.
 
 use leptos::prelude::*;
 
@@ -454,6 +455,26 @@ pub(super) fn unpublish_current_notebook(
             }
             Err(e) => toaster.toast(ToastIntent::Error, "Unpublish Failed", format!("{e}"), 6),
         }
+    });
+}
+
+/// Delete a local notebook: confirm, remove its `IndexedDB` record (its
+/// version-history ring goes with it, PRD-0058), then go home. The Local-mode
+/// twin of [`delete_mutable_current_notebook`].
+#[cfg(feature = "hydrate")]
+pub(super) fn delete_local_current_notebook(
+    state: &NotebookState,
+    navigate: impl Fn(&str, leptos_router::NavigateOptions) + 'static,
+) {
+    let Some(id) = state.notebook_id.try_get_untracked() else {
+        return;
+    };
+    if !crate::components::dialog::confirm(crate::components::dialog::DELETE_NOTEBOOK_CONFIRM) {
+        return;
+    }
+    leptos::task::spawn_local(async move {
+        crate::storage::client::delete_notebook(&id).await;
+        navigate("/", leptos_router::NavigateOptions::default());
     });
 }
 

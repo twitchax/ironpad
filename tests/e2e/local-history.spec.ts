@@ -101,6 +101,13 @@ test.describe("Local version history (PRD-0058)", () => {
       notebookId,
     );
     expect(afterDelete).toEqual([]);
+    // ...and the notebook itself: the editor's local Delete removed the
+    // IndexedDB record, not just the history ring.
+    const record = await page.evaluate(
+      (id) => (window as any).IronpadStorage.getNotebook(id),
+      notebookId,
+    );
+    expect(record, "the deleted notebook is gone from local storage").toBeNull();
   });
 
   test("Restore flushes typing still inside the save debounce into the pre-restore snapshot", async ({
