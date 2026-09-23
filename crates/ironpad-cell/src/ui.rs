@@ -27,6 +27,63 @@ fn simple_id() -> String {
     format!("{:08x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
+// ── Widget plumbing ──────────────────────────────────────────────────────────
+
+/// What sets one widget apart: the kind string the frontend dispatches on,
+/// the value it pipes downstream, and its config JSON. Every output impl is
+/// derived from these by `impl_widget!`, so a widget's kind, type tag and piped
+/// value are each written once.
+trait Widget {
+    /// The `DisplayPanel::Interactive` kind the frontend renders.
+    const KIND: &'static str;
+    /// The value piped to downstream cells; its [`TypeTag`] is the widget's.
+    type Value: serde::Serialize + TypeTag;
+
+    fn value(&self) -> &Self::Value;
+    fn config_json(&self) -> String;
+}
+
+/// `From<W> for CellOutput`, `IntoPanels`, `TypeTag` and `Serialize` for each
+/// widget, all read off its [`Widget`] impl. A bare widget output and the same
+/// widget inside a tuple (whose impls read `Serialize`, `TypeTag` and
+/// `IntoPanels`) therefore pipe the same bytes and tag by construction.
+macro_rules! impl_widget {
+    ($($w:ty),+ $(,)?) => {
+        $(
+            impl From<$w> for CellOutput {
+                fn from(w: $w) -> Self {
+                    Self {
+                        bytes: encode_bincode(w.value()),
+                        panels: w.into_panels(),
+                        type_tag: Some(<$w as TypeTag>::type_tag()),
+                    }
+                }
+            }
+
+            impl IntoPanels for $w {
+                fn into_panels(&self) -> Vec<DisplayPanel> {
+                    vec![DisplayPanel::Interactive {
+                        kind: <$w as Widget>::KIND.into(),
+                        config: Widget::config_json(self),
+                    }]
+                }
+            }
+
+            impl TypeTag for $w {
+                fn type_tag() -> String {
+                    <<$w as Widget>::Value as TypeTag>::type_tag()
+                }
+            }
+
+            impl serde::Serialize for $w {
+                fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                    serde::Serialize::serialize(self.value(), serializer)
+                }
+            }
+        )+
+    };
+}
+
 // ── Slider ───────────────────────────────────────────────────────────────────
 
 /// Builder for a range slider widget producing an `f64` value.
@@ -73,6 +130,15 @@ impl Slider {
         self.default = value;
         self
     }
+}
+
+impl Widget for Slider {
+    const KIND: &'static str = "slider";
+    type Value = f64;
+
+    fn value(&self) -> &f64 {
+        &self.default
+    }
 
     fn config_json(&self) -> String {
         serde_json::json!({
@@ -84,40 +150,6 @@ impl Slider {
             "default": self.default,
         })
         .to_string()
-    }
-}
-
-impl From<Slider> for CellOutput {
-    fn from(s: Slider) -> Self {
-        Self {
-            bytes: encode_bincode(&s.default),
-            panels: vec![DisplayPanel::Interactive {
-                kind: "slider".into(),
-                config: s.config_json(),
-            }],
-            type_tag: Some("f64".into()),
-        }
-    }
-}
-
-impl IntoPanels for Slider {
-    fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Interactive {
-            kind: "slider".into(),
-            config: self.config_json(),
-        }]
-    }
-}
-
-impl TypeTag for Slider {
-    fn type_tag() -> String {
-        "f64".into()
-    }
-}
-
-impl serde::Serialize for Slider {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.default.serialize(serializer)
     }
 }
 
@@ -165,6 +197,15 @@ impl Dropdown {
         self.name = Some(key.to_owned());
         self
     }
+}
+
+impl Widget for Dropdown {
+    const KIND: &'static str = "dropdown";
+    type Value = String;
+
+    fn value(&self) -> &String {
+        &self.default
+    }
 
     fn config_json(&self) -> String {
         serde_json::json!({
@@ -174,40 +215,6 @@ impl Dropdown {
             "name": self.name,
         })
         .to_string()
-    }
-}
-
-impl From<Dropdown> for CellOutput {
-    fn from(d: Dropdown) -> Self {
-        Self {
-            bytes: encode_bincode(&d.default),
-            panels: vec![DisplayPanel::Interactive {
-                kind: "dropdown".into(),
-                config: d.config_json(),
-            }],
-            type_tag: Some("String".into()),
-        }
-    }
-}
-
-impl IntoPanels for Dropdown {
-    fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Interactive {
-            kind: "dropdown".into(),
-            config: self.config_json(),
-        }]
-    }
-}
-
-impl TypeTag for Dropdown {
-    fn type_tag() -> String {
-        "String".into()
-    }
-}
-
-impl serde::Serialize for Dropdown {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.default.serialize(serializer)
     }
 }
 
@@ -244,6 +251,15 @@ impl Checkbox {
         self.default = value;
         self
     }
+}
+
+impl Widget for Checkbox {
+    const KIND: &'static str = "checkbox";
+    type Value = bool;
+
+    fn value(&self) -> &bool {
+        &self.default
+    }
 
     fn config_json(&self) -> String {
         serde_json::json!({
@@ -252,40 +268,6 @@ impl Checkbox {
             "default": self.default,
         })
         .to_string()
-    }
-}
-
-impl From<Checkbox> for CellOutput {
-    fn from(c: Checkbox) -> Self {
-        Self {
-            bytes: encode_bincode(&c.default),
-            panels: vec![DisplayPanel::Interactive {
-                kind: "checkbox".into(),
-                config: c.config_json(),
-            }],
-            type_tag: Some("bool".into()),
-        }
-    }
-}
-
-impl IntoPanels for Checkbox {
-    fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Interactive {
-            kind: "checkbox".into(),
-            config: self.config_json(),
-        }]
-    }
-}
-
-impl TypeTag for Checkbox {
-    fn type_tag() -> String {
-        "bool".into()
-    }
-}
-
-impl serde::Serialize for Checkbox {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.default.serialize(serializer)
     }
 }
 
@@ -322,6 +304,15 @@ impl TextInput {
         value.clone_into(&mut self.default);
         self
     }
+}
+
+impl Widget for TextInput {
+    const KIND: &'static str = "text_input";
+    type Value = String;
+
+    fn value(&self) -> &String {
+        &self.default
+    }
 
     fn config_json(&self) -> String {
         serde_json::json!({
@@ -330,40 +321,6 @@ impl TextInput {
             "default": self.default,
         })
         .to_string()
-    }
-}
-
-impl From<TextInput> for CellOutput {
-    fn from(t: TextInput) -> Self {
-        Self {
-            bytes: encode_bincode(&t.default),
-            panels: vec![DisplayPanel::Interactive {
-                kind: "text_input".into(),
-                config: t.config_json(),
-            }],
-            type_tag: Some("String".into()),
-        }
-    }
-}
-
-impl IntoPanels for TextInput {
-    fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Interactive {
-            kind: "text_input".into(),
-            config: self.config_json(),
-        }]
-    }
-}
-
-impl TypeTag for TextInput {
-    fn type_tag() -> String {
-        "String".into()
-    }
-}
-
-impl serde::Serialize for TextInput {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.default.serialize(serializer)
     }
 }
 
@@ -411,6 +368,15 @@ impl Number {
         self.default = value;
         self
     }
+}
+
+impl Widget for Number {
+    const KIND: &'static str = "number";
+    type Value = f64;
+
+    fn value(&self) -> &f64 {
+        &self.default
+    }
 
     fn config_json(&self) -> String {
         serde_json::json!({
@@ -421,40 +387,6 @@ impl Number {
             "default": self.default,
         })
         .to_string()
-    }
-}
-
-impl From<Number> for CellOutput {
-    fn from(n: Number) -> Self {
-        Self {
-            bytes: encode_bincode(&n.default),
-            panels: vec![DisplayPanel::Interactive {
-                kind: "number".into(),
-                config: n.config_json(),
-            }],
-            type_tag: Some("f64".into()),
-        }
-    }
-}
-
-impl IntoPanels for Number {
-    fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Interactive {
-            kind: "number".into(),
-            config: self.config_json(),
-        }]
-    }
-}
-
-impl TypeTag for Number {
-    fn type_tag() -> String {
-        "f64".into()
-    }
-}
-
-impl serde::Serialize for Number {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.default.serialize(serializer)
     }
 }
 
@@ -482,6 +414,15 @@ impl Switch {
         self.default = value;
         self
     }
+}
+
+impl Widget for Switch {
+    const KIND: &'static str = "switch";
+    type Value = bool;
+
+    fn value(&self) -> &bool {
+        &self.default
+    }
 
     fn config_json(&self) -> String {
         serde_json::json!({
@@ -489,40 +430,6 @@ impl Switch {
             "default": self.default,
         })
         .to_string()
-    }
-}
-
-impl From<Switch> for CellOutput {
-    fn from(s: Switch) -> Self {
-        Self {
-            bytes: encode_bincode(&s.default),
-            panels: vec![DisplayPanel::Interactive {
-                kind: "switch".into(),
-                config: s.config_json(),
-            }],
-            type_tag: Some("bool".into()),
-        }
-    }
-}
-
-impl IntoPanels for Switch {
-    fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Interactive {
-            kind: "switch".into(),
-            config: self.config_json(),
-        }]
-    }
-}
-
-impl TypeTag for Switch {
-    fn type_tag() -> String {
-        "bool".into()
-    }
-}
-
-impl serde::Serialize for Switch {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.default.serialize(serializer)
     }
 }
 
@@ -541,46 +448,19 @@ pub fn button(label: &str) -> Button {
     }
 }
 
-impl Button {
+impl Widget for Button {
+    const KIND: &'static str = "button";
+    type Value = ();
+
+    fn value(&self) -> &() {
+        &()
+    }
+
     fn config_json(&self) -> String {
         serde_json::json!({
             "label": self.label,
         })
         .to_string()
-    }
-}
-
-impl From<Button> for CellOutput {
-    fn from(b: Button) -> Self {
-        Self {
-            bytes: Vec::new(),
-            panels: vec![DisplayPanel::Interactive {
-                kind: "button".into(),
-                config: b.config_json(),
-            }],
-            type_tag: Some("()".into()),
-        }
-    }
-}
-
-impl IntoPanels for Button {
-    fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Interactive {
-            kind: "button".into(),
-            config: self.config_json(),
-        }]
-    }
-}
-
-impl TypeTag for Button {
-    fn type_tag() -> String {
-        "()".into()
-    }
-}
-
-impl serde::Serialize for Button {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        ().serialize(serializer)
     }
 }
 
@@ -617,6 +497,15 @@ impl ProgressBar {
         self.initial = value.clamp(0.0, 100.0);
         self
     }
+}
+
+impl Widget for ProgressBar {
+    const KIND: &'static str = "progress";
+    type Value = String;
+
+    fn value(&self) -> &String {
+        &self.id
+    }
 
     fn config_json(&self) -> String {
         serde_json::json!({
@@ -628,39 +517,16 @@ impl ProgressBar {
     }
 }
 
-impl From<ProgressBar> for CellOutput {
-    fn from(pb: ProgressBar) -> Self {
-        Self {
-            bytes: encode_bincode(&pb.id),
-            panels: vec![DisplayPanel::Interactive {
-                kind: "progress".into(),
-                config: pb.config_json(),
-            }],
-            type_tag: Some("String".into()),
-        }
-    }
-}
-
-impl IntoPanels for ProgressBar {
-    fn into_panels(&self) -> Vec<DisplayPanel> {
-        vec![DisplayPanel::Interactive {
-            kind: "progress".into(),
-            config: self.config_json(),
-        }]
-    }
-}
-
-impl TypeTag for ProgressBar {
-    fn type_tag() -> String {
-        "String".into()
-    }
-}
-
-impl serde::Serialize for ProgressBar {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.id.serialize(serializer)
-    }
-}
+impl_widget!(
+    Slider,
+    Dropdown,
+    Checkbox,
+    TextInput,
+    Number,
+    Switch,
+    Button,
+    ProgressBar,
+);
 
 // ── ProgressHandle ──────────────────────────────────────────────────────────
 
@@ -1143,6 +1009,77 @@ mod tests {
     }
 
     // ── Serialize / tuple tests ──────────────────────────────────────────
+
+    /// A bare widget output and the same widget inside a tuple must pipe the
+    /// same bytes and tag: the tuple impls read `Serialize`, `TypeTag` and
+    /// `IntoPanels`, while `From` builds the output directly.
+    fn assert_pipes_identically<W>(widget: W, value_bytes: &[u8], tag: &str, kind: &str)
+    where
+        W: serde::Serialize + IntoPanels + TypeTag,
+        CellOutput: From<W>,
+    {
+        let serialized = encode_bincode(&widget);
+        let tuple_panels = widget.into_panels();
+        let bare = CellOutput::from(widget);
+
+        assert_eq!(bare.bytes, value_bytes, "{kind}: From bytes");
+        assert_eq!(serialized, value_bytes, "{kind}: Serialize bytes");
+        assert_eq!(bare.type_tag.as_deref(), Some(tag), "{kind}: From tag");
+        assert_eq!(W::type_tag(), tag, "{kind}: TypeTag");
+        assert_eq!(bare.panels, tuple_panels, "{kind}: panels");
+        match bare.panels.as_slice() {
+            [DisplayPanel::Interactive { kind: k, .. }] => assert_eq!(k, kind),
+            other => panic!("{kind}: expected one Interactive panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_widget_pipes_identically_bare_and_in_a_tuple() {
+        // The expected tag and kind literals are spelled out on purpose, so a
+        // refactor of how widgets derive them cannot silently change them.
+        assert_pipes_identically(
+            slider("s", 0.0, 9.0).default_value(4.5),
+            &encode_bincode(&4.5f64),
+            "f64",
+            "slider",
+        );
+        assert_pipes_identically(
+            dropdown(&["a", "b"]).default_value("b"),
+            &encode_bincode(&"b".to_string()),
+            "String",
+            "dropdown",
+        );
+        assert_pipes_identically(
+            checkbox("c").default_value(true),
+            &encode_bincode(&true),
+            "bool",
+            "checkbox",
+        );
+        assert_pipes_identically(
+            text_input("hint").default_value("typed"),
+            &encode_bincode(&"typed".to_string()),
+            "String",
+            "text_input",
+        );
+        assert_pipes_identically(
+            number(1.0, 2.0).default_value(1.5),
+            &encode_bincode(&1.5f64),
+            "f64",
+            "number",
+        );
+        assert_pipes_identically(
+            switch("w").default_value(true),
+            &encode_bincode(&true),
+            "bool",
+            "switch",
+        );
+        // A button pipes `()`, which bincode encodes as zero bytes.
+        assert!(encode_bincode(&()).is_empty());
+        assert_pipes_identically(button("go"), &[], "()", "button");
+        let bar = progress_bar();
+        let id_bytes = encode_bincode(&bar.id);
+        assert_pipes_identically(bar, &id_bytes, "String", "progress");
+    }
 
     #[test]
     fn slider_serialize_matches_from_bytes() {
