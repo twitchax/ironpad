@@ -3,6 +3,7 @@
 //! JSON-over-Unix-socket, newline-delimited. Each message is a single
 //! JSON object followed by `\n`.
 
+use ironpad_common::protocol::ErrorCode;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
@@ -24,6 +25,25 @@ pub struct IpcRequest {
     pub args: serde_json::Value,
 }
 
+/// Machine-readable code on a failed [`IpcResponse`].
+///
+/// The strings are a contract: the CLI prints them to stderr as
+/// `{"error": code}` and agents parse that, so each serializes exactly as the
+/// hand-written literal it replaced. Protocol codes pass through under their
+/// own serde names, which are also what their old `Debug` rendering printed.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum IpcErrorCode {
+    /// The daemon, its socket, or its WebSocket to the server is unreachable.
+    #[serde(rename = "connection_error")]
+    ConnectionError,
+    /// A `cells.run` wait outlived its deadline.
+    #[serde(rename = "timeout")]
+    Timeout,
+    /// A code from the collaboration protocol, relayed verbatim.
+    #[serde(untagged)]
+    Protocol(ErrorCode),
+}
+
 /// Response from the daemon to the CLI client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IpcResponse {
@@ -37,7 +57,7 @@ pub struct IpcResponse {
     pub error: Option<String>,
     /// Error code if `ok` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
+    pub code: Option<IpcErrorCode>,
 }
 
 impl IpcResponse {
@@ -59,12 +79,12 @@ impl IpcResponse {
         }
     }
 
-    pub fn error_with_code(message: impl Into<String>, code: impl Into<String>) -> Self {
+    pub fn error_with_code(message: impl Into<String>, code: IpcErrorCode) -> Self {
         Self {
             ok: false,
             data: None,
             error: Some(message.into()),
-            code: Some(code.into()),
+            code: Some(code),
         }
     }
 }
@@ -203,13 +223,49 @@ mod tests {
 
     #[test]
     fn error_with_code_round_trips() {
-        let resp = IpcResponse::error_with_code("version conflict", "VERSION_CONFLICT");
+        let resp = IpcResponse::error_with_code(
+            "version conflict",
+            IpcErrorCode::Protocol(ErrorCode::VersionConflict),
+        );
         let back: IpcResponse =
             serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
         assert!(!back.ok);
         assert_eq!(back.error.as_deref(), Some("version conflict"));
-        assert_eq!(back.code.as_deref(), Some("VERSION_CONFLICT"));
+        assert_eq!(
+            back.code,
+            Some(IpcErrorCode::Protocol(ErrorCode::VersionConflict))
+        );
         assert!(back.data.is_none());
+    }
+
+    #[test]
+    fn error_codes_keep_the_strings_agents_already_parse() {
+        // Each of these was a hand-written literal (or a `{code:?}` render)
+        // before the enum; changing one changes what an agent reads.
+        for (code, wire) in [
+            (IpcErrorCode::ConnectionError, "connection_error"),
+            (IpcErrorCode::Timeout, "timeout"),
+            (
+                IpcErrorCode::Protocol(ErrorCode::CellNotFound),
+                "CellNotFound",
+            ),
+            (
+                IpcErrorCode::Protocol(ErrorCode::VersionConflict),
+                "VersionConflict",
+            ),
+            (
+                IpcErrorCode::Protocol(ErrorCode::PermissionDenied),
+                "PermissionDenied",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&code).unwrap(), json!(wire));
+            let back: IpcErrorCode = serde_json::from_value(json!(wire)).unwrap();
+            assert_eq!(back, code, "{wire} must decode back to itself");
+        }
+
+        // A code from a newer peer still decodes (protocol forward compat).
+        let future: IpcErrorCode = serde_json::from_value(json!("SomeFutureCode")).unwrap();
+        assert_eq!(future, IpcErrorCode::Protocol(ErrorCode::Unknown));
     }
 
     // ── read_frame (bounded, newline-delimited) ──────────────────────────

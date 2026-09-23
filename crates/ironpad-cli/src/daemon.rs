@@ -20,7 +20,7 @@ use ironpad_common::notebook_ops;
 use ironpad_common::protocol::{self, MessageKind, Query};
 use ironpad_common::IronpadNotebook;
 
-use crate::ipc::{IpcRequest, IpcResponse};
+use crate::ipc::{IpcErrorCode, IpcRequest, IpcResponse};
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
@@ -464,7 +464,10 @@ async fn serve_cells_get(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
         .and_then(|nb| nb.cells.iter().find(|c| c.id == cell_id))
     {
         Some(cell) => IpcResponse::success(serde_json::to_value(cell).expect("cell serialization")),
-        None => IpcResponse::error_with_code("cell not found", "CellNotFound"),
+        None => IpcResponse::error_with_code(
+            "cell not found",
+            IpcErrorCode::Protocol(protocol::ErrorCode::CellNotFound),
+        ),
     }
 }
 
@@ -527,7 +530,7 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
             Ok(Err(broadcast::error::RecvError::Closed)) => {
                 return IpcResponse::error_with_code(
                     "event stream closed before the run finished",
-                    "connection_error",
+                    IpcErrorCode::ConnectionError,
                 )
             }
             Err(_) => {
@@ -539,7 +542,7 @@ async fn serve_cells_run(req: &IpcRequest, state: &DaemonState) -> IpcResponse {
                 }
                 return IpcResponse::error_with_code(
                     format!("timed out after {timeout_secs}s waiting for the run to finish"),
-                    "timeout",
+                    IpcErrorCode::Timeout,
                 );
             }
         };
@@ -759,7 +762,7 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
             None => {
                 return IpcResponse::error_with_code(
                     "WebSocket not yet connected",
-                    "connection_error",
+                    IpcErrorCode::ConnectionError,
                 )
             }
         }
@@ -792,7 +795,10 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
     // Send over WebSocket.
     if ws_tx.send(json).is_err() {
         state.pending.write().await.remove(&msg_id);
-        return IpcResponse::error_with_code("WebSocket disconnected", "connection_error");
+        return IpcResponse::error_with_code(
+            "WebSocket disconnected",
+            IpcErrorCode::ConnectionError,
+        );
     }
 
     // Wait for response (10s timeout).
@@ -806,8 +812,10 @@ async fn forward_to_server(req: &IpcRequest, state: &DaemonState) -> IpcResponse
             Ok(response_msg) => translate_response(response_msg),
             Err(e) => IpcResponse::error(format!("invalid response: {e}")),
         },
-        Ok(Err(_)) => IpcResponse::error_with_code("response channel closed", "connection_error"),
-        Err(_) => IpcResponse::error_with_code("request timed out", "connection_error"),
+        Ok(Err(_)) => {
+            IpcResponse::error_with_code("response channel closed", IpcErrorCode::ConnectionError)
+        }
+        Err(_) => IpcResponse::error_with_code("request timed out", IpcErrorCode::ConnectionError),
     }
 }
 
@@ -992,7 +1000,7 @@ fn translate_response(msg: protocol::Message) -> IpcResponse {
                 IpcResponse::success(serde_json::to_value(detail).expect("detail serialization"))
             }
             protocol::Response::Error { code, message } => {
-                IpcResponse::error_with_code(message, format!("{code:?}"))
+                IpcResponse::error_with_code(message, IpcErrorCode::Protocol(code))
             }
             protocol::Response::Unknown => {
                 IpcResponse::error("unrecognized response from a newer server")
@@ -1706,7 +1714,10 @@ mod tests {
         })));
         assert!(!resp.ok);
         assert_eq!(resp.error.as_deref(), Some("denied"));
-        assert_eq!(resp.code.as_deref(), Some("PermissionDenied"));
+        assert_eq!(
+            resp.code,
+            Some(IpcErrorCode::Protocol(ErrorCode::PermissionDenied))
+        );
     }
 
     #[test]

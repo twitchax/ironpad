@@ -14,9 +14,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use ironpad_common::protocol::NotebookMetaPatch;
+use ironpad_common::protocol::{ErrorCode, NotebookMetaPatch};
 
-use crate::ipc::{IpcRequest, IpcResponse};
+use crate::ipc::{IpcErrorCode, IpcRequest, IpcResponse};
 
 // ── CLI args ────────────────────────────────────────────────────────────────
 
@@ -230,6 +230,7 @@ enum CellsCommand {
 // ── Exit codes ──────────────────────────────────────────────────────────────
 
 /// Named exit codes for consistent CLI error reporting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 enum CliExitCode {
     GenericError = 1,
@@ -660,7 +661,10 @@ fn print_response(response: &IpcResponse) {
         }
     } else {
         let error_json = serde_json::json!({
-            "error": response.code.as_deref().unwrap_or("error"),
+            "error": response
+                .code
+                .as_ref()
+                .map_or_else(|| serde_json::json!("error"), |code| serde_json::json!(code)),
             "message": response.error.as_deref().unwrap_or("unknown error"),
         });
         eprintln!(
@@ -668,25 +672,22 @@ fn print_response(response: &IpcResponse) {
             serde_json::to_string(&error_json).expect("JSON serialization")
         );
 
-        let exit_code = match response.code.as_deref() {
-            Some("VersionConflict") => CliExitCode::VersionConflict,
-            Some("PermissionDenied") => CliExitCode::PermissionDenied,
-            Some(c) if c.contains("connect") || c.contains("disconnect") => {
-                CliExitCode::ConnectionError
-            }
-            _ => {
-                if response
-                    .error
-                    .as_deref()
-                    .is_some_and(|e| e.contains("daemon") || e.contains("socket"))
-                {
-                    CliExitCode::ConnectionError
-                } else {
-                    CliExitCode::GenericError
-                }
-            }
-        };
-        std::process::exit(exit_code as i32);
+        std::process::exit(exit_code_for(response) as i32);
+    }
+}
+
+/// The exit status for a failed response, read off its code alone. It used
+/// to fall back to sniffing the human-readable message for "daemon" or
+/// "socket", so rewording an error could change the exit status; the
+/// transport failures that relied on that now carry
+/// [`IpcErrorCode::ConnectionError`] themselves. A run timeout stays a
+/// generic error, as it always was.
+fn exit_code_for(response: &IpcResponse) -> CliExitCode {
+    match response.code {
+        Some(IpcErrorCode::Protocol(ErrorCode::VersionConflict)) => CliExitCode::VersionConflict,
+        Some(IpcErrorCode::Protocol(ErrorCode::PermissionDenied)) => CliExitCode::PermissionDenied,
+        Some(IpcErrorCode::ConnectionError) => CliExitCode::ConnectionError,
+        Some(IpcErrorCode::Timeout | IpcErrorCode::Protocol(_)) | None => CliExitCode::GenericError,
     }
 }
 
@@ -699,7 +700,7 @@ async fn send_ipc(command: &str, args: serde_json::Value) -> IpcResponse {
     let Ok(stream) = UnixStream::connect(&sock).await else {
         return IpcResponse::error_with_code(
             "daemon is not running (cannot connect to socket)",
-            "connection_error",
+            IpcErrorCode::ConnectionError,
         );
     };
 
@@ -714,14 +715,21 @@ async fn send_ipc(command: &str, args: serde_json::Value) -> IpcResponse {
     json.push('\n');
 
     if writer.write_all(json.as_bytes()).await.is_err() {
-        return IpcResponse::error("failed to send request to daemon");
+        return IpcResponse::error_with_code(
+            "failed to send request to daemon",
+            IpcErrorCode::ConnectionError,
+        );
     }
 
     let mut reader = BufReader::new(reader);
     match crate::ipc::read_frame(&mut reader).await {
-        Ok(Some(line)) => serde_json::from_str(&line)
-            .unwrap_or_else(|_| IpcResponse::error("invalid response from daemon")),
-        _ => IpcResponse::error("no response from daemon"),
+        Ok(Some(line)) => serde_json::from_str(&line).unwrap_or_else(|_| {
+            IpcResponse::error_with_code(
+                "invalid response from daemon",
+                IpcErrorCode::ConnectionError,
+            )
+        }),
+        _ => IpcResponse::error_with_code("no response from daemon", IpcErrorCode::ConnectionError),
     }
 }
 
@@ -874,6 +882,53 @@ mod tests {
         assert_eq!(
             parse(&["ironpad", "notebook", "update"]),
             serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn exit_code_is_read_off_the_code_alone() {
+        let with = |code| IpcResponse::error_with_code("x", code);
+        assert_eq!(
+            exit_code_for(&with(IpcErrorCode::Protocol(ErrorCode::VersionConflict))),
+            CliExitCode::VersionConflict
+        );
+        assert_eq!(
+            exit_code_for(&with(IpcErrorCode::Protocol(ErrorCode::PermissionDenied))),
+            CliExitCode::PermissionDenied
+        );
+        assert_eq!(
+            exit_code_for(&with(IpcErrorCode::ConnectionError)),
+            CliExitCode::ConnectionError
+        );
+        // A run timeout has always exited as a generic error.
+        assert_eq!(
+            exit_code_for(&with(IpcErrorCode::Timeout)),
+            CliExitCode::GenericError
+        );
+        assert_eq!(
+            exit_code_for(&with(IpcErrorCode::Protocol(ErrorCode::CellNotFound))),
+            CliExitCode::GenericError
+        );
+    }
+
+    #[test]
+    fn transport_failures_exit_as_connection_errors_without_message_sniffing() {
+        // These used to reach ConnectionError only because their messages
+        // happen to mention "daemon"; they now carry the code, so the
+        // wording is free to change.
+        for message in [
+            "failed to send request to daemon",
+            "invalid response from daemon",
+            "no response from daemon",
+            "daemon is not running (cannot connect to socket)",
+        ] {
+            let response = IpcResponse::error_with_code(message, IpcErrorCode::ConnectionError);
+            assert_eq!(exit_code_for(&response), CliExitCode::ConnectionError);
+        }
+        // And an uncoded error is generic whatever it says.
+        assert_eq!(
+            exit_code_for(&IpcResponse::error("the daemon socket said no")),
+            CliExitCode::GenericError
         );
     }
 
