@@ -424,13 +424,14 @@ fn NotebookGrid(
         let public_notebooks = public_notebooks.clone();
         move || {
             let query = search_query.get().to_lowercase();
-            collect_items(
-                &private_notebooks.get(),
-                &mutable_entries.get(),
-                &public_notebooks,
-                &query,
-                filter_mode.get(),
-            )
+            // Borrowed: this runs on every search keystroke and chip change,
+            // and `get()` deep-cloned every local notebook (cells, sources,
+            // saved outputs) just so `collect_items` could read a few fields.
+            private_notebooks.with(|local| {
+                mutable_entries.with(|account| {
+                    collect_items(local, account, &public_notebooks, &query, filter_mode.get())
+                })
+            })
         }
     };
 
