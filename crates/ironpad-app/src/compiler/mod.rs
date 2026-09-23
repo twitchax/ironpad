@@ -601,6 +601,27 @@ mod e2e_tests {
         dir
     }
 
+    /// The last `n` characters of `s`, for failure messages. Cargo output is
+    /// long and its errors sit at the end; slicing by BYTES (the old
+    /// `&s[s.len() - n..]`) panics when the cut lands inside a multi-byte
+    /// character, replacing the real failure with a slicing panic.
+    fn tail(s: &str, n: usize) -> &str {
+        if n == 0 {
+            return "";
+        }
+        let start = s.char_indices().rev().nth(n - 1).map_or(0, |(i, _)| i);
+        &s[start..]
+    }
+
+    #[test]
+    fn tail_cuts_on_a_char_boundary() {
+        // "é" is two bytes, so a 3-byte cut of "aéb" lands mid-character.
+        assert_eq!(tail("aéb", 2), "éb");
+        assert_eq!(tail("aéb", 10), "aéb");
+        assert_eq!(tail("aéb", 0), "");
+        assert_eq!(tail("", 5), "");
+    }
+
     /// The names in a WASM module's export section (section id 7).
     ///
     /// Hand-rolled rather than adding a parser dependency for one assertion:
@@ -723,28 +744,6 @@ mod e2e_tests {
         }
     }
 
-    // ── Host-import linking (PRD-0031 T-004 regression) ─────────────────
-
-    /// Regression test for PRD-0031 T-004: a cell that calls the
-    /// simulation-bus / host-message FFI (`sim::read`, `host_message`) must
-    /// still *link* against the `env` wasm import module. Before
-    /// `ironpad-cell`'s `extern "C"` host-import blocks were annotated with
-    /// `#[link(wasm_import_module = "env")]`, current nightly `rust-lld`
-    /// rejected these as undefined symbols (e.g. `undefined symbol:
-    /// ironpad_sim_read`) because it no longer defaults to
-    /// `--allow-undefined` for `wasm32-unknown-unknown`.
-    ///
-    /// Note: this guard only *discriminates* on nightlies that dropped the
-    /// `--allow-undefined` default for wasm32. It spent a long time toothless:
-    /// the old `nightly-2025-12-22` pin still allowed undefined symbols, so
-    /// this test passed with or without the `#[link(...)]` fix. PRD-0067 moved
-    /// every build onto `nightly-2026-05-19`, which does NOT — measured while
-    /// spiking it, where a cdylib with no allocator failed with `rust-lld:
-    /// error: undefined symbol: realloc`. So the teeth are back. Re-confirm
-    /// that when bumping the pin, by deleting the `#[link(...)]` attributes in
-    /// `ironpad-cell` and watching this test fail. Browser-level module-name
-    /// correctness is independently covered by the Playwright uat-003
-    /// acceptance test in PRD-0031.
     /// PRD-0041 regression: a cell using the real `std::autodiff` compiles
     /// through the actual pipeline — nightly toolchain, `-Zautodiff=Enable`,
     /// the scaffold's crate-root feature gate + fat-LTO profile, and Enzyme's
@@ -832,8 +831,8 @@ pub fn range(angle: f64) -> f64 {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "std::autodiff cell should build.\nstdout(tail): {}\nstderr(tail): {}",
-                    &stdout[stdout.len().saturating_sub(2000)..],
-                    &stderr[stderr.len().saturating_sub(1500)..],
+                    tail(&stdout, 2000),
+                    tail(&stderr, 1500),
                 );
             }
         }
@@ -887,8 +886,8 @@ pub fn range(angle: f64) -> f64 {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "blocking (JSPI) cell should build and link.\nstdout(tail): {}\nstderr(tail): {}",
-                    &stdout[stdout.len().saturating_sub(2000)..],
-                    &stderr[stderr.len().saturating_sub(1500)..],
+                    tail(&stdout, 2000),
+                    tail(&stderr, 1500),
                 );
             }
         }
@@ -985,8 +984,8 @@ pub fn range(angle: f64) -> f64 {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "rayon cell should build.\nstdout(tail): {}\nstderr(tail): {}",
-                    &stdout[stdout.len().saturating_sub(2000)..],
-                    &stderr[stderr.len().saturating_sub(1500)..],
+                    tail(&stdout, 2000),
+                    tail(&stderr, 1500),
                 );
             }
         }
@@ -1038,8 +1037,8 @@ pub fn range(angle: f64) -> f64 {
         if let BuildResult::Failure { stdout, stderr } = result {
             panic!(
                 "fearless_simd cell should build against its simd128 backend.\nstdout(tail): {}\nstderr(tail): {}",
-                &stdout[stdout.len().saturating_sub(2000)..],
-                &stderr[stderr.len().saturating_sub(1500)..],
+                tail(&stdout, 2000),
+                tail(&stderr, 1500),
             );
         }
     }
@@ -1104,8 +1103,8 @@ pub fn range(angle: f64) -> f64 {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "portable SIMD cell should build.\nstdout(tail): {}\nstderr(tail): {}",
-                    &stdout[stdout.len().saturating_sub(2000)..],
-                    &stderr[stderr.len().saturating_sub(1500)..],
+                    tail(&stdout, 2000),
+                    tail(&stderr, 1500),
                 );
             }
         }
@@ -1166,13 +1165,35 @@ pub fn range(angle: f64) -> f64 {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "gen-block cell should build on edition 2024.\nstdout(tail): {}\nstderr(tail): {}",
-                    &stdout[stdout.len().saturating_sub(2000)..],
-                    &stderr[stderr.len().saturating_sub(1500)..],
+                    tail(&stdout, 2000),
+                    tail(&stderr, 1500),
                 );
             }
         }
     }
 
+    // ── Host-import linking (PRD-0031 T-004 regression) ─────────────────
+
+    /// Regression test for PRD-0031 T-004: a cell that calls the
+    /// simulation-bus / host-message FFI (`sim::read`, `host_message`) must
+    /// still *link* against the `env` wasm import module. Before
+    /// `ironpad-cell`'s `extern "C"` host-import blocks were annotated with
+    /// `#[link(wasm_import_module = "env")]`, current nightly `rust-lld`
+    /// rejected these as undefined symbols (e.g. `undefined symbol:
+    /// ironpad_sim_read`) because it no longer defaults to
+    /// `--allow-undefined` for `wasm32-unknown-unknown`.
+    ///
+    /// Note: this guard only *discriminates* on nightlies that dropped the
+    /// `--allow-undefined` default for wasm32. It spent a long time toothless:
+    /// the old `nightly-2025-12-22` pin still allowed undefined symbols, so
+    /// this test passed with or without the `#[link(...)]` fix. PRD-0067 moved
+    /// every build onto `nightly-2026-05-19`, which does NOT — measured while
+    /// spiking it, where a cdylib with no allocator failed with `rust-lld:
+    /// error: undefined symbol: realloc`. So the teeth are back. Re-confirm
+    /// that when bumping the pin, by deleting the `#[link(...)]` attributes in
+    /// `ironpad-cell` and watching this test fail. Browser-level module-name
+    /// correctness is independently covered by the Playwright uat-003
+    /// acceptance test in PRD-0031.
     #[tokio::test]
     #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
     async fn compile_cell_with_host_imports_links_successfully() {
@@ -1371,8 +1392,8 @@ pub struct AlsoUnusedHere {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "cell calling a shared helper should build.\nstdout(tail): {}\nstderr(tail): {}",
-                    &stdout[stdout.len().saturating_sub(2000)..],
-                    &stderr[stderr.len().saturating_sub(1500)..],
+                    tail(&stdout, 2000),
+                    tail(&stderr, 1500),
                 );
             }
         }
@@ -1443,8 +1464,8 @@ pub struct AlsoUnusedHere {
             BuildResult::Failure { stdout, stderr } => {
                 panic!(
                     "cell ignoring its inputs should build.\nstdout(tail): {}\nstderr(tail): {}",
-                    &stdout[stdout.len().saturating_sub(2000)..],
-                    &stderr[stderr.len().saturating_sub(1500)..],
+                    tail(&stdout, 2000),
+                    tail(&stderr, 1500),
                 );
             }
         }
@@ -1937,10 +1958,6 @@ impl LiveView for Counter {
                         // the error `compiler-message` and the final
                         // `build-finished` record are at the end, while the head is
                         // just dependency-locking + successful-artifact noise.
-                        let tail = |s: &str, n: usize| -> String {
-                            let chars: Vec<char> = s.chars().collect();
-                            chars[chars.len().saturating_sub(n)..].iter().collect()
-                        };
                         failures.push(format!(
                             "{filename} / {} ({}):\n  stdout(tail): {}\n  stderr(tail): {}",
                             cell.id,
