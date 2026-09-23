@@ -15,10 +15,8 @@ use leptos_router::hooks::use_params_map;
 use ironpad_common::IronpadNotebook;
 
 use crate::components::view_only_notebook::ViewOnlyNotebook;
-use crate::server_fns::{
-    get_mutable_manifest, get_mutable_notebook, get_public_notebook, get_shared_manifest,
-    get_shared_notebook,
-};
+use crate::pages::load::{load_mutable, load_shared};
+use crate::server_fns::get_public_notebook;
 
 /// Route component for `/embed/shared/{hash}` — the iframe-embeddable variant
 /// of [`SharedNotebookPage`](super::SharedNotebookPage).
@@ -28,16 +26,7 @@ pub fn EmbedSharedPage() -> impl IntoView {
     // Tracked: the router reuses this outlet on a param-only change.
     let hash = Memo::new(move |_| params.read().get("hash").unwrap_or_default());
 
-    let notebook_resource = Resource::new(
-        move || hash.get(),
-        |hash| async move {
-            let notebook = get_shared_notebook(hash.clone()).await?;
-            // A missing/failed manifest degrades to live compilation
-            // (PRD-0047); it never fails the embed.
-            let manifest = get_shared_manifest(hash).await.unwrap_or(None);
-            Ok::<_, ServerFnError>((notebook, manifest))
-        },
-    );
+    let notebook_resource = Resource::new(move || hash.get(), load_shared);
 
     view! {
         <Suspense fallback=embed_loading>
@@ -112,18 +101,7 @@ pub fn EmbedMutablePage() -> impl IntoView {
     // Tracked: the router reuses this outlet on a param-only change.
     let id = Memo::new(move |_| params.read().get("id").unwrap_or_default());
 
-    let notebook_resource = Resource::new(
-        move || id.get(),
-        |id| async move {
-            let access = get_mutable_notebook(id.clone()).await?;
-            let manifest = if matches!(access, ironpad_common::MutableNotebookAccess::Found(_)) {
-                get_mutable_manifest(id).await.unwrap_or(None)
-            } else {
-                None
-            };
-            Ok::<_, ServerFnError>((access, manifest))
-        },
-    );
+    let notebook_resource = Resource::new(move || id.get(), load_mutable);
 
     view! {
         <Suspense fallback=embed_loading>

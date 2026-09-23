@@ -8,8 +8,8 @@ use ironpad_common::{MutableNotebookAccess, MutableNotebookResponse, ShareManife
 use crate::components::app_layout::LayoutContext;
 use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
+use crate::pages::load::load_mutable;
 use crate::pages::notebook_editor::{NotebookEditor, ServerDraftMount};
-use crate::server_fns::{get_mutable_manifest, get_mutable_notebook};
 
 /// Copy for the neutral first-paint state on a `/mutable` 404.
 ///
@@ -113,14 +113,7 @@ pub fn MutableNotebookPage() -> impl IntoView {
     let notebook_resource = Resource::new(
         move || id.get(),
         |id| async move {
-            let access = get_mutable_notebook(id.clone()).await?;
-            // Manifest only matters when the notebook is viewable; a
-            // missing/degraded manifest falls back to live compilation.
-            let manifest = if matches!(access, MutableNotebookAccess::Found(_)) {
-                get_mutable_manifest(id).await.unwrap_or(None)
-            } else {
-                None
-            };
+            let (access, manifest) = load_mutable(id).await?;
             // Only the not-found arm consults this, so only that arm pays for
             // it. Riding the existing resource is what makes it survive into
             // the first paint: its value is serialized with the rest of the

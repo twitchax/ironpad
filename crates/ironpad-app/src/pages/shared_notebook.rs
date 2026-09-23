@@ -6,7 +6,7 @@ use leptos_router::hooks::use_params_map;
 use crate::components::app_layout::LayoutContext;
 use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
-use crate::server_fns::{get_shared_manifest, get_shared_notebook};
+use crate::pages::load::load_shared;
 
 /// Route component for `/shared/{hash}`.
 ///
@@ -24,16 +24,7 @@ pub fn SharedNotebookPage() -> impl IntoView {
     let ctx = expect_context::<LayoutContext>();
     ctx.enter_page();
 
-    let notebook_resource = Resource::new(
-        move || hash.get(),
-        |hash| async move {
-            let notebook = get_shared_notebook(hash.clone()).await?;
-            // A missing/failed manifest degrades to live compilation
-            // (PRD-0047); it never fails the page.
-            let manifest = get_shared_manifest(hash).await.unwrap_or(None);
-            Ok::<_, ServerFnError>((notebook, manifest))
-        },
-    );
+    let notebook_resource = Resource::new(move || hash.get(), load_shared);
 
     // Update footer cell count when the resource resolves.
     Effect::new(move || {

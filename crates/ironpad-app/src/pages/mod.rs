@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod embed_notebook;
 pub mod home_page;
+mod load;
 pub mod mutable_notebook;
 pub mod notebook_editor;
 pub mod public_notebook;
