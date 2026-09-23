@@ -19,11 +19,10 @@ pub fn SharedNotebookPage() -> impl IntoView {
     // frozen untracked read would keep rendering the old share.
     let hash = Memo::new(move |_| params.read().get("hash").unwrap_or_default());
 
-    // Reset layout context for shared notebook.
+    // Real title is shown once in the view-only toolbar (<h1>); the header
+    // center stays clear to avoid a duplicate.
     let ctx = expect_context::<LayoutContext>();
-    // Real title is shown once in the view-only toolbar (<h1>); keep the header
-    // center clear to avoid a duplicate.
-    ctx.notebook_title.set(None);
+    ctx.enter_page();
 
     let notebook_resource = Resource::new(
         move || hash.get(),

@@ -210,12 +210,7 @@ fn collect_items(
 /// signed-in user, published or not), and public.
 #[component]
 pub fn HomePage() -> impl IntoView {
-    // Reset layout context for home page.
-
-    let ctx = expect_context::<LayoutContext>();
-    ctx.notebook_title.set(None);
-    ctx.cell_count.set(0);
-    ctx.last_save_time.set(None);
+    expect_context::<LayoutContext>().enter_page();
 
     // Load public notebooks (participates in SSR).
 

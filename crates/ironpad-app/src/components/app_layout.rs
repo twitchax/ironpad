@@ -29,6 +29,20 @@ pub struct LayoutContext {
 }
 
 impl LayoutContext {
+    /// Reset the per-page status surfaces (header title, cell count, last
+    /// save) to a fresh page's state. Every route calls this first, so no
+    /// page inherits what the previous one wrote: before it, each route reset
+    /// its own subset and the editor's "Saved: 1m ago" survived a client-side
+    /// navigation onto a read-only page. Pages set their own values after.
+    ///
+    /// Called by the pages rather than from an `AppLayout` pathname effect,
+    /// which would race the pages' own synchronous writes.
+    pub fn enter_page(&self) {
+        self.notebook_title.set(None);
+        self.cell_count.set(0);
+        self.last_save_time.set(None);
+    }
+
     fn new() -> Self {
         Self {
             notebook_title: RwSignal::new(None),

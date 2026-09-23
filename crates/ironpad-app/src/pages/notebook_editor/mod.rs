@@ -91,6 +91,8 @@ pub struct ServerDraftMount {
 /// mode.
 #[component]
 pub fn NotebookEditorPage() -> impl IntoView {
+    // The editor's effects set the title and count once the notebook loads.
+    expect_context::<LayoutContext>().enter_page();
     let params = use_params_map();
     // Tracked: the router reuses this outlet on a param-only change
     // (/local/a -> /local/b), so a frozen untracked read would keep editing

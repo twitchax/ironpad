@@ -63,8 +63,7 @@ fn human_bytes(bytes: u64) -> String {
 /// thing the gate is meant to withhold.
 #[component]
 pub fn AdminPage() -> impl IntoView {
-    let ctx = expect_context::<LayoutContext>();
-    ctx.notebook_title.set(None);
+    expect_context::<LayoutContext>().enter_page();
 
     // Bumped after a revoke so the list refetches; the counts it shows are the
     // thing the action changes.

@@ -102,8 +102,9 @@ pub fn MutableNotebookPage() -> impl IntoView {
     let id = Memo::new(move |_| params.read().get("id").unwrap_or_default());
 
     let ctx = expect_context::<LayoutContext>();
-    // Real title shows once in the view-only toolbar; keep the header center clear.
-    ctx.notebook_title.set(None);
+    // Real title shows once in the view-only toolbar; the header center stays
+    // clear. The owner's editor sets its own values once it mounts.
+    ctx.enter_page();
 
     // `?view=reader` pins the reader even for the owner.
     let query = leptos_router::hooks::use_query_map();

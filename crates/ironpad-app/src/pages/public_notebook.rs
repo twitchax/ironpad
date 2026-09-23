@@ -20,11 +20,10 @@ pub fn PublicNotebookPage() -> impl IntoView {
     // a one-shot untracked read would keep rendering the old notebook forever.
     let filename = Memo::new(move |_| params.read().get("filename").unwrap_or_default());
 
-    // Reset layout context for public notebook. The notebook's real title is
-    // shown once in the view-only toolbar (<h1>), so clear the header center to
-    // avoid a duplicate (and to avoid the header showing the raw filename).
+    // The notebook's real title is shown once in the view-only toolbar (<h1>),
+    // so the header center stays clear (no duplicate, no raw filename).
     let ctx = expect_context::<LayoutContext>();
-    ctx.notebook_title.set(None);
+    ctx.enter_page();
 
     let notebook_resource = Resource::new(move || filename.get(), get_public_notebook);
 
