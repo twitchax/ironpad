@@ -259,21 +259,7 @@ crate-type = ["cdylib"]
 "#
     );
 
-    if !merged_deps.is_empty() {
-        toml.push_str(&merged_deps);
-        if !merged_deps.ends_with('\n') {
-            toml.push('\n');
-        }
-    }
-
-    if !extra_sections.is_empty() {
-        toml.push('\n');
-        toml.push_str(&extra_sections);
-        if !extra_sections.ends_with('\n') {
-            toml.push('\n');
-        }
-    }
-
+    append_user_sections(&mut toml, &merged_deps, &extra_sections);
     toml
 }
 
@@ -312,8 +298,17 @@ path = "src/main.rs"
 "#
     );
 
+    append_user_sections(&mut toml, &merged_deps, &extra_sections);
+    toml
+}
+
+/// Append the user's (merged) dependency lines under the manifest's
+/// `[dependencies]` header, then the forwarded extra sections after a blank
+/// line. Shared by both manifest generators, so a Linux cell's dependencies
+/// and profile are merged exactly as an ordinary cell's by construction.
+fn append_user_sections(toml: &mut String, merged_deps: &str, extra_sections: &str) {
     if !merged_deps.is_empty() {
-        toml.push_str(&merged_deps);
+        toml.push_str(merged_deps);
         if !merged_deps.ends_with('\n') {
             toml.push('\n');
         }
@@ -321,13 +316,11 @@ path = "src/main.rs"
 
     if !extra_sections.is_empty() {
         toml.push('\n');
-        toml.push_str(&extra_sections);
+        toml.push_str(extra_sections);
         if !extra_sections.ends_with('\n') {
             toml.push('\n');
         }
     }
-
-    toml
 }
 
 // (`extract_user_dependencies`, `merge_dependencies`, and the feature
@@ -982,6 +975,34 @@ serde = { version = "1", features = ["derive"] }
         assert!(result.contains(r#"crate-type = ["cdylib"]"#));
         assert!(result.contains("ironpad-cell = { path ="));
         assert!(result.contains("serde"));
+    }
+
+    /// The Linux manifest's doc says a Linux cell's dependencies and extra
+    /// sections are merged "exactly as they are for an ordinary cell"; this
+    /// makes that a test. Everything after the scaffold-owned dependency
+    /// lines must be byte-identical between the two generators.
+    #[test]
+    fn linux_and_ordinary_manifests_carry_identical_user_sections() {
+        let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let shared = "[dependencies]\nserde = \"1\"\n\n[profile.release]\nopt-level = 1\n";
+        let cell =
+            "[dependencies]\nrand = \"0.8\"\n\n[dependencies.itertools]\nversion = \"0.13\"\n";
+
+        let ordinary = generate_cargo_toml("c", cell, &cell_path, Some(shared), false, false);
+        let linux = generate_linux_cargo_toml("c", cell, Some(shared));
+
+        // The ordinary manifest's scaffold-owned lines are the two that
+        // follow its header: ironpad-cell and wasm-bindgen.
+        let ordinary_user = ordinary
+            .split_once("[dependencies]\n")
+            .and_then(|(_, rest)| rest.splitn(3, '\n').nth(2))
+            .expect("ironpad-cell and wasm-bindgen lines");
+        let linux_user = linux
+            .split_once("[dependencies]\n")
+            .map(|(_, rest)| rest)
+            .expect("dependencies header");
+        assert!(ordinary_user.contains("rand") && ordinary_user.contains("opt-level = 1"));
+        assert_eq!(ordinary_user, linux_user);
     }
 
     #[test]
