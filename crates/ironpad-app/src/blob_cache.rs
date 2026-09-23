@@ -101,22 +101,12 @@ pub async fn store_unless_served(
 /// unavailable (treat as "local cache disabled").
 pub async fn request_hash(request: &CompileRequest) -> Option<String> {
     let fingerprint = toolchain_fingerprint().await?;
-    let needs_atomics = cache_key::merged_deps_contain_rayon(
-        request.shared_cargo_toml.as_deref(),
-        &request.cargo_toml,
-    );
-    let needs_autodiff =
-        cache_key::uses_std_autodiff(&request.source, request.shared_source.as_deref());
-    let needs_simd = cache_key::uses_wasm_simd(&request.source, request.shared_source.as_deref());
     Some(cache_key::content_hash_with_fingerprint(
         &request.source,
         &request.cargo_toml,
         &request.previous_cell_types,
         request.shared_cargo_toml.as_deref(),
         request.shared_source.as_deref(),
-        needs_atomics,
-        needs_autodiff,
-        needs_simd,
         // Must keep matching the target `compile_cell_core` hashes with, or a
         // local hit serves an artifact built for the other target. Both sides
         // derive it from the request's cell type through the same `From` impl

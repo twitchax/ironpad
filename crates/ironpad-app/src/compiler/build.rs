@@ -20,7 +20,7 @@ use anyhow::Context;
 use tokio::process::Command;
 use tracing::Instrument as _;
 
-use ironpad_common::cache_key::CellTarget;
+use ironpad_common::cache_key::{CellFeatures, CellTarget};
 
 use crate::CELL_TOOLCHAIN;
 
@@ -149,34 +149,6 @@ const fn cell_toolchain(target: CellTarget) -> &'static str {
     }
 }
 
-/// The feature flags as a build for `target` actually applies them.
-///
-/// Every one of atomics, autodiff and SIMD is a statement about building for
-/// `wasm32-unknown-unknown`: a `-C target-feature` set, wasm-bindgen-rayon's
-/// shared-memory link args, Enzyme's fat-LTO profile. None of them mean
-/// anything on `wasm32-browserpod-linux-musl`, whose target spec already
-/// carries `+atomics`, shared memory and its export set, and which has no
-/// Enzyme component. So the target wins over all three — in ONE place, rather
-/// than at each of the four consumers (toolchain, target dir, RUSTFLAGS,
-/// `-Zbuild-std`) where three of them would eventually be remembered and one
-/// forgotten.
-///
-/// Note this does not change the cache key: the flags are pure functions of
-/// the source and are hashed as such, so a Linux cell that merely *mentions*
-/// `std::simd` keys consistently whether or not the flag is applied.
-const fn effective_features(
-    target: CellTarget,
-    needs_atomics: bool,
-    needs_autodiff: bool,
-    needs_simd: bool,
-) -> (bool, bool, bool) {
-    if target.is_linux() {
-        (false, false, false)
-    } else {
-        (needs_atomics, needs_autodiff, needs_simd)
-    }
-}
-
 // The default toolchain for cell builds is [`crate::CELL_TOOLCHAIN`] — every
 // cell except rayon/atomics ones compiles on that pin (autodiff cells
 // additionally get `-Zautodiff=Enable`, SIMD cells `+simd128`; plain cells
@@ -238,7 +210,6 @@ pub enum BuildResult {
 ///
 /// Returns `Err` for infrastructure problems: failed to spawn cargo, build
 /// timeout exceeded, or a missing artifact after a successful exit code.
-#[allow(clippy::too_many_arguments)]
 pub async fn build_micro_crate(
     crate_dir: &Path,
     cache_dir: &Path,
@@ -246,18 +217,15 @@ pub async fn build_micro_crate(
     cell_id: &str,
     compilation_proxy: Option<&str>,
     target: CellTarget,
-    needs_atomics: bool,
-    needs_autodiff: bool,
-    needs_simd: bool,
+    features: CellFeatures,
 ) -> anyhow::Result<BuildResult> {
     // The target decides which feature flags survive, once, before anything
     // reads them: the target dir below, the log line, and the cargo
     // invocation must all describe the same build.
-    let (needs_atomics, needs_autodiff, needs_simd) =
-        effective_features(target, needs_atomics, needs_autodiff, needs_simd);
+    let features = features.for_target(target);
 
     let cargo_home = cargo_home_dir(cache_dir);
-    let target_dir = if needs_atomics {
+    let target_dir = if features.atomics {
         atomics_target_dir(cache_dir)
     } else {
         target_dir(cache_dir, session_id)
@@ -276,9 +244,9 @@ pub async fn build_micro_crate(
         cargo_home = %cargo_home.display(),
         target_dir = %target_dir.display(),
         target = %target.triple(),
-        needs_atomics = needs_atomics,
-        needs_autodiff = needs_autodiff,
-        needs_simd = needs_simd,
+        needs_atomics = features.atomics,
+        needs_autodiff = features.autodiff,
+        needs_simd = features.simd,
         rustup_toolchain = %std::env::var("RUSTUP_TOOLCHAIN").unwrap_or_default(),
         "starting WASM build",
     );
@@ -294,9 +262,7 @@ pub async fn build_micro_crate(
         &target_dir,
         compilation_proxy,
         target,
-        needs_atomics,
-        needs_autodiff,
-        needs_simd,
+        features,
     );
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -434,9 +400,9 @@ pub async fn build_micro_crate(
 /// `all_public_notebook_cells_compile`. Stdio/process-group setup stays with the
 /// caller since only the real build needs it.
 ///
-/// The feature flags must already have passed through [`effective_features`]
-/// (both entry points apply it first), so what is set here is what the build
-/// actually gets.
+/// The feature flags must already have passed through
+/// [`CellFeatures::for_target`] (both entry points apply it first), so what is
+/// set here is what the build actually gets.
 #[allow(clippy::too_many_arguments)]
 fn configure_cargo_cmd(
     cmd: &mut Command,
@@ -446,9 +412,7 @@ fn configure_cargo_cmd(
     target_dir: &Path,
     compilation_proxy: Option<&str>,
     target: CellTarget,
-    needs_atomics: bool,
-    needs_autodiff: bool,
-    needs_simd: bool,
+    features: CellFeatures,
 ) {
     // Every cell build pins its toolchain explicitly — never the host default,
     // which differs between dev (nightly) and the deploy image, and once let
@@ -478,10 +442,10 @@ fn configure_cargo_cmd(
         cmd.env("HTTP_PROXY", proxy);
     }
 
-    if needs_atomics {
+    if features.atomics {
         cmd.arg("-Zbuild-std=std,panic_abort");
     }
-    if let Some(rustflags) = compose_rustflags(needs_atomics, needs_autodiff, needs_simd) {
+    if let Some(rustflags) = compose_rustflags(features) {
         cmd.env("RUSTFLAGS", rustflags);
     }
 }
@@ -493,16 +457,12 @@ fn configure_cargo_cmd(
 /// **single** `-C target-feature=` flag: rustc keeps only the last occurrence
 /// of the option, so emitting two would silently drop the earlier feature set
 /// (a rayon+simd cell would lose its atomics features and fail to link).
-fn compose_rustflags(
-    needs_atomics: bool,
-    needs_autodiff: bool,
-    needs_simd: bool,
-) -> Option<String> {
+fn compose_rustflags(features: CellFeatures) -> Option<String> {
     let mut target_features: Vec<&str> = Vec::new();
-    if needs_atomics {
+    if features.atomics {
         target_features.push(ATOMICS_TARGET_FEATURES);
     }
-    if needs_simd {
+    if features.simd {
         target_features.push(SIMD_TARGET_FEATURES);
     }
 
@@ -510,10 +470,10 @@ fn compose_rustflags(
     if !target_features.is_empty() {
         rustflags.push(format!("-C target-feature={}", target_features.join(",")));
     }
-    if needs_atomics {
+    if features.atomics {
         rustflags.push(ATOMICS_LINK_RUSTFLAGS.to_string());
     }
-    if needs_autodiff {
+    if features.autodiff {
         rustflags.push(AUTODIFF_RUSTFLAGS.to_string());
     }
 
@@ -548,17 +508,14 @@ pub async fn check_micro_crate(
     cell_id: &str,
     compilation_proxy: Option<&str>,
     target: CellTarget,
-    needs_atomics: bool,
-    needs_autodiff: bool,
-    needs_simd: bool,
+    features: CellFeatures,
     timeout: Duration,
 ) -> anyhow::Result<CheckResult> {
     // Same rule as the build path, applied before anything reads the flags.
-    let (needs_atomics, needs_autodiff, needs_simd) =
-        effective_features(target, needs_atomics, needs_autodiff, needs_simd);
+    let features = features.for_target(target);
 
     let cargo_home = cargo_home_dir(cache_dir);
-    let target_dir = if needs_atomics {
+    let target_dir = if features.atomics {
         atomics_target_dir(cache_dir)
     } else {
         target_dir(cache_dir, session_id)
@@ -575,9 +532,9 @@ pub async fn check_micro_crate(
     tracing::debug!(
         cell_id = %cell_id,
         target = %target.triple(),
-        needs_atomics,
-        needs_autodiff,
-        needs_simd,
+        needs_atomics = features.atomics,
+        needs_autodiff = features.autodiff,
+        needs_simd = features.simd,
         "starting live check",
     );
 
@@ -590,9 +547,7 @@ pub async fn check_micro_crate(
         &target_dir,
         compilation_proxy,
         target,
-        needs_atomics,
-        needs_autodiff,
-        needs_simd,
+        features,
     );
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -682,22 +637,31 @@ mod tests {
 
     // ── compose_rustflags ───────────────────────────────────────────────
 
+    /// A feature set from three flags, in the order the tests name them.
+    const fn features(atomics: bool, autodiff: bool, simd: bool) -> CellFeatures {
+        CellFeatures {
+            atomics,
+            autodiff,
+            simd,
+        }
+    }
+
     #[test]
     fn rustflags_none_when_no_features() {
-        assert_eq!(compose_rustflags(false, false, false), None);
+        assert_eq!(compose_rustflags(features(false, false, false)), None);
     }
 
     #[test]
     fn rustflags_simd_only() {
         assert_eq!(
-            compose_rustflags(false, false, true).as_deref(),
+            compose_rustflags(features(false, false, true)).as_deref(),
             Some("-C target-feature=+simd128"),
         );
     }
 
     #[test]
     fn rustflags_atomics_only_keeps_features_and_link_args() {
-        let flags = compose_rustflags(true, false, false).unwrap();
+        let flags = compose_rustflags(features(true, false, false)).unwrap();
         assert!(flags.starts_with("-C target-feature=+atomics,+bulk-memory,+mutable-globals"));
         assert!(flags.contains("-C link-arg=--shared-memory"));
         assert!(flags.contains("-C link-arg=--export=__tls_base"));
@@ -705,7 +669,7 @@ mod tests {
 
     #[test]
     fn rustflags_atomics_plus_simd_merge_into_one_target_feature_flag() {
-        let flags = compose_rustflags(true, false, true).unwrap();
+        let flags = compose_rustflags(features(true, false, true)).unwrap();
         // One merged flag — a second `-C target-feature=` would make rustc
         // silently drop the first set.
         assert_eq!(flags.matches("-C target-feature=").count(), 1);
@@ -715,7 +679,7 @@ mod tests {
 
     #[test]
     fn rustflags_autodiff_composes_with_simd() {
-        let flags = compose_rustflags(false, true, true).unwrap();
+        let flags = compose_rustflags(features(false, true, true)).unwrap();
         assert!(flags.contains("-C target-feature=+simd128"));
         assert!(flags.contains("-Zautodiff=Enable"));
     }
@@ -737,9 +701,7 @@ mod tests {
             Path::new("/target"),
             None,
             target,
-            atomics,
-            autodiff,
-            simd,
+            features(atomics, autodiff, simd),
         );
         cmd.as_std()
             .get_args()
@@ -823,7 +785,7 @@ mod tests {
         // `std::autodiff` in a comment) must still get the browserpod pack.
         // Since PRD-0067 the routing takes only the target, which is what makes
         // that true by construction rather than by remembering an `if` order —
-        // `effective_features` is where a Linux cell's feature flags are
+        // `CellFeatures::for_target` is where a Linux cell's feature flags are
         // dropped, and it has its own tests.
         assert_eq!(cell_toolchain(CellTarget::Linux), BROWSERPOD_TOOLCHAIN);
         assert_ne!(BROWSERPOD_TOOLCHAIN, CELL_TOOLCHAIN);
@@ -867,15 +829,10 @@ mod tests {
         // them here would fight the target spec's own atomics + shared-memory
         // link args, and `-Zbuild-std` would try to rebuild a std the vendor
         // toolchain already ships.
-        assert_eq!(
-            effective_features(CellTarget::Linux, true, true, true),
-            (false, false, false)
-        );
-        assert_eq!(
-            effective_features(CellTarget::Executor, true, true, true),
-            (true, true, true)
-        );
-        assert_eq!(compose_rustflags(false, false, false), None);
+        let all = features(true, true, true);
+        assert_eq!(all.for_target(CellTarget::Linux), CellFeatures::default());
+        assert_eq!(all.for_target(CellTarget::Executor), all);
+        assert_eq!(compose_rustflags(all.for_target(CellTarget::Linux)), None);
     }
 
     #[test]

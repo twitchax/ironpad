@@ -138,6 +138,79 @@ impl From<crate::types::CellType> for CellTarget {
 /// invalidates them.
 pub const CACHE_EPOCH: u32 = 11;
 
+// ── Feature set ──────────────────────────────────────────────────────────────
+
+/// The build modes a cell opts into just by what it says (see the feature
+/// detection functions below): rayon in the merged dependencies (atomics),
+/// `std::autodiff` (Enzyme), and WASM SIMD.
+///
+/// Every one of them is a pure function of the cell's text, so [`detect`]
+/// is the ONE place they are derived: the cache key detects them itself, and
+/// the scaffold, build and check stages take this value rather than three
+/// loose bools a caller could pass in disagreement with the source.
+///
+/// [`detect`]: CellFeatures::detect
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CellFeatures {
+    /// A `rayon` dependency: atomics target features, shared-memory link
+    /// args and a `-Zbuild-std` std (wasm-bindgen-rayon's worker pool).
+    pub atomics: bool,
+    /// `std::autodiff`: `-Zautodiff=Enable` and a forced fat-LTO profile.
+    pub autodiff: bool,
+    /// WASM SIMD: `-C target-feature=+simd128` and the `portable_simd` gate.
+    pub simd: bool,
+}
+
+impl CellFeatures {
+    /// Detect the feature set from a cell's source and manifest plus the
+    /// notebook's shared manifest and (effective) shared source.
+    ///
+    /// These are the RAW verdicts, whatever the target; the cache key hashes
+    /// exactly these. [`for_target`](Self::for_target) is the build-side view.
+    #[must_use]
+    pub fn detect(
+        source: &str,
+        cargo_toml: &str,
+        shared_cargo_toml: Option<&str>,
+        shared_source: Option<&str>,
+    ) -> Self {
+        Self {
+            atomics: merged_deps_contain_rayon(shared_cargo_toml, cargo_toml),
+            autodiff: uses_std_autodiff(source, shared_source),
+            simd: uses_wasm_simd(source, shared_source),
+        }
+    }
+
+    /// The feature set as a build for `target` actually applies it.
+    ///
+    /// Every one of atomics, autodiff and SIMD is a statement about building
+    /// for `wasm32-unknown-unknown`: a `-C target-feature` set,
+    /// wasm-bindgen-rayon's shared-memory link args, Enzyme's fat-LTO profile.
+    /// None of them mean anything on `wasm32-browserpod-linux-musl`, whose
+    /// target spec already carries `+atomics`, shared memory and its export
+    /// set, and which has no Enzyme component. So the target wins over all
+    /// three, in ONE place, rather than at each of the consumers (toolchain,
+    /// target dir, RUSTFLAGS, `-Zbuild-std`) where some would eventually be
+    /// remembered and one forgotten.
+    ///
+    /// This does not change the cache key: the key hashes the raw
+    /// [`detect`](Self::detect) verdicts, so a Linux cell that merely
+    /// *mentions* `std::simd` keys consistently whether or not the flag is
+    /// applied.
+    #[must_use]
+    pub const fn for_target(self, target: CellTarget) -> Self {
+        if target.is_linux() {
+            Self {
+                atomics: false,
+                autodiff: false,
+                simd: false,
+            }
+        } else {
+            self
+        }
+    }
+}
+
 // ── Content hash ─────────────────────────────────────────────────────────────
 
 /// Compute the deterministic blake3 cache key for a cell, given an explicit
@@ -151,8 +224,10 @@ pub const CACHE_EPOCH: u32 = 11;
 /// `("ab", "c")` and `("a", "bc")`) and serve each other's compiled WASM.
 /// The toolchain fingerprint (rustc version + host wasm-bindgen CLI version)
 /// ensures a toolchain upgrade invalidates stale cached blobs.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::fn_params_excessive_bools)]
+///
+/// The [`CellFeatures`] are detected here from the same inputs rather than
+/// taken as parameters, so no caller can hash flags that disagree with the
+/// source it hashes.
 #[must_use]
 pub fn content_hash_with_fingerprint(
     source: &str,
@@ -160,9 +235,33 @@ pub fn content_hash_with_fingerprint(
     previous_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
-    needs_atomics: bool,
-    needs_autodiff: bool,
-    needs_simd: bool,
+    target: CellTarget,
+    toolchain: &str,
+) -> String {
+    content_hash_with_features(
+        source,
+        cargo_toml,
+        previous_types,
+        shared_cargo_toml,
+        shared_source,
+        CellFeatures::detect(source, cargo_toml, shared_cargo_toml, shared_source),
+        target,
+        toolchain,
+    )
+}
+
+/// The recipe itself, with the feature set explicit. Private: production keys
+/// always detect their features ([`content_hash_with_fingerprint`]); this seam
+/// exists so tests can prove each flag byte is hashed, which toggling the
+/// source cannot (a source change already changes the key).
+#[allow(clippy::too_many_arguments)]
+fn content_hash_with_features(
+    source: &str,
+    cargo_toml: &str,
+    previous_types: &[String],
+    shared_cargo_toml: Option<&str>,
+    shared_source: Option<&str>,
+    features: CellFeatures,
     target: CellTarget,
     toolchain: &str,
 ) -> String {
@@ -188,9 +287,9 @@ pub fn content_hash_with_fingerprint(
     }
     update_framed_opt(&mut hasher, shared_cargo_toml.map(str::as_bytes));
     update_framed_opt(&mut hasher, shared_source.map(str::as_bytes));
-    hasher.update(&[u8::from(needs_atomics)]);
-    hasher.update(&[u8::from(needs_autodiff)]);
-    hasher.update(&[u8::from(needs_simd)]);
+    hasher.update(&[u8::from(features.atomics)]);
+    hasher.update(&[u8::from(features.autodiff)]);
+    hasher.update(&[u8::from(features.simd)]);
     hasher.update(&CACHE_EPOCH.to_le_bytes());
     update_framed(&mut hasher, toolchain.as_bytes());
     hasher.finalize().to_hex().to_string()
@@ -621,9 +720,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
             "toolchain-a",
         );
@@ -633,9 +729,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
             "toolchain-b",
         );
@@ -650,9 +743,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
             "toolchain-a",
         );
@@ -662,9 +752,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
             "toolchain-a",
         );
@@ -684,9 +771,6 @@ mod tests {
                 types,
                 None,
                 None,
-                false,
-                false,
-                false,
                 CellTarget::Executor,
                 "tc",
             )
@@ -706,9 +790,6 @@ mod tests {
                 types,
                 None,
                 None,
-                false,
-                false,
-                false,
                 CellTarget::Executor,
                 "tc",
             )
@@ -728,18 +809,7 @@ mod tests {
         // cdylib vs a `_start` Linux binary). A shared key would hand one to
         // the runtime expecting the other.
         let key = |target| {
-            content_hash_with_fingerprint(
-                "fn main() {}",
-                "",
-                &[],
-                None,
-                None,
-                false,
-                false,
-                false,
-                target,
-                "tc",
-            )
+            content_hash_with_fingerprint("fn main() {}", "", &[], None, None, target, "tc")
         };
         assert_ne!(key(CellTarget::Executor), key(CellTarget::Linux));
 
@@ -785,8 +855,10 @@ mod tests {
     /// recipe changed: either undo that, or make it deliberate and bump
     /// [`CACHE_EPOCH`] (then update these literals).
     ///
-    /// The feature flags passed here are the ones detection yields for each
-    /// source, so the pinned keys are the keys production computes.
+    /// The recipe detects each cell's feature flags itself; these literals
+    /// were first pinned when callers still passed the flags in, with the
+    /// values detection yields, so they prove moving detection inside the
+    /// recipe changed no key.
     #[test]
     fn hash_recipe_is_byte_stable() {
         // A plain, independent cell.
@@ -796,9 +868,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
             "tc",
         );
@@ -816,9 +885,6 @@ mod tests {
             &["u32".to_string(), "i64".to_string()],
             Some("[dependencies]\nserde = \"1\"\n"),
             Some("pub fn helper() {}"),
-            true,
-            false,
-            true,
             CellTarget::Executor,
             "tc",
         );
@@ -834,9 +900,6 @@ mod tests {
             &[],
             None,
             Some("use std::autodiff::autodiff_reverse;"),
-            false,
-            true,
-            false,
             CellTarget::Executor,
             "tc",
         );
@@ -853,9 +916,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            true,
             CellTarget::Linux,
             "tc",
         );
@@ -865,20 +925,105 @@ mod tests {
         );
     }
 
+    /// Each flag byte is hashed on its own. Toggling the SOURCE cannot show
+    /// this (a source change already changes the key), hence the private
+    /// explicit-features seam.
+    #[test]
+    fn each_feature_flag_changes_the_key() {
+        let key = |features| {
+            content_hash_with_features(
+                "x",
+                "y",
+                &[],
+                None,
+                None,
+                features,
+                CellTarget::Executor,
+                "tc",
+            )
+        };
+        let none = key(CellFeatures::default());
+        let atomics = key(CellFeatures {
+            atomics: true,
+            ..CellFeatures::default()
+        });
+        let autodiff = key(CellFeatures {
+            autodiff: true,
+            ..CellFeatures::default()
+        });
+        let simd = key(CellFeatures {
+            simd: true,
+            ..CellFeatures::default()
+        });
+        assert_ne!(
+            none, atomics,
+            "atomics changes codegen, so it must change the key"
+        );
+        assert_ne!(
+            none, autodiff,
+            "autodiff changes codegen, so it must change the key"
+        );
+        assert_ne!(
+            none, simd,
+            "simd128 changes codegen, so it must change the key"
+        );
+        // Distinct positions, not one shared "any feature" byte.
+        assert_ne!(atomics, autodiff);
+        assert_ne!(autodiff, simd);
+        assert_ne!(atomics, simd);
+    }
+
+    #[test]
+    fn features_are_detected_from_source_manifest_and_shared_context() {
+        assert_eq!(
+            CellFeatures::detect("let x = 1;", "[dependencies]", None, None),
+            CellFeatures::default()
+        );
+        let all = CellFeatures {
+            atomics: true,
+            autodiff: true,
+            simd: true,
+        };
+        assert_eq!(
+            CellFeatures::detect(
+                "use std::simd::f32x4; shared::d_f(1.0, 1.0)",
+                "[dependencies]\nrayon = \"1\"\n",
+                None,
+                Some("use std::autodiff::autodiff_reverse;"),
+            ),
+            all
+        );
+        // The shared manifest and shared source count too.
+        assert_eq!(
+            CellFeatures::detect(
+                "shared::dot()",
+                "",
+                Some("[dependencies]\nrayon = \"1\"\n"),
+                Some("use std::simd::f32x4;"),
+            ),
+            CellFeatures {
+                atomics: true,
+                autodiff: false,
+                simd: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_linux_build_applies_no_wasm32_unknown_feature() {
+        let all = CellFeatures {
+            atomics: true,
+            autodiff: true,
+            simd: true,
+        };
+        assert_eq!(all.for_target(CellTarget::Linux), CellFeatures::default());
+        assert_eq!(all.for_target(CellTarget::Executor), all);
+    }
+
     #[test]
     fn hash_is_64_hex_chars() {
-        let h = content_hash_with_fingerprint(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-            "tc",
-        );
+        let h =
+            content_hash_with_fingerprint("x", "y", &[], None, None, CellTarget::Executor, "tc");
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }

@@ -26,18 +26,14 @@ use super::toolchain::toolchain_fingerprint;
 ///
 /// `target` must be the target the cell will actually be built for: it is part
 /// of the key precisely so a Code cell and a Linux cell with identical source
-/// cannot serve each other's blobs.
-#[allow(clippy::fn_params_excessive_bools)]
-#[allow(clippy::too_many_arguments)]
+/// cannot serve each other's blobs. The feature flags are detected by the
+/// recipe itself, from these same inputs.
 pub fn content_hash(
     source: &str,
     cargo_toml: &str,
     previous_types: &[String],
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
-    needs_atomics: bool,
-    needs_autodiff: bool,
-    needs_simd: bool,
     target: ironpad_common::cache_key::CellTarget,
 ) -> String {
     ironpad_common::cache_key::content_hash_with_fingerprint(
@@ -46,9 +42,6 @@ pub fn content_hash(
         previous_types,
         shared_cargo_toml,
         shared_source,
-        needs_atomics,
-        needs_autodiff,
-        needs_simd,
         target,
         toolchain_fingerprint(),
     )
@@ -208,9 +201,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         let b = content_hash(
@@ -219,9 +209,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert_eq!(a, b);
@@ -235,9 +222,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         let b = content_hash(
@@ -246,9 +230,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert_ne!(a, b);
@@ -263,9 +244,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         let b = content_hash(
@@ -274,9 +252,6 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert_ne!(a, b);
@@ -292,28 +267,8 @@ mod tests {
 
         // source/cargo_toml boundary: "ab"+"c" and "a"+"bc" both concatenate to
         // "abc" under the old bare-concatenation scheme.
-        let a = content_hash(
-            "ab",
-            "c",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let b = content_hash(
-            "a",
-            "bc",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let a = content_hash("ab", "c", &[], None, None, CellTarget::Executor);
+        let b = content_hash("a", "bc", &[], None, None, CellTarget::Executor);
         assert_ne!(a, b, "source/cargo_toml boundary must be unambiguous");
 
         // cargo_toml/target boundary: the target triple is hashed right after
@@ -326,38 +281,15 @@ mod tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
-        let d = content_hash(
-            "x",
-            target,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let d = content_hash("x", target, &[], None, None, CellTarget::Executor);
         assert_ne!(c, d, "cargo_toml/target boundary must be unambiguous");
     }
 
     #[test]
     fn hash_is_64_hex_chars() {
-        let h = content_hash(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let h = content_hash("x", "y", &[], None, None, CellTarget::Executor);
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -370,39 +302,9 @@ mod tests {
         // (PRD-0060 normalization).
         let s = "let x = cell0;";
         let c = "[dependencies]";
-        let a = content_hash(
-            s,
-            c,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let b = content_hash(
-            s,
-            c,
-            &["u32".into()],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let d = content_hash(
-            s,
-            c,
-            &["String".into()],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let a = content_hash(s, c, &[], None, None, CellTarget::Executor);
+        let b = content_hash(s, c, &["u32".into()], None, None, CellTarget::Executor);
+        let d = content_hash(s, c, &["String".into()], None, None, CellTarget::Executor);
         assert_ne!(a, b);
         assert_ne!(b, d);
     }
@@ -418,9 +320,6 @@ mod tests {
             &["u32".into(), String::new()],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         let b = content_hash(
@@ -429,9 +328,6 @@ mod tests {
             &[String::new(), "u32".into()],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert_ne!(a, b);
@@ -443,26 +339,13 @@ mod tests {
     fn hash_changes_when_shared_cargo_toml_changes() {
         let s = "let x = 1;";
         let c = "[dependencies]";
-        let a = content_hash(
-            s,
-            c,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let a = content_hash(s, c, &[], None, None, CellTarget::Executor);
         let b = content_hash(
             s,
             c,
             &[],
             Some("[dependencies]\nserde = \"1\""),
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         let d = content_hash(
@@ -471,9 +354,6 @@ mod tests {
             &[],
             Some("[dependencies]\nrand = \"0.8\""),
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert_ne!(a, b);
@@ -484,28 +364,8 @@ mod tests {
     fn hash_with_none_shared_differs_from_empty_shared() {
         let s = "x";
         let c = "y";
-        let a = content_hash(
-            s,
-            c,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let b = content_hash(
-            s,
-            c,
-            &[],
-            Some(""),
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let a = content_hash(s, c, &[], None, None, CellTarget::Executor);
+        let b = content_hash(s, c, &[], Some(""), None, CellTarget::Executor);
         assert_ne!(a, b);
     }
 
@@ -576,17 +436,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let source = "let x = 42;";
         let cargo = "[dependencies]";
-        let hash = content_hash(
-            source,
-            cargo,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let hash = content_hash(source, cargo, &[], None, None, CellTarget::Executor);
         let blob = vec![0u8; 256];
         let glue = "// js glue content";
 
@@ -601,17 +451,7 @@ mod tests {
 
     #[test]
     fn hash_empty_source_is_valid() {
-        let h = content_hash(
-            "",
-            "",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let h = content_hash("", "", &[], None, None, CellTarget::Executor);
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -619,28 +459,8 @@ mod tests {
     #[test]
     fn hash_same_shared_cargo_toml_is_deterministic() {
         let shared = "[dependencies]\nserde = \"1\"";
-        let a = content_hash(
-            "x",
-            "y",
-            &[],
-            Some(shared),
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let b = content_hash(
-            "x",
-            "y",
-            &[],
-            Some(shared),
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let a = content_hash("x", "y", &[], Some(shared), None, CellTarget::Executor);
+        let b = content_hash("x", "y", &[], Some(shared), None, CellTarget::Executor);
         assert_eq!(a, b);
     }
 
@@ -726,91 +546,6 @@ mod tests {
         );
         let hit = try_cache_hit(dir.path(), "beefbeef").unwrap();
         assert!(hit.diagnostics.is_empty());
-    }
-
-    // ── T-002: needs_atomics flag ────────────────────────────────────────
-
-    #[test]
-    fn hash_changes_with_needs_atomics() {
-        let s = "x";
-        let c = "y";
-        let a = content_hash(
-            s,
-            c,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let b = content_hash(
-            s,
-            c,
-            &[],
-            None,
-            None,
-            true,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn hash_changes_with_needs_autodiff() {
-        let a = content_hash(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let b = content_hash(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            true,
-            false,
-            CellTarget::Executor,
-        );
-        assert_ne!(a, b, "autodiff changes codegen, so it must change the key");
-    }
-
-    #[test]
-    fn hash_changes_with_needs_simd() {
-        let a = content_hash(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let b = content_hash(
-            "x",
-            "y",
-            &[],
-            None,
-            None,
-            false,
-            false,
-            true,
-            CellTarget::Executor,
-        );
-        assert_ne!(a, b, "simd128 changes codegen, so it must change the key");
     }
 
     // Fingerprint-variation tests live with the shared recipe in

@@ -22,7 +22,7 @@ use leptos::prelude::*;
 // ordinary cell's key could be handed a `cell_main` cdylib, which a pod
 // cannot exec.
 #[cfg(feature = "ssr")]
-use ironpad_common::cache_key::CellTarget;
+use ironpad_common::cache_key::{CellFeatures, CellTarget};
 
 // ── Compilation ──────────────────────────────────────────────────────────────
 
@@ -146,9 +146,7 @@ async fn compile_cell_core(
         cache::{content_hash, store_blob, try_cache_hit},
         diagnostics::parse_diagnostics,
         optimize::optimize_wasm,
-        scaffold::{
-            merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff, uses_wasm_simd,
-        },
+        scaffold::scaffold_micro_crate,
     };
 
     let session_id = "default";
@@ -174,15 +172,17 @@ async fn compile_cell_core(
     )
     .await;
 
-    // `needs_atomics` is a pure function of the inputs (no I/O), so the cache key
-    // can be derived before scaffolding. Scaffolding writes Cargo.toml + lib.rs
-    // (+ shared.rs) to disk, so defer it until a confirmed cache miss: a repeat
-    // compile of an unchanged cell (the common case, a hot path) hits the cache
-    // and must not pay those filesystem writes.
-    let needs_atomics =
-        merged_deps_contain_rayon(request.shared_cargo_toml.as_deref(), &request.cargo_toml);
-    let needs_autodiff = uses_std_autodiff(&request.source, request.shared_source.as_deref());
-    let needs_simd = uses_wasm_simd(&request.source, request.shared_source.as_deref());
+    // The feature set is a pure function of the inputs (no I/O), so the cache
+    // key can be derived before scaffolding. Scaffolding writes Cargo.toml +
+    // lib.rs (+ shared.rs) to disk, so defer it until a confirmed cache miss: a
+    // repeat compile of an unchanged cell (the common case, a hot path) hits
+    // the cache and must not pay those filesystem writes.
+    let features = CellFeatures::detect(
+        &request.source,
+        &request.cargo_toml,
+        request.shared_cargo_toml.as_deref(),
+        request.shared_source.as_deref(),
+    );
 
     let hash = content_hash(
         &request.source,
@@ -190,12 +190,16 @@ async fn compile_cell_core(
         &request.previous_cell_types,
         request.shared_cargo_toml.as_deref(),
         request.shared_source.as_deref(),
-        needs_atomics,
-        needs_autodiff,
-        needs_simd,
         target,
     );
-    tracing::info!(cell_id = %request.cell_id, hash = %hash, needs_atomics, needs_autodiff, needs_simd, "compile_cell started");
+    tracing::info!(
+        cell_id = %request.cell_id,
+        hash = %hash,
+        needs_atomics = features.atomics,
+        needs_autodiff = features.autodiff,
+        needs_simd = features.simd,
+        "compile_cell started"
+    );
 
     // Cache check (skipped when force-recompile is requested).
 
@@ -261,9 +265,7 @@ async fn compile_cell_core(
         &request.cell_id,
         config.compilation_proxy.as_deref(),
         target,
-        needs_atomics,
-        needs_autodiff,
-        needs_simd,
+        features,
     )
     .await
     .map_err(|e| ServerFnError::new(format!("build invocation failed: {e}")))?;
@@ -297,7 +299,7 @@ async fn compile_cell_core(
                 optimize_wasm(
                     &wasm_bytes,
                     crate_dir.parent().unwrap_or(&crate_dir),
-                    needs_atomics,
+                    features.atomics,
                 )
                 .await
             };
@@ -463,9 +465,7 @@ async fn check_cell_core(
     use crate::compiler::{
         build::{check_micro_crate, CheckResult, CheckTimedOut},
         diagnostics::{parse_diagnostics, parse_shared_range_diagnostics},
-        scaffold::{
-            merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff, uses_wasm_simd,
-        },
+        scaffold::scaffold_micro_crate,
     };
     use ironpad_common::CheckStatus;
 
@@ -500,10 +500,12 @@ async fn check_cell_core(
         });
     };
 
-    let needs_atomics =
-        merged_deps_contain_rayon(request.shared_cargo_toml.as_deref(), &request.cargo_toml);
-    let needs_autodiff = uses_std_autodiff(&request.source, request.shared_source.as_deref());
-    let needs_simd = uses_wasm_simd(&request.source, request.shared_source.as_deref());
+    let features = CellFeatures::detect(
+        &request.source,
+        &request.cargo_toml,
+        request.shared_cargo_toml.as_deref(),
+        request.shared_source.as_deref(),
+    );
 
     let (crate_dir, preamble_lines, _is_async, _is_simulation) = scaffold_micro_crate(
         &config.cache_dir,
@@ -526,9 +528,7 @@ async fn check_cell_core(
         &request.cell_id,
         config.compilation_proxy.as_deref(),
         target,
-        needs_atomics,
-        needs_autodiff,
-        needs_simd,
+        features,
         live_check_timeout(),
     )
     .await;
@@ -1043,7 +1043,6 @@ async fn write_cell_blobs_capped(
     max_total_bytes: u64,
 ) -> anyhow::Result<std::collections::BTreeMap<String, ironpad_common::ShareBlobEntry>> {
     use crate::compiler::cache::{content_hash, try_cache_hit};
-    use crate::compiler::scaffold::{merged_deps_contain_rayon, uses_std_autodiff, uses_wasm_simd};
     use ironpad_common::ShareBlobEntry;
 
     // One positional tag per cell is the contract (empty = no tag); a
@@ -1094,19 +1093,12 @@ async fn write_cell_blobs_capped(
             continue;
         }
         let cargo_toml = cell.cargo_toml.clone().unwrap_or_default();
-        let needs_atomics = merged_deps_contain_rayon(shared_cargo_toml, &cargo_toml);
-        let needs_autodiff = uses_std_autodiff(&cell.source, shared_source);
-        let needs_simd = uses_wasm_simd(&cell.source, shared_source);
         let hash = content_hash(
             &cell.source,
             &cargo_toml,
             &cell_type_tags[..idx],
             shared_cargo_toml,
-            shared_source,
-            needs_atomics,
-            needs_autodiff,
-            needs_simd,
-            // From the cell, not assumed. Since PRD-0067 this loop DOES
+            shared_source, // From the cell, not assumed. Since PRD-0067 this loop DOES
             // see Linux cells, so the target is load-bearing rather than
             // defensive: assume `Executor` here and every Linux cell gets
             // snapshotted under an ordinary cell's key, which is a blob
@@ -2292,9 +2284,6 @@ mod tests {
                 &[],
                 notebook.shared_cargo_toml.as_deref(),
                 notebook.effective_shared_source().as_deref(),
-                false,
-                false,
-                false,
                 target,
             )
         };
@@ -2419,17 +2408,7 @@ mod tests {
         let cargo_toml = "[dependencies]";
 
         let seed = |target, blob: &[u8]| {
-            let hash = content_hash(
-                source,
-                cargo_toml,
-                &[],
-                None,
-                None,
-                false,
-                false,
-                false,
-                target,
-            );
+            let hash = content_hash(source, cargo_toml, &[], None, None, target);
             store_blob(cache.path(), &hash, blob, None, &[]).unwrap();
             hash
         };
@@ -2597,7 +2576,6 @@ mod tests {
     #[tokio::test]
     async fn compile_cell_core_cache_hit_does_not_scaffold() {
         use crate::compiler::cache::{content_hash, store_blob};
-        use crate::compiler::scaffold::merged_deps_contain_rayon;
         use crate::compiler::CompileLocks;
         use ironpad_common::AppConfig;
 
@@ -2608,18 +2586,7 @@ mod tests {
 
         // Pre-seed the cache with a blob under the exact hash compile_cell_core
         // derives for these inputs, so the request resolves as a cache hit.
-        let needs_atomics = merged_deps_contain_rayon(None, cargo_toml);
-        let hash = content_hash(
-            source,
-            cargo_toml,
-            &[],
-            None,
-            None,
-            needs_atomics,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let hash = content_hash(source, cargo_toml, &[], None, None, CellTarget::Executor);
         let fake_wasm = b"\x00asm\x01\x00\x00\x00cache-hit";
         store_blob(
             cache.path(),
@@ -2725,17 +2692,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let source = "    CellOutput::empty()";
         let cargo_toml = "[dependencies]";
-        let hash = content_hash(
-            source,
-            cargo_toml,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let hash = content_hash(source, cargo_toml, &[], None, None, CellTarget::Executor);
         store_blob(
             cache.path(),
             &hash,
@@ -3088,9 +3045,6 @@ mod tests {
             &tags[..idx],
             notebook.shared_cargo_toml.as_deref(),
             notebook.effective_shared_source().as_deref(),
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         store_blob(cache_dir, &hash, blob, glue, &[]).unwrap();

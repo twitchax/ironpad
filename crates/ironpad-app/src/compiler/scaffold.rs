@@ -6,7 +6,7 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use ironpad_common::cache_key::{merge_dependencies, CellTarget};
+use ironpad_common::cache_key::{merge_dependencies, CellFeatures, CellTarget};
 
 // Re-exported so in-crate callers (`server_fns.rs`, `compiler/mod.rs`) and the
 // tests below keep their `compiler::scaffold::*` paths; the definitions moved
@@ -43,9 +43,9 @@ pub fn is_valid_cell_id(cell_id: &str) -> bool {
 /// ```
 ///
 /// Returns `(crate_dir, preamble_lines, is_async, is_simulation)`. Feature
-/// flags (atomics/autodiff/simd) are re-derived here from the same pure
-/// detection functions callers hash with — those functions are the single
-/// source of truth, so both sides always agree:
+/// flags (atomics/autodiff/simd) are re-derived here through
+/// [`CellFeatures::detect`], the same derivation the cache key uses, so both
+/// sides always agree:
 /// - `crate_dir`: path to the micro-crate root directory
 /// - `preamble_lines`: number of lines before user code (for diagnostic mapping)
 /// - `is_async`: whether the cell wrapper is async (source contains `.await`)
@@ -89,29 +89,28 @@ pub fn scaffold_micro_crate(
         ironpad_cell_path.to_path_buf()
     });
 
-    let needs_atomics = merged_deps_contain_rayon(shared_cargo_toml, cargo_toml);
-    let needs_autodiff = uses_std_autodiff(source, shared_source);
+    let features = CellFeatures::detect(source, cargo_toml, shared_cargo_toml, shared_source);
 
     let generated_cargo_toml = generate_cargo_toml(
         cell_id,
         cargo_toml,
         &absolute_cell_path,
         shared_cargo_toml,
-        needs_atomics,
-        needs_autodiff,
+        features.atomics,
+        features.autodiff,
     );
     std::fs::write(crate_dir.join("Cargo.toml"), generated_cargo_toml)?;
 
     let (mut lib_rs, mut preamble_lines, is_async, is_simulation) =
         generate_lib_rs(source, previous_cell_types, shared_source.is_some());
-    if needs_autodiff {
+    if features.autodiff {
         // `#![feature(autodiff)]` must sit at the crate root — the one place a
         // cell author can't reach and the scaffold owns. Adding a line above
         // the wrapper shifts every diagnostic, hence the preamble bump.
         lib_rs.insert_str(0, "#![feature(autodiff)]\n");
         preamble_lines += 1;
     }
-    if uses_wasm_simd(source, shared_source) {
+    if features.simd {
         // Crate-root gate for `std::simd` (portable SIMD is nightly-only);
         // harmless when the cell only uses stable `std::arch::wasm32`
         // intrinsics. Same preamble bump rule as the autodiff gate above.

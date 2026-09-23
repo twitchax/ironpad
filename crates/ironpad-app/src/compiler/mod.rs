@@ -265,28 +265,8 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]\nrand = \"0.8\"";
 
         // Hashes must match.
-        let hash_a = content_hash(
-            source,
-            cargo_toml,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
-        let hash_b = content_hash(
-            source,
-            cargo_toml,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let hash_a = content_hash(source, cargo_toml, &[], None, None, CellTarget::Executor);
+        let hash_b = content_hash(source, cargo_toml, &[], None, None, CellTarget::Executor);
         assert_eq!(hash_a, hash_b, "same inputs must produce identical hashes");
 
         // Scaffolded content must be identical for the same inputs.
@@ -339,9 +319,6 @@ mod pipeline_tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         let hash_v2 = content_hash(
@@ -350,9 +327,6 @@ mod pipeline_tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert_ne!(
@@ -370,9 +344,6 @@ mod pipeline_tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         let hash_b = content_hash(
@@ -381,9 +352,6 @@ mod pipeline_tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert_ne!(
@@ -450,17 +418,7 @@ mod pipeline_tests {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input.
-        let hash = content_hash(
-            source,
-            cargo_toml,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let hash = content_hash(source, cargo_toml, &[], None, None, CellTarget::Executor);
         assert_eq!(hash.len(), 64, "blake3 hash should be 64 hex chars");
         assert!(
             hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -547,17 +505,7 @@ mod pipeline_tests {
 
         let source = "    CellOutput::text(\"cached\")";
         let cargo = "[dependencies]";
-        let hash = content_hash(
-            source,
-            cargo,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let hash = content_hash(source, cargo, &[], None, None, CellTarget::Executor);
 
         let cache_dir = tempdir();
         let fake_wasm = b"\x00asm\x01\x00\x00\x00fake-wasm-bytes";
@@ -579,9 +527,6 @@ mod pipeline_tests {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert!(try_cache_hit(&cache_dir, &different_hash).is_none());
@@ -605,12 +550,12 @@ mod e2e_tests {
 
     use ironpad_common::cache_key::CellTarget;
 
+    use ironpad_common::cache_key::CellFeatures;
+
     use super::build::{build_micro_crate, check_micro_crate, BuildResult, CheckResult};
     use super::cache::{content_hash, store_blob, try_cache_hit};
     use super::diagnostics::parse_diagnostics;
-    use super::scaffold::{
-        merged_deps_contain_rayon, scaffold_micro_crate, uses_std_autodiff, uses_wasm_simd,
-    };
+    use super::scaffold::scaffold_micro_crate;
 
     /// Resolve the path to the `ironpad-cell` crate relative to this crate's manifest.
     fn ironpad_cell_path() -> PathBuf {
@@ -706,9 +651,7 @@ mod e2e_tests {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -827,6 +770,13 @@ pub fn range(angle: f64) -> f64 {
         assert!(lib_rs.starts_with("#![feature(autodiff)]\n"));
         assert!(preamble >= 1);
 
+        // The production derivation, not a hard-coded flag.
+        let features = CellFeatures::detect(source, cargo_toml, None, Some(shared_source));
+        assert!(
+            features.autodiff,
+            "a std::autodiff cell must opt into Enzyme"
+        );
+
         let result = build_micro_crate(
             &crate_dir,
             &cache_dir,
@@ -834,9 +784,7 @@ pub fn range(angle: f64) -> f64 {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            true,
-            false,
+            features,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -891,9 +839,7 @@ pub fn range(angle: f64) -> f64 {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -961,6 +907,8 @@ pub fn range(angle: f64) -> f64 {
             manifest.contains(r#"features = ["rayon"]"#),
             "scaffold must enable ironpad-cell's rayon feature:\n{manifest}"
         );
+        let features = CellFeatures::detect(source, cargo_toml, None, None);
+        assert!(features.atomics, "a rayon cell must opt into atomics");
 
         let result = build_micro_crate(
             &crate_dir,
@@ -969,9 +917,7 @@ pub fn range(angle: f64) -> f64 {
             cell_id,
             None,
             CellTarget::Executor,
-            true,
-            false,
-            false,
+            features,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1025,8 +971,8 @@ pub fn range(angle: f64) -> f64 {
         // Without it the crate silently compiles its scalar fallback.
         let source = "    let level = fearless_simd::Level::new();\n    CellOutput::from(level.as_wasm_simd128().is_some())";
         let cargo_toml = "[dependencies]\nfearless_simd = \"1.0\"";
-        let needs_simd = uses_wasm_simd(source, None);
-        assert!(needs_simd, "a fearless_simd cell must opt into simd128");
+        let features = CellFeatures::detect(source, cargo_toml, None, None);
+        assert!(features.simd, "a fearless_simd cell must opt into simd128");
 
         let (crate_dir, ..) = scaffold_micro_crate(
             &cache_dir,
@@ -1049,9 +995,7 @@ pub fn range(angle: f64) -> f64 {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            needs_simd,
+            features,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1099,6 +1043,8 @@ pub fn range(angle: f64) -> f64 {
         let lib_rs = std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap();
         assert!(lib_rs.starts_with("#![feature(portable_simd)]\n"));
         assert!(preamble >= 1);
+        let features = CellFeatures::detect(source, cargo_toml, None, None);
+        assert!(features.simd, "a std::simd cell must opt into simd128");
 
         let result = build_micro_crate(
             &crate_dir,
@@ -1107,9 +1053,7 @@ pub fn range(angle: f64) -> f64 {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            true,
+            features,
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1171,9 +1115,7 @@ pub fn range(angle: f64) -> f64 {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1227,9 +1169,7 @@ pub fn range(angle: f64) -> f64 {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1286,9 +1226,7 @@ pub fn range(angle: f64) -> f64 {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1365,9 +1303,7 @@ pub struct AlsoUnusedHere {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1440,9 +1376,7 @@ pub struct AlsoUnusedHere {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1482,17 +1416,7 @@ pub struct AlsoUnusedHere {
         let cargo_toml = "[dependencies]";
 
         // Step 1: Hash the input (should be a cache miss).
-        let hash = content_hash(
-            source,
-            cargo_toml,
-            &[],
-            None,
-            None,
-            false,
-            false,
-            false,
-            CellTarget::Executor,
-        );
+        let hash = content_hash(source, cargo_toml, &[], None, None, CellTarget::Executor);
         assert!(
             try_cache_hit(&cache_dir, &hash).is_none(),
             "should be a cache miss before compilation",
@@ -1520,9 +1444,7 @@ pub struct AlsoUnusedHere {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build should not return an infra error");
@@ -1565,9 +1487,6 @@ pub struct AlsoUnusedHere {
             &[],
             None,
             None,
-            false,
-            false,
-            false,
             CellTarget::Executor,
         );
         assert!(
@@ -1636,9 +1555,7 @@ impl Simulation for BusSim {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1758,9 +1675,7 @@ impl LiveView for Counter {
             cell_id,
             None,
             CellTarget::Executor,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -1939,15 +1854,15 @@ impl LiveView for Counter {
 
                 // Match production: rayon cells need the atomics/shared-memory
                 // build (the scaffold injects wasm-bindgen-rayon, whose
-                // `atomics` target-feature guard fails otherwise). The scaffold
-                // detects this the same way via `merged_deps_contain_rayon`.
-                let needs_atomics = merged_deps_contain_rayon(shared_cargo_toml, cell_cargo);
-                // Match production for autodiff cells too: nightly toolchain,
-                // -Zautodiff, and the fat-LTO profile the scaffold enforces.
-                let needs_autodiff = uses_std_autodiff(&cell.source, shared_source);
-                // And for SIMD cells: the +simd128 target feature (the scaffold
-                // injects the portable_simd gate either way).
-                let needs_simd = uses_wasm_simd(&cell.source, shared_source);
+                // `atomics` target-feature guard fails otherwise), autodiff
+                // cells -Zautodiff and the fat-LTO profile, SIMD cells
+                // +simd128. Derived exactly as the server derives them.
+                let features = CellFeatures::detect(
+                    &cell.source,
+                    cell_cargo,
+                    shared_cargo_toml,
+                    shared_source,
+                );
                 let result = check_micro_crate(
                     &crate_dir,
                     &cache_dir,
@@ -1955,9 +1870,7 @@ impl LiveView for Counter {
                     &unique_id,
                     None,
                     target,
-                    needs_atomics,
-                    needs_autodiff,
-                    needs_simd,
+                    features,
                     super::build::build_timeout(),
                 )
                 .await;
@@ -2068,9 +1981,7 @@ impl LiveView for Counter {
             cell_id,
             None,
             CellTarget::Linux,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -2153,9 +2064,7 @@ impl LiveView for Counter {
             cell_id,
             None,
             CellTarget::Linux,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
@@ -2214,9 +2123,7 @@ impl LiveView for Counter {
             cell_id,
             None,
             CellTarget::Linux,
-            false,
-            false,
-            false,
+            CellFeatures::default(),
         )
         .await
         .expect("build_micro_crate should not return an infra error");
