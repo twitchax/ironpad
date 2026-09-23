@@ -25,6 +25,7 @@ use axum::response::{IntoResponse, Response};
 use ironpad_common::IronpadNotebook;
 use tracing::Instrument as _;
 
+pub use crate::notebook_class::Class;
 use crate::state::AppState;
 use svg::Card;
 
@@ -50,53 +51,6 @@ const CODE_EXCERPT_LINES: usize = 8;
 /// keeps a pushed mutable share from showing a stale preview all day while
 /// still absorbing the burst of fetches a popular link produces.
 const CACHE_CONTROL: &str = "public, max-age=3600";
-
-// ── Storage class ───────────────────────────────────────────────────────────
-
-/// Which storage class a card is being rendered for, mirroring the canonical
-/// route prefixes (PRD-0048).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Class {
-    Public,
-    Shared,
-    Mutable,
-}
-
-impl Class {
-    /// Parses the `{class}` path segment.
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "public" => Some(Self::Public),
-            "shared" => Some(Self::Shared),
-            "mutable" => Some(Self::Mutable),
-            _ => None,
-        }
-    }
-
-    /// The route prefix this class lives under, used to build `og:url`.
-    #[must_use]
-    pub fn route_prefix(self) -> &'static str {
-        match self {
-            Self::Public => "/public",
-            Self::Shared => "/shared",
-            Self::Mutable => "/mutable",
-        }
-    }
-
-    /// Reader-facing label printed on the card.
-    ///
-    /// `Mutable` reads as "shared" deliberately: "mutable share" is ironpad's
-    /// internal vocabulary, and someone seeing the card in a feed only needs
-    /// to know it is somebody's notebook rather than a bundled one.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Public => "public notebook",
-            Self::Shared | Self::Mutable => "shared notebook",
-        }
-    }
-}
 
 // ── Card construction ───────────────────────────────────────────────────────
 
@@ -445,24 +399,9 @@ pub async fn notebook_card_handler(
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
 
-    let notebook = match class {
-        Class::Public => {
-            let site_root = Path::new(state.leptos_options.site_root.as_ref()).to_path_buf();
-            ironpad_app::server_fns::get_public_notebook_core(&site_root, id).await
-        }
-        Class::Shared => {
-            ironpad_app::server_fns::get_shared_notebook_core(&state.config.data_dir, id).await
-        }
-        // A mutable share that was unpublished resolves to `Ok(None)`, which
-        // is a 404 here exactly like a hash that never existed.
-        Class::Mutable => match ironpad_app::server_fns::get_mutable_notebook_core(&db, id).await {
-            Ok(Some(nb)) => Ok(nb),
-            Ok(None) => Err(anyhow::anyhow!("no such mutable share")),
-            Err(e) => Err(e),
-        },
-    };
-
-    let Ok(notebook) = notebook else {
+    // An unpublished or private mutable share resolves to `None`, which is a
+    // 404 here exactly like a hash that never existed.
+    let Some(notebook) = class.load(&state, &db, id).await else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
 
@@ -522,16 +461,6 @@ mod tests {
         nb.tags = Some(vec!["blog".to_string()]);
         nb.cells = cells;
         nb
-    }
-
-    #[test]
-    fn class_parses_only_the_canonical_prefixes() {
-        assert_eq!(Class::parse("public"), Some(Class::Public));
-        assert_eq!(Class::parse("shared"), Some(Class::Shared));
-        assert_eq!(Class::parse("mutable"), Some(Class::Mutable));
-        assert_eq!(Class::parse("local"), None);
-        assert_eq!(Class::parse(".."), None);
-        assert_eq!(Class::parse(""), None);
     }
 
     #[test]

@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use ironpad_common::absolute_url;
 use serde::{Deserialize, Serialize};
 
+use crate::notebook_class::Class;
 use crate::state::AppState;
 
 /// Default iframe height, matching the Embed snippet the view-only toolbar
@@ -70,8 +71,9 @@ pub struct Oembed {
 /// A notebook this provider can hand back an embed for.
 #[derive(Debug, PartialEq, Eq)]
 pub struct EmbedTarget {
-    /// Storage class segment: `public`, `shared`, or `mutable` (PRD-0057).
-    pub class: &'static str,
+    /// Storage class: public, shared, or mutable (PRD-0057). Every class has
+    /// an `/embed/*` route.
+    pub class: Class,
     /// The notebook's id within that class.
     pub id: String,
 }
@@ -79,7 +81,7 @@ pub struct EmbedTarget {
 impl EmbedTarget {
     /// The `/embed/…` path that renders this notebook chrome-less.
     fn embed_path(&self) -> String {
-        format!("/embed/{}/{}", self.class, self.id)
+        format!("/embed/{}/{}", self.class.segment(), self.id)
     }
 }
 
@@ -96,11 +98,12 @@ pub fn embed_target(public_url: &str, url: &str) -> Option<EmbedTarget> {
     // part of a notebook name.
     let path = path.split(['?', '#']).next()?;
 
-    let (class, id) = path
-        .strip_prefix("/public/")
-        .map(|id| ("public", id))
-        .or_else(|| path.strip_prefix("/shared/").map(|id| ("shared", id)))
-        .or_else(|| path.strip_prefix("/mutable/").map(|id| ("mutable", id)))?;
+    let (class, id) = Class::ALL.into_iter().find_map(|class| {
+        path.strip_prefix('/')?
+            .strip_prefix(class.segment())?
+            .strip_prefix('/')
+            .map(|id| (class, id))
+    })?;
 
     // The canonical public route is extension-less (PRD-0048), but the legacy
     // form still resolves and people paste what their address bar shows.
@@ -184,23 +187,9 @@ pub async fn oembed_handler(
         return (StatusCode::NOT_FOUND, "not an embeddable ironpad URL").into_response();
     };
 
-    let notebook = match target.class {
-        "public" => {
-            let site_root =
-                std::path::Path::new(state.leptos_options.site_root.as_ref()).to_path_buf();
-            ironpad_app::server_fns::get_public_notebook_core(&site_root, &target.id).await
-        }
-        // The reader resolve: published only, drafts never (PRD-0057).
-        "mutable" => ironpad_app::server_fns::get_mutable_notebook_core(&db, &target.id)
-            .await
-            .and_then(|nb| nb.ok_or_else(|| anyhow::anyhow!("no such notebook"))),
-        _ => {
-            ironpad_app::server_fns::get_shared_notebook_core(&state.config.data_dir, &target.id)
-                .await
-        }
-    };
-
-    let Ok(notebook) = notebook else {
+    // The reader resolve: a mutable notebook's published copy only, drafts
+    // never (PRD-0057).
+    let Some(notebook) = target.class.load(&state, &db, &target.id).await else {
         return (StatusCode::NOT_FOUND, "no such notebook").into_response();
     };
 
@@ -236,14 +225,14 @@ mod tests {
         assert_eq!(
             target("https://ironpad.twitchax.com/public/cannon"),
             Some(EmbedTarget {
-                class: "public",
+                class: Class::Public,
                 id: "cannon".into()
             })
         );
         assert_eq!(
             target("https://ironpad.twitchax.com/shared/a1b2c3d4e5f60718"),
             Some(EmbedTarget {
-                class: "shared",
+                class: Class::Shared,
                 id: "a1b2c3d4e5f60718".into()
             })
         );
@@ -251,7 +240,7 @@ mod tests {
         assert_eq!(
             target("https://ironpad.twitchax.com/mutable/a1b2c3d4e5f60718"),
             Some(EmbedTarget {
-                class: "mutable",
+                class: Class::Mutable,
                 id: "a1b2c3d4e5f60718".into()
             })
         );
@@ -269,7 +258,7 @@ mod tests {
         assert_eq!(
             target("https://ironpad.twitchax.com/public/cannon.ironpad"),
             Some(EmbedTarget {
-                class: "public",
+                class: Class::Public,
                 id: "cannon".into()
             })
         );
@@ -280,14 +269,14 @@ mod tests {
         assert_eq!(
             target("https://ironpad.twitchax.com/public/cannon?utm_source=reddit"),
             Some(EmbedTarget {
-                class: "public",
+                class: Class::Public,
                 id: "cannon".into()
             })
         );
         assert_eq!(
             target("https://ironpad.twitchax.com/public/cannon#cell-3"),
             Some(EmbedTarget {
-                class: "public",
+                class: Class::Public,
                 id: "cannon".into()
             })
         );
@@ -337,7 +326,7 @@ mod tests {
                 "https://ironpad.twitchax.com/public/cannon"
             ),
             Some(EmbedTarget {
-                class: "public",
+                class: Class::Public,
                 id: "cannon".into()
             })
         );
@@ -373,6 +362,28 @@ mod tests {
         // The title field itself is JSON, which serde escapes; only the HTML
         // needs entity encoding.
         assert!(res.title.contains("<script>"));
+    }
+
+    #[test]
+    fn every_class_resolves_to_its_own_embed_route() {
+        // Walks the one class list, so a class added to `Class::ALL` is
+        // embeddable here without a matcher of oEmbed's own to update.
+        for class in Class::ALL {
+            let url = format!("{ORIGIN}/{}/a1b2c3d4e5f60718", class.segment());
+            let t = target(&url).unwrap_or_else(|| panic!("{url} should resolve"));
+            assert_eq!(t.class, class);
+            assert_eq!(
+                t.embed_path(),
+                format!("/embed/{}/a1b2c3d4e5f60718", class.segment())
+            );
+        }
+    }
+
+    #[test]
+    fn a_class_prefix_must_be_a_whole_segment() {
+        // `/publicity/x` is not `/public/` plus `ity/x`.
+        assert_eq!(target("https://ironpad.twitchax.com/publicity/x"), None);
+        assert_eq!(target("https://ironpad.twitchax.com/public"), None);
     }
 
     #[test]
