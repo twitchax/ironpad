@@ -1,4 +1,4 @@
-use crate::components::icon::{Chevron, IconLabel};
+use crate::components::collapsible_section::CollapsibleSection;
 use crate::components::icons;
 use leptos::prelude::*;
 
@@ -6,15 +6,7 @@ use crate::components::monaco_editor::MonacoEditor;
 use crate::components::toaster::{ToastIntent, Toaster};
 use crate::model::NotebookModel;
 
-#[cfg(not(feature = "hydrate"))]
-use super::state::persist_notebook;
-use super::state::NotebookState;
-
-/// Minimum time (ms) the Saving… state stays visible: the `IndexedDB` write
-/// usually completes imperceptibly fast, so the indicator is floored at
-/// the longer of the actual write or this.
-#[cfg(feature = "hydrate")]
-const MIN_SAVING_MS: i32 = 500;
+use super::state::{persist_with_saving_floor, NotebookState};
 
 // ── Shared editor appendix (generic) ────────────────────────────────────────
 
@@ -37,28 +29,10 @@ pub(super) fn SharedEditorSection(kind: SharedEditorKind) -> impl IntoView {
         SharedEditorKind::Source => (icons::EDIT, "Shared Source (shared.rs)"),
     };
 
-    let collapsed = RwSignal::new(true);
-
     view! {
-        <div class="view-only-shared-section">
-            <button
-                class="view-only-shared-header"
-                on:click=move |_| collapsed.update(|c| *c = !*c)
-            >
-                <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !collapsed.get())/></span>
-                <IconLabel icon=icon label=label/>
-            </button>
-            {move || {
-                (!collapsed.get())
-                    .then(|| {
-                        view! {
-                            <div class="view-only-shared-body">
-                                <SharedEditorPanel kind=kind />
-                            </div>
-                        }
-                    })
-            }}
-        </div>
+        <CollapsibleSection icon=icon label=label>
+            <SharedEditorPanel kind=kind />
+        </CollapsibleSection>
     }
 }
 
@@ -121,34 +95,7 @@ fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
             );
         };
 
-        // Await the actual IndexedDB write (so the toast means "durably
-        // saved", not "save dispatched"), and floor the Saving… indicator
-        // at MIN_SAVING_MS so the feedback is perceptible — the write is
-        // usually far faster than a blink.
-        #[cfg(feature = "hydrate")]
-        {
-            saving.set(true);
-            leptos::task::spawn_local(async move {
-                let started = js_sys::Date::now();
-                super::state::persist_notebook_durable(&state).await;
-                #[allow(clippy::cast_possible_truncation)]
-                let remaining = MIN_SAVING_MS - (js_sys::Date::now() - started) as i32;
-                if remaining > 0 {
-                    crate::components::run_flow::sleep_ms(remaining).await;
-                }
-                // The panel may have been disposed mid-save (navigation,
-                // section collapse); try_set keeps this continuation
-                // panic-free. The toaster is app-level and outlives us,
-                // and the save DID land, so the toast stays truthful.
-                let _ = saving.try_set(false);
-                dispatch_saved_toast();
-            });
-        }
-        #[cfg(not(feature = "hydrate"))]
-        {
-            persist_notebook(&state);
-            dispatch_saved_toast();
-        }
+        persist_with_saving_floor(&state, saving, dispatch_saved_toast);
     };
 
     view! {

@@ -576,6 +576,48 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
     }
 }
 
+/// Minimum time (ms) a panel's Saving… state stays visible: the write
+/// usually completes imperceptibly fast, so the indicator is floored at the
+/// longer of the actual write or this.
+#[cfg(feature = "hydrate")]
+const MIN_SAVING_MS: i32 = 500;
+
+/// A panel's explicit Save: persist durably with `saving` held for at least
+/// [`MIN_SAVING_MS`], then run `on_done` (the panel's saved toast).
+///
+/// Awaits the actual write, so the toast means "durably saved" rather than
+/// "save dispatched". `saving` is cleared with `try_set`: the panel may have
+/// been disposed mid-save (navigation, a section collapse), and the save DID
+/// land, so `on_done` still runs and its toast stays truthful.
+#[allow(unused_variables)] // `saving` is read only under `hydrate`.
+pub(super) fn persist_with_saving_floor(
+    state: &NotebookState,
+    saving: RwSignal<bool>,
+    on_done: impl FnOnce() + 'static,
+) {
+    #[cfg(feature = "hydrate")]
+    {
+        let state = *state;
+        saving.set(true);
+        leptos::task::spawn_local(async move {
+            let started = js_sys::Date::now();
+            persist_notebook_durable(&state).await;
+            #[allow(clippy::cast_possible_truncation)]
+            let remaining = MIN_SAVING_MS - (js_sys::Date::now() - started) as i32;
+            if remaining > 0 {
+                crate::components::run_flow::sleep_ms(remaining).await;
+            }
+            let _ = saving.try_set(false);
+            on_done();
+        });
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        persist_notebook(state);
+        on_done();
+    }
+}
+
 /// Schedule a coalesced draft save `after_ms` from now. Every call bumps the
 /// epoch; only the task holding the newest epoch actually writes, so a typing
 /// burst produces one server round trip.

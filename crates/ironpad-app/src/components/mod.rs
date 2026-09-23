@@ -1,6 +1,7 @@
 pub mod animation_canvas;
 pub mod app_layout;
 pub mod blob_url;
+pub mod collapsible_section;
 pub mod copy_button;
 pub(crate) mod dialog;
 pub(crate) mod dismiss;

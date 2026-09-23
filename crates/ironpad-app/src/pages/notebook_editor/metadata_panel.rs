@@ -11,7 +11,7 @@
 //! the cell list, on the same reasoning: the cells are the story, and this is
 //! the colophon.
 
-use crate::components::icon::{Chevron, IconLabel};
+use crate::components::collapsible_section::CollapsibleSection;
 use crate::components::icons;
 use ironpad_common::protocol::{ClientId, Mutation, NotebookMetaPatch};
 use ironpad_common::{OG_IMAGE_MAX_PX, OG_IMAGE_MIN_PX};
@@ -23,14 +23,7 @@ use crate::components::toaster::{ToastIntent, Toaster};
 use crate::model::NotebookModel;
 
 use super::share_access::ShareAccessSection;
-#[cfg(not(feature = "hydrate"))]
-use super::state::persist_notebook;
-use super::state::NotebookState;
-
-/// Floors the visible Saving… state, matching the shared-source panel: the
-/// `IndexedDB` write is usually faster than a blink.
-#[cfg(feature = "hydrate")]
-const MIN_SAVING_MS: i32 = 500;
+use super::state::{persist_with_saving_floor, NotebookState};
 
 /// Hint under the notebook's address while it has no published copy.
 const UNPUBLISHED_URL_HINT: &str =
@@ -58,28 +51,10 @@ pub(super) fn NotebookMetadataSection(
     /// link is findable after its one appearance in the share toast.
     mutable_binding: RwSignal<Option<String>>,
 ) -> impl IntoView {
-    let collapsed = RwSignal::new(true);
-
     view! {
-        <div class="view-only-shared-section">
-            <button
-                class="view-only-shared-header"
-                on:click=move |_| collapsed.update(|c| *c = !*c)
-            >
-                <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !collapsed.get())/></span>
-                <IconLabel icon=icons::METADATA label="Notebook Metadata (link previews)"/>
-            </button>
-            {move || {
-                (!collapsed.get())
-                    .then(|| {
-                        view! {
-                            <div class="view-only-shared-body">
-                                <NotebookMetadataPanel mutable_binding=mutable_binding />
-                            </div>
-                        }
-                    })
-            }}
-        </div>
+        <CollapsibleSection icon=icons::METADATA label="Notebook Metadata (link previews)">
+            <NotebookMetadataPanel mutable_binding=mutable_binding />
+        </CollapsibleSection>
     }
 }
 
@@ -234,28 +209,7 @@ fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<String>>) -> impl Into
             );
         };
 
-        #[cfg(feature = "hydrate")]
-        {
-            saving.set(true);
-            leptos::task::spawn_local(async move {
-                let started = js_sys::Date::now();
-                super::state::persist_notebook_durable(&state).await;
-                #[allow(clippy::cast_possible_truncation)]
-                let remaining = MIN_SAVING_MS - (js_sys::Date::now() - started) as i32;
-                if remaining > 0 {
-                    crate::components::run_flow::sleep_ms(remaining).await;
-                }
-                // The panel may have been disposed mid-save (navigation, or a
-                // collapse); try_set keeps this continuation panic-free.
-                let _ = saving.try_set(false);
-                dispatch_saved_toast();
-            });
-        }
-        #[cfg(not(feature = "hydrate"))]
-        {
-            persist_notebook(&state);
-            dispatch_saved_toast();
-        }
+        persist_with_saving_floor(&state, saving, dispatch_saved_toast);
     };
 
     view! {

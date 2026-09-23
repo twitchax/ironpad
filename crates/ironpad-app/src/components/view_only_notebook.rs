@@ -12,6 +12,7 @@ use leptos::prelude::*;
 use ironpad_common::CompileRequest;
 use ironpad_common::{CellType, ExecutionResult, IronpadCell, IronpadNotebook};
 
+use crate::components::collapsible_section::CollapsibleSection;
 use crate::components::copy_button::CopyButton;
 use crate::components::linux_cell::ViewOnlyLinuxCell;
 use crate::components::markdown_cell::render_markdown;
@@ -599,27 +600,14 @@ fn SharedAppendixSection(
     language: &'static str,
     content: String,
 ) -> impl IntoView {
-    let collapsed = RwSignal::new(true);
-
     view! {
-        <div class="view-only-shared-section">
-            <button
-                class="view-only-shared-header"
-                on:click=move |_| collapsed.update(|c| *c = !*c)
-            >
-                <span class="ironpad-output-toggle"><Chevron expanded=Signal::derive(move || !collapsed.get())/></span>
-                <IconLabel icon=icon label=label/>
-            </button>
-            {move || (!collapsed.get()).then(|| view! {
-                <div class="view-only-shared-body">
-                    <MonacoEditor
-                        initial_value=content.clone()
-                        language=language
-                        read_only=true
-                    />
-                </div>
-            })}
-        </div>
+        <CollapsibleSection icon=icon label=label>
+            <MonacoEditor
+                initial_value=content.clone()
+                language=language
+                read_only=true
+            />
+        </CollapsibleSection>
     }
 }
 
