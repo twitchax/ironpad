@@ -146,7 +146,7 @@ async fn compile_cell_core(
         cache::{content_hash, store_blob, try_cache_hit},
         diagnostics::parse_diagnostics,
         optimize::optimize_wasm,
-        scaffold::scaffold_micro_crate,
+        scaffold::{scaffold_micro_crate, Scaffolded},
     };
 
     let session_id = "default";
@@ -242,7 +242,10 @@ async fn compile_cell_core(
     // on-disk work a cache hit skips. Its returned `needs_atomics` matches the
     // value hashed above (both derive from the same inputs), so we keep ours.
 
-    let (crate_dir, preamble_lines, _is_async, _is_simulation) = scaffold_micro_crate(
+    let Scaffolded {
+        crate_dir,
+        preamble_lines,
+    } = scaffold_micro_crate(
         &config.cache_dir,
         &config.ironpad_cell_path,
         session_id,
@@ -465,7 +468,7 @@ async fn check_cell_core(
     use crate::compiler::{
         build::{check_micro_crate, CheckResult, CheckTimedOut},
         diagnostics::{parse_diagnostics, parse_shared_range_diagnostics},
-        scaffold::scaffold_micro_crate,
+        scaffold::{scaffold_micro_crate, Scaffolded},
     };
     use ironpad_common::CheckStatus;
 
@@ -507,7 +510,10 @@ async fn check_cell_core(
         request.shared_source.as_deref(),
     );
 
-    let (crate_dir, preamble_lines, _is_async, _is_simulation) = scaffold_micro_crate(
+    let Scaffolded {
+        crate_dir,
+        preamble_lines,
+    } = scaffold_micro_crate(
         &config.cache_dir,
         &config.ironpad_cell_path,
         session_id,

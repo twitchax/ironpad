@@ -31,6 +31,16 @@ pub fn is_valid_cell_id(cell_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// A scaffolded micro-crate, as [`scaffold_micro_crate`] left it on disk.
+#[derive(Debug)]
+pub struct Scaffolded {
+    /// The micro-crate root directory (holds `Cargo.toml` and `src/`).
+    pub crate_dir: PathBuf,
+    /// Lines the scaffold wrote above the user's code, which diagnostics
+    /// subtract to map back to the user's own line numbers.
+    pub preamble_lines: u32,
+}
+
 /// Scaffold a micro-crate for a single cell compilation.
 ///
 /// Creates the directory structure:
@@ -42,15 +52,9 @@ pub fn is_valid_cell_id(cell_id: &str) -> bool {
 ///     lib.rs      (ordinary cells)  or  main.rs (Linux cells)
 /// ```
 ///
-/// Returns `(crate_dir, preamble_lines, is_async, is_simulation)`. Feature
-/// flags (atomics/autodiff/simd) are re-derived here through
+/// Feature flags (atomics/autodiff/simd) are re-derived here through
 /// [`CellFeatures::detect`], the same derivation the cache key uses, so both
-/// sides always agree:
-/// - `crate_dir`: path to the micro-crate root directory
-/// - `preamble_lines`: number of lines before user code (for diagnostic mapping)
-/// - `is_async`: whether the cell wrapper is async (source contains `.await`)
-/// - `is_simulation`: whether the cell uses the tick infrastructure (a
-///   `Simulation` or `LiveView` trait impl)
+/// sides always agree.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(name = "scaffold", level = "info", skip_all, fields(cell_id = %cell_id))]
 pub fn scaffold_micro_crate(
@@ -64,7 +68,7 @@ pub fn scaffold_micro_crate(
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
     target: CellTarget,
-) -> anyhow::Result<(PathBuf, u32, bool, bool)> {
+) -> anyhow::Result<Scaffolded> {
     let crate_dir = cache_dir.join("workspaces").join(session_id).join(cell_id);
 
     let src_dir = crate_dir.join("src");
@@ -101,7 +105,7 @@ pub fn scaffold_micro_crate(
     );
     std::fs::write(crate_dir.join("Cargo.toml"), generated_cargo_toml)?;
 
-    let (mut lib_rs, mut preamble_lines, is_async, is_simulation) =
+    let (mut lib_rs, mut preamble_lines, ..) =
         generate_lib_rs(source, previous_cell_types, shared_source.is_some());
     if features.autodiff {
         // `#![feature(autodiff)]` must sit at the crate root — the one place a
@@ -145,7 +149,10 @@ pub fn scaffold_micro_crate(
         std::fs::write(src_dir.join("shared.rs"), shared)?;
     }
 
-    Ok((crate_dir, preamble_lines, is_async, is_simulation))
+    Ok(Scaffolded {
+        crate_dir,
+        preamble_lines,
+    })
 }
 
 /// Scaffold a Linux cell (PRD-0066): a whole Rust program, not a fragment.
@@ -157,10 +164,6 @@ pub fn scaffold_micro_crate(
 /// possible implementation). What it does supply is the notebook's shared
 /// source as a plain `mod shared`, exactly as an ordinary cell gets it, and
 /// the merged dependency set.
-///
-/// Returns the same tuple shape as [`scaffold_micro_crate`]; `is_async` and
-/// `is_simulation` are always false, since both describe the executor ABI a
-/// Linux cell does not use.
 fn scaffold_linux_crate(
     crate_dir: &Path,
     src_dir: &Path,
@@ -169,7 +172,7 @@ fn scaffold_linux_crate(
     cargo_toml: &str,
     shared_cargo_toml: Option<&str>,
     shared_source: Option<&str>,
-) -> anyhow::Result<(PathBuf, u32, bool, bool)> {
+) -> anyhow::Result<Scaffolded> {
     std::fs::write(
         crate_dir.join("Cargo.toml"),
         generate_linux_cargo_toml(cell_id, cargo_toml, shared_cargo_toml),
@@ -188,7 +191,10 @@ fn scaffold_linux_crate(
         std::fs::write(src_dir.join("shared.rs"), shared)?;
     }
 
-    Ok((crate_dir.to_path_buf(), preamble_lines, false, false))
+    Ok(Scaffolded {
+        crate_dir: crate_dir.to_path_buf(),
+        preamble_lines,
+    })
 }
 
 // ── Cargo.toml Generation ────────────────────────────────────────────────────
@@ -1184,7 +1190,10 @@ serde = { version = "1", features = ["derive"] }
 serde = "1"
 "#;
 
-        let (crate_dir, preamble_lines, is_async, _) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
@@ -1199,7 +1208,6 @@ serde = "1"
         .expect("scaffold should succeed");
 
         assert_eq!(preamble_lines, 7);
-        assert!(!is_async);
 
         // Verify directory structure.
         assert!(crate_dir.join("Cargo.toml").is_file());
@@ -1230,7 +1238,10 @@ serde = "1"
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (crate_dir, preamble_lines, is_async, is_sim) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
@@ -1247,8 +1258,6 @@ serde = "1"
         // No preamble at all without shared source: the file IS the user's
         // program, so a diagnostic's line number needs no adjustment.
         assert_eq!(preamble_lines, 0);
-        assert!(!is_async, "the executor's async ABI does not apply");
-        assert!(!is_sim, "nor the tick ABI");
 
         // A bin, not a cdylib.
         assert!(crate_dir.join("src/main.rs").is_file());
@@ -1294,7 +1303,10 @@ serde = "1"
         let cell_path = PathBuf::from("/opt/ironpad-cell");
         let shared = "pub fn greeting() -> &'static str { \"hi\" }";
 
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
@@ -1342,7 +1354,10 @@ serde = "1"
         let cell_path = PathBuf::from("/opt/ironpad-cell");
         let source = "#![feature(portable_simd)]\n#![allow(dead_code)]\n//! A program.\n\nfn main() {\n    println!(\"{}\", shared::doubled(21));\n}";
 
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
@@ -1390,7 +1405,10 @@ serde = "1"
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session-1",
@@ -1432,7 +1450,7 @@ serde = "1"
                 target,
             )
             .expect("scaffold should succeed")
-            .0
+            .crate_dir
         };
 
         let dir = scaffold("    CellOutput::empty()", CellTarget::Executor);
@@ -1556,7 +1574,7 @@ serde = "1"
         let shared = "[dependencies]\nserde = \"1\"";
         let cell = "[dependencies]\nrand = \"0.8\"";
 
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -1638,39 +1656,28 @@ serde = "1"
     }
 
     #[test]
-    fn scaffold_micro_crate_returns_is_async() {
+    fn scaffold_micro_crate_writes_the_async_wrapper_for_await() {
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
+        let lib_rs = |cell_id: &str, source: &str| {
+            let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
+                &tmp,
+                &cell_path,
+                "s1",
+                cell_id,
+                source,
+                "",
+                &[],
+                None,
+                None,
+                CellTarget::Executor,
+            )
+            .unwrap();
+            std::fs::read_to_string(crate_dir.join("src/lib.rs")).unwrap()
+        };
 
-        let (_, _, is_async, _) = scaffold_micro_crate(
-            &tmp,
-            &cell_path,
-            "s1",
-            "c1",
-            "    CellOutput::empty()",
-            "",
-            &[],
-            None,
-            None,
-            CellTarget::Executor,
-        )
-        .unwrap();
-        assert!(!is_async);
-
-        let (_, _, is_async, _) = scaffold_micro_crate(
-            &tmp,
-            &cell_path,
-            "s1",
-            "c2",
-            "    foo().await",
-            "",
-            &[],
-            None,
-            None,
-            CellTarget::Executor,
-        )
-        .unwrap();
-        assert!(is_async);
+        assert!(!lib_rs("c1", "    CellOutput::empty()").contains("pub async fn cell_main("));
+        assert!(lib_rs("c2", "    foo().await").contains("pub async fn cell_main("));
     }
 
     // ── extract_extra_sections ──────────────────────────────────────────
@@ -1965,7 +1972,10 @@ serde = \"1\"
         let cell_path = PathBuf::from("/opt/ironpad-cell");
         let shared_src = "pub fn helper() -> u32 { 42 }";
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -1997,7 +2007,10 @@ serde = \"1\"
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s1",
@@ -2322,7 +2335,10 @@ impl LiveView for Dashboard {
         let dir = tempfile::tempdir().unwrap();
 
         // Baseline without simd for the preamble delta.
-        let (_, base_preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            preamble_lines: base_preamble,
+            ..
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2336,7 +2352,10 @@ impl LiveView for Dashboard {
         )
         .unwrap();
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2366,7 +2385,10 @@ impl LiveView for Dashboard {
     fn gen_block_gate_is_injected_and_bumps_the_preamble() {
         let dir = tempfile::tempdir().unwrap();
 
-        let (_, base_preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            preamble_lines: base_preamble,
+            ..
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2380,7 +2402,10 @@ impl LiveView for Dashboard {
         )
         .unwrap();
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2407,7 +2432,10 @@ impl LiveView for Dashboard {
     fn coroutine_gate_is_injected_and_bumps_the_preamble() {
         let dir = tempfile::tempdir().unwrap();
 
-        let (_, base_preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            preamble_lines: base_preamble,
+            ..
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2421,7 +2449,10 @@ impl LiveView for Dashboard {
         )
         .unwrap();
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2454,7 +2485,10 @@ impl LiveView for Dashboard {
             "    use std::simd::prelude::*;\n    let (_v, g) = shared::d_f(2.0, 1.0);\n    g";
         let shared = "#[autodiff_reverse(d_f, Active, Active)]\npub fn f(x: f64) -> f64 { x * x }";
 
-        let (_, base_preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            preamble_lines: base_preamble,
+            ..
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2468,7 +2502,10 @@ impl LiveView for Dashboard {
         )
         .unwrap();
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2522,7 +2559,10 @@ impl LiveView for Dashboard {
         let shared = "#[autodiff_reverse(d_f, Active, Active)]\npub fn f(x: f64) -> f64 { x * x }";
 
         // Baseline without autodiff for the preamble delta.
-        let (_, base_preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            preamble_lines: base_preamble,
+            ..
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",
@@ -2536,7 +2576,10 @@ impl LiveView for Dashboard {
         )
         .unwrap();
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             dir.path(),
             Path::new("crates/ironpad-cell"),
             "s",

@@ -199,7 +199,7 @@ mod pipeline_tests {
 
     use super::cache::content_hash;
     use super::diagnostics::parse_diagnostics;
-    use super::scaffold::{generate_lib_rs, scaffold_micro_crate};
+    use super::scaffold::{generate_lib_rs, scaffold_micro_crate, Scaffolded};
 
     // ── Scaffolding → Content Verification ──────────────────────────────
 
@@ -210,7 +210,7 @@ mod pipeline_tests {
         let source = "    CellOutput::text(\"hello\")";
         let cargo_toml = "[dependencies]\nserde = \"1\"";
 
-        let (crate_dir, _preamble_lines, _is_async, _) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "sess-1",
@@ -274,7 +274,9 @@ mod pipeline_tests {
         let tmp_b = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (dir_a, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir: dir_a, ..
+        } = scaffold_micro_crate(
             &tmp_a,
             &cell_path,
             "s",
@@ -287,7 +289,9 @@ mod pipeline_tests {
             CellTarget::Executor,
         )
         .unwrap();
-        let (dir_b, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir: dir_b, ..
+        } = scaffold_micro_crate(
             &tmp_b,
             &cell_path,
             "s",
@@ -368,7 +372,10 @@ mod pipeline_tests {
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
 
-        let (dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir: dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "s",
@@ -428,7 +435,10 @@ mod pipeline_tests {
         // Step 2: Scaffold the micro-crate.
         let tmp = tempdir();
         let cell_path = PathBuf::from("/opt/ironpad-cell");
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &tmp,
             &cell_path,
             "session",
@@ -555,7 +565,7 @@ mod e2e_tests {
     use super::build::{build_micro_crate, check_micro_crate, BuildResult, CheckResult};
     use super::cache::{content_hash, store_blob, try_cache_hit};
     use super::diagnostics::parse_diagnostics;
-    use super::scaffold::scaffold_micro_crate;
+    use super::scaffold::{generate_lib_rs, scaffold_micro_crate, Scaffolded};
 
     /// Resolve the path to the `ironpad-cell` crate relative to this crate's manifest.
     fn ironpad_cell_path() -> PathBuf {
@@ -626,7 +636,7 @@ mod e2e_tests {
         let source = "    CellOutput::empty()";
         let cargo_toml = "[dependencies]";
         // Scaffold the micro-crate.
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -751,7 +761,10 @@ pub fn range(angle: f64) -> f64 {
         let source = "    let (_r, grad) = shared::d_range(0.6, 1.0);\n    CellOutput::from(grad)";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -818,7 +831,7 @@ pub fn range(angle: f64) -> f64 {
         let source = "    blocking::sleep_ms(1.0);\n    let body = blocking::fetch_text(\"/notebooks/welcome.ironpad\");\n    CellOutput::from(body.map_or_else(|e| e, |b| b))";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -885,7 +898,7 @@ pub fn range(angle: f64) -> f64 {
         let source = "    use rayon::prelude::*;\n    let v: Vec<f64> = (0..1000).map(f64::from).collect();\n    CellOutput::from(v.par_iter().sum::<f64>())";
         let cargo_toml = "[dependencies]\nrayon = \"1\"";
 
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -974,7 +987,7 @@ pub fn range(angle: f64) -> f64 {
         let features = CellFeatures::detect(source, cargo_toml, None, None);
         assert!(features.simd, "a fearless_simd cell must opt into simd128");
 
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1025,7 +1038,10 @@ pub fn range(angle: f64) -> f64 {
         let source = "    use std::simd::prelude::*;\n    use std::arch::wasm32::{f32x4_extract_lane, f32x4_splat};\n    let v = f32x4::from_array([1.0, 2.0, 3.0, 4.0]) * f32x4::splat(2.0);\n    let intrinsic = f32x4_extract_lane::<0>(f32x4_splat(21.0)) * 2.0;\n    CellOutput::from(f64::from(v.reduce_sum() + intrinsic))";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, preamble, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines: preamble,
+        } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1089,7 +1105,7 @@ pub fn range(angle: f64) -> f64 {
         let source = "    let g = gen { yield 1u32; yield 2; yield 3; };\n    let total: u32 = g.sum();\n    CellOutput::from(total)";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1148,7 +1164,7 @@ pub fn range(angle: f64) -> f64 {
         let source = "    let val: Option<f64> = sim::read(\"regression_key\");\n    host_message(\"prd-0031-regression\");\n    CellOutput::from(val.unwrap_or(0.0))";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1205,7 +1221,10 @@ pub fn range(angle: f64) -> f64 {
         let source = "    let x: i32 = \"oops\";\n    CellOutput::empty()";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1282,7 +1301,10 @@ pub struct AlsoUnusedHere {
         let source = "    let _ = shared::used_here();\n    CellOutput::empty()";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1355,7 +1377,10 @@ pub struct AlsoUnusedHere {
         let source = "    CellOutput::text(format!(\"{last}\"))";
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1423,7 +1448,7 @@ pub struct AlsoUnusedHere {
         );
 
         // Step 2: Scaffold and build.
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1534,7 +1559,7 @@ impl Simulation for BusSim {
 "#;
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, ..) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1635,7 +1660,7 @@ impl LiveView for Counter {
 "#;
         let cargo_toml = "[dependencies]";
 
-        let (crate_dir, _preamble, _is_async, is_sim) = scaffold_micro_crate(
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1651,6 +1676,7 @@ impl LiveView for Counter {
 
         // LiveView cells report is_simulation=true so the executor knows to
         // export cell_tick.
+        let (_, _, _, is_sim) = generate_lib_rs(source, &[], false);
         assert!(is_sim, "LiveView cells should report is_simulation=true");
 
         // Verify the generated lib.rs contains LiveView-specific code.
@@ -1840,7 +1866,7 @@ impl LiveView for Counter {
                     target,
                 );
 
-                let (crate_dir, ..) = match scaffold_result {
+                let Scaffolded { crate_dir, .. } = match scaffold_result {
                     Ok(r) => r,
                     Err(e) => {
                         failures.push(format!(
@@ -1958,7 +1984,10 @@ impl LiveView for Counter {
         // here rather than passing.
         let source = "use std::fs;\n\nfn main() {\n    fs::write(\"/tmp/ironpad-linux-cell\", b\"ok\").unwrap();\n    let t = std::thread::spawn(|| 40 + 2);\n    println!(\"{}\", t.join().unwrap());\n}";
 
-        let (crate_dir, preamble_lines, is_async, is_sim) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -1972,7 +2001,6 @@ impl LiveView for Counter {
         )
         .expect("scaffold should succeed");
         assert_eq!(preamble_lines, 0);
-        assert!(!is_async && !is_sim);
 
         let result = build_micro_crate(
             &crate_dir,
@@ -2042,7 +2070,10 @@ impl LiveView for Counter {
         let source = "fn main() {\n    println!(\"{}\", shared::doubled(21));\n}";
         let shared = "pub fn doubled(n: u32) -> u32 { n * 2 }";
 
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
@@ -2101,7 +2132,10 @@ impl LiveView for Counter {
         let source = "#![feature(portable_simd)]\n//! A whole program.\n\nuse std::simd::u32x4;\n\nfn main() {\n    let v = u32x4::splat(shared::doubled(21));\n    println!(\"{}\", v[0]);\n}";
         let shared = "pub fn doubled(n: u32) -> u32 { n * 2 }";
 
-        let (crate_dir, preamble_lines, ..) = scaffold_micro_crate(
+        let Scaffolded {
+            crate_dir,
+            preamble_lines,
+        } = scaffold_micro_crate(
             &cache_dir,
             &cell_path,
             session_id,
