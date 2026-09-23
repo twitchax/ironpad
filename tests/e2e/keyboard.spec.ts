@@ -146,7 +146,12 @@ test.describe("Keyboard shortcuts", () => {
       timeout: 10_000,
     });
 
-    await cell.locator('button[title="Run cell"]').click();
+    // The Run button sits in the row's action rail, beside the card.
+    await page
+      .locator(".ironpad-cell-row")
+      .first()
+      .locator('button[title="Run cell"]')
+      .click();
     await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
       timeout: 120_000,
     });
