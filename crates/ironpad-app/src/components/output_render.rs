@@ -470,14 +470,14 @@ fn InteractiveWidget(
         .to_owned();
 
     match kind.as_str() {
-        "slider" => render_slider(&cfg, &label, cell_id, sink).into_any(),
-        "dropdown" => render_dropdown(&cfg, &label, cell_id, sink).into_any(),
-        "checkbox" => render_checkbox(&cfg, &label, cell_id, sink).into_any(),
-        "text_input" => render_text_input(&cfg, &label, cell_id, sink).into_any(),
-        "number" => render_number(&cfg, &label, cell_id, sink).into_any(),
-        "switch" => render_switch(&cfg, &label, cell_id, sink).into_any(),
-        "button" => render_button(&cfg, &label, cell_id, sink).into_any(),
-        "progress" => render_progress(&cfg, &label).into_any(),
+        "slider" => render_numeric(&cfg, label, cell_id, sink, NumericInput::Range).into_any(),
+        "number" => render_numeric(&cfg, label, cell_id, sink, NumericInput::Number).into_any(),
+        "dropdown" => render_dropdown(&cfg, label, cell_id, sink).into_any(),
+        "checkbox" => render_toggle(&cfg, label, cell_id, sink, false).into_any(),
+        "switch" => render_toggle(&cfg, label, cell_id, sink, true).into_any(),
+        "text_input" => render_text_input(&cfg, label, cell_id, sink).into_any(),
+        "button" => render_button(label, cell_id, sink).into_any(),
+        "progress" => render_progress(&cfg, label).into_any(),
         _ => view! {
             <div class="ironpad-interactive-widget">
                 <span class="ironpad-widget-label">{format!("[unknown widget: {kind}]")}</span>
@@ -497,35 +497,44 @@ fn widget_label(label_text: String) -> AnyView {
     }
 }
 
+/// A numeric config field, or `default` when it is missing or not a number.
+fn cfg_f64(cfg: &serde_json::Value, key: &str, default: f64) -> f64 {
+    cfg.get(key)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(default)
+}
+
+/// The sim-bus key a widget publishes its value under (`name`), if it has
+/// one.
+fn bus_key(cfg: &serde_json::Value) -> Option<String> {
+    cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned)
+}
+
+/// The two numeric widgets differ only in their input type and whether the
+/// current value is echoed beside the control.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NumericInput {
+    /// `slider`: a range input with a value readout.
+    Range,
+    /// `number`: a number input, which shows its own value.
+    Number,
+}
+
+/// `slider` and `number`: min/max/step/default config, a bincode `f64`
+/// output, and a sim-bus write on every change.
 #[allow(clippy::needless_pass_by_value)]
-fn render_slider(
+fn render_numeric(
     cfg: &serde_json::Value,
-    label: &str,
+    label: String,
     cell_id: Option<String>,
     sink: Option<WidgetSink>,
+    input: NumericInput,
 ) -> impl IntoView {
-    let min = cfg
-        .get("min")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let max = cfg
-        .get("max")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(100.0);
-    let step = cfg
-        .get("step")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(1.0);
-    let default = cfg
-        .get("default")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(min);
-    let label_text = if label.is_empty() {
-        String::new()
-    } else {
-        label.to_owned()
-    };
-    let bus_key = cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned);
+    let min = cfg_f64(cfg, "min", 0.0);
+    let max = cfg_f64(cfg, "max", 100.0);
+    let step = cfg_f64(cfg, "step", 1.0);
+    let default = cfg_f64(cfg, "default", min);
+    let bus_key = bus_key(cfg);
 
     let value = RwSignal::new(default.to_string());
 
@@ -560,18 +569,25 @@ fn render_slider(
     let on_input = move |_: leptos::ev::Event| {};
     let _ = (&cell_id, &sink, &bus_key);
 
+    let (input_type, show_value) = match input {
+        NumericInput::Range => ("range", true),
+        NumericInput::Number => ("number", false),
+    };
+
     view! {
         <div class="ironpad-interactive-widget">
-            {widget_label(label_text)}
+            {widget_label(label)}
             <input
-                type="range"
+                type=input_type
                 min=min.to_string()
                 max=max.to_string()
                 step=step.to_string()
                 prop:value=move || value.get()
                 on:input=on_input
             />
-            <span class="ironpad-widget-value">{move || value.get()}</span>
+            {show_value.then(|| view! {
+                <span class="ironpad-widget-value">{move || value.get()}</span>
+            })}
         </div>
     }
 }
@@ -579,7 +595,7 @@ fn render_slider(
 #[allow(clippy::needless_pass_by_value)]
 fn render_dropdown(
     cfg: &serde_json::Value,
-    label: &str,
+    label: String,
     cell_id: Option<String>,
     sink: Option<WidgetSink>,
 ) -> impl IntoView {
@@ -597,12 +613,7 @@ fn render_dropdown(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_owned();
-    let label_text = if label.is_empty() {
-        String::new()
-    } else {
-        label.to_owned()
-    };
-    let bus_key = cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned);
+    let bus_key = bus_key(cfg);
 
     let options_for_bus = options.clone();
 
@@ -649,7 +660,7 @@ fn render_dropdown(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {widget_label(label_text)}
+            {widget_label(label)}
             <select
                 prop:value=move || value.get()
                 on:change=on_change
@@ -668,19 +679,22 @@ fn render_dropdown(
     }
 }
 
+/// `checkbox` and `switch`: a boolean default, a bincode `bool` output, and
+/// a sim-bus write on every change. `switch` is the same input dressed as a
+/// sliding toggle.
 #[allow(clippy::needless_pass_by_value)]
-fn render_checkbox(
+fn render_toggle(
     cfg: &serde_json::Value,
-    label: &str,
+    label: String,
     cell_id: Option<String>,
     sink: Option<WidgetSink>,
+    switch: bool,
 ) -> impl IntoView {
     let default = cfg
         .get("default")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let label_text = label.to_owned();
-    let bus_key = cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned);
+    let bus_key = bus_key(cfg);
 
     let checked = RwSignal::new(default);
 
@@ -718,15 +732,22 @@ fn render_checkbox(
     let on_change = move |_: leptos::ev::Event| {};
     let _ = (&cell_id, &sink, &bus_key);
 
+    let label_class = if switch {
+        "ironpad-switch"
+    } else {
+        "ironpad-widget-checkbox-label"
+    };
+
     view! {
         <div class="ironpad-interactive-widget">
-            <label class="ironpad-widget-checkbox-label">
+            <label class=label_class>
                 <input
                     type="checkbox"
                     prop:checked=move || checked.get()
                     on:change=on_change
                 />
-                {" "}{label_text}
+                {switch.then(|| view! { <span class="ironpad-switch-slider"></span> })}
+                {" "}{label}
             </label>
         </div>
     }
@@ -735,7 +756,7 @@ fn render_checkbox(
 #[allow(clippy::needless_pass_by_value)]
 fn render_text_input(
     cfg: &serde_json::Value,
-    label: &str,
+    label: String,
     cell_id: Option<String>,
     sink: Option<WidgetSink>,
 ) -> impl IntoView {
@@ -749,11 +770,6 @@ fn render_text_input(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_owned();
-    let label_text = if label.is_empty() {
-        String::new()
-    } else {
-        label.to_owned()
-    };
 
     let value = RwSignal::new(default);
 
@@ -774,7 +790,7 @@ fn render_text_input(
 
     view! {
         <div class="ironpad-interactive-widget">
-            {widget_label(label_text)}
+            {widget_label(label)}
             <input
                 type="text"
                 placeholder=placeholder
@@ -786,158 +802,15 @@ fn render_text_input(
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn render_number(
-    cfg: &serde_json::Value,
-    label: &str,
-    cell_id: Option<String>,
-    sink: Option<WidgetSink>,
-) -> impl IntoView {
-    let min = cfg
-        .get("min")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let max = cfg
-        .get("max")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(100.0);
-    let step = cfg
-        .get("step")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(1.0);
-    let default = cfg
-        .get("default")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(min);
-    let label_text = if label.is_empty() {
-        String::new()
-    } else {
-        label.to_owned()
-    };
-    let bus_key = cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned);
-
-    let value = RwSignal::new(default.to_string());
-
-    #[cfg(feature = "hydrate")]
-    {
-        if let Some(key) = bus_key.clone() {
-            Effect::new(move |_| {
-                sim_bus_js::sim_bus_write_f64(&key, default);
-            });
-        }
-    }
-
-    #[cfg(feature = "hydrate")]
-    let on_input = {
-        let cell_id = cell_id.clone();
-        let bus_key = bus_key.clone();
-        move |ev: web_sys::Event| {
-            let new_val = leptos::prelude::event_target_value(&ev);
-            value.set(new_val.clone());
-            if let Ok(f) = new_val.parse::<f64>() {
-                let bytes = bincode_encode_f64(f);
-                update_cell_output(bytes, cell_id.as_deref(), sink);
-                if let Some(ref key) = bus_key {
-                    sim_bus_js::sim_bus_write_f64(key, f);
-                }
-            }
-        }
-    };
-
-    #[cfg(not(feature = "hydrate"))]
-    let on_input = move |_: leptos::ev::Event| {};
-    let _ = (&cell_id, &sink, &bus_key);
-
-    view! {
-        <div class="ironpad-interactive-widget">
-            {widget_label(label_text)}
-            <input
-                type="number"
-                min=min.to_string()
-                max=max.to_string()
-                step=step.to_string()
-                prop:value=move || value.get()
-                on:input=on_input
-            />
-        </div>
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn render_switch(
-    cfg: &serde_json::Value,
-    label: &str,
-    cell_id: Option<String>,
-    sink: Option<WidgetSink>,
-) -> impl IntoView {
-    let default = cfg
-        .get("default")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let label_text = label.to_owned();
-    let bus_key = cfg.get("name").and_then(|v| v.as_str()).map(str::to_owned);
-
-    let checked = RwSignal::new(default);
-
-    #[cfg(feature = "hydrate")]
-    {
-        if let Some(key) = bus_key.clone() {
-            Effect::new(move |_| {
-                sim_bus_js::sim_bus_write_bool(&key, default);
-            });
-        }
-    }
-
-    #[cfg(feature = "hydrate")]
-    let on_change = {
-        let cell_id = cell_id.clone();
-        let bus_key = bus_key.clone();
-        move |ev: web_sys::Event| {
-            use wasm_bindgen::JsCast;
-            if let Some(input) = ev
-                .target()
-                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-            {
-                let new_val = input.checked();
-                checked.set(new_val);
-                let bytes = bincode_encode_bool(new_val);
-                update_cell_output(bytes, cell_id.as_deref(), sink);
-                if let Some(ref key) = bus_key {
-                    sim_bus_js::sim_bus_write_bool(key, new_val);
-                }
-            }
-        }
-    };
-
-    #[cfg(not(feature = "hydrate"))]
-    let on_change = move |_: leptos::ev::Event| {};
-    let _ = (&cell_id, &sink, &bus_key);
-
-    view! {
-        <div class="ironpad-interactive-widget">
-            <label class="ironpad-switch">
-                <input
-                    type="checkbox"
-                    prop:checked=move || checked.get()
-                    on:change=on_change
-                />
-                <span class="ironpad-switch-slider"></span>
-                {" "}{label_text}
-            </label>
-        </div>
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
 fn render_button(
-    _cfg: &serde_json::Value,
-    label: &str,
+    label: String,
     cell_id: Option<String>,
     sink: Option<WidgetSink>,
 ) -> impl IntoView {
     let button_label = if label.is_empty() {
         "Run".to_owned()
     } else {
-        label.to_owned()
+        label
     };
 
     #[cfg(feature = "hydrate")]
@@ -971,33 +844,26 @@ fn render_button(
     }
 }
 
-fn render_progress(cfg: &serde_json::Value, label: &str) -> impl IntoView {
+fn render_progress(cfg: &serde_json::Value, label: String) -> impl IntoView {
     let id = cfg
         .get("id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_owned();
-    let initial = cfg
-        .get("initial")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let pct = initial.clamp(0.0, 100.0);
+    let pct = cfg_f64(cfg, "initial", 0.0).clamp(0.0, 100.0);
     // Cast is safe: pct is clamped to [0.0, 100.0].
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pct_int = pct as u32;
     let width_style = format!("width: {pct}%");
-    let label_text = if label.is_empty() {
-        String::new()
-    } else {
-        label.to_owned()
-    };
 
     view! {
         <div class="ironpad-interactive-widget">
-            {if label_text.is_empty() {
+            // Nothing at all for an empty label, unlike `widget_label`'s empty
+            // span: an extra node here can shift the progress bar's layout.
+            {if label.is_empty() {
                 None
             } else {
-                Some(view! { <span class="ironpad-widget-label">{label_text}</span> })
+                Some(view! { <span class="ironpad-widget-label">{label}</span> })
             }}
             <div class="ironpad-progress" data-progress-id={id}>
                 <div class="ironpad-progress-bar">
@@ -1062,6 +928,80 @@ mod tests {
         let panels: Vec<DisplayPanel> = serde_json::from_str(json).unwrap();
         assert_eq!(panels.len(), 1);
         assert!(matches!(panels[0], DisplayPanel::Text(ref t) if t == "hello"));
+    }
+
+    /// SSR markup of one interactive widget.
+    fn widget_html(kind: &str, config: &str) -> String {
+        use leptos::tachys::view::RenderHtml as _;
+        Owner::new().with(|| {
+            view! {
+                <InteractiveWidget
+                    kind=kind.to_string()
+                    config=config.to_string()
+                    cell_id=None
+                    sink=None
+                />
+            }
+            .to_html()
+        })
+    }
+
+    #[test]
+    fn numeric_widgets_share_one_renderer_but_keep_their_markup() {
+        let cfg = r#"{"label":"Speed","min":1,"max":9,"step":2,"default":3}"#;
+
+        let slider = widget_html("slider", cfg);
+        assert!(slider.contains(r#"type="range""#), "{slider}");
+        assert!(
+            slider.contains("ironpad-widget-value"),
+            "a slider echoes its value: {slider}"
+        );
+        assert!(
+            slider.contains(r#"min="1""#) && slider.contains(r#"max="9""#),
+            "{slider}"
+        );
+        assert!(slider.contains(r#"step="2""#), "{slider}");
+        assert!(slider.contains("Speed"), "{slider}");
+
+        let number = widget_html("number", cfg);
+        assert!(number.contains(r#"type="number""#), "{number}");
+        assert!(
+            !number.contains("ironpad-widget-value"),
+            "a number input shows its own value: {number}"
+        );
+        assert!(
+            number.contains(r#"min="1""#) && number.contains(r#"step="2""#),
+            "{number}"
+        );
+    }
+
+    #[test]
+    fn toggle_widgets_share_one_renderer_but_keep_their_markup() {
+        let cfg = r#"{"label":"Wrap","default":true}"#;
+
+        let switch = widget_html("switch", cfg);
+        assert!(switch.contains(r#"class="ironpad-switch""#), "{switch}");
+        assert!(switch.contains("ironpad-switch-slider"), "{switch}");
+        assert!(switch.contains(r#"type="checkbox""#), "{switch}");
+
+        let checkbox = widget_html("checkbox", cfg);
+        assert!(
+            checkbox.contains("ironpad-widget-checkbox-label"),
+            "{checkbox}"
+        );
+        assert!(
+            !checkbox.contains("ironpad-switch-slider"),
+            "a checkbox is not dressed as a switch: {checkbox}"
+        );
+        assert!(checkbox.contains(r#"type="checkbox""#), "{checkbox}");
+        assert!(checkbox.contains("Wrap"), "{checkbox}");
+    }
+
+    #[test]
+    fn a_progress_widget_with_no_label_renders_no_label_node() {
+        let html = widget_html("progress", r#"{"id":"p","initial":40}"#);
+        assert!(!html.contains("ironpad-widget-label"), "{html}");
+        assert!(html.contains("40%"), "{html}");
     }
 
     #[test]
