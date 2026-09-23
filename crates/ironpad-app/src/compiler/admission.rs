@@ -32,6 +32,7 @@ pub const DEFAULT_MAX_CONCURRENT_BUILDS: usize = 3;
 /// edit-compile loop; the Playwright suite tripped a 10/min version of this
 /// and overrides the env instead).
 const DEFAULT_RATE_BURST: f64 = 20.0;
+const DEFAULT_RATE_PER_MIN: f64 = 30.0;
 
 /// Per-client token bucket for `get_browserpod_key` (PRD-0066).
 ///
@@ -48,7 +49,6 @@ const DEFAULT_KEY_RATE_BURST: f64 = 30.0;
 
 /// Refill rate for [`DEFAULT_KEY_RATE_BURST`], per minute.
 const DEFAULT_KEY_RATE_PER_MIN: f64 = 30.0;
-const DEFAULT_RATE_PER_MIN: f64 = 30.0;
 
 /// Default bound on how long a compile may queue for a slot.
 const DEFAULT_QUEUE_TIMEOUT_SECS: u64 = 180;
@@ -89,18 +89,70 @@ struct Bucket {
     last_refill: Instant,
 }
 
+/// One per-client token-bucket budget: the table plus the burst and refill
+/// rate it is charged against. The build budget and the key-fetch budget are
+/// two of these, so they share one implementation of the refill, the sweep
+/// and the off-by-one that decides admission.
+struct TokenBuckets {
+    table: Mutex<HashMap<String, Bucket>>,
+    burst: f64,
+    per_sec: f64,
+}
+
+impl TokenBuckets {
+    fn new(burst: f64, per_min: f64) -> Self {
+        Self {
+            table: Mutex::new(HashMap::new()),
+            burst,
+            per_sec: per_min / 60.0,
+        }
+    }
+
+    /// Take one token from `client_ip`'s bucket, refilling for elapsed time
+    /// first. `true` = admitted.
+    fn take(&self, client_ip: &str) -> bool {
+        let now = Instant::now();
+        let mut buckets = self.table.lock().expect("bucket table poisoned");
+
+        // Opportunistic sweep: a bucket back at full charge has been idle for
+        // at least burst/rate seconds and carries no information.
+        if buckets.len() >= BUCKET_SWEEP_THRESHOLD {
+            buckets.retain(|_, b| {
+                let refilled =
+                    b.tokens + now.duration_since(b.last_refill).as_secs_f64() * self.per_sec;
+                refilled < self.burst
+            });
+        }
+
+        let bucket = buckets.entry(client_ip.to_string()).or_insert(Bucket {
+            tokens: self.burst,
+            last_refill: now,
+        });
+        bucket.tokens = (bucket.tokens
+            + now.duration_since(bucket.last_refill).as_secs_f64() * self.per_sec)
+            .min(self.burst);
+        bucket.last_refill = now;
+
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Shared admission state. Cloneable; all clones share the same slots and
 /// buckets (mirrors [`super::CompileLocks`]).
 #[derive(Clone)]
 pub struct BuildAdmission {
     compile_slots: Arc<tokio::sync::Semaphore>,
     check_slots: Arc<tokio::sync::Semaphore>,
-    buckets: Arc<Mutex<HashMap<String, Bucket>>>,
-    key_buckets: Arc<Mutex<HashMap<String, Bucket>>>,
-    rate_burst: f64,
-    rate_per_sec: f64,
-    key_rate_burst: f64,
-    key_rate_per_sec: f64,
+    /// Charged per build START (cache misses only).
+    builds: Arc<TokenBuckets>,
+    /// Charged per `get_browserpod_key`; see [`DEFAULT_KEY_RATE_BURST`] for
+    /// why it is a separate budget.
+    keys: Arc<TokenBuckets>,
     queue_timeout: Duration,
 }
 
@@ -142,7 +194,8 @@ impl BuildAdmission {
         )
     }
 
-    /// Fully-explicit construction (tests).
+    /// Fully-explicit construction (tests). The key-fetch budget starts at
+    /// its defaults; [`with_key_rate`](Self::with_key_rate) overrides it.
     pub fn new(
         max_concurrent: usize,
         rate_burst: f64,
@@ -153,12 +206,11 @@ impl BuildAdmission {
         Self {
             compile_slots: Arc::new(tokio::sync::Semaphore::new(slots)),
             check_slots: Arc::new(tokio::sync::Semaphore::new(slots)),
-            buckets: Arc::new(Mutex::new(HashMap::new())),
-            key_buckets: Arc::new(Mutex::new(HashMap::new())),
-            rate_burst,
-            rate_per_sec: rate_per_min / 60.0,
-            key_rate_burst: DEFAULT_KEY_RATE_BURST,
-            key_rate_per_sec: DEFAULT_KEY_RATE_PER_MIN / 60.0,
+            builds: Arc::new(TokenBuckets::new(rate_burst, rate_per_min)),
+            keys: Arc::new(TokenBuckets::new(
+                DEFAULT_KEY_RATE_BURST,
+                DEFAULT_KEY_RATE_PER_MIN,
+            )),
             queue_timeout,
         }
     }
@@ -166,8 +218,7 @@ impl BuildAdmission {
     /// Override the `get_browserpod_key` bucket (tests, and `from_env`).
     #[must_use]
     pub fn with_key_rate(mut self, burst: f64, per_min: f64) -> Self {
-        self.key_rate_burst = burst;
-        self.key_rate_per_sec = per_min / 60.0;
+        self.keys = Arc::new(TokenBuckets::new(burst, per_min));
         self
     }
 
@@ -218,12 +269,7 @@ impl BuildAdmission {
     /// "no key configured" shape a contributor checkout produces rather than
     /// inventing a second failure mode in the cell UI.
     pub fn try_admit_key(&self, client_ip: &str) -> bool {
-        let admitted = take_token(
-            &self.key_buckets,
-            client_ip,
-            self.key_rate_burst,
-            self.key_rate_per_sec,
-        );
+        let admitted = self.keys.take(client_ip);
         if !admitted {
             tracing::warn!(client_ip, "browserpod key rate limit hit");
         }
@@ -233,47 +279,7 @@ impl BuildAdmission {
     /// Take one token from `client_ip`'s build bucket, refilling for elapsed
     /// time first. `true` = admitted.
     fn try_take_token(&self, client_ip: &str) -> bool {
-        take_token(&self.buckets, client_ip, self.rate_burst, self.rate_per_sec)
-    }
-}
-
-/// Take one token from `client_ip`'s bucket in `table`, refilling for elapsed
-/// time first. `true` = admitted.
-///
-/// A free function over the table rather than a method, so the build bucket
-/// and the key bucket share one implementation of the refill, the sweep and
-/// the off-by-one that decides admission. Two copies of this drift.
-fn take_token(
-    table: &Mutex<HashMap<String, Bucket>>,
-    client_ip: &str,
-    burst: f64,
-    per_sec: f64,
-) -> bool {
-    let now = Instant::now();
-    let mut buckets = table.lock().expect("bucket table poisoned");
-
-    // Opportunistic sweep: a bucket back at full charge has been idle for
-    // at least burst/rate seconds and carries no information.
-    if buckets.len() >= BUCKET_SWEEP_THRESHOLD {
-        buckets.retain(|_, b| {
-            let refilled = b.tokens + now.duration_since(b.last_refill).as_secs_f64() * per_sec;
-            refilled < burst
-        });
-    }
-
-    let bucket = buckets.entry(client_ip.to_string()).or_insert(Bucket {
-        tokens: burst,
-        last_refill: now,
-    });
-    bucket.tokens =
-        (bucket.tokens + now.duration_since(bucket.last_refill).as_secs_f64() * per_sec).min(burst);
-    bucket.last_refill = now;
-
-    if bucket.tokens >= 1.0 {
-        bucket.tokens -= 1.0;
-        true
-    } else {
-        false
+        self.builds.take(client_ip)
     }
 }
 
@@ -416,6 +422,22 @@ mod tests {
             ),
             "build budget is separate and spends on its own schedule"
         );
+    }
+
+    #[test]
+    fn new_gives_the_key_budget_its_default_burst() {
+        // `new` sets only the build budget; the key budget must still start
+        // at its documented default rather than at the build numbers.
+        let a = admission(4, 1.0, 1.0, 50);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let burst = DEFAULT_KEY_RATE_BURST as usize;
+        for i in 0..burst {
+            assert!(
+                a.try_admit_key("1.2.3.4"),
+                "key request {i} is within the burst"
+            );
+        }
+        assert!(!a.try_admit_key("1.2.3.4"), "past the default burst");
     }
 
     #[test]
