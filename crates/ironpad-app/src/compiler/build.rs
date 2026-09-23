@@ -1144,6 +1144,30 @@ mod tests {
             format!("browserpod-{version}"),
             "BROWSERPOD_TOOLCHAIN must name the toolchain docker/browserpod.env installs"
         );
+        // The installers must read that version too, not repeat it: a literal
+        // left behind by a bump keeps installing the OLD pack, which surfaces
+        // only later as test-integration's "toolchain not installed". The env
+        // file's own fetch URL is held to the same rule.
+        for (file, text) in [("docker/Dockerfile", &dockerfile), ("build.yml", &ci)] {
+            for (idx, _) in text.match_indices("browserpod-") {
+                let rest = text[idx + "browserpod-".len()..].trim_start_matches("rust-");
+                assert!(
+                    !rest.starts_with(|c: char| c.is_ascii_digit()),
+                    "{file} hard-codes a BrowserPod version; expand \
+                     ${{BROWSERPOD_VERSION}} from docker/browserpod.env instead"
+                );
+            }
+        }
+        let dist_base = env_file
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("BROWSERPOD_DIST_BASE="))
+            .expect("browserpod.env must define BROWSERPOD_DIST_BASE");
+        assert!(
+            !dist_base.contains(version),
+            "BROWSERPOD_DIST_BASE repeats the version {version}; expand \
+             ${{BROWSERPOD_VERSION}} so a bump moves it too"
+        );
+
         // No unknown pin hiding anywhere: every nightly date literal in the
         // install environments must be `CELL_TOOLCHAIN` or the BrowserPod
         // pack's recorded nightly (the pack pulls its own, recorded in that
