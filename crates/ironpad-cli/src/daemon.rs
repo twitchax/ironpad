@@ -821,9 +821,18 @@ fn translate_command(req: &IpcRequest) -> Result<MessageKind, String> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // An unrecognised type is refused rather than defaulted: a Linux
+            // cell silently made into a Code cell compiles a whole program
+            // against the wrong target (see `CellType`).
             let cell_type = match req.args.get("type").and_then(|v| v.as_str()) {
+                None | Some("code") => ironpad_common::CellType::Code,
                 Some("markdown") => ironpad_common::CellType::Markdown,
-                _ => ironpad_common::CellType::Code,
+                Some("linux") => ironpad_common::CellType::Linux,
+                Some(other) => {
+                    return Err(format!(
+                        "unknown cell type: {other} (expected code, markdown or linux)"
+                    ))
+                }
             };
             let label = req
                 .args
@@ -1449,6 +1458,35 @@ mod tests {
             }
             other => panic!("expected CellAdd, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn translate_cells_add_linux() {
+        let req = ipc(
+            "cells.add",
+            json!({ "type": "linux", "source": "fn main() {}" }),
+        );
+        match translate_command(&req).unwrap() {
+            MessageKind::Mutation(protocol::Mutation::CellAdd { cell, .. }) => {
+                assert_eq!(cell.cell_type, CellType::Linux);
+            }
+            other => panic!("expected CellAdd, got {other:?}"),
+        }
+        // "code" spelled out is the same as absent.
+        match translate_command(&ipc("cells.add", json!({ "type": "code" }))).unwrap() {
+            MessageKind::Mutation(protocol::Mutation::CellAdd { cell, .. }) => {
+                assert_eq!(cell.cell_type, CellType::Code);
+            }
+            other => panic!("expected CellAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_cells_add_unknown_type_is_an_error() {
+        // It used to fall through to Code, the silent Linux-as-Code mistake
+        // `CellType`'s docs warn about.
+        let err = translate_command(&ipc("cells.add", json!({ "type": "lnux" }))).unwrap_err();
+        assert!(err.contains("unknown cell type: lnux"), "got: {err}");
     }
 
     #[test]

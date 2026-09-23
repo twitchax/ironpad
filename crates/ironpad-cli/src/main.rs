@@ -14,6 +14,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use ironpad_common::protocol::NotebookMetaPatch;
+
 use crate::ipc::{IpcRequest, IpcResponse};
 
 // ── CLI args ────────────────────────────────────────────────────────────────
@@ -69,6 +71,8 @@ enum Command {
 enum CellTypeArg {
     Code,
     Markdown,
+    /// A whole Rust program run as a Linux process in the browser (PRD-0066).
+    Linux,
 }
 
 impl CellTypeArg {
@@ -76,6 +80,7 @@ impl CellTypeArg {
         match self {
             Self::Code => "code",
             Self::Markdown => "markdown",
+            Self::Linux => "linux",
         }
     }
 }
@@ -395,7 +400,7 @@ async fn handle_cells_command(cmd: CellsCommand) {
 /// Build and send a `notebook.update` patch from the CLI flags.
 ///
 /// Tri-state per field: an omitted flag is absent from the JSON (untouched),
-/// `--clear-*` inserts an explicit `null` (a clear, via
+/// `--clear-*` sends an explicit `null` (a clear, via
 /// `explicit_null_is_a_clear` on the daemon side), and a value sets it.
 async fn handle_notebook_update(args: NotebookUpdateArgs) {
     // Both text fields accept "-", but stdin can only be read once.
@@ -405,59 +410,60 @@ async fn handle_notebook_update(args: NotebookUpdateArgs) {
         std::process::exit(1);
     }
 
-    let mut meta = serde_json::Map::new();
-    if let Some(title) = args.title {
-        meta.insert("title".to_string(), serde_json::Value::String(title));
-    }
-    if args.clear_shared_source {
-        meta.insert("shared_source".to_string(), serde_json::Value::Null);
-    } else if let Some(source) = resolve_source(args.shared_source, args.shared_source_file) {
-        meta.insert(
-            "shared_source".to_string(),
-            serde_json::Value::String(source),
-        );
-    }
-    if args.clear_shared_cargo_toml {
-        meta.insert("shared_cargo_toml".to_string(), serde_json::Value::Null);
-    } else if let Some(toml) = resolve_source(args.shared_cargo_toml, args.shared_cargo_toml_file) {
-        meta.insert(
-            "shared_cargo_toml".to_string(),
-            serde_json::Value::String(toml),
-        );
-    }
-    if args.clear_description {
-        meta.insert("description".to_string(), serde_json::Value::Null);
-    } else if let Some(description) = args.description {
-        meta.insert(
-            "description".to_string(),
-            serde_json::Value::String(description),
-        );
-    }
-    if args.clear_tags {
-        meta.insert("tags".to_string(), serde_json::Value::Null);
-    } else if let Some(tags) = args.tags {
-        let list: Vec<serde_json::Value> = tags
-            .split(',')
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(|t| serde_json::Value::String(t.to_string()))
-            .collect();
-        // An all-whitespace --tags is a clear, not a list of nothing.
-        let value = if list.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::Value::Array(list)
-        };
-        meta.insert("tags".to_string(), value);
-    }
-
-    if meta.is_empty() {
+    let meta =
+        serde_json::to_value(build_meta_patch(args)).expect("NotebookMetaPatch serialization");
+    // `skip_serializing_if` keeps untouched fields off the wire, so an empty
+    // object is exactly "no flag given".
+    if meta.as_object().is_some_and(serde_json::Map::is_empty) {
         eprintln!("nothing to update: pass at least one field flag (see `notebook update --help`)");
         std::process::exit(1);
     }
 
     let response = send_ipc("notebook.update", serde_json::json!({ "meta": meta })).await;
     print_response(&response);
+}
+
+/// The typed patch behind `notebook update`. Built as the protocol type
+/// rather than a map of string keys, so a renamed patch field is a compile
+/// error here instead of a key the daemon silently ignores.
+fn build_meta_patch(args: NotebookUpdateArgs) -> NotebookMetaPatch {
+    // The doubled option is the tri-state itself: clear, set, or untouched.
+    #[allow(clippy::option_option)]
+    fn tri<T>(clear: bool, value: impl FnOnce() -> Option<T>) -> Option<Option<T>> {
+        if clear {
+            Some(None)
+        } else {
+            value().map(Some)
+        }
+    }
+
+    let tags = if args.clear_tags {
+        Some(None)
+    } else {
+        args.tags.map(|tags| {
+            let list: Vec<String> = tags
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect();
+            // An all-whitespace --tags is a clear, not a list of nothing.
+            (!list.is_empty()).then_some(list)
+        })
+    };
+
+    NotebookMetaPatch {
+        title: args.title,
+        shared_source: tri(args.clear_shared_source, || {
+            resolve_source(args.shared_source, args.shared_source_file)
+        }),
+        shared_cargo_toml: tri(args.clear_shared_cargo_toml, || {
+            resolve_source(args.shared_cargo_toml, args.shared_cargo_toml_file)
+        }),
+        description: tri(args.clear_description, || args.description),
+        tags,
+        ..NotebookMetaPatch::default()
+    }
 }
 
 async fn handle_cells_run(cell_id: &str, no_wait: bool, timeout_secs: u64) {
@@ -789,6 +795,86 @@ mod tests {
             panic!("expected cells add");
         };
         assert!(shared);
+    }
+
+    #[test]
+    fn cells_add_parses_linux_type() {
+        let cli = Cli::try_parse_from(["ironpad", "cells", "add", "--type", "linux"])
+            .expect("linux should be a valid --type");
+        let Command::Cells(CellsCommand::Add { r#type, .. }) = cli.command else {
+            panic!("expected cells add");
+        };
+        assert!(matches!(r#type, CellTypeArg::Linux));
+        assert_eq!(r#type.as_str(), "linux");
+    }
+
+    /// The typed patch must produce the JSON the daemon's
+    /// `translate_notebook_update_tri_states` consumes: a `--clear-*` flag is
+    /// an explicit null, a value is set, and an omitted flag is absent.
+    #[test]
+    fn notebook_update_patch_serializes_the_tri_states() {
+        let cli = Cli::try_parse_from([
+            "ironpad",
+            "notebook",
+            "update",
+            "--title",
+            "Renamed",
+            "--clear-description",
+            "--tags",
+            "blog, simd ,",
+        ])
+        .expect("flags should parse");
+        let Command::Notebook {
+            command: Some(NotebookCommand::Update(args)),
+        } = cli.command
+        else {
+            panic!("expected notebook update");
+        };
+
+        let meta = serde_json::to_value(build_meta_patch(*args)).unwrap();
+        assert_eq!(
+            meta,
+            serde_json::json!({
+                "title": "Renamed",
+                "description": null,
+                "tags": ["blog", "simd"],
+            })
+        );
+
+        // And the daemon decodes it back into the same three states.
+        let back: NotebookMetaPatch = serde_json::from_value(meta).unwrap();
+        assert_eq!(back.description, Some(None), "explicit null is a clear");
+        assert_eq!(back.shared_source, None, "absent is untouched");
+    }
+
+    #[test]
+    fn notebook_update_blank_tags_clear_and_no_flags_is_empty() {
+        let parse = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(argv).expect("flags should parse");
+            let Command::Notebook {
+                command: Some(NotebookCommand::Update(args)),
+            } = cli.command
+            else {
+                panic!("expected notebook update");
+            };
+            serde_json::to_value(build_meta_patch(*args)).unwrap()
+        };
+
+        // An all-whitespace --tags is a clear, like --clear-tags.
+        assert_eq!(
+            parse(&["ironpad", "notebook", "update", "--tags", " , "]),
+            serde_json::json!({ "tags": null })
+        );
+        assert_eq!(
+            parse(&["ironpad", "notebook", "update", "--clear-tags"]),
+            serde_json::json!({ "tags": null })
+        );
+        // No field flag serializes to `{}`, which is the "nothing to update"
+        // check in `handle_notebook_update`.
+        assert_eq!(
+            parse(&["ironpad", "notebook", "update"]),
+            serde_json::json!({})
+        );
     }
 
     #[test]
