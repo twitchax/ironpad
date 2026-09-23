@@ -332,13 +332,10 @@ fn oauth_state_cookie(nonce: &str, max_age_secs: u32) -> String {
     )
 }
 
-/// Read one cookie's value from request headers.
+/// Read one cookie's value from request headers, through the app crate's one
+/// parser so these routes and session resolution cannot disagree.
 fn cookie_value<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
-    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
-    raw.split(';').find_map(|pair| {
-        let (n, v) = pair.trim().split_once('=')?;
-        (n == name && !v.is_empty()).then_some(v)
-    })
+    ironpad_app::auth::cookie_value(headers.get(header::COOKIE)?.to_str().ok()?, name)
 }
 
 /// 128-bit random nonce as hex for the OAuth state.

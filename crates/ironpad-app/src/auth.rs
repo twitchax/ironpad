@@ -17,15 +17,25 @@ pub const SESSION_COOKIE: &str = "ironpad_session";
 #[derive(Clone, Copy, Debug)]
 pub struct AuthEnabled(pub bool);
 
-/// Extract the session token from a `Cookie` request header value.
+/// Read the cookie `name` from a `Cookie` request header value; an empty
+/// value reads as absent.
 ///
-/// Hand-rolled on purpose: our token is plain hex (no quoting/encoding
-/// concerns), and this avoids dragging a cookie crate into the app crate.
-pub fn session_token_from_cookie_header(header: &str) -> Option<&str> {
+/// The ONE cookie parser: the session lookup here and the auth routes in
+/// ironpad-server (logout, the OAuth CSRF nonce) all go through it, so a
+/// parsing change cannot make logout disagree with session resolution.
+/// Hand-rolled on purpose: our cookie values are plain hex (no quoting or
+/// encoding concerns), and this avoids dragging a cookie crate into the app.
+#[must_use]
+pub fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     header.split(';').find_map(|pair| {
-        let (name, value) = pair.trim().split_once('=')?;
-        (name == SESSION_COOKIE && !value.is_empty()).then_some(value)
+        let (n, value) = pair.trim().split_once('=')?;
+        (n == name && !value.is_empty()).then_some(value)
     })
+}
+
+/// Extract the session token from a `Cookie` request header value.
+pub fn session_token_from_cookie_header(header: &str) -> Option<&str> {
+    cookie_value(header, SESSION_COOKIE)
 }
 
 /// The `Set-Cookie` value minting (or re-issuing) a session cookie.
@@ -214,5 +224,15 @@ mod tests {
             session_token_from_cookie_header("xironpad_session=abc"),
             None
         );
+    }
+
+    #[test]
+    fn cookie_value_reads_any_named_cookie() {
+        // The generalized path the server's OAuth nonce check uses.
+        assert_eq!(
+            cookie_value("a=1; ironpad_oauth_state=n", "ironpad_oauth_state"),
+            Some("n")
+        );
+        assert_eq!(cookie_value("a=1", "ironpad_oauth_state"), None);
     }
 }
