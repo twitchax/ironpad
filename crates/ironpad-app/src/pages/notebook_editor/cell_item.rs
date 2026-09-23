@@ -956,16 +956,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         class
     };
 
-    let body_class = Signal::derive(move || {
-        // `collapsed` is the single source of truth: it loads from the cell's
-        // saved default, the header toggle snaps it when the default changes,
-        // and the chevron flips it transiently — no per-mode overrides.
-        if collapsed.get() {
-            "ironpad-cell-body ironpad-cell-body--collapsed"
-        } else {
-            "ironpad-cell-body"
-        }
-    });
+    // `collapsed` is the single source of truth: it loads from the cell's
+    // saved default, the header toggle snaps it when the default changes,
+    // and the chevron flips it transiently — no per-mode overrides.
+    let body_class = crate::components::view_only_notebook::cell_body_class(collapsed);
 
     // ── Scroll-to & focus when this cell is newly added ─────────────────
 

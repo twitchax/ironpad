@@ -38,10 +38,11 @@ use leptos::prelude::*;
 
 use ironpad_common::IronpadCell;
 
-use crate::components::icon::{Chevron, Icon, IconLabel};
+use crate::components::icon::{Icon, IconLabel};
 use crate::components::icons;
 use crate::components::monaco_editor::MonacoEditor;
 use crate::components::notebook_rail::{RailCellRun, RailCellStatus, RailRunState};
+use crate::components::view_only_notebook::{cell_body_class, ViewOnlyCellHeaderLead};
 
 // ── Pod runtime bindings (client-side only) ─────────────────────────────────
 
@@ -603,13 +604,7 @@ pub(crate) fn ViewOnlyLinuxCell(
 
     let collapsed = RwSignal::new(cell.with_value(|c| c.collapsed));
     let output_collapsed = RwSignal::new(cell.with_value(|c| c.output_collapsed));
-    let body_class = Signal::derive(move || {
-        if collapsed.get() {
-            "ironpad-cell-body ironpad-cell-body--collapsed"
-        } else {
-            "ironpad-cell-body"
-        }
-    });
+    let body_class = cell_body_class(collapsed);
 
     let busy = Signal::derive(move || stage.get().busy());
     let stage_label = Signal::derive(move || stage.get().label());
@@ -638,16 +633,11 @@ pub(crate) fn ViewOnlyLinuxCell(
     view! {
         <div class="view-only-cell view-only-cell--frame view-only-cell--linux" id=anchor_id>
             <div class="view-only-cell-header">
-                <button
-                    class="ironpad-cell-collapse-btn"
-                    on:click=move |_| collapsed.update(|c| *c = !*c)
-                >
-                    <Chevron expanded=Signal::derive(move || !collapsed.get())/>
-                </button>
-                {index.map(|n| view! {
-                    <span class="view-only-cell-index">{format!("[{n}]")}</span>
-                })}
-                <span class="view-only-cell-label">{cell.with_value(|c| c.label.clone())}</span>
+                <ViewOnlyCellHeaderLead
+                    collapsed=collapsed
+                    index=index
+                    label=cell.with_value(|c| c.label.clone())
+                />
                 <span class="ironpad-cell-type-badge ironpad-cell-type-badge--linux">
                     <IconLabel icon=icons::LINUX label="linux"/>
                 </span>

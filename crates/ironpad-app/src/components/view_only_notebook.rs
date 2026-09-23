@@ -528,19 +528,62 @@ pub(crate) fn ViewOnlyNotebook(
 /// sees has no gaps. Markdown is prose, not a numbered step, and 51% of the
 /// cells in `public/notebooks/` are markdown — numbering by notebook position
 /// would show `[2] [5] [9]`.
+///
+/// Mirrors `ViewOnlyCell`'s dispatch: a shared cell frames whatever its type
+/// says, and Code, Linux and a newer release's cell type all draw a frame
+/// with an index slot. Only markdown renders as bare prose.
 fn frame_indices(cells: &[IronpadCell]) -> Vec<Option<usize>> {
     let mut next = 0usize;
     cells
         .iter()
         .map(|c| {
-            // Mirrors ViewOnlyCell's dispatch: a shared cell frames whatever
-            // its type says.
-            (c.shared || c.cell_type == CellType::Code).then(|| {
+            (c.shared
+                || matches!(
+                    c.cell_type,
+                    CellType::Code | CellType::Linux | CellType::Unsupported(_)
+                ))
+            .then(|| {
                 next += 1;
                 next
             })
         })
         .collect()
+}
+
+/// The source pane's class: `ironpad-cell-body`, plus `--collapsed` while
+/// `collapsed` holds. One derivation for every framed cell, in the viewer
+/// and the editor alike.
+pub(crate) fn cell_body_class(collapsed: RwSignal<bool>) -> Signal<&'static str> {
+    Signal::derive(move || {
+        if collapsed.get() {
+            "ironpad-cell-body ironpad-cell-body--collapsed"
+        } else {
+            "ironpad-cell-body"
+        }
+    })
+}
+
+/// The lead of every view-only cell frame header: the collapse chevron, the
+/// `[n]` frame index when the cell has one, and the label. Each cell kind
+/// follows it with only its own badge, pill, meta and run control.
+#[component]
+pub(crate) fn ViewOnlyCellHeaderLead(
+    collapsed: RwSignal<bool>,
+    index: Option<usize>,
+    #[prop(into)] label: String,
+) -> impl IntoView {
+    view! {
+        <button
+            class="ironpad-cell-collapse-btn"
+            on:click=move |_| collapsed.update(|c| *c = !*c)
+        >
+            <Chevron expanded=Signal::derive(move || !collapsed.get())/>
+        </button>
+        {index.map(|n| view! {
+            <span class="view-only-cell-index">{format!("[{n}]")}</span>
+        })}
+        <span class="view-only-cell-label">{label}</span>
+    }
 }
 
 // ── Shared appendix ─────────────────────────────────────────────────────────
@@ -959,13 +1002,7 @@ fn ViewOnlyCodeCell(
     // transient reader affordances on top.
     let collapsed = RwSignal::new(cell.with_value(|c| c.collapsed));
     let output_collapsed = RwSignal::new(cell.with_value(|c| c.output_collapsed));
-    let body_class = Signal::derive(move || {
-        if collapsed.get() {
-            "ironpad-cell-body ironpad-cell-body--collapsed"
-        } else {
-            "ironpad-cell-body"
-        }
-    });
+    let body_class = cell_body_class(collapsed);
 
     // Run affordance state (PRD-0065 T-005): the header glyph is green once
     // this browser has run the cell clean, red once it has failed, and muted
@@ -995,16 +1032,11 @@ fn ViewOnlyCodeCell(
     view! {
         <div class="view-only-cell view-only-cell--frame" id=anchor_id>
             <div class="view-only-cell-header">
-                <button
-                    class="ironpad-cell-collapse-btn"
-                    on:click=move |_| collapsed.update(|c| *c = !*c)
-                >
-                    <Chevron expanded=Signal::derive(move || !collapsed.get())/>
-                </button>
-                {index.map(|n| view! {
-                    <span class="view-only-cell-index">{format!("[{n}]")}</span>
-                })}
-                <span class="view-only-cell-label">{cell.with_value(|c| c.label.clone())}</span>
+                <ViewOnlyCellHeaderLead
+                    collapsed=collapsed
+                    index=index
+                    label=cell.with_value(|c| c.label.clone())
+                />
                 // State pill — the header's optional slot. Compiling and
                 // queued are the only states a read-only page can reach
                 // (the handoff's "stale" needs an editable source).
@@ -1164,27 +1196,12 @@ fn ViewOnlyInertCell(
     notice: &'static str,
 ) -> impl IntoView {
     let collapsed = RwSignal::new(cell.collapsed);
-    let body_class = Signal::derive(move || {
-        if collapsed.get() {
-            "ironpad-cell-body ironpad-cell-body--collapsed"
-        } else {
-            "ironpad-cell-body"
-        }
-    });
+    let body_class = cell_body_class(collapsed);
 
     view! {
         <div class="view-only-cell view-only-cell--frame view-only-cell--inert" id=anchor_id>
             <div class="view-only-cell-header">
-                <button
-                    class="ironpad-cell-collapse-btn"
-                    on:click=move |_| collapsed.update(|c| *c = !*c)
-                >
-                    <Chevron expanded=Signal::derive(move || !collapsed.get())/>
-                </button>
-                {index.map(|n| view! {
-                    <span class="view-only-cell-index">{format!("[{n}]")}</span>
-                })}
-                <span class="view-only-cell-label">{cell.label.clone()}</span>
+                <ViewOnlyCellHeaderLead collapsed=collapsed index=index label=cell.label.clone()/>
                 <span class="ironpad-cell-type-badge ironpad-cell-type-badge--inert">{badge}</span>
             </div>
             <div class=body_class>
@@ -1205,27 +1222,12 @@ fn ViewOnlyInertCell(
 #[component]
 fn ViewOnlySharedCell(cell: IronpadCell, index: Option<usize>, anchor_id: String) -> impl IntoView {
     let collapsed = RwSignal::new(cell.collapsed);
-    let body_class = Signal::derive(move || {
-        if collapsed.get() {
-            "ironpad-cell-body ironpad-cell-body--collapsed"
-        } else {
-            "ironpad-cell-body"
-        }
-    });
+    let body_class = cell_body_class(collapsed);
 
     view! {
         <div class="view-only-cell view-only-cell--frame view-only-cell--shared" id=anchor_id>
             <div class="view-only-cell-header">
-                <button
-                    class="ironpad-cell-collapse-btn"
-                    on:click=move |_| collapsed.update(|c| *c = !*c)
-                >
-                    <Chevron expanded=Signal::derive(move || !collapsed.get())/>
-                </button>
-                {index.map(|n| view! {
-                    <span class="view-only-cell-index">{format!("[{n}]")}</span>
-                })}
-                <span class="view-only-cell-label">{cell.label.clone()}</span>
+                <ViewOnlyCellHeaderLead collapsed=collapsed index=index label=cell.label.clone()/>
                 <span class="ironpad-cell-type-badge ironpad-cell-type-badge--shared">
                     <IconLabel icon=icons::SHARED label="shared"/>
                 </span>
@@ -1418,6 +1420,28 @@ mod tests {
         nb.shared_cargo_toml = shared_cargo_toml.map(str::to_string);
         nb.cells = cells;
         nb
+    }
+
+    #[test]
+    fn frames_number_every_framed_cell_and_skip_only_prose() {
+        let mut shared_md = cell(CellType::Markdown, None);
+        shared_md.shared = true;
+        let cells = vec![
+            cell(CellType::Markdown, None),
+            cell(CellType::Code, None),
+            cell(CellType::Linux, None),
+            cell(CellType::Markdown, None),
+            shared_md,
+            cell(CellType::from_wire_tag("Gpu"), None),
+            cell(CellType::Code, None),
+        ];
+        assert_eq!(
+            frame_indices(&cells),
+            vec![None, Some(1), Some(2), None, Some(3), Some(4), Some(5)],
+            "Linux and newer-release cells draw a frame, so they are numbered; \
+             a shared cell frames whatever its type says"
+        );
+        assert!(frame_indices(&[]).is_empty());
     }
 
     #[test]

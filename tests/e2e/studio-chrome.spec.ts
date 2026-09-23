@@ -172,6 +172,31 @@ test.describe("Studio frame and status bar", () => {
     const collapsed = await page.locator(".ironpad-cell-body--collapsed").count();
     expect(collapsed, "charts-with-plot ships collapsed cells").toBeGreaterThan(0);
   });
+
+  test("the frame's chevron toggles the source on a code cell and a shared cell", async ({
+    page,
+  }) => {
+    // Every framed cell kind renders its header lead (chevron, index, label)
+    // and body class from one shared piece; drive two different kinds so a
+    // regression in either wiring shows. shared-code ships every code cell,
+    // shared ones included, collapsed.
+    await page.goto("/public/shared-code");
+    await expect(page.locator(".view-only-cell").first()).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(3_000); // hydration, suite convention
+
+    const code = page
+      .locator(".view-only-cell--frame:not(.view-only-cell--shared)")
+      .first();
+    const shared = page.locator(".view-only-cell--shared").first();
+    for (const frame of [code, shared]) {
+      const body = frame.locator(".ironpad-cell-body");
+      await expect(body).toHaveClass(/ironpad-cell-body--collapsed/);
+      await frame.locator(".ironpad-cell-collapse-btn").click();
+      await expect(body).not.toHaveClass(/ironpad-cell-body--collapsed/);
+      await frame.locator(".ironpad-cell-collapse-btn").click();
+      await expect(body).toHaveClass(/ironpad-cell-body--collapsed/);
+    }
+  });
 });
 
 test.describe("Embeds stay chrome-less", () => {
