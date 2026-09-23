@@ -276,7 +276,17 @@ fn content_hash_with_features(
     // change the key. Normalizing HERE (not at call sites) keeps the
     // server, the browser blob cache, and share-snapshot recomputes on one
     // recipe by construction.
-    let previous_types = crate::cell_deps::normalize_previous_types(source, previous_types);
+    //
+    // A Linux cell has no typed piping (the scaffold never reads the slots),
+    // so no upstream tag can change what is built. Hashing them anyway let a
+    // share snapshot, which hashes the sharer's tag chain, compute a key no
+    // compile ever produced (the viewer compiles Linux cells with no tags),
+    // whenever the program merely mentioned `last` or `cellN`.
+    let previous_types = if target.is_linux() {
+        Vec::new()
+    } else {
+        crate::cell_deps::normalize_previous_types(source, previous_types)
+    };
     let mut hasher = blake3::Hasher::new();
     update_framed(&mut hasher, source.as_bytes());
     update_framed(&mut hasher, cargo_toml.as_bytes());
@@ -834,6 +844,26 @@ mod tests {
             let target = CellTarget::from(other);
             assert_eq!(target, CellTarget::Executor, "{other:?}");
         }
+    }
+
+    #[test]
+    fn a_linux_key_ignores_upstream_type_tags() {
+        // `last` is an ordinary identifier in a whole program, but the slot
+        // scan cannot know that and reads it as depends-on-all.
+        let key = |types: &[String], target| {
+            content_hash_with_fingerprint("let last = 1;", "", types, None, None, target, "tc")
+        };
+        let tagged = ["i32".to_string()];
+        assert_eq!(
+            key(&tagged, CellTarget::Linux),
+            key(&[], CellTarget::Linux),
+            "a Linux cell has no typed piping, so no tag can fork its key"
+        );
+        // Control: for an ordinary cell `last` IS the alias, so the tag counts.
+        assert_ne!(
+            key(&tagged, CellTarget::Executor),
+            key(&[], CellTarget::Executor)
+        );
     }
 
     #[test]

@@ -2321,6 +2321,61 @@ mod tests {
         );
     }
 
+    /// A Linux cell's snapshot key must not depend on the sharer's tag chain
+    /// (review server-fns-4).
+    ///
+    /// The only compile that warms a Linux blob is the viewer's, which sends
+    /// no `previous_cell_types`. The snapshot hashes the sharer's positional
+    /// tags, and a program that merely names a local `last` reads as
+    /// depends-on-all to the slot scan, so below a run Code cell it used to
+    /// hash a tag no compile ever did: a miss, no manifest entry, and a real
+    /// cargo build for every reader who clicks Run.
+    #[tokio::test]
+    async fn a_linux_cell_snapshots_under_its_tagless_key() {
+        use crate::compiler::cache::content_hash;
+        use ironpad_common::IronpadNotebook;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_dir = tmp.path().join("data");
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(cache_dir.join("blobs")).expect("cache blobs dir");
+
+        let mut linux = code_cell(
+            "linux-1",
+            "fn main() { let last = 1; println!(\"{last}\"); }",
+        );
+        linux.cell_type = CellType::Linux;
+        linux.cargo_toml = None;
+        let mut notebook = IronpadNotebook::new("mixed notebook");
+        notebook.cells = vec![code_cell("code-1", "40 + 2"), linux.clone()];
+        // The sharer ran the Code cell, so its slot carries a tag.
+        let tags = vec!["i32".to_string(), String::new()];
+
+        // Seed exactly the key the viewer's compile stores under: no tags.
+        let viewer_key = content_hash(
+            &linux.source,
+            "",
+            &[],
+            notebook.shared_cargo_toml.as_deref(),
+            notebook.effective_shared_source().as_deref(),
+            CellTarget::Linux,
+        );
+        std::fs::write(
+            cache_dir.join("blobs").join(format!("{viewer_key}.wasm")),
+            b"\0asm-l",
+        )
+        .expect("seed linux blob");
+
+        let entries = write_cell_blobs_capped(&data_dir, &cache_dir, &notebook, &tags, u64::MAX)
+            .await
+            .expect("snapshot should not error");
+        assert_eq!(
+            entries.get("linux-1").map(|e| e.blob.as_str()),
+            Some(viewer_key.as_str()),
+            "the snapshot must find the blob the viewer compiled: {entries:?}"
+        );
+    }
+
     /// Every `admin_*` server fn must call the gate, and this scans the source
     /// rather than trusting a list someone remembers to update.
     ///
