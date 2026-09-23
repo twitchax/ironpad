@@ -1841,32 +1841,20 @@ impl LiveView for Counter {
                 // which meant the moment a public notebook shipped one it got
                 // no compile coverage at all — the same silent hole that let
                 // rayon go unbuilt for the life of the feature.
-                let target = if cell.cell_type.is_linux() {
-                    CellTarget::Linux
-                } else {
-                    CellTarget::Executor
-                };
+                let target = CellTarget::from(cell.cell_type);
 
-                // Skip cells that reference prior cell outputs (cell0, cell1,
-                // etc.) or the scaffold-injected `last` binding — they can't
+                // Skip cells that consume prior cell outputs — they can't
                 // compile in isolation since we don't know the concrete
-                // output types of predecessor cells.
+                // output types of predecessor cells. Same recipe the
+                // scaffold binds from.
                 //
                 // Linux cells are exempt: there is no typed piping into one
                 // (the pod's filesystem is the piping model), so `last` in a
                 // Linux cell is an ordinary identifier and skipping on it
                 // would drop a checkable program on a false match.
-                let uses_cell_ref = !target.is_linux()
-                    && (0..10).any(|i| {
-                        let pat = format!("cell{i}");
-                        cell.source.contains(&pat)
-                    });
-                // Bare `last` (not `.last()`) indicates the scaffold binding.
-                let uses_last_binding = !target.is_linux()
-                    && cell.source.split_whitespace().any(|tok| {
-                        tok == "last" || tok.starts_with("last,") || tok.starts_with("last)")
-                    });
-                if uses_cell_ref || uses_last_binding {
+                let piped = !target.is_linux()
+                    && !ironpad_common::cell_deps::referenced_slots(&cell.source).is_empty();
+                if piped {
                     previous_cell_types.push(String::new());
                     continue;
                 }
