@@ -1233,6 +1233,48 @@ mod tests {
         );
     }
 
+    /// The wasm-bindgen CLI must match the locked `wasm-bindgen` crate
+    /// exactly: cargo-leptos post-processes the frontend with it, and the
+    /// image's copy is what cell builds run. It is installed in three build
+    /// environments by three hand-written pins, and a mismatch in the image
+    /// only surfaces deep into a docker build, so Cargo.lock is made the
+    /// authority by assertion. Every pin in each file is checked, not just the
+    /// first, so a second stale copy fails too.
+    #[test]
+    fn wasm_bindgen_cli_pins_match_the_lockfile() {
+        let lock = read_workspace_file("Cargo.lock");
+        let locked = lock
+            .split_once("\nname = \"wasm-bindgen\"\n")
+            .and_then(|(_, rest)| rest.lines().next())
+            .and_then(|line| line.strip_prefix("version = \""))
+            .and_then(|v| v.strip_suffix('"'))
+            .expect("Cargo.lock locks the wasm-bindgen crate");
+
+        for (file, required) in [
+            ("docker/Dockerfile", "wasm-bindgen-cli@"),
+            (".github/workflows/build.yml", "wasm-bindgen-cli@"),
+            ("Makefile.toml", "wasm-bindgen-cli --version "),
+        ] {
+            let text = read_workspace_file(file);
+            assert!(
+                text.contains(&format!("{required}{locked}")),
+                "{file} does not install wasm-bindgen-cli {locked} (the Cargo.lock version)"
+            );
+            for prefix in ["wasm-bindgen-cli@", "wasm-bindgen-cli --version "] {
+                for (idx, _) in text.match_indices(prefix) {
+                    let rest = &text[idx + prefix.len()..];
+                    let pinned = &rest[..rest
+                        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+                        .unwrap_or(rest.len())];
+                    assert_eq!(
+                        pinned, locked,
+                        "{file} pins wasm-bindgen-cli {pinned}, but Cargo.lock has {locked}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The executor's env host-import table must list exactly the imports
     /// ironpad-cell's `#[link(wasm_import_module = "env")]` extern blocks
     /// declare. A name missing from the JS side fails cell instantiation at
