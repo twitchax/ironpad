@@ -775,6 +775,96 @@ mod tests {
         assert_eq!(CellTarget::Executor.triple(), "wasm32-unknown-unknown");
     }
 
+    /// Golden keys: the literal hex the recipe produces for fixed inputs.
+    ///
+    /// Every other hash test compares two keys against each other, so a
+    /// refactor that changed EVERY key the same way (a reordered field, a
+    /// dropped framing byte, flags derived differently) would pass all of
+    /// them and silently cold-start every cached blob, local store and share
+    /// snapshot in production. This one pins the bytes. If it fails, the
+    /// recipe changed: either undo that, or make it deliberate and bump
+    /// [`CACHE_EPOCH`] (then update these literals).
+    ///
+    /// The feature flags passed here are the ones detection yields for each
+    /// source, so the pinned keys are the keys production computes.
+    #[test]
+    fn hash_recipe_is_byte_stable() {
+        // A plain, independent cell.
+        let plain = content_hash_with_fingerprint(
+            "40 + 2",
+            "",
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            CellTarget::Executor,
+            "tc",
+        );
+        assert_eq!(
+            plain,
+            "cdcdecfc968af780798cf99f69562e87a367f89a1b52599d7e40328771ef4de8"
+        );
+
+        // Every field populated: a rayon dependency (atomics) and a
+        // `std::simd` cell, one referenced upstream slot, shared manifest and
+        // shared source.
+        let rayon_simd = content_hash_with_fingerprint(
+            "use std::simd::f32x4;\nlet v = f32x4::splat(cell1 as f32);",
+            "[dependencies]\nrayon = \"1.10\"\n",
+            &["u32".to_string(), "i64".to_string()],
+            Some("[dependencies]\nserde = \"1\"\n"),
+            Some("pub fn helper() {}"),
+            true,
+            false,
+            true,
+            CellTarget::Executor,
+            "tc",
+        );
+        assert_eq!(
+            rayon_simd,
+            "2a5e6f6ea9ae989b1a75fcb5bdd709a102259276b9ceccf13bf034c27c3f6882"
+        );
+
+        // Autodiff on its own, so each flag byte is pinned in its position.
+        let autodiff = content_hash_with_fingerprint(
+            "let (_r, g) = shared::d_f(1.0, 1.0);",
+            "",
+            &[],
+            None,
+            Some("use std::autodiff::autodiff_reverse;"),
+            false,
+            true,
+            false,
+            CellTarget::Executor,
+            "tc",
+        );
+        assert_eq!(
+            autodiff,
+            "51b9f2488b6edbff36b9ff38cdbecdd50848e1fcd8fe27d4e05e128aaa781b6d"
+        );
+
+        // A Linux cell that mentions `std::simd`: its key hashes the RAW
+        // detection (the build masks the flag, the key does not).
+        let linux = content_hash_with_fingerprint(
+            "fn main() { let _ = \"std::simd\"; }",
+            "",
+            &[],
+            None,
+            None,
+            false,
+            false,
+            true,
+            CellTarget::Linux,
+            "tc",
+        );
+        assert_eq!(
+            linux,
+            "2f33973a365628e8d4d9a04c23460a5401b0d12f1a8b934784858f4341db9639"
+        );
+    }
+
     #[test]
     fn hash_is_64_hex_chars() {
         let h = content_hash_with_fingerprint(
