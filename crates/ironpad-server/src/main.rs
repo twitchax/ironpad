@@ -124,7 +124,7 @@ async fn main() {
     // context. Kept OUT of AppState so WS handler tests don't each pay that
     // open — the DB travels as leptos context + the auth router's own state.
     std::fs::create_dir_all(&config.data_dir).expect("create data dir");
-    let db = ironpad_app::db::Db::open(&config.data_dir.join("ironpad.db"))
+    let db = ironpad_app::db::Db::open(&config.data_dir.join(ironpad_app::db::DB_FILE))
         .await
         .expect("accounts database");
     tracing::info!("accounts database open");

@@ -16,27 +16,32 @@ use std::path::Path;
 
 pub use ironpad_common::CacheTier;
 
-/// Total bytes under a tier, or 0 when it does not exist.
+/// Total bytes of the regular files under a directory tree, or 0 when it
+/// cannot be read (a missing path included).
 ///
 /// Walks the tree rather than calling out to `du`: the caller is a request
 /// handler, and shelling out from one is both slower and a dependency on the
-/// image having the binary.
+/// image having the binary. It is synchronous and a tier can hold tens of
+/// thousands of entries, so an async caller runs it under `spawn_blocking`.
+#[must_use]
+pub fn dir_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_bytes(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Total bytes under a tier, or 0 when it does not exist.
 #[must_use]
 pub fn tier_bytes(cache_dir: &Path, tier: CacheTier) -> u64 {
-    fn walk(dir: &Path) -> u64 {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return 0;
-        };
-        entries
-            .filter_map(Result::ok)
-            .map(|e| match e.file_type() {
-                Ok(t) if t.is_dir() => walk(&e.path()),
-                Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
-                _ => 0,
-            })
-            .sum()
-    }
-    walk(&tier.path(cache_dir))
+    dir_bytes(&tier.path(cache_dir))
 }
 
 /// Remove a tier, returning the bytes it held.
@@ -68,6 +73,27 @@ mod tests {
         let dir = tier.path(root).join("nested");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("f.bin"), vec![0u8; bytes]).unwrap();
+    }
+
+    #[test]
+    fn dir_bytes_sums_files_at_every_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("top.bin"), vec![0u8; 100]).unwrap();
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::write(root.join("a/mid.bin"), vec![0u8; 20]).unwrap();
+        std::fs::write(root.join("a/b/c/deep.bin"), vec![0u8; 3]).unwrap();
+        // An empty subdirectory contributes nothing and breaks nothing.
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+
+        assert_eq!(dir_bytes(root), 123);
+        assert_eq!(dir_bytes(&root.join("a")), 23, "a subtree sums alone");
+    }
+
+    #[test]
+    fn dir_bytes_of_a_missing_path_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(dir_bytes(&dir.path().join("never-created")), 0);
     }
 
     #[test]

@@ -18,6 +18,11 @@ use surrealdb::Surreal;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
+/// The database's file name under the data dir. The server opens it and the
+/// admin panel sizes it; each spelling its own literal would let a rename
+/// silently report 0 bytes.
+pub const DB_FILE: &str = "ironpad.db";
+
 /// Sliding session lifetime.
 pub(crate) const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 

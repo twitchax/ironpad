@@ -2077,22 +2077,32 @@ pub async fn admin_overview() -> Result<Option<ironpad_common::AdminOverview>, S
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
-    let cache_tiers = crate::cache_tiers::CacheTier::ALL
-        .iter()
-        .map(|&tier| CacheTierUsage {
-            tier,
-            name: tier.dir_name().to_string(),
-            bytes: crate::cache_tiers::tier_bytes(&config.cache_dir, tier),
-            valve_may_clear: tier.valve_may_clear(),
-        })
-        .collect();
+    // Off the async worker: `targets` alone is gigabytes across tens of
+    // thousands of entries, and a synchronous walk here would stall every
+    // compile and autosave scheduled on the same worker for seconds.
+    let cache_dir = config.cache_dir.clone();
+    let db_path = config.data_dir.join(crate::db::DB_FILE);
+    let (cache_tiers, database_bytes) = tokio::task::spawn_blocking(move || {
+        let tiers = crate::cache_tiers::CacheTier::ALL
+            .iter()
+            .map(|&tier| CacheTierUsage {
+                tier,
+                name: tier.dir_name().to_string(),
+                bytes: crate::cache_tiers::tier_bytes(&cache_dir, tier),
+                valve_may_clear: tier.valve_may_clear(),
+            })
+            .collect();
+        (tiers, crate::cache_tiers::dir_bytes(&db_path))
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("cache size scan failed: {e}")))?;
 
     Ok(Some(AdminOverview {
         users,
         sessions,
         mutable_shares,
         cache_tiers,
-        database_bytes: dir_bytes(&config.data_dir.join("ironpad.db")),
+        database_bytes,
     }))
 }
 
@@ -2183,7 +2193,13 @@ pub async fn admin_wipe_cache_tier(
         return Ok(admin_denied());
     };
 
-    let freed = crate::cache_tiers::clear_tier(&config.cache_dir, tier);
+    // Off the async worker, like the overview's walk: this walks the tier
+    // and then removes it, and a tier can be gigabytes.
+    let cache_dir = config.cache_dir.clone();
+    let freed =
+        tokio::task::spawn_blocking(move || crate::cache_tiers::clear_tier(&cache_dir, tier))
+            .await
+            .map_err(|e| ServerFnError::new(format!("cache tier clear failed: {e}")))?;
     tracing::warn!(
         actor = %admin.login,
         tier = tier.dir_name(),
@@ -2202,22 +2218,6 @@ pub async fn admin_wipe_cache_tier(
 #[cfg(feature = "ssr")]
 fn admin_denied<T>() -> Option<T> {
     None
-}
-
-/// Total bytes under a directory tree, or 0 when it cannot be read.
-#[cfg(feature = "ssr")]
-fn dir_bytes(dir: &std::path::Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .map(|e| match e.file_type() {
-            Ok(t) if t.is_dir() => dir_bytes(&e.path()),
-            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
-            _ => 0,
-        })
-        .sum()
 }
 
 // ── Accounts (PRD-0053) ─────────────────────────────────────────────────────
