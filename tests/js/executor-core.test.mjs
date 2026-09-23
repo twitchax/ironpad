@@ -3,230 +3,30 @@
  *
  *   cargo make test-js
  *
- * These load the real executor scripts from `public/` and drive the methods a
- * cell's WASM imports and the bridge call, against FAKE loaded entries: a
- * `{ type: "raw", instance: { exports } }` or `{ type: "bindgen", module,
- * wasm }` record in `executor.modules`, whose memory is a real
- * `WebAssembly.Memory` and whose `ironpad_alloc`/`cell_tick` are plain JS. No
- * cell is compiled and no browser runs, which is the point: the ABI details
- * under test (length prefixes, result-struct layouts, which pointer is freed
- * with which size) are invisible to a Playwright spec until they corrupt a
- * frame.
- *
- * The scripts run with `TextDecoder` bound to `BrowserTextDecoder`, which
- * refuses views over a SharedArrayBuffer the way browsers do. Node's own
- * decoder accepts them, so without it a live-view decode of a rayon cell's
- * shared memory (a trap inside a WASM import, in a browser) would pass here.
- * Both codecs also count their constructions, which the executor makes once
- * per script load rather than once per per-frame call.
+ * These drive the methods a cell's WASM imports and the bridge call, against
+ * fake loaded entries (see executor-harness.mjs). The ABI details under test
+ * (length prefixes, result-struct layouts, which pointer is freed with which
+ * size) are invisible to a Playwright spec until they corrupt a frame.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC = path.join(HERE, "..", "..", "public");
+import {
+  bindgenEntry,
+  loadCore,
+  loadWorker,
+  makeMemory,
+  rawEntry,
+  writeLiveTickResult,
+  writeTickResult,
+} from "./executor-harness.mjs";
 
 // Mirrors of the executor's result-struct sizes (executor-core.js). Duplicated
 // deliberately: the assertions are about the ABI, so reading the sizes out of
 // the module under test would make a wrong size agree with itself.
 const TICK_RESULT_SIZE = 16;
 const LIVE_TICK_RESULT_SIZE = 12;
-
-// ── Harness ─────────────────────────────────────────────────────────────────
-
-function isShared(buffer) {
-  // Realm-agnostic: the memory may come from any realm's WebAssembly.
-  return Object.prototype.toString.call(buffer) === "[object SharedArrayBuffer]";
-}
-
-/** A `TextDecoder` with the browser's shared-memory rule and counters. */
-function makeBrowserTextDecoder(stats) {
-  return class BrowserTextDecoder {
-    constructor() {
-      stats.codecs += 1;
-      this.inner = new TextDecoder();
-    }
-
-    decode(input) {
-      stats.decodes += 1;
-      const buffer = input && ArrayBuffer.isView(input) ? input.buffer : input;
-      if (isShared(buffer)) {
-        throw new TypeError(
-          "Failed to execute 'decode' on 'TextDecoder': The provided ArrayBufferView value must not be shared.",
-        );
-      }
-      return this.inner.decode(input);
-    }
-  };
-}
-
-/** A `TextEncoder` that counts its constructions. */
-function makeCountingTextEncoder(stats) {
-  return class CountingTextEncoder extends TextEncoder {
-    constructor() {
-      super();
-      stats.codecs += 1;
-    }
-  };
-}
-
-function source(name) {
-  return readFileSync(path.join(PUBLIC, name), "utf8");
-}
-
-/**
- * Evaluate public scripts against one fake global. Each script sees `self`,
- * `importScripts`, the two UTF-8 codecs and `console` as that global's, which
- * is all the executor chain reaches for at load time.
- */
-function makeGlobal() {
-  const stats = { decodes: 0, codecs: 0, warnings: [] };
-  const posted = [];
-  const g = {
-    location: { search: "" },
-    postMessage: (msg) => posted.push(msg),
-  };
-  g.self = g;
-  g.constructor = function WorkerGlobalScope() {};
-  const fakeConsole = {
-    log() {},
-    error() {},
-    warn: (...args) => stats.warnings.push(args.join(" ")),
-  };
-  const Decoder = makeBrowserTextDecoder(stats);
-  const Encoder = makeCountingTextEncoder(stats);
-
-  function run(name) {
-    // eslint-disable-next-line no-new-func
-    new Function("self", "importScripts", "TextDecoder", "TextEncoder", "console", source(name))(
-      g,
-      importScripts,
-      Decoder,
-      Encoder,
-      fakeConsole,
-    );
-  }
-  function importScripts(url) {
-    run(url.replace(/^\//, "").replace(/\?.*$/, ""));
-  }
-
-  return { g, run, stats, posted };
-}
-
-/** The core executor, loaded exactly as the main-thread fallback chain does. */
-function loadCore() {
-  const env = makeGlobal();
-  env.run("executor-gpu.js");
-  env.run("executor-glue.js");
-  env.run("executor-core.js");
-  const executor = new env.g.__IronpadExecutorCore.CellExecutor("self._ironpadExecutor");
-  return { ...env, executor };
-}
-
-/** The worker entry, loaded through its own importScripts chain. */
-function loadWorker() {
-  const env = makeGlobal();
-  env.run("executor-worker.js");
-  const executor = env.g._ironpadExecutor;
-  assert.ok(executor, "executor-worker.js must create the executor on self");
-  return { ...env, executor };
-}
-
-/**
- * Linear memory plus the two allocator exports a cell provides. `alloc` is a
- * bump allocator that logs its requests; `failAlloc` makes it return 0.
- */
-function makeMemory({ shared = false } = {}) {
-  const memory = shared
-    ? new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true })
-    : new WebAssembly.Memory({ initial: 1 });
-  const log = { allocs: [], deallocs: [] };
-  let next = 4096;
-  const cell = {
-    memory,
-    log,
-    failAlloc: false,
-    ironpad_alloc(n) {
-      log.allocs.push(n);
-      if (cell.failAlloc) return 0;
-      const ptr = next;
-      next += (n + 7) & ~7;
-      return ptr;
-    },
-    ironpad_dealloc(ptr, len) {
-      log.deallocs.push([ptr, len]);
-    },
-    /** Write bytes at a fixed address and return that address. */
-    put(ptr, bytes) {
-      new Uint8Array(memory.buffer, ptr, bytes.length).set(bytes);
-      return ptr;
-    },
-    putText(ptr, text) {
-      const bytes = new TextEncoder().encode(text);
-      cell.put(ptr, bytes);
-      return { ptr, len: bytes.length };
-    },
-    putU32s(ptr, words) {
-      const view = new DataView(memory.buffer);
-      words.forEach((w, i) => view.setUint32(ptr + i * 4, w, true));
-      return ptr;
-    },
-    readLengthPrefixed(ptr) {
-      const len = new DataView(memory.buffer).getUint32(ptr, true);
-      const bytes = new Uint8Array(memory.buffer, ptr + 4, len).slice();
-      return new TextDecoder().decode(bytes);
-    },
-  };
-  return cell;
-}
-
-function rawEntry(cell, extraExports = {}) {
-  return {
-    hash: "h",
-    type: "raw",
-    needsJspi: false,
-    instance: {
-      exports: {
-        memory: cell.memory,
-        ironpad_alloc: cell.ironpad_alloc,
-        ironpad_dealloc: cell.ironpad_dealloc,
-        ...extraExports,
-      },
-    },
-  };
-}
-
-function bindgenEntry(cell, moduleExports = {}, extraWasm = {}) {
-  return {
-    hash: "h",
-    type: "bindgen",
-    needsJspi: false,
-    module: moduleExports,
-    wasm: {
-      memory: cell.memory,
-      ironpad_alloc: cell.ironpad_alloc,
-      ironpad_dealloc: cell.ironpad_dealloc,
-      ...extraWasm,
-    },
-  };
-}
-
-/** A TickResult at 256 pointing at three RGB bytes at 512. */
-function writeTickResult(cell) {
-  cell.put(512, [10, 20, 30]);
-  return cell.putU32s(256, [512, 3, 1, 1]);
-}
-
-/** A LiveTickResult at 256 (kind 1 = Html) pointing at UTF-8 content at 512. */
-function writeLiveTickResult(cell, content) {
-  const { len } = cell.putText(512, content);
-  cell.putU32s(256, [1, 512, len]);
-  return { ptr: 256, len };
-}
 
 // ── Host messages (review js-1) ─────────────────────────────────────────────
 

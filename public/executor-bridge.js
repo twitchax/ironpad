@@ -207,6 +207,44 @@
     return this._mainExecutorPromise;
   };
 
+  /// Retry a failed worker call on the main-thread fallback executor: the ONE
+  /// fallback policy behind loadBlob, execute, tick and tickLive.
+  ///
+  /// Loads the cell's cached blob there if it isn't already, then calls
+  /// `method` with `args` and tags the result `fallback: true` so the UI can
+  /// show where it ran. A null `method` stops after the load (the loadBlob
+  /// case). Rethrows `workerError` when there is nothing to fall back with.
+  BridgeExecutor.prototype._mainThreadFallback = async function (
+    cellId, what, workerError, method, args
+  ) {
+    // A deliberate cancellation (terminate() rejects pending requests with an
+    // AbortError) must NOT fall back to the main thread — re-running a runaway
+    // cell there would freeze the tab. Rethrow so the caller sees the cancel.
+    if (workerError && workerError.name === "AbortError") {
+      throw workerError;
+    }
+    console.warn(
+      "ironpad: worker " + what + " failed for " + cellId +
+      ", retrying on main thread. Worker error: " + workerError.message
+    );
+
+    var exec = await this._ensureMainExecutor();
+    var blob = this._blobCache.get(cellId);
+    if (!blob) throw workerError; // No cached blob — can't fall back.
+
+    if (!exec.isLoaded(cellId, blob.hash)) {
+      await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
+    }
+    if (method === null) return undefined;
+
+    // The main-thread executor may not support this call at all.
+    if (typeof exec[method] !== "function") throw workerError;
+
+    var result = await exec[method].apply(exec, args);
+    result.fallback = true;
+    return result;
+  };
+
   // ── Request/response helpers ──────────────────────────────────────────────
 
   BridgeExecutor.prototype._postRequest = function (message) {
@@ -258,11 +296,7 @@
       jsGlue: jsGlue || null,
     }).then(function () {
       self._loadedCache.set(cellId, hash);
-    }).catch(async function (workerError) {
-      // A deliberate cancellation must surface as-is (see execute()).
-      if (workerError && workerError.name === "AbortError") {
-        throw workerError;
-      }
+    }).catch(function (workerError) {
       // The worker is unavailable (e.g. the respawn cap tripped after
       // repeated crashes). Without a fallback here every run would fail with
       // "Worker unavailable" BEFORE execute()'s own main-thread fallback
@@ -270,16 +304,7 @@
       // main-thread executor so the cell still runs; execute() then runs it
       // there too. Do NOT touch _loadedCache — that tracks the WORKER's
       // loaded state, and this blob is loaded on the main executor.
-      console.warn(
-        "ironpad: worker loadBlob failed for " + cellId +
-        ", loading on main thread. Worker error: " + workerError.message
-      );
-      var exec = await self._ensureMainExecutor();
-      var blob = self._blobCache.get(cellId);
-      if (!blob) throw workerError;
-      if (!exec.isLoaded(cellId, blob.hash)) {
-        await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
-      }
+      return self._mainThreadFallback(cellId, "loadBlob", workerError, null, null);
     });
   };
 
@@ -295,31 +320,10 @@
       type: "execute",
       cellId: cellId,
       inputBytes: inputBytes,
-    }).catch(async function (workerError) {
-      // A deliberate cancellation (terminate() rejects pending requests with an
-      // AbortError) must NOT fall back to the main thread — re-running a runaway
-      // cell there would freeze the tab. Rethrow so the caller sees the cancel.
-      if (workerError && workerError.name === "AbortError") {
-        throw workerError;
-      }
-      // Worker execution failed — fall back to main-thread execution.
-      console.warn(
-        "ironpad: worker execution failed for " + cellId +
-        ", retrying on main thread. Worker error: " + workerError.message
+    }).catch(function (workerError) {
+      return self._mainThreadFallback(
+        cellId, "execution", workerError, "execute", [cellId, inputBytes]
       );
-
-      var exec = await self._ensureMainExecutor();
-      var blob = self._blobCache.get(cellId);
-
-      if (!blob) throw workerError; // No cached blob — can't fall back.
-
-      if (!exec.isLoaded(cellId, blob.hash)) {
-        await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
-      }
-
-      var result = await exec.execute(cellId, inputBytes);
-      result.fallback = true;
-      return result;
     });
   };
 
@@ -334,31 +338,8 @@
     return this._postRequest({
       type: "tick",
       cellId: cellId,
-    }).catch(async function (workerError) {
-      // Deliberate cancellation (AbortError) must not fall back — see execute().
-      if (workerError && workerError.name === "AbortError") {
-        throw workerError;
-      }
-      // Worker tick failed — fall back to main-thread execution.
-      console.warn(
-        "ironpad: worker tick failed for " + cellId +
-        ", retrying on main thread. Worker error: " + workerError.message
-      );
-
-      var exec = await self._ensureMainExecutor();
-      var blob = self._blobCache.get(cellId);
-
-      if (!blob) throw workerError; // No cached blob — can't fall back.
-
-      if (!exec.isLoaded(cellId, blob.hash)) {
-        await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
-      }
-
-      if (!exec.tick) throw workerError; // Main-thread executor doesn't support tick.
-
-      var result = await exec.tick(cellId);
-      result.fallback = true;
-      return result;
+    }).catch(function (workerError) {
+      return self._mainThreadFallback(cellId, "tick", workerError, "tick", [cellId]);
     });
   };
 
@@ -372,30 +353,10 @@
     return this._postRequest({
       type: "tick_live",
       cellId: cellId,
-    }).catch(async function (workerError) {
-      // Deliberate cancellation (AbortError) must not fall back — see execute().
-      if (workerError && workerError.name === "AbortError") {
-        throw workerError;
-      }
-      console.warn(
-        "ironpad: worker tickLive failed for " + cellId +
-        ", retrying on main thread. Worker error: " + workerError.message
+    }).catch(function (workerError) {
+      return self._mainThreadFallback(
+        cellId, "tickLive", workerError, "tickLive", [cellId]
       );
-
-      var exec = await self._ensureMainExecutor();
-      var blob = self._blobCache.get(cellId);
-
-      if (!blob) throw workerError;
-
-      if (!exec.isLoaded(cellId, blob.hash)) {
-        await exec.loadBlob(cellId, blob.hash, blob.wasmBytes, blob.jsGlue);
-      }
-
-      if (!exec.tickLive) throw workerError;
-
-      var result = await exec.tickLive(cellId);
-      result.fallback = true;
-      return result;
     });
   };
 
