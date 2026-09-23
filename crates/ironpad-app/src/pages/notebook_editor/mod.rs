@@ -945,13 +945,9 @@ fn NotebookContent() -> impl IntoView {
                                                     #[cfg(feature = "hydrate")]
                                                     {
                                                         let id = state.notebook_id.get_untracked();
-                                                        let confirmed = web_sys::window()
-                                                            .unwrap()
-                                                            .confirm_with_message(
-                                                                "Delete this notebook? This cannot be undone.",
-                                                            )
-                                                            .unwrap_or(false);
-                                                        if confirmed {
+                                                        if crate::components::dialog::confirm(
+                                                            crate::components::dialog::DELETE_NOTEBOOK_CONFIRM,
+                                                        ) {
                                                             let navigate = navigate.get_value();
                                                             leptos::task::spawn_local(async move {
                                                                 crate::storage::client::delete_notebook(&id)

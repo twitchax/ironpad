@@ -154,14 +154,10 @@ fn format_age(saved_at_ms: f64) -> String {
 fn restore_snapshot(state: &NotebookState, toaster: Toaster, saved_at: f64) {
     #[cfg(feature = "hydrate")]
     {
-        let confirmed = web_sys::window().is_some_and(|w| {
-            w.confirm_with_message(
-                "Restore this snapshot? Your current version is saved to \
-                 history first, so this can be undone.",
-            )
-            .unwrap_or(false)
-        });
-        if !confirmed {
+        if !crate::components::dialog::confirm(
+            "Restore this snapshot? Your current version is saved to \
+             history first, so this can be undone.",
+        ) {
             return;
         }
         let state = *state;

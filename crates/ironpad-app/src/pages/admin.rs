@@ -93,14 +93,10 @@ pub fn AdminPage() -> impl IntoView {
                 "Every compiled cell is discarded. Readers will wait for a \
                  cold compile on notebooks that are currently instant."
             };
-            let confirmed = web_sys::window().is_some_and(|w: web_sys::Window| {
-                w.confirm_with_message(&format!(
-                    "Clear the {name} cache ({size})?\n\n{consequence}\n\n\
-                     This cannot be undone."
-                ))
-                .unwrap_or(false)
-            });
-            if !confirmed {
+            if !crate::components::dialog::confirm(&format!(
+                "Clear the {name} cache ({size})?\n\n{consequence}\n\n\
+                 This cannot be undone."
+            )) {
                 return;
             }
         }
@@ -114,19 +110,15 @@ pub fn AdminPage() -> impl IntoView {
     };
 
     let revoke = move |github_id: String, login: String, sessions: u64| {
-        // `web_sys` is a hydrate-only dependency here, and a click handler can
-        // only run on the client anyway; SSR compiles this branch away.
+        // The confirm is hydrate-only (it needs a window), and a click handler
+        // can only run on the client anyway; SSR compiles this branch away.
         #[cfg(feature = "hydrate")]
         {
-            let confirmed = web_sys::window().is_some_and(|w: web_sys::Window| {
-                w.confirm_with_message(&format!(
-                    "Sign {login} out of {sessions} session(s)?\n\n\
-                     Their notebooks and shares are untouched, and they can \
-                     sign back in."
-                ))
-                .unwrap_or(false)
-            });
-            if !confirmed {
+            if !crate::components::dialog::confirm(&format!(
+                "Sign {login} out of {sessions} session(s)?\n\n\
+                 Their notebooks and shares are untouched, and they can \
+                 sign back in."
+            )) {
                 return;
             }
         }

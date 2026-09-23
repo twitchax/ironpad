@@ -167,11 +167,7 @@ pub(super) fn save_to_account_current_notebook(state: &NotebookState, toaster: T
     let Some(uuid) = state.notebook_id.try_get_untracked() else {
         return;
     };
-    let confirmed = web_sys::window().is_some_and(|w| {
-        w.confirm_with_message(SAVE_TO_ACCOUNT_CONFIRM)
-            .unwrap_or(false)
-    });
-    if !confirmed {
+    if !crate::components::dialog::confirm(SAVE_TO_ACCOUNT_CONFIRM) {
         return;
     }
     // Immediate ack: the menu closes on click, and the upload plus the
@@ -387,14 +383,10 @@ pub(super) fn discard_draft_current_notebook(
         );
         return;
     }
-    let confirmed = web_sys::window().is_some_and(|w| {
-        w.confirm_with_message(
-            "Discard your draft and return to the published copy? \
-             Unpushed changes will be lost.",
-        )
-        .unwrap_or(false)
-    });
-    if !confirmed {
+    if !crate::components::dialog::confirm(
+        "Discard your draft and return to the published copy? \
+         Unpushed changes will be lost.",
+    ) {
         return;
     }
     leptos::task::spawn_local(async move {
@@ -442,14 +434,10 @@ pub(super) fn unpublish_current_notebook(
     toaster: Toaster,
     share_id: String,
 ) {
-    let confirmed = web_sys::window().is_some_and(|w| {
-        w.confirm_with_message(
-            "Unpublish this notebook? Its link stops working for readers. It \
-             stays in your account, and you can publish it again.",
-        )
-        .unwrap_or(false)
-    });
-    if !confirmed {
+    if !crate::components::dialog::confirm(
+        "Unpublish this notebook? Its link stops working for readers. It \
+         stays in your account, and you can publish it again.",
+    ) {
         return;
     }
     toaster.toast(
@@ -486,15 +474,11 @@ pub(super) fn unpublish_current_notebook(
 /// place.
 #[cfg(feature = "hydrate")]
 pub(super) fn delete_mutable_current_notebook(toaster: Toaster, share_id: String) {
-    let confirmed = web_sys::window().is_some_and(|w| {
-        w.confirm_with_message(
-            "Delete this notebook from your account? Its link stops working \
-             and this cannot be undone. Download .ironpad first if you want \
-             to keep a copy.",
-        )
-        .unwrap_or(false)
-    });
-    if !confirmed {
+    if !crate::components::dialog::confirm(
+        "Delete this notebook from your account? Its link stops working \
+         and this cannot be undone. Download .ironpad first if you want \
+         to keep a copy.",
+    ) {
         return;
     }
     toaster.toast(

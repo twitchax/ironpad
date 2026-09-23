@@ -334,11 +334,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         menu_open.set(false);
         #[cfg(feature = "hydrate")]
         {
-            let confirmed = web_sys::window()
-                .unwrap()
-                .confirm_with_message("Delete this cell? This cannot be undone.")
-                .unwrap_or(false);
-            if confirmed {
+            if crate::components::dialog::confirm("Delete this cell? This cannot be undone.") {
                 delete_cell_fn();
             }
         }

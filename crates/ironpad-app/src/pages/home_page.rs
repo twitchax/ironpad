@@ -494,11 +494,9 @@ fn NotebookCard(
                 #[cfg(feature = "hydrate")]
                 {
                     let id = delete_id.clone();
-                    let confirmed = web_sys::window()
-                        .unwrap()
-                        .confirm_with_message("Delete this notebook? This cannot be undone.")
-                        .unwrap_or(false);
-                    if confirmed {
+                    if crate::components::dialog::confirm(
+                        crate::components::dialog::DELETE_NOTEBOOK_CONFIRM,
+                    ) {
                         leptos::task::spawn_local(async move {
                             crate::storage::client::delete_notebook(&id).await;
                             let nbs = crate::storage::client::list_notebooks().await;
