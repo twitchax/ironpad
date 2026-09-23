@@ -87,9 +87,12 @@ async fn github_redirect(
         "https://github.com/login/oauth/authorize",
         &[
             ("client_id", github.client_id.as_str()),
+            // `absolute_url`, not concatenation: a `--public-url` typed with
+            // a trailing slash would otherwise send `//auth/callback`, which
+            // GitHub rejects as outside the registered callback.
             (
                 "redirect_uri",
-                &format!("{}/auth/callback", state.public_url),
+                &ironpad_common::absolute_url(&state.public_url, "/auth/callback"),
             ),
             ("state", &state_param),
         ],
@@ -482,6 +485,28 @@ mod tests {
             .unwrap();
         assert!(cookie.starts_with("ironpad_oauth_state="));
         assert!(cookie.contains("Path=/auth"));
+    }
+
+    #[tokio::test]
+    async fn github_redirect_uri_tolerates_a_trailing_slash_on_public_url() {
+        let (_dir, mut state) = test_state(false, true).await;
+        state.public_url = "http://localhost:3111/".to_string();
+        let res = get_response(router(state), "/github").await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        let location = res
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let url = reqwest::Url::parse(location).unwrap();
+        let redirect_uri = url
+            .query_pairs()
+            .find_map(|(k, v)| (k == "redirect_uri").then(|| v.into_owned()));
+        assert_eq!(
+            redirect_uri.as_deref(),
+            Some("http://localhost:3111/auth/callback")
+        );
     }
 
     #[tokio::test]

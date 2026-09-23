@@ -41,9 +41,9 @@ pub struct CliArgs {
     /// Origin this instance is reachable at from the public internet, e.g.
     /// `https://ironpad.twitchax.com`. Defaults to `http://localhost:{port}`.
     ///
-    /// Only social-preview metadata and the sitemap consume it, both of which
-    /// must emit absolute URLs because crawlers resolve them with no document
-    /// base to fall back on.
+    /// Consumed where a URL must be absolute: social-preview metadata, the
+    /// sitemap and oEmbed (crawlers and consumers resolve them with no
+    /// document base to fall back on), and the OAuth `redirect_uri`.
     #[arg(long, env = "IRONPAD_PUBLIC_URL")]
     pub public_url: Option<String>,
 
