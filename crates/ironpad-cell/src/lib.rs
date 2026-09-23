@@ -1082,9 +1082,8 @@ fn format_vec_truncated<T: std::fmt::Debug>(v: &[T], type_tag: Option<&str>) -> 
     format!("{tag}, len = {}, [{}, ...]", v.len(), items.join(", "))
 }
 
-/// Escape HTML special characters to prevent XSS.
-fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+/// Append `s` to `out` with HTML special characters escaped (XSS guard).
+fn html_escape_into(out: &mut String, s: &str) {
     for ch in s.chars() {
         match ch {
             '&' => out.push_str("&amp;"),
@@ -1095,77 +1094,95 @@ fn html_escape(s: &str) -> String {
             _ => out.push(ch),
         }
     }
-    out
 }
 
 /// Render a `serde_json::Value` as syntax-highlighted HTML inside a `<pre>` block.
+///
+/// Every token is written straight into one buffer: a few-hundred-KB response
+/// is tens of thousands of tokens, and a throwaway `String` per token was most
+/// of the work.
 fn render_json_html(value: &serde_json::Value) -> String {
+    use std::fmt::Write as _;
+
     const COLOR_KEY: &str = "#e94560";
     const COLOR_STRING: &str = "#40c080";
     const COLOR_NUMBER: &str = "#40a0f0";
     const COLOR_KEYWORD: &str = "#b080f0";
     const COLOR_PUNCT: &str = "#eaeaea";
 
-    fn span(color: &str, text: &str) -> String {
-        format!("<span style=\"color:{color}\">{text}</span>")
+    fn open_span(buf: &mut String, color: &str) {
+        buf.push_str("<span style=\"color:");
+        buf.push_str(color);
+        buf.push_str("\">");
+    }
+
+    fn span(buf: &mut String, color: &str, text: &str) {
+        open_span(buf, color);
+        buf.push_str(text);
+        buf.push_str("</span>");
+    }
+
+    /// A quoted, escaped string token (a value or a key).
+    fn quoted_span(buf: &mut String, color: &str, text: &str) {
+        open_span(buf, color);
+        buf.push_str("&quot;");
+        html_escape_into(buf, text);
+        buf.push_str("&quot;</span>");
+    }
+
+    fn pad(buf: &mut String, indent: usize) {
+        buf.extend(std::iter::repeat_n(' ', indent));
     }
 
     fn write_value(buf: &mut String, value: &serde_json::Value, indent: usize) {
         match value {
-            serde_json::Value::Null => buf.push_str(&span(COLOR_KEYWORD, "null")),
+            serde_json::Value::Null => span(buf, COLOR_KEYWORD, "null"),
             serde_json::Value::Bool(b) => {
-                buf.push_str(&span(COLOR_KEYWORD, if *b { "true" } else { "false" }));
+                span(buf, COLOR_KEYWORD, if *b { "true" } else { "false" });
             }
             serde_json::Value::Number(n) => {
-                buf.push_str(&span(COLOR_NUMBER, &n.to_string()));
+                open_span(buf, COLOR_NUMBER);
+                let _ = write!(buf, "{n}");
+                buf.push_str("</span>");
             }
-            serde_json::Value::String(s) => {
-                let escaped = html_escape(s);
-                buf.push_str(&span(COLOR_STRING, &format!("&quot;{escaped}&quot;")));
-            }
+            serde_json::Value::String(s) => quoted_span(buf, COLOR_STRING, s),
             serde_json::Value::Array(arr) => {
                 if arr.is_empty() {
-                    buf.push_str(&span(COLOR_PUNCT, "[]"));
+                    span(buf, COLOR_PUNCT, "[]");
                     return;
                 }
-                buf.push_str(&span(COLOR_PUNCT, "["));
+                span(buf, COLOR_PUNCT, "[");
                 buf.push('\n');
                 for (i, item) in arr.iter().enumerate() {
-                    let padding = " ".repeat(indent + 2);
-                    buf.push_str(&padding);
+                    pad(buf, indent + 2);
                     write_value(buf, item, indent + 2);
                     if i + 1 < arr.len() {
-                        buf.push_str(&span(COLOR_PUNCT, ","));
+                        span(buf, COLOR_PUNCT, ",");
                     }
                     buf.push('\n');
                 }
-                let padding = " ".repeat(indent);
-                buf.push_str(&padding);
-                buf.push_str(&span(COLOR_PUNCT, "]"));
+                pad(buf, indent);
+                span(buf, COLOR_PUNCT, "]");
             }
             serde_json::Value::Object(map) => {
                 if map.is_empty() {
-                    buf.push_str(&span(COLOR_PUNCT, "{}"));
+                    span(buf, COLOR_PUNCT, "{}");
                     return;
                 }
-                buf.push_str(&span(COLOR_PUNCT, "{"));
+                span(buf, COLOR_PUNCT, "{");
                 buf.push('\n');
-                let entries: Vec<_> = map.iter().collect();
-                for (i, (key, val)) in entries.iter().enumerate() {
-                    let padding = " ".repeat(indent + 2);
-                    let escaped_key = html_escape(key);
-                    buf.push_str(&padding);
-                    buf.push_str(&span(COLOR_KEY, &format!("&quot;{escaped_key}&quot;")));
-                    buf.push_str(&span(COLOR_PUNCT, ": "));
+                for (i, (key, val)) in map.iter().enumerate() {
+                    pad(buf, indent + 2);
+                    quoted_span(buf, COLOR_KEY, key);
+                    span(buf, COLOR_PUNCT, ": ");
                     write_value(buf, val, indent + 2);
-                    if i + 1 < entries.len() {
-                        buf.push_str(&span(COLOR_PUNCT, ","));
+                    if i + 1 < map.len() {
+                        span(buf, COLOR_PUNCT, ",");
                     }
                     buf.push('\n');
                 }
-                let padding = " ".repeat(indent);
-                buf.push_str(&padding);
-                buf.push_str(&span(COLOR_PUNCT, "}"));
+                pad(buf, indent);
+                span(buf, COLOR_PUNCT, "}");
             }
         }
     }
@@ -2369,6 +2386,77 @@ mod tests {
     fn json_from_str_invalid() {
         let result = "not json {{{".parse::<Json>();
         assert!(result.is_err());
+    }
+
+    /// Keys are written in sorted order so the fixture renders the same
+    /// whether or not a workspace dependency turns on `serde_json`'s
+    /// `preserve_order` (feature unification decides that, not this crate).
+    fn json_golden_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "array": [1, {"b": false}, [], "x"],
+            "bool": true,
+            "empty_array": [],
+            "empty_object": {},
+            "nested": {"inner": [2.5, -3]},
+            "null": null,
+            "number": 42,
+            "string": "<a href='x'>&\"",
+            "z<k>&": "v"
+        })
+    }
+
+    /// Byte-exact pin on the renderer. The substring tests below survive a
+    /// rewrite that changes spacing, nesting or escaping; this one does not.
+    #[test]
+    fn json_render_golden() {
+        let expected = concat!(
+            r##"<pre style="margin:0; font-family:monospace; line-height:1.5"><span style="color:#eaeaea">{</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;array&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">[</span>"##,
+            "\n",
+            r##"    <span style="color:#40a0f0">1</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"    <span style="color:#eaeaea">{</span>"##,
+            "\n",
+            r##"      <span style="color:#e94560">&quot;b&quot;</span><span style="color:#eaeaea">: </span><span style="color:#b080f0">false</span>"##,
+            "\n",
+            r##"    <span style="color:#eaeaea">}</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"    <span style="color:#eaeaea">[]</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"    <span style="color:#40c080">&quot;x&quot;</span>"##,
+            "\n",
+            r##"  <span style="color:#eaeaea">]</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;bool&quot;</span><span style="color:#eaeaea">: </span><span style="color:#b080f0">true</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;empty_array&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">[]</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;empty_object&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">{}</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;nested&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">{</span>"##,
+            "\n",
+            r##"    <span style="color:#e94560">&quot;inner&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">[</span>"##,
+            "\n",
+            r##"      <span style="color:#40a0f0">2.5</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"      <span style="color:#40a0f0">-3</span>"##,
+            "\n",
+            r##"    <span style="color:#eaeaea">]</span>"##,
+            "\n",
+            r##"  <span style="color:#eaeaea">}</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;null&quot;</span><span style="color:#eaeaea">: </span><span style="color:#b080f0">null</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;number&quot;</span><span style="color:#eaeaea">: </span><span style="color:#40a0f0">42</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;string&quot;</span><span style="color:#eaeaea">: </span><span style="color:#40c080">&quot;&lt;a href=&#x27;x&#x27;&gt;&amp;&quot;&quot;</span><span style="color:#eaeaea">,</span>"##,
+            "\n",
+            r##"  <span style="color:#e94560">&quot;z&lt;k&gt;&amp;&quot;</span><span style="color:#eaeaea">: </span><span style="color:#40c080">&quot;v&quot;</span>"##,
+            "\n",
+            r##"<span style="color:#eaeaea">}</span></pre>"##,
+        );
+        assert_eq!(render_json_html(&json_golden_fixture()), expected);
     }
 
     #[test]
