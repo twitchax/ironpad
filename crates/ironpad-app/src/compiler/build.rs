@@ -329,7 +329,7 @@ pub async fn build_micro_crate(
     let wb_output = run_group_with_timeout(wb_cmd, WASM_BINDGEN_TIMEOUT)
         .instrument(tracing::info_span!("wasm_bindgen", cell_id = %cell_id))
         .await
-        .context("wasm-bindgen CLI not found. Install it with: cargo install wasm-bindgen-cli")?
+        .context("wasm-bindgen CLI not found on PATH. Run `cargo make install-tools` (installs the pinned CLI into ./.tools) and start ironpad through cargo make")?
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "wasm-bindgen timed out after {}s",

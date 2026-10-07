@@ -41,3 +41,6 @@ __pycache__/
 # docker/browserpod.env, so fetching beats committing it.
 docker/vendor/*
 !docker/vendor/.gitkeep
+
+# Project-local pinned tools (wasm-bindgen-cli); see Makefile.toml [env].
+/.tools/

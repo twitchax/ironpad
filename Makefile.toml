@@ -14,6 +14,14 @@
 [config]
 default_to_workspace = false
 
+[env]
+# The pinned wasm-bindgen CLI lives in ./.tools (see install-tools), never ~/.cargo/bin: cargo-leptos
+# runs any wasm-bindgen it finds there without a version check, and rustup's cargo proxy puts
+# ~/.cargo/bin on PATH for every `cargo <subcommand>`, so a global pin breaks every other Leptos
+# project on the machine. Every task (dev, build, test, playwright) and the server's cell compiler
+# inherit this PATH.
+PATH = "${CARGO_MAKE_WORKING_DIRECTORY}/.tools/bin:${PATH}"
+
 # ── Tool Installation ────────────────────────────────────────────────────────
 
 [tasks.install-tools]
@@ -40,7 +48,8 @@ echo "==> Installing wasm-bindgen-cli..."
 # the crate and CLI schema versions to match exactly (`cargo make dev/build/playwright`
 # fail otherwise). Cell compiles pin their scaffolded wasm-bindgen to this CLI version
 # automatically (PRD-0031 T-002). When bumping the workspace `wasm-bindgen`, bump this too.
-cargo binstall wasm-bindgen-cli --version 0.2.127 --no-confirm --force 2>/dev/null || cargo install wasm-bindgen-cli --version 0.2.127
+# Installed into ./.tools (on PATH via [env]), not ~/.cargo/bin; see the [env] comment.
+cargo binstall wasm-bindgen-cli --version 0.2.127 --root .tools --no-confirm --force 2>/dev/null || cargo install wasm-bindgen-cli --version 0.2.127 --root .tools
 
 echo "==> Adding wasm32-unknown-unknown target..."
 rustup target add wasm32-unknown-unknown 2>/dev/null || true
