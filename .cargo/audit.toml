@@ -1,0 +1,16 @@
+# cargo-audit config (read by `cargo audit` locally and in CI's Security Audit job).
+# Every ignore names why it can't be fixed by an update and why ironpad doesn't reach it.
+# Re-check each one when its upstream ships a fix; delete the line once Cargo.lock moves past it.
+
+[advisories]
+ignore = [
+    # rsa 0.9 "Marvin" timing side channel: no fixed release exists. It arrives only through
+    # jsonwebtoken inside the embedded SurrealDB (kv-surrealkv); ironpad opens the local engine
+    # directly (`Surreal::new::<SurrealKv>`) and never calls SurrealDB signin/authenticate, so
+    # no RSA JWT is ever verified. Revisit when SurrealDB moves to rsa 0.10.
+    "RUSTSEC-2023-0071",
+    # rkyv 0.7 archive validation: fixed only in 0.8. It is an optional dependency of
+    # rust_decimal (via SurrealDB's `revision`) that no enabled feature turns on, so it sits in
+    # Cargo.lock but is never compiled (`cargo tree -i rkyv --target all -e all` prints nothing).
+    "RUSTSEC-2026-0235",
+]
