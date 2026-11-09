@@ -88,15 +88,8 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("restricting permissions on {}", dir.display()))?;
 
-    // Clean up stale socket.
     let sock = socket_path();
-    if sock.exists() {
-        tokio::fs::remove_file(&sock).await?;
-    }
-
-    // Write pidfile.
-    let pid = pid_path();
-    tokio::fs::write(&pid, std::process::id().to_string()).await?;
+    claim_socket(&sock).await?;
 
     // ── Bind Unix socket FIRST ──────────────────────────────────────────
 
@@ -107,6 +100,11 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("restricting permissions on {}", sock.display()))?;
     tracing::info!(path = %sock.display(), "listening on Unix socket");
+
+    // Write the pidfile only once the socket is ours: it is what `cleanup`
+    // and `daemon-stop` read to decide whose files these are.
+    let pid = pid_path();
+    tokio::fs::write(&pid, std::process::id().to_string()).await?;
 
     let state = Arc::new(DaemonState {
         connected: RwLock::new(false),
@@ -265,9 +263,44 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
+/// Take the daemon socket path for this process, refusing a live owner.
+///
+/// The socket is per-user, not per-session, so a second daemon that simply
+/// unlinked it would take every later CLI command away from the first
+/// daemon's session (they would land in the second daemon's notebook and
+/// report success). A socket that accepts a connection has a live daemon
+/// behind it; one that refuses is a crashed daemon's leftover, removed here.
+async fn claim_socket(sock: &Path) -> anyhow::Result<()> {
+    if !sock.exists() {
+        return Ok(());
+    }
+    if tokio::net::UnixStream::connect(sock).await.is_ok() {
+        anyhow::bail!(
+            "another ironpad daemon is serving {} (run daemon-stop first)",
+            sock.display()
+        );
+    }
+    tokio::fs::remove_file(sock)
+        .await
+        .with_context(|| format!("removing stale socket {}", sock.display()))
+}
+
+/// Remove the socket and pidfile, but only while the pidfile still names
+/// this process: if another daemon has since claimed the paths (after this
+/// one's socket was removed by hand, say), they are its files, not ours.
 async fn cleanup(sock: &Path, pid: &Path) {
-    let _ = tokio::fs::remove_file(sock).await;
-    let _ = tokio::fs::remove_file(pid).await;
+    let ours = std::process::id().to_string();
+    match tokio::fs::read_to_string(pid).await {
+        Ok(owner) if owner.trim() == ours => {
+            let _ = tokio::fs::remove_file(sock).await;
+            let _ = tokio::fs::remove_file(pid).await;
+        }
+        Ok(owner) => tracing::info!(
+            owner = owner.trim(),
+            "socket and pidfile now belong to another daemon; leaving them"
+        ),
+        Err(e) => tracing::warn!(error = %e, "cannot read pidfile; leaving socket and pidfile"),
+    }
     tracing::info!("daemon shutdown complete");
 }
 
@@ -1906,13 +1939,69 @@ mod tests {
         let sock = base.join("daemon.sock");
         let pid = base.join("daemon.pid");
         tokio::fs::write(&sock, b"x").await.unwrap();
-        tokio::fs::write(&pid, b"123").await.unwrap();
+        tokio::fs::write(&pid, std::process::id().to_string())
+            .await
+            .unwrap();
         assert!(sock.exists() && pid.exists());
 
         cleanup(&sock, &pid).await;
 
         assert!(!sock.exists(), "socket should be removed on cleanup");
         assert!(!pid.exists(), "pidfile should be removed on cleanup");
+        let _ = tokio::fs::remove_dir_all(&base).await;
+    }
+
+    /// The socket and pidfile are per-user, not per-session: once a second
+    /// daemon has taken them, the first daemon's exit must not delete them
+    /// out from under it.
+    #[tokio::test]
+    async fn cleanup_keeps_files_owned_by_another_pid() {
+        let base = std::env::temp_dir().join(format!("ironpad-cli-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&base).await.unwrap();
+        let sock = base.join("daemon.sock");
+        let pid = base.join("daemon.pid");
+        tokio::fs::write(&sock, b"x").await.unwrap();
+        tokio::fs::write(&pid, (std::process::id() + 1).to_string())
+            .await
+            .unwrap();
+
+        cleanup(&sock, &pid).await;
+
+        assert!(sock.exists(), "another daemon's socket must survive");
+        assert!(pid.exists(), "another daemon's pidfile must survive");
+        let _ = tokio::fs::remove_dir_all(&base).await;
+    }
+
+    /// A live daemon's socket is refused, never silently taken over; a
+    /// socket file nobody is listening on is stale and reclaimed.
+    #[tokio::test]
+    async fn claim_socket_refuses_a_live_daemon_and_reclaims_a_stale_file() {
+        let base = std::env::temp_dir().join(format!("ironpad-cli-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&base).await.unwrap();
+        let sock = base.join("daemon.sock");
+
+        let listener = UnixListener::bind(&sock).unwrap();
+        let err = claim_socket(&sock)
+            .await
+            .expect_err("a live daemon's socket must not be claimed");
+        assert!(
+            err.to_string()
+                .contains("another ironpad daemon is serving"),
+            "{err}"
+        );
+        assert!(sock.exists(), "the live daemon keeps its socket");
+
+        // Dropping the listener closes it but leaves the file: a crashed
+        // daemon's leftover.
+        drop(listener);
+        assert!(sock.exists());
+        claim_socket(&sock)
+            .await
+            .expect("a stale socket is reclaimed");
+        assert!(!sock.exists(), "the stale file is removed");
+
+        // Nothing there at all is fine too.
+        claim_socket(&sock).await.expect("no socket to claim");
         let _ = tokio::fs::remove_dir_all(&base).await;
     }
 

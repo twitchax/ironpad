@@ -16,7 +16,7 @@ The `ironpad-cli` binary is how an AI agent drives a collaboration session from 
 - **THEN** it prints `error: --token or IRONPAD_TOKEN required for daemon mode` and exits 1
 
 ### Requirement: Daemon startup
-`ironpad-cli daemon` SHALL run in the foreground; no other subcommand starts it. It SHALL create `~/.ironpad` with mode 0700, write its pid to `daemon.pid`, and bind `daemon.sock` with mode 0600 before connecting, then cache the notebook, waiting up to 10 seconds for it. Its logs SHALL show the token as `<redacted>`. (PRD-0035, PRD-0038, f305339 agentic-collaboration/0008)
+`ironpad-cli daemon` SHALL run in the foreground; no other subcommand starts it. It SHALL create `~/.ironpad` with mode 0700, bind `daemon.sock` with mode 0600, and then write its pid to `daemon.pid`, all before connecting, then cache the notebook, waiting up to 10 seconds for it. The socket is per-user, so it SHALL refuse to start, printing `another ironpad daemon is serving <path> (run daemon-stop first)` and exiting 1, when a daemon is already listening on `daemon.sock`, and SHALL replace a leftover socket file that nothing is listening on. Its logs SHALL show the token as `<redacted>`. (PRD-0035, PRD-0038, f305339 agentic-collaboration/0008)
 
 #### Scenario: Ready to serve
 - **WHEN** the daemon connects to a live session
@@ -26,8 +26,12 @@ The `ironpad-cli` binary is how an AI agent drives a collaboration session from 
 - **WHEN** the daemon cannot open its WebSocket
 - **THEN** it keeps serving its socket, `status` reports `"connected":false`, and commands that need the browser fail with `connection_error`
 
+#### Scenario: A daemon is already running
+- **WHEN** `ironpad-cli daemon` starts while another daemon is serving `~/.ironpad/daemon.sock`
+- **THEN** it exits 1 without touching that socket or its pidfile, and the running daemon keeps serving its session
+
 ### Requirement: Daemon lifetime follows the session
-The daemon SHALL exit when its WebSocket closes, whether the session ended, the host left, or the server dropped the connection, and SHALL NOT reconnect; a new session needs a new daemon. On that exit, and on SIGINT or SIGTERM, it SHALL remove its socket and pidfile. (PRD-0035, PRD-0038)
+The daemon SHALL exit when its WebSocket closes, whether the session ended, the host left, or the server dropped the connection, and SHALL NOT reconnect; a new session needs a new daemon. On that exit, and on SIGINT or SIGTERM, it SHALL remove its socket and pidfile, but only while `daemon.pid` still holds its own pid; files another daemon has since claimed SHALL be left in place. (PRD-0035, PRD-0038)
 
 #### Scenario: Host tab closes
 - **WHEN** the browser tab hosting the session closes
