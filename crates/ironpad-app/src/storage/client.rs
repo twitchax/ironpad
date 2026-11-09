@@ -32,9 +32,6 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "snapshotNow")]
     async fn js_snapshot_now(id: &str) -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(catch, js_namespace = ["window", "IronpadStorage"], js_name = "importNotebook")]
-    async fn js_import_notebook(json_string: &str) -> Result<JsValue, JsValue>;
-
 }
 
 // ── Typed Rust API ──────────────────────────────────────────────────────────
@@ -172,17 +169,5 @@ pub async fn get_history_snapshot(id: &str, saved_at: f64) -> Option<String> {
 pub async fn snapshot_now(id: &str) {
     if let Err(e) = js_snapshot_now(id).await {
         leptos::logging::warn!("snapshotNow failed: {e:?}");
-    }
-}
-
-/// Imports a notebook from a JSON string. Returns the imported notebook with a new UUID,
-/// or `None` if the import failed.
-pub async fn import_notebook(json_string: &str) -> Option<IronpadNotebook> {
-    match js_import_notebook(json_string).await {
-        Ok(val) => serde_wasm_bindgen::from_value(val).ok(),
-        Err(e) => {
-            leptos::logging::warn!("importNotebook failed: {e:?}");
-            None
-        }
     }
 }

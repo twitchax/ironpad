@@ -1,16 +1,9 @@
 /**
  * IronpadStorage — IndexedDB storage layer for private notebooks.
  *
- * All methods are async and work with IronpadNotebook JSON objects matching:
- * {
- *   version: 1,
- *   id: "uuid-string",
- *   title: "...",
- *   created_at: "ISO 8601",
- *   updated_at: "ISO 8601",
- *   shared_cargo_toml: "..." | null,
- *   cells: [{ id, order, label, cell_type, source, cargo_toml }]
- * }
+ * All methods are async and work with notebook records in the serde shape of
+ * `IronpadNotebook` (crates/ironpad-common/src/types.rs), which is the only
+ * schema; this layer stores whatever the app hands it and never restates it.
  */
 window.IronpadStorage = (function () {
     const DB_NAME = 'ironpad';
@@ -343,6 +336,11 @@ window.IronpadStorage = (function () {
         /**
          * Import a notebook from a JSON string. Assigns a new UUID so
          * the imported copy doesn't collide with the original.
+         *
+         * Stores the record WITHOUT decoding it, so the app never calls
+         * this: Import Notebook decodes through `IronpadNotebook` first and
+         * saves only what decoded. It stays for e2e specs that seed
+         * fixtures through it.
          * @param {string} jsonString - JSON-encoded IronpadNotebook.
          * @returns {Promise<Object>} The imported notebook (with new ID).
          */

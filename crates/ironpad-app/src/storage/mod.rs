@@ -8,4 +8,4 @@
 pub mod client;
 
 #[cfg(any(feature = "hydrate", feature = "ssr"))]
-pub mod validate;
+pub mod import;

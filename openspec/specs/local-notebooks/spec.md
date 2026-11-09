@@ -147,7 +147,7 @@ The system SHALL import a `.ironpad` or `.json` file chosen through the home pag
 - **THEN** a single-file picker opens that accepts `.ironpad` and `.json`
 
 ### Requirement: Import validation
-The system SHALL reject, with an "Import Failed" toast naming the problem and without adding a notebook, a file that is not JSON, not an object, or lacks a numeric `version`, a string `title` or a `cells` array, or that has a cell missing a string `id`, `source` or `label`. (PRD-0010)
+The system SHALL reject, with an "Import Failed" toast naming the problem and without adding a notebook, a file that is not JSON, not an object, or lacks a numeric `version`, a string `title` or a `cells` array, or that has a cell missing a string `id`, `source` or `label`, or that otherwise does not parse as a notebook. Nothing SHALL be stored for a rejected file. (PRD-0010)
 
 #### Scenario: Not JSON
 - **WHEN** the chosen file contains `this is not valid json {{{`
@@ -155,7 +155,11 @@ The system SHALL reject, with an "Import Failed" toast naming the problem and wi
 
 #### Scenario: Missing cells
 - **WHEN** the chosen file is `{"version": 1, "title": "Missing Cells"}`
-- **THEN** the toast reads "Missing or invalid 'cells' field (expected an array)" and nothing is added
+- **THEN** the toast reads "Not an ironpad notebook: missing field `cells`" and nothing is added
+
+#### Scenario: A cell without an order
+- **WHEN** the chosen file's only cell has an `id`, `source` and `label` but no `order`
+- **THEN** an "Import Failed" toast appears and the browser store holds no new record
 
 ### Requirement: Export HTML
 The system SHALL export the open notebook from its menu as one self-contained `.html` file named after the title: the title, each cell's label, code cells' source with their last outputs from this session, rendered markdown, inline styles and icons, the footer "Exported from ironpad", and a Content-Security-Policy forbidding scripts and remote loads. (PRD-0003, PRD-0062)

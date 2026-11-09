@@ -623,8 +623,8 @@ fn NotebookCardSkeleton() -> impl IntoView {
 
 // ── Notebook import ─────────────────────────────────────────────────────────
 
-/// Opens a file picker, reads the selected `.ironpad`/`.json` file, validates
-/// it, imports it via `storage.js`, and refreshes the notebook list.
+/// Opens a file picker, reads the selected `.ironpad`/`.json` file, decodes it
+/// as a fresh local notebook, saves it, and refreshes the notebook list.
 ///
 /// Takes the toaster by value: the `FileReader` callbacks below run outside any
 /// reactive owner, where `Toaster::expect_context()` panics, so the caller
@@ -700,7 +700,7 @@ fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>, 
         }
     };
 
-    // File selected: read, validate, and import it.
+    // File selected: read, decode, and save it.
     let on_change = {
         let input = input.clone();
         let cleanup = cleanup.clone();
@@ -725,31 +725,36 @@ fn import_notebook_from_file(private_notebooks: RwSignal<Vec<IronpadNotebook>>, 
                     return;
                 };
 
-                // Validate the JSON before importing.
-                if let Err(msg) = crate::storage::validate::validate_notebook_json(&text) {
-                    toaster.toast(ToastIntent::Error, "Import Failed", msg, 5);
-                    return;
-                }
+                // Decode through the notebook type BEFORE anything is written:
+                // a record that cannot decode must never reach IndexedDB,
+                // where the home page would skip it on every load.
+                let nb = match crate::storage::import::notebook_from_import_json(&text) {
+                    Ok(nb) => nb,
+                    Err(msg) => {
+                        toaster.toast(ToastIntent::Error, "Import Failed", msg, 5);
+                        return;
+                    }
+                };
 
-                // Import and refresh the notebook list.
+                // Save and refresh the notebook list.
                 leptos::task::spawn_local(async move {
-                    match crate::storage::client::import_notebook(&text).await {
-                        Some(nb) => {
-                            let title = nb.title.clone();
+                    match crate::storage::client::save_notebook(&nb).await {
+                        Ok(()) => {
                             let nbs = crate::storage::client::list_notebooks().await;
                             private_notebooks.set(nbs);
                             toaster.toast(
                                 ToastIntent::Success,
                                 "Notebook Imported",
-                                format!("\"{title}\" has been added to your notebooks."),
+                                format!("\"{}\" has been added to your notebooks.", nb.title),
                                 3,
                             );
                         }
-                        None => {
+                        Err(e) => {
+                            leptos::logging::warn!("saving the imported notebook failed: {e:?}");
                             toaster.toast(
                                 ToastIntent::Error,
                                 "Import Failed",
-                                "Failed to import the notebook. The file may be corrupted.",
+                                "Could not save the notebook locally. Try again.",
                                 5,
                             );
                         }

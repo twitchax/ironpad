@@ -285,4 +285,44 @@ test.describe("Notebook import/export", () => {
     // Clean up temp file.
     fs.unlinkSync(badPath);
   });
+
+  test("import a notebook the type cannot decode stores nothing", async ({
+    page,
+  }) => {
+    // A cell without `order` passed the old hand-written validator, but
+    // `IronpadNotebook` requires it: the record was written to IndexedDB
+    // first and only then failed to decode, leaving a row the home page skips
+    // on every load and can never list or delete. `listNotebooks` returns the
+    // RAW records, so it sees such a stranded row where the UI cannot.
+    test.setTimeout(60_000);
+
+    await page.goto("/");
+    await expect(page.locator(".ironpad-home")).toBeVisible();
+    await page.waitForTimeout(3_000);
+
+    const count = () =>
+      page.evaluate(async () => (await window.IronpadStorage.listNotebooks()).length);
+    const beforeCount = await count();
+
+    const fixture = makeFixture("No Order");
+    const { order: _order, ...cellWithoutOrder } = fixture.cells[0];
+    const badPath = path.join("/tmp", "e2e-import-no-order.ironpad");
+    fs.writeFileSync(badPath, JSON.stringify({ ...fixture, cells: [cellWithoutOrder] }));
+
+    const fileChooserPromise = page.waitForEvent("filechooser", {
+      timeout: 10_000,
+    });
+    await page.locator("button", { hasText: "Import Notebook" }).click();
+    const fileChooser = await fileChooserPromise;
+    await fileChooser.setFiles(badPath);
+
+    await expect(page.getByText("Import Failed").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    // The failure toast can race the stray write, so give it a moment.
+    await page.waitForTimeout(1_000);
+    expect(await count()).toBe(beforeCount);
+
+    fs.unlinkSync(badPath);
+  });
 });
