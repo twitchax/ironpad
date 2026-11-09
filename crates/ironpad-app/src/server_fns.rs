@@ -362,6 +362,16 @@ async fn compile_cell_core(
         .admit_compile(client_ip)
         .await
         .map_err(|denied| ServerFnError::new(denied.to_string()))?;
+    // Then the target dir (review bug-compiler-5): cargo locks it for the
+    // whole invocation, so a build queued behind another in the same dir
+    // would otherwise spend that wait inside its own 300-second budget.
+    let dir_guard = admission
+        .admit_target_dir(
+            features.for_target(target).atomics,
+            admission.queue_timeout(),
+        )
+        .await
+        .map_err(|denied| ServerFnError::new(denied.to_string()))?;
 
     // Cache miss (or forced recompile): scaffold the micro-crate now, the
     // on-disk work a cache hit skips.
@@ -384,6 +394,8 @@ async fn compile_cell_core(
     )
     .await
     .map_err(|e| ServerFnError::new(format!("build invocation failed: {e}")))?;
+    // wasm-opt (up to two minutes) never touches the target dir.
+    drop(dir_guard);
 
     match build_result {
         BuildResult::Success {
@@ -561,7 +573,30 @@ fn live_check_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// Server-side live-check pipeline behind [`check_cell`].
+/// Server-side live-check pipeline behind [`check_cell`], under the
+/// configured [`live_check_timeout`].
+#[cfg(feature = "ssr")]
+async fn check_cell_core(
+    config: &ironpad_common::AppConfig,
+    compile_locks: &crate::compiler::CompileLocks,
+    admission: &crate::compiler::admission::BuildAdmission,
+    client_ip: &str,
+    request: CompileRequest,
+) -> Result<CheckResponse, ServerFnError> {
+    check_cell_with_budget(
+        config,
+        compile_locks,
+        admission,
+        client_ip,
+        request,
+        live_check_timeout(),
+    )
+    .await
+}
+
+/// [`check_cell_core`] with an explicit time budget, so tests can exercise
+/// the target-dir wait without a ten-second one. `budget` bounds the wait
+/// for the target dir and, separately, cargo itself.
 #[cfg(feature = "ssr")]
 #[tracing::instrument(
     name = "check_cell",
@@ -569,12 +604,13 @@ fn live_check_timeout() -> std::time::Duration {
     skip_all,
     fields(cell_id = %request.cell_id, status = tracing::field::Empty)
 )]
-async fn check_cell_core(
+async fn check_cell_with_budget(
     config: &ironpad_common::AppConfig,
     compile_locks: &crate::compiler::CompileLocks,
     admission: &crate::compiler::admission::BuildAdmission,
     client_ip: &str,
     request: CompileRequest,
+    budget: std::time::Duration,
 ) -> Result<CheckResponse, ServerFnError> {
     use crate::compiler::{
         build::{check_micro_crate, CheckResult, CheckTimedOut},
@@ -601,6 +637,22 @@ async fn check_cell_core(
     // status the client already retries after the next quiet period, so a
     // busy server degrades to fewer live markers, never to blocked typing.
     let Some(_check_permit) = admission.try_admit_check() else {
+        tracing::Span::current().record("status", "skipped");
+        return Ok(CheckResponse {
+            status: CheckStatus::Skipped,
+            diagnostics: vec![],
+        });
+    };
+
+    // Wait out a build or check holding the target dir HERE, before the
+    // budget starts (review bug-compiler-5): cargo's own lock wait used to
+    // count against the budget, so a check that only waited was killed and
+    // reported `TimedOut` as a cold cache, which the client never retries.
+    // Expiry is `Skipped`, which it does.
+    let Ok(_dir_guard) = admission
+        .admit_target_dir(features.for_target(target).atomics, budget)
+        .await
+    else {
         tracing::Span::current().record("status", "skipped");
         return Ok(CheckResponse {
             status: CheckStatus::Skipped,
@@ -641,7 +693,7 @@ async fn check_cell_core(
         config.compilation_proxy.as_deref(),
         target,
         features,
-        live_check_timeout(),
+        budget,
     )
     .await;
 
@@ -2996,6 +3048,107 @@ mod tests {
             CheckStatus::Skipped,
             "re-checking an existing cell is free"
         );
+    }
+
+    // ── Target-dir admission (review bug-compiler-5) ─────────────────────
+
+    /// A check whose target dir is held by another build waits for it
+    /// within its budget and then reports `Skipped`, which the client
+    /// retries. It used to start cargo, spend the budget blocked on cargo's
+    /// own lock, and report `TimedOut` as if the cache were cold.
+    #[tokio::test]
+    async fn a_check_behind_a_held_target_dir_is_skipped_not_timed_out() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::{AppConfig, CheckStatus};
+
+        let cache = tempfile::tempdir().unwrap();
+        let config = AppConfig::for_tests(cache.path());
+        let locks = CompileLocks::default();
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            4,
+            100.0,
+            100.0,
+            std::time::Duration::from_millis(50),
+        );
+        let request = || CompileRequest {
+            cargo_toml: "[dependencies]\nbroken = ".to_string(),
+            ..admission_test_request("dir-check")
+        };
+        let budget = std::time::Duration::from_millis(100);
+
+        let held = admission
+            .admit_target_dir(false, budget)
+            .await
+            .expect("the default dir is free");
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            check_cell_with_budget(&config, &locks, &admission, "test", request(), budget),
+        )
+        .await
+        .expect("the wait is bounded by the budget")
+        .unwrap();
+        assert_eq!(response.status, CheckStatus::Skipped);
+        assert!(
+            !cache.path().join("workspaces").exists(),
+            "nothing is scaffolded or run while the dir is held"
+        );
+        drop(held);
+
+        // Holding only the ATOMICS dir blocks nothing here: a different
+        // cargo lock. The bogus manifest makes cargo fail fast.
+        let _atomics = admission
+            .admit_target_dir(true, budget)
+            .await
+            .expect("the atomics dir is free");
+        let response = check_cell_with_budget(
+            &config,
+            &locks,
+            &admission,
+            "test",
+            request(),
+            std::time::Duration::from_mins(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status, CheckStatus::Errors);
+    }
+
+    /// A compile queued behind a held target dir is refused as at capacity
+    /// once the queue timeout passes, before scaffolding or spending any of
+    /// its build budget.
+    #[tokio::test]
+    async fn a_compile_behind_a_held_target_dir_is_at_capacity() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let cache = tempfile::tempdir().unwrap();
+        let config = AppConfig::for_tests(cache.path());
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            4,
+            100.0,
+            100.0,
+            std::time::Duration::from_millis(100),
+        );
+        let _held = admission
+            .admit_target_dir(false, std::time::Duration::from_millis(100))
+            .await
+            .unwrap();
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            compile_cell_core(
+                &config,
+                &CompileLocks::default(),
+                &admission,
+                "test",
+                admission_test_request("dir-compile"),
+            ),
+        )
+        .await
+        .expect("the dir wait is bounded by the queue timeout")
+        .unwrap_err();
+        assert!(err.to_string().contains("build capacity"), "{err}");
+        assert!(!cache.path().join("workspaces").exists());
     }
 
     // ── compile_cell_core (cache-hit path) ───────────────────────────────

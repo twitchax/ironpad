@@ -35,7 +35,7 @@ The system SHALL check a cell with the same request validation, generated crate,
 - **THEN** it is checked for `wasm32-browserpod-linux-musl` on the BrowserPod toolchain, as it would be built
 
 ### Requirement: Check time budget
-The system SHALL bound each live check by `IRONPAD_LIVE_CHECK_TIMEOUT_SECS` (default 10 seconds) and, on expiry, kill the whole cargo process group and return `TimedOut` rather than an error. (PRD-0045 T-001)
+The system SHALL bound each live check by `IRONPAD_LIVE_CHECK_TIMEOUT_SECS` (default 10 seconds) and, on expiry, kill the whole cargo process group and return `TimedOut` rather than an error. Waiting for another build or check to release the shared cargo target directory SHALL NOT count against that budget: the check waits up to the budget for the directory first, and returns `Skipped` if it does not get it. (PRD-0045 T-001)
 
 #### Scenario: Cold dependency tree
 - **WHEN** a check would need longer than the budget to build its dependencies

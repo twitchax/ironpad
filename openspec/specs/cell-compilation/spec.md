@@ -399,7 +399,7 @@ The system SHALL fingerprint its toolchain as the pinned rustc's `--version` out
 - **THEN** every existing cache entry misses on its next compile
 
 ### Requirement: Same-cell compiles serialize
-The system SHALL run concurrent compiles or checks that share a cell id one at a time, treating ids that differ only by `-` versus `_` as the same cell, while compiles of distinct cells proceed concurrently. (PRD-0036)
+The system SHALL run concurrent compiles or checks that share a cell id one at a time, treating ids that differ only by `-` versus `_` as the same cell. Distinct cells share no per-cell lock, but builds and checks that share a cargo target directory (every non-rayon cell, Linux cells included, in one; rayon cells in the shared atomics one) also run one at a time, because cargo locks the directory for a whole invocation; each waits for the directory in process, before its time budget starts. (PRD-0036)
 
 #### Scenario: Two tabs, one cell
 - **WHEN** two compiles of `cell-1` arrive together
@@ -409,8 +409,12 @@ The system SHALL run concurrent compiles or checks that share a cell id one at a
 - **WHEN** a compile of `cell-a-b` is in flight and one of `cell-a_b` arrives
 - **THEN** the second waits
 
+#### Scenario: Two cells, one target directory
+- **WHEN** a 250-second cold build of one cell is running and a build of a different non-rayon cell starts
+- **THEN** the second waits for the target directory and then gets its full build budget, rather than timing out after 50 seconds of real work
+
 ### Requirement: Build concurrency cap
-The system SHALL let only cache misses take a build slot, run at most `--max-concurrent-builds` (`IRONPAD_MAX_CONCURRENT_BUILDS`, default 3, minimum 1) compiles at once, and queue others up to `IRONPAD_BUILD_QUEUE_TIMEOUT_SECS` (default 180) before failing with an at-capacity error. (PRD-0052)
+The system SHALL let only cache misses take a build slot, run at most `--max-concurrent-builds` (`IRONPAD_MAX_CONCURRENT_BUILDS`, default 3, minimum 1) compiles at once, and queue others up to `IRONPAD_BUILD_QUEUE_TIMEOUT_SECS` (default 180) before failing with an at-capacity error. A compile holding a slot SHALL then wait up to the same timeout for its cargo target directory, failing with the same error, so the slot count buys concurrency only across target directories. (PRD-0052)
 
 #### Scenario: Queue then proceed
 - **WHEN** every slot is held and another miss arrives

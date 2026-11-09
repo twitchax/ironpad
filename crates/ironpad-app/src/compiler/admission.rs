@@ -13,6 +13,14 @@
 //! - **Live checks** `try_acquire` and shed load: the client already treats
 //!   `Skipped` as "try again after the next quiet period" (PRD-0045), so
 //!   typing never blocks on capacity.
+//!
+//! The slot count is not the whole story. Every non-rayon build and check
+//! (Linux cells included) shares one cargo target dir, and cargo holds an
+//! exclusive lock on a target dir for a whole invocation, so within one dir
+//! they run one at a time whatever the cap says; `--max-concurrent-builds`
+//! only buys concurrency ACROSS target dirs (the default dir and the shared
+//! atomics dir). [`BuildAdmission::admit_target_dir`] makes that wait visible
+//! in process, before any build or check budget starts its clock.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -176,6 +184,10 @@ pub struct BuildAdmission {
     /// Charged in bytes per NEW immutable share; see
     /// [`DEFAULT_SHARE_RATE_BURST_BYTES`].
     shares: Arc<TokenBuckets>,
+    /// One lock per cargo target directory; see
+    /// [`admit_target_dir`](Self::admit_target_dir).
+    default_dir: Arc<tokio::sync::Mutex<()>>,
+    atomics_dir: Arc<tokio::sync::Mutex<()>>,
     queue_timeout: Duration,
 }
 
@@ -250,6 +262,8 @@ impl BuildAdmission {
                 DEFAULT_SHARE_RATE_BURST_BYTES,
                 DEFAULT_SHARE_RATE_BYTES_PER_MIN,
             )),
+            default_dir: Arc::default(),
+            atomics_dir: Arc::default(),
             queue_timeout,
         }
     }
@@ -309,6 +323,47 @@ impl BuildAdmission {
                 Err(AdmissionDenied::AtCapacity)
             }
         }
+    }
+
+    /// How long a compile may queue for a build slot, and then for its target
+    /// directory.
+    pub fn queue_timeout(&self) -> Duration {
+        self.queue_timeout
+    }
+
+    /// Wait up to `wait` for exclusive use of a cargo target directory: the
+    /// shared atomics dir when `atomics`, the default dir otherwise (Linux
+    /// cells build in the default dir too).
+    ///
+    /// Cargo holds an exclusive lock on a target dir for a whole invocation,
+    /// so two builds or checks in one dir run one at a time whatever the
+    /// slot count says. Waiting HERE, in process, keeps that wait out of the
+    /// build and check budgets, which start their clocks at spawn (review
+    /// bug-compiler-5): a check that only waited on another build's lock
+    /// used to be killed and reported `TimedOut` as a cold cache, and a
+    /// queued build could time out after a few seconds of real work. The
+    /// guard must be held for the cargo invocation and released before
+    /// anything that does not touch the target dir (wasm-opt).
+    ///
+    /// Lock order is cell, then slot, then dir, and a dir holder waits on
+    /// nothing else, so no cycle exists.
+    pub async fn admit_target_dir(
+        &self,
+        atomics: bool,
+        wait: Duration,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, AdmissionDenied> {
+        let dir = if atomics {
+            &self.atomics_dir
+        } else {
+            &self.default_dir
+        };
+        tokio::time::timeout(wait, Arc::clone(dir).lock_owned())
+            .instrument(tracing::info_span!("target_dir_wait", atomics))
+            .await
+            .map_err(|_| {
+                tracing::warn!(atomics, "target dir wait timed out — at capacity");
+                AdmissionDenied::AtCapacity
+            })
     }
 
     /// Admit a live check, or `None` when every check slot is busy — the
@@ -541,6 +596,32 @@ mod tests {
             a.try_admit_share("1.2.3.4", 600),
             "elapsed time must refill the byte budget"
         );
+    }
+
+    /// A target dir admits one holder at a time and refuses after `wait`;
+    /// the default and atomics dirs are independent (review bug-compiler-5).
+    #[tokio::test]
+    async fn target_dirs_admit_one_holder_each() {
+        let a = admission(4, 100.0, 6000.0, 50);
+        let wait = Duration::from_millis(50);
+
+        let held = a.admit_target_dir(false, wait).await.unwrap();
+        assert_eq!(
+            a.admit_target_dir(false, wait).await.unwrap_err(),
+            AdmissionDenied::AtCapacity,
+            "a held dir refuses after the wait"
+        );
+        let atomics = a
+            .admit_target_dir(true, wait)
+            .await
+            .expect("the atomics dir is a different cargo lock");
+
+        drop(held);
+        assert!(
+            a.admit_target_dir(false, wait).await.is_ok(),
+            "a released dir admits the next holder"
+        );
+        drop(atomics);
     }
 
     #[test]
