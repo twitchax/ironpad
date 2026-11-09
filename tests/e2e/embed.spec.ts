@@ -55,6 +55,41 @@ function openCrossOriginEmbed(page: Page, name: string) {
 }
 
 /**
+ * Three embeds on one host page: every frame gets its own id, and a height
+ * message one frame posts under ANOTHER frame's id must not resize it.
+ */
+async function expectIsolatedEmbeds(page: Page) {
+  const frames = page.locator("iframe[id^='ironpad-embed-']");
+  await expect(frames).toHaveCount(3, { timeout: 15_000 });
+  const ids = await frames.evaluateAll((els) => els.map((e) => e.id));
+  expect(new Set(ids).size, `ids: ${ids.join(", ")}`).toBe(3);
+
+  // Let frame 2 report its own height first: a frame posts only when its
+  // height changes, so a forged height that lands afterwards would stick.
+  const second = frames.nth(1);
+  await expect
+    .poll(async () => second.evaluate((el) => el.style.height), {
+      timeout: 30_000,
+    })
+    .not.toBe("480px");
+
+  // A message from frame 1 naming frame 2's id passes the origin check (both
+  // frames are ironpad), so only a check on the SOURCE window can refuse it.
+  const first = page
+    .frames()
+    .find((f) => f.url().includes(`embed_id=${encodeURIComponent(ids[0])}`));
+  expect(first, "frame 1 is attached").toBeTruthy();
+  await first!.evaluate((id) => {
+    window.parent.postMessage(
+      { type: "ironpad:embed:height", id, height: 123 },
+      "*",
+    );
+  }, ids[1]);
+  await page.waitForTimeout(1_000);
+  expect(await second.evaluate((el) => el.style.height)).not.toBe("123px");
+}
+
+/**
  * Drive the framed notebook: report isolation, whether the threaded-cells
  * notice rendered, and whether the first frame's chevron still toggles its
  * body (a panicked hydration leaves every handler dead).
@@ -203,6 +238,28 @@ test.describe("Notebook embedding", () => {
     // Distinct ids → distinct resize channels.
     const ids = await frames.evaluateAll((els) => els.map((e) => e.id));
     expect(new Set(ids).size).toBe(2);
+  });
+
+  test("embed.js script tags never share an id or resize each other", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    // Each style-1 tag runs its own copy of the loader, so a per-script
+    // counter starts at 0 in every one of them. The host freezes its own
+    // clock first, so all three tags run "in the same millisecond", which is
+    // the case that collided (4 of 15 real loads with two async tags).
+    const host = await openHostPage(
+      page,
+      `<script>const frozen = Date.now(); Date.now = () => frozen;</script>
+       <script src="${BASE}/embed.js" data-notebook="public/welcome" async></script>
+       <script src="${BASE}/embed.js" data-notebook="public/tutorial" async></script>
+       <script src="${BASE}/embed.js" data-notebook="public/welcome" async></script>`,
+    );
+    try {
+      await expectIsolatedEmbeds(page);
+    } finally {
+      await host.close();
+    }
   });
 
   test("a cross-origin embed of a rayon notebook explains itself and stays live", async ({

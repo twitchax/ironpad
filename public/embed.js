@@ -20,8 +20,9 @@
  *
  * Height protocol: the embedded page posts
  *   { type: "ironpad:embed:height", id: <embed id>, height: <px> }
- * on load and on content resize; the loader validates the event origin and
- * matches ids so multiple embeds on one page can't cross-talk.
+ * on load and on content resize; the loader validates the event origin, its
+ * source window (the frame it created) and the id, so multiple embeds on one
+ * page can't cross-talk.
  */
 (function () {
   "use strict";
@@ -36,8 +37,6 @@
     return;
   }
 
-  var seq = 0;
-
   /** Validate and normalize a data-notebook value; null if malformed. */
   function embedPath(spec) {
     if (typeof spec !== "string") return null;
@@ -51,7 +50,14 @@
     var path = embedPath(spec);
     if (!path) return;
 
-    var id = "ironpad-embed-" + Date.now().toString(36) + "-" + seq++;
+    // Unique across every copy of this loader on the page: each script tag
+    // runs its own IIFE, so a per-script counter starts at 0 in all of them,
+    // and two tags executing in the same millisecond used to share an id.
+    var id =
+      "ironpad-embed-" +
+      (self.crypto && crypto.randomUUID
+        ? crypto.randomUUID()
+        : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
     var frame = document.createElement("iframe");
     frame.src =
       origin +
@@ -72,7 +78,9 @@
     target.appendChild(frame);
 
     window.addEventListener("message", function (event) {
-      if (event.origin !== origin) return;
+      // The source check is what actually isolates embeds: every frame is the
+      // same origin, so an id alone is only as good as its uniqueness.
+      if (event.origin !== origin || event.source !== frame.contentWindow) return;
       var msg = event.data;
       if (!msg || msg.type !== "ironpad:embed:height" || msg.id !== id) return;
       var h = Number(msg.height);
