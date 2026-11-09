@@ -304,7 +304,7 @@ A notebook with no published copy SHALL read as not found on every reader and an
 - **THEN** its OG card answers 200 and oEmbed answers 200 with its title
 
 ### Requirement: Storage quotas
-Every write that stores notebook JSON in an account (Save to Account, Share Mutable, draft autosave) SHALL pass the 4 MiB per-notebook upload limit and SHALL be refused if it would push the instance's stored notebook bytes past 512 MiB or the owner's past 32 MiB, drafts included in both. Promoting an existing draft SHALL never be refused by these caps. (PRD-0064, PRD-0054)
+Every write that stores notebook JSON in an account (Save to Account, Share Mutable, draft autosave) SHALL pass the 4 MiB per-notebook upload limit and SHALL be refused if it would push the instance's stored notebook bytes past 512 MiB or the owner's past 32 MiB, drafts included in both. A draft autosave replaces the draft slot, so only its growth over the draft already stored counts, and one that does not grow it SHALL always be admitted. Promoting an existing draft SHALL never be refused by these caps. (PRD-0064, PRD-0054)
 
 #### Scenario: Per-account cap
 - **WHEN** a user's notebooks already fill their allowance and they save another
@@ -318,6 +318,10 @@ Every write that stores notebook JSON in an account (Save to Account, Share Muta
 #### Scenario: Drafts count
 - **WHEN** a draft autosave would exceed a cap that the published copy alone fits under
 - **THEN** the draft save is refused
+
+#### Scenario: Editing at the cap
+- **WHEN** the instance is exactly at its cap and an owner's autosave replaces their draft with one of the same size or smaller
+- **THEN** the save succeeds, while saving a new notebook to an account is still refused
 
 #### Scenario: Refused autosave
 - **WHEN** a draft autosave is refused for storage

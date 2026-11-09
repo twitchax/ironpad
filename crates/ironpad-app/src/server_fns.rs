@@ -806,15 +806,16 @@ fn validate_notebook_upload(notebook_json: &str) -> anyhow::Result<IronpadNotebo
 #[cfg(feature = "ssr")]
 const MAX_TOTAL_SHARE_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Validate and store an immutable share. Returns the content hash AND the
-/// parsed notebook, because the caller snapshots blobs from it and a second
-/// parse of a body of up to 4 MiB is pure waste.
-#[cfg(feature = "ssr")]
+/// Validate and store an immutable share, unmetered. Returns the content hash
+/// AND the parsed notebook, because the caller snapshots blobs from it and a
+/// second parse of a body of up to 4 MiB is pure waste. Test-only: the
+/// server fn prices new shares through [`share_notebook_core_capped`].
+#[cfg(all(test, feature = "ssr"))]
 pub(crate) async fn share_notebook_core(
     data_dir: &std::path::Path,
     notebook_json: &str,
 ) -> anyhow::Result<(String, IronpadNotebook)> {
-    share_notebook_core_capped(data_dir, notebook_json, MAX_TOTAL_SHARE_BYTES).await
+    share_notebook_core_capped(data_dir, notebook_json, MAX_TOTAL_SHARE_BYTES, |_| true).await
 }
 
 /// Sum of the sizes of all regular files directly under `dir`. Returns `Ok(0)`
@@ -844,12 +845,19 @@ async fn dir_total_bytes(dir: &std::path::Path) -> anyhow::Result<u64> {
 
 /// Core share logic with an explicit aggregate cap (so tests can exercise the
 /// cap without writing hundreds of MiB).
+///
+/// `admit_new` prices a NEW distinct share in bytes and is asked only once
+/// the hash is known not to be stored yet, so a re-share stays free. It is
+/// the per-client rate limit in production (review bug-security-8): the
+/// store never evicts, since an immutable link is frozen by design, so
+/// without a price one client could fill it for everyone.
 #[cfg(feature = "ssr")]
 #[tracing::instrument(name = "share_notebook", level = "info", skip_all, fields(bytes = notebook_json.len()))]
 async fn share_notebook_core_capped(
     data_dir: &std::path::Path,
     notebook_json: &str,
     max_total_bytes: u64,
+    admit_new: impl FnOnce(u64) -> bool,
 ) -> anyhow::Result<(String, IronpadNotebook)> {
     let notebook = validate_notebook_upload(notebook_json)?;
 
@@ -868,6 +876,11 @@ async fn share_notebook_core_capped(
     // existing hash overwrites in place and adds no bytes. (Minor TOCTOU under
     // concurrent shares is acceptable: the cap bounds steady-state disk use.)
     if !path.exists() {
+        if !admit_new(notebook_json.len() as u64) {
+            anyhow::bail!(
+                "rate limited: too many new shares from this client. Re-sharing an existing link is unaffected; wait and retry"
+            );
+        }
         let existing_total = dir_total_bytes(&shares_dir).await?;
         let projected = existing_total.saturating_add(notebook_json.len() as u64);
         if projected > max_total_bytes {
@@ -914,9 +927,26 @@ pub async fn share_notebook(
     use ironpad_common::AppConfig;
 
     let config = expect_context::<AppConfig>();
-    let (hash, notebook) = share_notebook_core(&config.data_dir, &notebook_json)
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    // `use_context`, not `expect_context`: a harness that mounts only this
+    // fn with an `AppConfig` (the body-limit test does) has no admission,
+    // and gets an unmetered share rather than a panic.
+    let admission = use_context::<crate::compiler::admission::BuildAdmission>();
+    let client_ip = leptos_axum::extract::<http::HeaderMap>().await.map_or_else(
+        |_| "local".to_string(),
+        |headers| crate::compiler::admission::client_ip(&headers),
+    );
+    let (hash, notebook) = share_notebook_core_capped(
+        &config.data_dir,
+        &notebook_json,
+        MAX_TOTAL_SHARE_BYTES,
+        |bytes| {
+            admission
+                .as_ref()
+                .is_none_or(|a| a.try_admit_share(&client_ip, bytes))
+        },
+    )
+    .await
+    .map_err(|e| ServerFnError::new(e.to_string()))?;
 
     match snapshot_share_blobs(
         &config.data_dir,
@@ -1391,14 +1421,19 @@ impl MutableQuota {
     };
 }
 
-/// Admit a write of `incoming` bytes against both caps — the ONE place
-/// either is enforced, so a new write path cannot be metered against the
-/// instance and not the account.
+/// Admit a write that GROWS stored bytes by `incoming` against both caps —
+/// the ONE place either is enforced, so a new write path cannot be metered
+/// against the instance and not the account.
+///
+/// `incoming` is the growth, not the size of the write: a caller replacing
+/// stored bytes passes only what it adds (review bug-security-8). Counting
+/// the whole write against totals that still include what it replaces
+/// looked harmlessly conservative, but at a cap it refused EVERY autosave,
+/// including one that shrinks a notebook, so every editor on the instance
+/// stopped saving at once. A write that adds nothing is always admitted.
 ///
 /// Minor TOCTOU is fine: these bound steady-state storage, they are not
-/// hard quotas. Conservative by up to the size of whatever is being
-/// replaced (both totals still include it), which at worst refuses one
-/// notebook-size early near a cap.
+/// hard quotas.
 #[cfg(feature = "ssr")]
 async fn admit_mutable_write(
     db: &crate::db::Db,
@@ -1406,6 +1441,9 @@ async fn admit_mutable_write(
     incoming: u64,
     quota: MutableQuota,
 ) -> anyhow::Result<()> {
+    if incoming == 0 {
+        return Ok(());
+    }
     let total = db.total_mutable_bytes().await?;
     if total.saturating_add(incoming) > quota.total {
         anyhow::bail!(
@@ -1551,8 +1589,11 @@ pub(crate) async fn save_mutable_draft_core(
     ensure_share_owner(db, github_id, id).await?;
     // Drafts count toward both caps: they are the one write path an owner
     // can drive at will, and uncounted, N tiny shares each autosaving a
-    // 4 MiB draft would grow storage unboundedly.
-    admit_mutable_write(db, github_id, notebook_json.len() as u64, quota).await?;
+    // 4 MiB draft would grow storage unboundedly. An autosave REPLACES the
+    // draft slot, so only its growth over the draft already stored is new.
+    let prior = db.draft_bytes(id).await?;
+    let growth = (notebook_json.len() as u64).saturating_sub(prior);
+    admit_mutable_write(db, github_id, growth, quota).await?;
     db.save_draft(id, notebook_json).await
 }
 
@@ -3089,11 +3130,11 @@ mod tests {
         // Cap chosen so the first notebook exactly fills the store; a second
         // *distinct* notebook then pushes the total over the cap.
         let cap = VALID_NOTEBOOK_JSON.len() as u64;
-        let (h1, _) = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap)
+        let (h1, _) = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap, |_| true)
             .await
             .expect("first share fits within the cap");
 
-        let err = share_notebook_core_capped(dir.path(), &second_notebook_json(), cap)
+        let err = share_notebook_core_capped(dir.path(), &second_notebook_json(), cap, |_| true)
             .await
             .unwrap_err()
             .to_string();
@@ -3107,9 +3148,10 @@ mod tests {
 
         // Re-sharing an already-stored notebook overwrites in place and is still
         // allowed even at/over the cap (it adds no bytes).
-        let (h1_again, _) = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap)
-            .await
-            .expect("idempotent re-share is allowed at the cap");
+        let (h1_again, _) =
+            share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, cap, |_| true)
+                .await
+                .expect("idempotent re-share is allowed at the cap");
         assert_eq!(h1, h1_again);
     }
 
@@ -4144,9 +4186,8 @@ mod tests {
         assert!(err.contains("store full"), "unexpected error: {err}");
 
         // With headroom the same save lands, and an overwrite of the SAME
-        // draft passes a cap of total + one draft: the check is conservative
-        // (it still counts the draft being replaced) but the slot itself is
-        // replaced, not appended.
+        // draft passes a cap of exactly the stored total: the slot is
+        // replaced, not appended, and only growth is metered.
         save_mutable_draft_core(&db, "1", &id, &draft, MutableQuota::DEFAULT)
             .await
             .expect("draft fits under the real cap");
@@ -4158,12 +4199,71 @@ mod tests {
             &id,
             &draft,
             MutableQuota {
-                total: total + draft.len() as u64,
+                total,
                 ..MutableQuota::DEFAULT
             },
         )
         .await
         .expect("replacing the draft is bounded, not accumulating");
+    }
+
+    /// A NEW share is priced by `admit_new` (review bug-security-8): refused,
+    /// nothing is written. A re-share of a stored hash adds no bytes, so it
+    /// never asks.
+    #[tokio::test]
+    async fn a_new_share_is_metered_and_a_reshare_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, u64::MAX, |_| false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("rate limited"), "{err}");
+        assert!(
+            std::fs::read_dir(dir.path().join("shares"))
+                .map_or(true, |mut entries| entries.next().is_none()),
+            "a refused share writes nothing"
+        );
+
+        let (hash, _) = share_notebook_core(dir.path(), VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
+        let (again, _) =
+            share_notebook_core_capped(dir.path(), VALID_NOTEBOOK_JSON, u64::MAX, |_| {
+                panic!("a re-share must not be charged")
+            })
+            .await
+            .unwrap();
+        assert_eq!(again, hash);
+    }
+
+    /// At the cap, an autosave that replaces a draft without growing it must
+    /// still land (review bug-security-8): counting the whole write against
+    /// totals that include the draft it replaces refused every editor on the
+    /// instance at once, including saves that shrink a notebook.
+    #[tokio::test]
+    async fn at_the_cap_a_draft_can_be_replaced_but_not_grown() {
+        let (_dbdir, db) = accounts_db().await;
+        let draft = zero_cell_notebook_json("Drafty");
+        let id = save_notebook_to_account_core(&db, "1", &draft, MutableQuota::DEFAULT)
+            .await
+            .unwrap();
+        let at_cap = MutableQuota {
+            total: db.total_mutable_bytes().await.unwrap(),
+            ..MutableQuota::DEFAULT
+        };
+
+        save_mutable_draft_core(&db, "1", &id, &draft, at_cap)
+            .await
+            .expect("a same-size replacement adds nothing");
+        let smaller = zero_cell_notebook_json("D");
+        save_mutable_draft_core(&db, "1", &id, &smaller, at_cap)
+            .await
+            .expect("a smaller replacement shrinks the store");
+
+        let err = save_notebook_to_account_core(&db, "1", &draft, at_cap)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("store full"), "{err}");
     }
 
     // ── Account notebooks (PRD-0064) ────────────────────────────────
@@ -4587,9 +4687,11 @@ mod tests {
             .await
             .expect("bob has his own allowance");
 
-        // Autosave is metered the same way, by the same helper.
+        // Autosave growth is metered the same way, by the same helper (only
+        // growth: the draft it replaces is already counted).
         let id = list_mutable_core(&db, "1").await.unwrap()[0].id.clone();
-        let err = save_mutable_draft_core(&db, "1", &id, &second, quota)
+        let grown = zero_cell_notebook_json("First, grown past the allowance");
+        let err = save_mutable_draft_core(&db, "1", &id, &grown, quota)
             .await
             .unwrap_err()
             .to_string();

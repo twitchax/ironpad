@@ -71,6 +71,14 @@ The server SHALL refuse a new distinct share once the files already in the share
 - **WHEN** the share store is full and a user re-shares byte-identical JSON that is already stored
 - **THEN** the share succeeds and returns the existing hash
 
+### Requirement: Per-client share rate limit
+The server SHALL charge each new distinct share's byte length against a per-client budget of `IRONPAD_SHARE_RATE_BURST_BYTES` (default 64 MiB) refilling at `IRONPAD_SHARE_RATE_BYTES_PER_MIN` (default 16 MiB an hour), keyed like the build rate limit, and SHALL refuse a share the budget cannot cover with "rate limited: too many new shares from this client" before anything is written. Re-sharing a stored hash SHALL never be charged.
+
+#### Scenario: Scripted share flood
+- **WHEN** one client uploads distinct notebooks faster than its budget refills
+- **THEN** the next new share is refused with "rate limited" and nothing is written
+- **AND** a share from another client, or a re-share of a stored hash, still succeeds
+
 ### Requirement: Share-time blob snapshot
 When a share is created, the server SHALL copy the compiled blob (and JS glue, if any) of each non-shared Rust or Linux cell whose cache key, built from the sharer's positional type tags, is already in the compile cache into the share blob store. It SHALL never compile at share time, and a skipped or failed snapshot SHALL never fail the share. (PRD-0047, PRD-0066)
 

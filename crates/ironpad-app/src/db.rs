@@ -757,6 +757,28 @@ impl Db {
         .await
     }
 
+    /// Byte size of the share's draft slot, 0 when it holds none (or the id
+    /// does not exist). The input a draft autosave is metered against: it
+    /// replaces this slot, so only its growth over this is new storage.
+    #[tracing::instrument(name = "db_draft_bytes", level = "debug", skip_all, fields(id = %id))]
+    pub async fn draft_bytes(&self, id: &str) -> Result<u64> {
+        #[derive(SurrealValue)]
+        struct Row {
+            draft_bytes: Option<i64>,
+        }
+        let row: Option<Row> = self
+            .inner
+            .query("SELECT draft_bytes FROM ONLY type::record('mutable_share', $id)")
+            .bind(("id", id.to_string()))
+            .await
+            .context("draft size fetch failed")?
+            .take(0)
+            .context("draft size row malformed")?;
+        Ok(row
+            .and_then(|r| r.draft_bytes)
+            .map_or(0, |bytes| u64::try_from(bytes).unwrap_or(0)))
+    }
+
     /// The owner's editing view: the draft when one exists, else published.
     #[tracing::instrument(name = "db_get_share_for_edit", level = "info", skip_all, fields(id = %id))]
     pub async fn get_share_for_edit(&self, id: &str) -> Result<Option<ShareEditRow>> {

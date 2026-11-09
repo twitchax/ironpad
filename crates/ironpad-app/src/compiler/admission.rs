@@ -53,6 +53,21 @@ const DEFAULT_KEY_RATE_PER_MIN: f64 = 30.0;
 /// Default bound on how long a compile may queue for a slot.
 const DEFAULT_QUEUE_TIMEOUT_SECS: u64 = 180;
 
+/// Per-client byte budget for NEW immutable shares (review bug-security-8).
+///
+/// The share store is capped instance-wide and never evicts, because an
+/// immutable link is frozen by design, so without a per-client price one
+/// anonymous client could fill it with distinct uploads and refuse every
+/// later share for everyone. Charged in bytes rather than requests, since
+/// the store fills by bytes: a burst of 64 MiB (sixteen maximum-size
+/// notebooks) refilling at 16 MiB an hour, far beyond anyone sharing their
+/// own work. Re-sharing an already stored hash adds nothing and is free.
+const DEFAULT_SHARE_RATE_BURST_BYTES: f64 = 64.0 * 1024.0 * 1024.0;
+
+/// Refill rate for [`DEFAULT_SHARE_RATE_BURST_BYTES`], per minute (16 MiB
+/// an hour).
+const DEFAULT_SHARE_RATE_BYTES_PER_MIN: f64 = 16.0 * 1024.0 * 1024.0 / 60.0;
+
 /// Buckets at or above this count trigger an opportunistic sweep of
 /// fully-recharged (i.e. idle) entries, so the map cannot grow without bound
 /// across many distinct client IPs.
@@ -108,9 +123,14 @@ impl TokenBuckets {
         }
     }
 
-    /// Take one token from `client_ip`'s bucket, refilling for elapsed time
-    /// first. `true` = admitted.
+    /// Take one token from `client_ip`'s bucket. `true` = admitted.
     fn take(&self, client_ip: &str) -> bool {
+        self.take_n(client_ip, 1.0)
+    }
+
+    /// Take `n` tokens from `client_ip`'s bucket, refilling for elapsed time
+    /// first. `true` = admitted; a refusal takes nothing.
+    fn take_n(&self, client_ip: &str, n: f64) -> bool {
         let now = Instant::now();
         let mut buckets = self.table.lock().expect("bucket table poisoned");
 
@@ -133,8 +153,8 @@ impl TokenBuckets {
             .min(self.burst);
         bucket.last_refill = now;
 
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
+        if bucket.tokens >= n {
+            bucket.tokens -= n;
             true
         } else {
             false
@@ -153,6 +173,9 @@ pub struct BuildAdmission {
     /// Charged per `get_browserpod_key`; see [`DEFAULT_KEY_RATE_BURST`] for
     /// why it is a separate budget.
     keys: Arc<TokenBuckets>,
+    /// Charged in bytes per NEW immutable share; see
+    /// [`DEFAULT_SHARE_RATE_BURST_BYTES`].
+    shares: Arc<TokenBuckets>,
     queue_timeout: Duration,
 }
 
@@ -168,7 +191,8 @@ impl Default for BuildAdmission {
 impl BuildAdmission {
     /// Build with `max_concurrent` slots and rate/queue settings from the
     /// environment (`IRONPAD_BUILD_RATE_BURST`, `IRONPAD_BUILD_RATE_PER_MIN`,
-    /// `IRONPAD_BUILD_QUEUE_TIMEOUT_SECS`), falling back to the defaults.
+    /// `IRONPAD_BUILD_QUEUE_TIMEOUT_SECS`, the `IRONPAD_KEY_RATE_*` pair and
+    /// the `IRONPAD_SHARE_RATE_*` pair), falling back to the defaults.
     pub fn from_env(max_concurrent: usize) -> Self {
         let env_f64 = |name: &str, default: f64| {
             std::env::var(name)
@@ -192,10 +216,21 @@ impl BuildAdmission {
             env_f64("IRONPAD_KEY_RATE_BURST", DEFAULT_KEY_RATE_BURST),
             env_f64("IRONPAD_KEY_RATE_PER_MIN", DEFAULT_KEY_RATE_PER_MIN),
         )
+        .with_share_rate(
+            env_f64(
+                "IRONPAD_SHARE_RATE_BURST_BYTES",
+                DEFAULT_SHARE_RATE_BURST_BYTES,
+            ),
+            env_f64(
+                "IRONPAD_SHARE_RATE_BYTES_PER_MIN",
+                DEFAULT_SHARE_RATE_BYTES_PER_MIN,
+            ),
+        )
     }
 
-    /// Fully-explicit construction (tests). The key-fetch budget starts at
-    /// its defaults; [`with_key_rate`](Self::with_key_rate) overrides it.
+    /// Fully-explicit construction (tests). The key-fetch and share budgets
+    /// start at their defaults; [`with_key_rate`](Self::with_key_rate) and
+    /// [`with_share_rate`](Self::with_share_rate) override them.
     pub fn new(
         max_concurrent: usize,
         rate_burst: f64,
@@ -211,6 +246,10 @@ impl BuildAdmission {
                 DEFAULT_KEY_RATE_BURST,
                 DEFAULT_KEY_RATE_PER_MIN,
             )),
+            shares: Arc::new(TokenBuckets::new(
+                DEFAULT_SHARE_RATE_BURST_BYTES,
+                DEFAULT_SHARE_RATE_BYTES_PER_MIN,
+            )),
             queue_timeout,
         }
     }
@@ -220,6 +259,25 @@ impl BuildAdmission {
     pub fn with_key_rate(mut self, burst: f64, per_min: f64) -> Self {
         self.keys = Arc::new(TokenBuckets::new(burst, per_min));
         self
+    }
+
+    /// Override the new-share byte budget (tests, and `from_env`).
+    #[must_use]
+    pub fn with_share_rate(mut self, burst_bytes: f64, bytes_per_min: f64) -> Self {
+        self.shares = Arc::new(TokenBuckets::new(burst_bytes, bytes_per_min));
+        self
+    }
+
+    /// Admit a write of `bytes` into the immutable share store from
+    /// `client_ip`. `true` = admitted. Only a NEW share is charged: the caller
+    /// asks only once it knows the hash is not already stored.
+    pub fn try_admit_share(&self, client_ip: &str, bytes: u64) -> bool {
+        #[allow(clippy::cast_precision_loss)] // bytes up to the 4 MiB upload cap
+        let admitted = self.shares.take_n(client_ip, bytes as f64);
+        if !admitted {
+            tracing::warn!(client_ip, bytes, "share rate limit hit");
+        }
+        admitted
     }
 
     /// Admit a compile that is about to spawn cargo: charge the client's
@@ -438,6 +496,34 @@ mod tests {
             );
         }
         assert!(!a.try_admit_key("1.2.3.4"), "past the default burst");
+    }
+
+    /// Shares are charged in bytes (review bug-security-8): a burst admits
+    /// that many bytes, a refusal takes nothing, and time refills it.
+    #[test]
+    fn share_bytes_are_charged_per_client_and_refill() {
+        // 1,000-byte burst refilling at 60,000 bytes a minute (1,000/s).
+        let a = admission(4, 1.0, 1.0, 50).with_share_rate(1_000.0, 60_000.0);
+
+        assert!(a.try_admit_share("1.2.3.4", 600));
+        assert!(
+            !a.try_admit_share("1.2.3.4", 600),
+            "600 more is past the 400 left in the burst"
+        );
+        assert!(
+            a.try_admit_share("1.2.3.4", 300),
+            "a refusal must not have spent the remainder"
+        );
+        assert!(
+            a.try_admit_share("5.6.7.8", 1_000),
+            "another client has its own budget"
+        );
+
+        std::thread::sleep(Duration::from_millis(700));
+        assert!(
+            a.try_admit_share("1.2.3.4", 600),
+            "elapsed time must refill the byte budget"
+        );
     }
 
     #[test]
