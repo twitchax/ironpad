@@ -137,6 +137,13 @@ fn prepare_cell(request: &CompileRequest) -> Result<(CellTarget, CellFeatures), 
         )));
     }
 
+    if let Some(slot) = unsplicable_tag_slot(&request.source, &request.previous_cell_types, target)
+    {
+        return Err(ServerFnError::new(format!(
+            "invalid type tag for cell{slot}: the scaffold binds it as a Rust type, and it is not one"
+        )));
+    }
+
     // A pure function of the inputs (no I/O), so both cores can derive it
     // before any lock or filesystem work.
     let features = CellFeatures::detect(
@@ -146,6 +153,28 @@ fn prepare_cell(request: &CompileRequest) -> Result<(CellTarget, CellFeatures), 
         request.shared_source.as_deref(),
     );
     Ok((target, features))
+}
+
+/// The upstream slot whose type tag would be spliced into this cell's
+/// generated source but is not a type, if any (review bug-security-5).
+///
+/// Tags are client-supplied and the scaffold writes them into `lib.rs` as
+/// Rust, so an unchecked one can run code the cell's source does not show,
+/// cached under that source. The ONE rule for both places a tag chain meets a
+/// blob: a compile or check ([`prepare_cell`]), and a share snapshot, which
+/// must not publish a blob cached under a hostile chain before this existed.
+/// A Linux cell binds no inputs, so it splices nothing.
+#[cfg(feature = "ssr")]
+fn unsplicable_tag_slot(
+    source: &str,
+    previous_cell_types: &[String],
+    target: CellTarget,
+) -> Option<usize> {
+    if target.is_linux() {
+        return None;
+    }
+    ironpad_common::cell_deps::invalid_spliced_tag(source, previous_cell_types)
+        .map(|(slot, _)| slot)
 }
 
 /// Scaffold the request's micro-crate into the shared workspace session.
@@ -1100,6 +1129,17 @@ async fn write_cell_blobs_capped(
         // `run_flow::acquire_blob`, so it was only ever the server that
         // declined to snapshot them.
         if !cell.cell_type.compiles() || cell.shared {
+            continue;
+        }
+        // Readers run a manifest entry without comparing it to the source
+        // they display, so a blob cached under a hostile tag chain must not
+        // get one. Skip the cell, not the share: its siblings are fine.
+        if let Some(slot) = unsplicable_tag_slot(
+            &cell.source,
+            &cell_type_tags[..idx],
+            CellTarget::from(cell.cell_type),
+        ) {
+            tracing::warn!(cell_id = %cell.id, slot, "share snapshot: unsplicable type tag, skipping cell");
             continue;
         }
         let hash = content_hash(
@@ -2661,6 +2701,46 @@ mod tests {
         );
     }
 
+    /// A type tag is spliced into the generated `lib.rs` as Rust source, and
+    /// the client supplies it (review bug-security-5). A tag that closes the
+    /// binding and opens a statement would compile code the cell's source does
+    /// not show, cached under that innocent source.
+    ///
+    /// Only the tags that are actually spliced are checked: an independent
+    /// cell below an async cell's local struct carries a `{{closure}}` tag in
+    /// a slot it never binds, and refusing that would break a cell that
+    /// compiles fine today.
+    #[test]
+    fn prepare_cell_refuses_a_hostile_tag_only_where_it_is_spliced() {
+        let hostile = CompileRequest {
+            source: "cell0 + 1".to_string(),
+            previous_cell_types: vec!["u32 = 0; evil(); let _x: u32".to_string()],
+            ..admission_test_request("hostile-tag")
+        };
+        let err = prepare_cell(&hostile).expect_err("a hostile spliced tag must be refused");
+        assert!(err.to_string().contains("cell0"), "name the slot: {err}");
+
+        let closure_tag = "Vec<cell_x::__ironpad_user__::{{closure}}::P>".to_string();
+        let independent = CompileRequest {
+            source: "40 + 2".to_string(),
+            previous_cell_types: vec![closure_tag.clone()],
+            ..admission_test_request("independent")
+        };
+        assert!(
+            prepare_cell(&independent).is_ok(),
+            "an unreferenced slot is never spliced, so its tag is not checked"
+        );
+
+        // The same tag in a slot the cell DOES bind is refused: it could
+        // never have compiled there anyway.
+        let bound = CompileRequest {
+            source: "cell0.len()".to_string(),
+            previous_cell_types: vec![closure_tag],
+            ..admission_test_request("bound")
+        };
+        assert!(prepare_cell(&bound).is_err());
+    }
+
     // ── compile_cell_core (cache-hit path) ───────────────────────────────
 
     #[tokio::test]
@@ -3210,6 +3290,37 @@ mod tests {
                 .await
                 .unwrap(),
             b"glue()"
+        );
+    }
+
+    /// A blob cached under a hostile tag chain (one compiled before tags were
+    /// validated) must not reach a manifest: readers run manifest entries
+    /// without comparing them to the displayed source (review
+    /// bug-security-5). The guard skips that one cell rather than failing the
+    /// whole snapshot, so its sibling is still covered.
+    #[tokio::test]
+    async fn snapshot_skips_a_cell_whose_spliced_tag_is_hostile() {
+        let data = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let nb = snapshot_notebook(vec![
+            code_cell("cell-1", "40 + 2"),
+            code_cell("cell-2", "cell0 + 1"),
+        ]);
+        let tags: Vec<String> = vec!["u32 = 0; evil(); let _x: u32".into(), String::new()];
+        seed_cache(cache.path(), &nb, &tags, 0, b"wasm-1", None).await;
+        seed_cache(cache.path(), &nb, &tags, 1, b"wasm-hostile", None).await;
+
+        let entries = write_cell_blobs_capped(data.path(), cache.path(), &nb, &tags, u64::MAX)
+            .await
+            .unwrap();
+
+        assert!(
+            entries.contains_key("cell-1"),
+            "the sibling is unaffected: {entries:?}"
+        );
+        assert!(
+            !entries.contains_key("cell-2"),
+            "a cell bound to a hostile tag must get no manifest entry: {entries:?}"
         );
     }
 

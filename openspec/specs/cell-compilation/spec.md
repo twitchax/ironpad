@@ -130,6 +130,17 @@ The system SHALL bind an upstream output as `cellN: <type tag>` only when the so
 - **WHEN** a bound slot's bytes do not deserialize as its tag at run time
 - **THEN** the cell panics with `failed to deserialize cellN as` the tag, naming the input's byte length
 
+### Requirement: Type tags are types
+The system SHALL refuse a compile or check of a non-Linux cell, before any cache lookup, scaffold or build, when an upstream type tag in a slot the cell references (every slot, when it references `last` or reads `__ironpad_inputs__`) is not a type: longer than 512 bytes, containing a character outside identifier characters, spaces and `_ : < > , ( ) [ ] & ' - + *`, a `;` outside brackets, brackets that do not balance by kind, or a `'` that does not start a lifetime. Tags in slots the cell does not reference are not checked.
+
+#### Scenario: A tag that smuggles a statement
+- **WHEN** the source is `cell0 + 1` and the upstream type tags are `["u32 = 0; evil(); let _x: u32"]`
+- **THEN** the call fails with an error naming `cell0` and nothing is built
+
+#### Scenario: An unreferenced closure-path tag
+- **WHEN** the source is `40 + 2` and an upstream slot carries `Vec<cell_x::__ironpad_user__::{{closure}}::P>`
+- **THEN** the cell compiles as usual
+
 ### Requirement: Notebook shared source module
 The system SHALL compile the request's `shared_source` as a module `shared` in every cell's crate, reachable as `shared::…`, without reporting dead-code warnings for shared helpers the cell does not call. (PRD-0007, PRD-0044)
 

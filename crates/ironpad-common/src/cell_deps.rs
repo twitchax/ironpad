@@ -202,6 +202,88 @@ pub fn transitive_dep_indices(cells: &[DepCell<'_>], target_idx: usize) -> BTree
     deps
 }
 
+/// Longest type tag the scaffold will splice into generated source.
+const MAX_TYPE_TAG_BYTES: usize = 512;
+
+/// Is `tag` safe to splice into a cell's generated `lib.rs` as a type?
+///
+/// The scaffold writes `let cellN: {tag} = …` and repeats the tag inside a
+/// `panic!` format string, and the tag comes from the client. A tag such as
+/// `u32 = 0; evil(); let _x: u32` closes the binding and runs a statement the
+/// cell's source does not show, and the blob is then cached (and shared)
+/// under that innocent source.
+///
+/// So this is an allowlist of what a type can contain: identifier characters
+/// (Rust identifiers may be non-ASCII), paths, generics, tuples, arrays,
+/// references, lifetimes, raw pointers, `dyn A + B` and `fn(..) -> T`. It
+/// excludes `{ } = ! " / \` and newlines, and allows `;` only inside brackets
+/// (an array length), so a tag can neither end the statement nor leave the
+/// format string. Brackets must balance BY KIND, because `<` is also a
+/// comparison inside an array length: a plain count would let `(` close
+/// against `<` and pass off a top-level `;` as nested. For the same reason a
+/// `'` must start a lifetime, never a char literal such as `'['`.
+///
+/// Empty is valid: it means the slot has no tag.
+#[must_use]
+pub fn is_valid_type_tag(tag: &str) -> bool {
+    if tag.len() > MAX_TYPE_TAG_BYTES {
+        return false;
+    }
+    let mut open: Vec<char> = Vec::new();
+    let mut chars = tag.chars().peekable();
+    let mut prev = None;
+    while let Some(c) = chars.next() {
+        let ok = match c {
+            '<' | '(' | '[' => {
+                open.push(c);
+                true
+            }
+            // The `->` of a fn type, not a closing angle bracket.
+            '>' if prev == Some('-') => true,
+            '>' => open.pop() == Some('<'),
+            ')' => open.pop() == Some('('),
+            ']' => open.pop() == Some('['),
+            ';' => !open.is_empty(),
+            '\'' => {
+                let mut ident = 0;
+                while chars
+                    .next_if(|&n| n.is_alphanumeric() || n == '_')
+                    .is_some()
+                {
+                    ident += 1;
+                }
+                ident > 0 && chars.peek() != Some(&'\'')
+            }
+            '_' | ':' | ',' | '&' | '-' | '+' | '*' | ' ' => true,
+            c => c.is_alphanumeric(),
+        };
+        if !ok {
+            return false;
+        }
+        prev = Some(c);
+    }
+    open.is_empty()
+}
+
+/// The first upstream slot whose tag the scaffold would splice into this cell
+/// but [`is_valid_type_tag`] refuses, as `(slot, tag)`.
+///
+/// Checks exactly the tags [`normalize_previous_types`] keeps, which covers
+/// every slot the scaffold binds, so a tag in a slot the cell never references
+/// is never refused. That matters: an async cell's local struct produces a
+/// tag like `Vec<cell_x::__ironpad_user__::{{closure}}::P>`, and an
+/// independent cell further down still receives it in an unreferenced slot.
+#[must_use]
+pub fn invalid_spliced_tag<'a>(
+    source: &str,
+    previous_types: &'a [String],
+) -> Option<(usize, &'a str)> {
+    normalize_previous_types(source, previous_types)
+        .into_iter()
+        .enumerate()
+        .find(|(_, tag)| !is_valid_type_tag(tag))
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -376,6 +458,68 @@ mod tests {
             deps,
             vec![0, 1],
             "cell1's unknown source pulls in everything above it"
+        );
+    }
+
+    #[test]
+    fn type_tags_admit_types_and_refuse_statements() {
+        for ok in [
+            "",
+            "u32",
+            "String",
+            "()",
+            "Vec<(String, f64)>",
+            "[u8; 4]",
+            "std::collections::HashMap<String, Vec<u32>>",
+            "(f64, ())",
+            "&'static str",
+            "Box<dyn Fn(u32) -> u32 + Send>",
+            "*const u8",
+            "Vec<Größe>",
+        ] {
+            assert!(is_valid_type_tag(ok), "{ok:?} is a type and must pass");
+        }
+        for bad in [
+            "u32 = 0; evil(); let _x: u32",
+            "u32; evil(); let _x: u32",
+            "[u8; 1]; evil(); let _x: [u8; 1]",
+            "[u8",
+            "u8]",
+            "Vec<u8)",
+            "\"",
+            "Vec<{{closure}}>",
+            "u32\nfn evil() {}",
+            "u32 // comment",
+            // A char literal is not a lifetime: `'['` would open a bracket
+            // the compiler does not see, so a `;` that ends the statement
+            // would look nested here.
+            "[u8; '[' as usize]; evil(); let _x: [u8; ']' as usize]",
+            "[u8; 'a' as usize]",
+            // `<` as a comparison inside an array length would desync the
+            // same way, and a kind-checked stack refuses it.
+            "[u8; (1 < 2) as usize]; evil(); let _x: [u8; (2 > 1) as usize]",
+        ] {
+            assert!(!is_valid_type_tag(bad), "{bad:?} must be refused");
+        }
+        assert!(!is_valid_type_tag(&"u".repeat(513)), "over the length cap");
+    }
+
+    #[test]
+    fn only_spliced_tags_are_checked() {
+        let tags = vec![
+            "u32 = 0; evil(); let _x: u32".to_string(),
+            "Vec<x::{{closure}}::P>".to_string(),
+        ];
+        // Independent: nothing is spliced, so nothing is refused.
+        assert_eq!(invalid_spliced_tag("40 + 2", &tags), None);
+        // Slot 0 is bound, and its tag is the first refusal.
+        assert_eq!(
+            invalid_spliced_tag("cell0 + 1", &tags),
+            Some((0, "u32 = 0; evil(); let _x: u32"))
+        );
+        assert_eq!(
+            invalid_spliced_tag("cell1.len()", &tags),
+            Some((1, "Vec<x::{{closure}}::P>"))
         );
     }
 

@@ -144,6 +144,74 @@ fn every_cell_widget_kind_is_dispatched() {
     );
 }
 
+/// The type tag `output` carries across the FFI, read the way the host
+/// reads it: out of the leaked `CellResult` buffer.
+fn ffi_type_tag(output: CellOutput) -> String {
+    let result = ironpad_cell::CellResult::from(output);
+    let tag = if result.type_tag_len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: `From<CellOutput>` leaked the tag as a `Vec` with
+        // capacity == len at this pointer.
+        unsafe { std::slice::from_raw_parts(result.type_tag_ptr, result.type_tag_len) }.to_vec()
+    };
+    // SAFETY: each buffer was leaked by `From<CellOutput>` with capacity ==
+    // len (or is null with length 0), which is `ironpad_dealloc`'s contract.
+    unsafe {
+        ironpad_cell::ironpad_dealloc(result.output_ptr, result.output_len);
+        ironpad_cell::ironpad_dealloc(result.display_ptr, result.display_len);
+        ironpad_cell::ironpad_dealloc(result.type_tag_ptr, result.type_tag_len);
+    }
+    String::from_utf8(tag).expect("type tags are UTF-8")
+}
+
+/// Every tag the cell runtime emits must survive the server's splice gate
+/// (`is_valid_type_tag`, review bug-security-5): a tag the runtime produces
+/// and the server refuses would make every downstream cell uncompilable.
+#[test]
+fn every_runtime_type_tag_passes_the_splice_gate() {
+    use ironpad_cell::TypeTag;
+    use ironpad_common::cell_deps::is_valid_type_tag;
+
+    let mut tags = vec![
+        i8::type_tag(),
+        i16::type_tag(),
+        i32::type_tag(),
+        i64::type_tag(),
+        i128::type_tag(),
+        u8::type_tag(),
+        u16::type_tag(),
+        u32::type_tag(),
+        u64::type_tag(),
+        u128::type_tag(),
+        f32::type_tag(),
+        f64::type_tag(),
+        bool::type_tag(),
+        usize::type_tag(),
+        isize::type_tag(),
+        String::type_tag(),
+        <()>::type_tag(),
+        <Vec<(String, f64)>>::type_tag(),
+        <Vec<Vec<u8>>>::type_tag(),
+    ];
+    for output in [
+        CellOutput::from((ui::slider("s", 0.0, 1.0), ui::button("b"))),
+        CellOutput::from((ui::slider("s", 0.0, 1.0), ui::dropdown(&["a"]))),
+        CellOutput::from((ui::checkbox("c"), ui::text_input("t"), ui::number(0.0, 1.0))),
+    ] {
+        let tag = ffi_type_tag(output);
+        assert!(!tag.is_empty(), "a widget tuple carries a tag");
+        tags.push(tag);
+    }
+
+    for tag in &tags {
+        assert!(
+            is_valid_type_tag(tag),
+            "the runtime emits {tag:?}, which the server would refuse to splice"
+        );
+    }
+}
+
 #[test]
 fn live_tick_kind_codes_decode_to_the_panel_kind_strings() {
     for content in [

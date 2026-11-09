@@ -92,6 +92,10 @@ When a share is created, the server SHALL copy the compiled blob (and JS glue, i
 - **WHEN** a client omits `cell_type_tags`, or sends a tag list whose length differs from the cell count
 - **THEN** the notebook is stored and the share succeeds with no new snapshot entries
 
+#### Scenario: A cached blob under a hostile tag chain
+- **WHEN** a cell's blob is cached under upstream type tags that a compile would refuse as not being types
+- **THEN** that cell gets no snapshot entry and its siblings are snapshotted as usual
+
 #### Scenario: Blob store over budget
 - **WHEN** the share blob store already holds more than 2 GiB
 - **THEN** new shares succeed with no new snapshot entries
