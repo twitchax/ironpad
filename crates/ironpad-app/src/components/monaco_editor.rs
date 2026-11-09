@@ -116,6 +116,10 @@ impl MonacoEditorHandle {
     }
 
     /// Overwrite the editor content.  No-op during SSR or before mount.
+    ///
+    /// Does NOT fire the editor's `on_change`: that callback means typing,
+    /// and a program write is not typing. A caller that needs what typing
+    /// would have triggered does it itself.
     pub fn set_value(&self, value: &str) {
         #[cfg(feature = "hydrate")]
         {
@@ -249,7 +253,8 @@ pub fn MonacoEditor(
     /// Language mode (e.g. `"rust"`, `"toml"`).  Defaults to `"rust"`.
     #[prop(into, default = "rust".into())]
     language: String,
-    /// Fires whenever the editor content changes, providing the full new value.
+    /// Fires on every edit made in the editor (never on
+    /// [`MonacoEditorHandle::set_value`]), providing the full new value.
     #[prop(optional)]
     on_change: Option<Callback<String>>,
     /// If provided, the component writes a [`MonacoEditorHandle`] into this

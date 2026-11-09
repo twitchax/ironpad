@@ -175,3 +175,17 @@ test("a value set before Monaco has loaded still wins", async () => {
   await load();
   assert.equal(monaco.created[0].getValue(), "# queued");
 });
+
+test("a program write does not fire onChange; typing does", async () => {
+  // setValue is how the host pulls an agent's edit into Monaco. Echoing it
+  // through onChange made the pane look like unsaved typing, which armed a
+  // save that reverted the agent's next edit.
+  const { bridge, monaco, load } = loadBridge();
+  const seen = [];
+  const id = bridge.create(container(), "a", "rust", (v) => seen.push(v));
+  await load();
+  bridge.setValue(id, "agent");
+  assert.deepEqual(seen, []);
+  monaco.created[0].type("human");
+  assert.deepEqual(seen, ["human"]);
+});

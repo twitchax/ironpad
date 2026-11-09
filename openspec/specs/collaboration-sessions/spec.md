@@ -210,6 +210,10 @@ An agent's accepted mutation SHALL go through the same notebook model as the hos
 - **THEN** the host's rendered cell shows the new text
 - **AND** after the host opens that cell's editor and clicks away without typing, the daemon and IndexedDB still hold the agent's text
 
+#### Scenario: Rapid agent edits both land
+- **WHEN** an agent updates one cell's source twice within a second
+- **THEN** the cell holds the second source, its version has risen by exactly two, and its Code tab shows no unsaved-changes dot
+
 #### Scenario: Agent sets shared source
 - **WHEN** an agent sets the notebook's shared source
 - **THEN** the change is stored in IndexedDB and shown in the editor's shared appendix

@@ -340,8 +340,13 @@
         editor.onDidContentSizeChange(updateHeight);
         updateHeight();
 
+        // Edits only. A flush is `setValue`, a program write (the host
+        // pulling an agent's edit into the pane), and echoing it made the
+        // pane look like unsaved typing whose debounced save then reverted
+        // the agent's next edit.
         if (onChange) {
-          editor.onDidChangeModelContent(function () {
+          editor.onDidChangeModelContent(function (e) {
+            if (e.isFlush) return;
             onChange(editor.getValue());
           });
         }

@@ -61,12 +61,16 @@ The system SHALL run live checks in their own pool of `--max-concurrent-builds` 
 - **THEN** a live check can still take a check slot and run
 
 ### Requirement: Checks dispatch after the save debounce
-The editor SHALL dispatch a live check for a cell one second after its source stops changing, at the moment the edit is saved, and MUST NOT dispatch one for a Markdown or unrecognized cell, a cell that is compiling or running, or an edit to the cell's Cargo.toml alone. View-only and embedded pages SHALL NOT run live checks. (PRD-0045 T-003)
+The editor SHALL dispatch a live check for a cell one second after its source stops changing, at the moment the edit is saved, and as soon as an agent's source edit reaches the host's editor, and MUST NOT dispatch one for a Markdown or unrecognized cell, a cell that is compiling or running, or an edit to the cell's Cargo.toml alone. View-only and embedded pages SHALL NOT run live checks. (PRD-0045 T-003)
 
 #### Scenario: Squiggle without running
 - **WHEN** an author types `let x: i32 = "not a number";\nx` into a new cell and stops typing
 - **THEN** an error squiggle appears in the editor
 - **AND** the cell shows no output and no success status
+
+#### Scenario: An agent's edit is checked
+- **WHEN** an agent sets a code cell's source through a session
+- **THEN** the host dispatches a live check of the agent's text
 
 #### Scenario: Fixing clears the squiggle
 - **WHEN** the author then changes the source to `let x: i32 = 42;\nx`

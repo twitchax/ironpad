@@ -354,6 +354,76 @@ test.describe.serial("Agent Session", () => {
     expect(await storedSource(page, notebookId)).toBe("# SECOND AGENT TEXT");
   });
 
+  // Regression (review soc-app-client-1): pulling an agent's edit into Monaco
+  // fired the editor's change callback like typing does, so the pane looked
+  // dirty and armed a 1s save of what it held. A second agent edit inside
+  // that second was skipped as "unsaved host typing" and then reverted.
+  test("two rapid agent source edits both land", async ({ page }) => {
+    test.setTimeout(90_000);
+
+    await createNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await waitForPersistedCells(page, 1);
+
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+    await dismissSessionPanel(page);
+    const cellId = cliExec(["cells", "list"])[0].id;
+    const before = cliExec(["cells", "get", cellId]).version;
+
+    expect(
+      cliExecRaw(["cells", "update", cellId, "--source", "let first_edit = 1;\nfirst_edit"])
+        .exitCode,
+    ).toBe(0);
+    expect(
+      cliExecRaw(["cells", "update", cellId, "--source", "let second_edit = 2;\nsecond_edit"])
+        .exitCode,
+    ).toBe(0);
+    await page.waitForTimeout(2_000); // past the debounce the echo used to arm
+
+    const cell = cliExec(["cells", "get", cellId]);
+    expect(cell.source).toBe("let second_edit = 2;\nsecond_edit");
+    expect(cell.version).toBe(before + 2);
+    const host = page.locator(".ironpad-cell-card").first();
+    await expect(host.locator(".view-lines").first()).toContainText("second_edit");
+    await expect(host.locator(".ironpad-tab-dirty")).toHaveCount(0);
+  });
+
+  // The echo above was also the only thing that live-checked an agent's edit.
+  // Asserted on the dispatch rather than the squiggle: the check itself is a
+  // cargo round-trip, which live-check.spec.ts covers.
+  test("an agent edit gets a live check", async ({ page }) => {
+    test.setTimeout(90_000);
+
+    await createNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await waitForPersistedCells(page, 1);
+
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+    await dismissSessionPanel(page);
+    const cellId = cliExec(["cells", "list"])[0].id;
+
+    const checked = page.waitForRequest(
+      (r) =>
+        r.url().includes("check_cell") &&
+        (r.postData() ?? "").includes("agent_checked"),
+      { timeout: 30_000 },
+    );
+    expect(
+      cliExecRaw([
+        "cells",
+        "update",
+        cellId,
+        "--source",
+        'let agent_checked: i32 = "no";\nagent_checked',
+      ]).exitCode,
+    ).toBe(0);
+    await checked;
+  });
+
   test("agent updates notebook shared source and cargo", async ({ page }) => {
     test.setTimeout(60_000);
 

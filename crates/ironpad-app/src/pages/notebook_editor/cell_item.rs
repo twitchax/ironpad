@@ -598,8 +598,23 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
             let Some((latest_source, latest_cargo_toml)) = latest else {
                 return;
             };
-            if !source_dirty.get_untracked() {
-                refresh_pane(source, source_handle.get_untracked(), latest_source);
+            if !source_dirty.get_untracked()
+                && refresh_pane(source, source_handle.get_untracked(), latest_source)
+            {
+                // The model already holds the agent's text, so check it now:
+                // typing gets its check from the save debounce, which a
+                // program write into Monaco does not arm.
+                pipeline::dispatch_live_check(
+                    &state,
+                    cell_id.get_value(),
+                    cell_type,
+                    is_shared,
+                    cell_status,
+                    source,
+                    cargo_toml,
+                    last_check,
+                    check_generation,
+                );
             }
             if !cargo_toml_dirty.get_untracked() {
                 refresh_pane(
@@ -1524,16 +1539,26 @@ fn completion_variables(
 }
 
 /// Pull the model's `latest` text into one editor pane: the Monaco buffer the
-/// host sees and the signal the run pipeline compiles from. Each is written
-/// only when it differs, since a Monaco write fires the pane's `on_change`.
+/// host sees and the signal the run pipeline compiles from, each written only
+/// when it differs. Returns whether either changed. The Monaco write does not
+/// fire the pane's `on_change`, so the pane stays clean and the caller does
+/// whatever typing would have triggered.
 #[cfg(feature = "hydrate")]
-fn refresh_pane(signal: RwSignal<String>, handle: Option<MonacoEditorHandle>, latest: String) {
+fn refresh_pane(
+    signal: RwSignal<String>,
+    handle: Option<MonacoEditorHandle>,
+    latest: String,
+) -> bool {
+    let mut changed = false;
     if let Some(handle) = handle {
         if handle.get_value() != latest {
             handle.set_value(&latest);
+            changed = true;
         }
     }
     if signal.get_untracked() != latest {
         signal.set(latest);
+        changed = true;
     }
+    changed
 }
