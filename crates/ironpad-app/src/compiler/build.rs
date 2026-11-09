@@ -1559,6 +1559,60 @@ mod tests {
         std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"))
     }
 
+    /// A `${{ }}` expression inside a `run:` block is spliced into the script
+    /// SOURCE before bash sees it, so commit text there is executed: every
+    /// backtick span and `$(...)` in a commit message ran in the Notify step,
+    /// with the channel signing key in its environment. Untrusted values must
+    /// reach a script through `env:` and be read as `"$VAR"`.
+    #[test]
+    fn workflow_never_interpolates_commit_text_into_run_blocks() {
+        let workflow = read_workspace_file(".github/workflows/build.yml");
+        let indent = |line: &str| line.len() - line.trim_start().len();
+
+        let mut run_block: Option<usize> = None;
+        for (number, line) in workflow.lines().enumerate().map(|(i, l)| (i + 1, l)) {
+            if let Some(run_indent) = run_block {
+                if line.trim().is_empty() || indent(line) > run_indent {
+                    assert!(
+                        !line.contains("${{"),
+                        "build.yml:{number} interpolates an expression into a run block; \
+                         pass it through env: instead: {line}"
+                    );
+                    continue;
+                }
+                run_block = None;
+            }
+            let key = line.trim_start().trim_start_matches("- ");
+            if let Some(command) = key.strip_prefix("run:") {
+                assert!(
+                    !command.contains("${{"),
+                    "build.yml:{number} interpolates an expression into a run command: {line}"
+                );
+                run_block = Some(indent(line) + (line.trim_start().len() - key.len()));
+            }
+        }
+
+        for (number, line) in workflow.lines().enumerate().map(|(i, l)| (i + 1, l)) {
+            if !line.contains("github.event.head_commit") {
+                continue;
+            }
+            let (name, value) = line
+                .trim()
+                .split_once(": ")
+                .unwrap_or_else(|| panic!("build.yml:{number} is not a KEY: value line: {line}"));
+            assert!(
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && value.starts_with("${{")
+                    && value.ends_with("}}"),
+                "build.yml:{number} must read commit text only as an env entry \
+                 (NAME: ${{{{ ... }}}}): {line}"
+            );
+        }
+    }
+
     /// Both atomics warmups (the image's and `cargo make warmup-atomics`)
     /// exist only to leave behind artifacts a runtime rayon build reuses, and
     /// cargo fingerprints those by toolchain, RUSTFLAGS and the `-Zbuild-std`

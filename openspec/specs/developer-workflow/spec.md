@@ -101,6 +101,13 @@ The maintainer contract for the ironpad repository: the cargo-make tasks that bu
 - **WHEN** a pull request is opened or updated
 - **THEN** the Test, Security Audit, and Code Coverage jobs run and the Docker job does not
 
+### Requirement: Build notification carries commit text as data
+On pushes, the Test job's final Notify step SHALL receive the commit message, author and job status only through `env:` and format them with `printf`, never through a `${{ }}` expression inside its script, and SHALL be `continue-on-error` so a failed notification cannot fail the job. `cargo make test` SHALL fail when any `run:` block in `build.yml` contains a `${{ }}` expression or a `github.event.head_commit` value is read anywhere but an uppercase env entry.
+
+#### Scenario: A commit message with shell syntax
+- **WHEN** a pushed commit's message contains an unmatched backtick, `$(...)`, or a line reading `EOF`
+- **THEN** the notification carries that text literally and the Test job's result is unaffected
+
 ### Requirement: CI audit, coverage, and image jobs
 The workflow SHALL also run a Security Audit job (`cargo audit` over `Cargo.lock`), a Code Coverage job after Test that uploads `cargo llvm-cov nextest` lcov output to Codecov, and, for pushes to `main` after Test passes, a Docker job that builds `docker/Dockerfile` and pushes `ghcr.io/twitchax/ironpad:latest` and `:sha-<commit>`. (PRD-0009, PRD-0038)
 
