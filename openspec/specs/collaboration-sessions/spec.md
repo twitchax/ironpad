@@ -267,7 +267,7 @@ While a session is active, the browser SHALL emit `CellCompiling`, `CellCompiled
 - **THEN** it reads it as `success: true`
 
 ### Requirement: Queue drops are always reported
-When a queued run is dropped, the browser SHALL report it to agents: `CellBlocked { cell_id, blocked_by }` for each queued cell dropped because a cell it transitively depends on failed, and `RunCancelled { cell_ids }` listing every queued cell dropped when the user cancels the run. (PRD-0052, PRD-0060)
+When a queued run is dropped, the browser SHALL report it to agents: `CellBlocked { cell_id, blocked_by }` for each queued cell dropped because a cell it transitively depends on failed, and `RunCancelled { cell_ids }` naming the stopped cell and every queued cell dropped when the user cancels the run. (PRD-0052, PRD-0060)
 
 #### Scenario: Dependency failure
 - **WHEN** a queued cell reads `cell0` and cell 0 fails to compile during a session
@@ -275,7 +275,11 @@ When a queued run is dropped, the browser SHALL report it to agents: `CellBlocke
 
 #### Scenario: User stops the run
 - **WHEN** the user terminates a running cell while two more cells are queued
-- **THEN** guests receive `RunCancelled` listing those two cells, and the aborted cell reports `CellExecuted` with `success: false`
+- **THEN** the aborted cell reports `CellExecuted` with `success: false`, and guests receive `RunCancelled` naming it and those two cells
+
+#### Scenario: User stops a compile
+- **WHEN** the user stops a cell that is still compiling
+- **THEN** guests receive `RunCancelled` naming that cell and every cell queued behind it, and no `CellCompiled` or `CellExecuted` for the discarded compile
 
 ### Requirement: Protocol version and forward compatibility
 The protocol SHALL carry an advisory version, currently 7, that peers never reject on. The envelope SHALL ignore unknown keys, and an unknown `action`, `query`, `event`, `response`, `result`, `control`, or error-code tag SHALL decode to an unknown variant that is dropped or refused, not fail the whole frame; an unknown top-level `type` is dropped. (PRD-0038, PRD-0052, PRD-0060, PRD-0066)

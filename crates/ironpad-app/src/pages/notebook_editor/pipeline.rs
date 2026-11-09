@@ -15,9 +15,11 @@ use ironpad_common::{
 use leptos::prelude::*;
 
 use crate::components::monaco_editor::MonacoEditorHandle;
+use crate::components::run_flow::RunGuard;
 use crate::model::NotebookModel;
 #[cfg(not(feature = "hydrate"))]
 use crate::server_fns::compile_cell;
+use crate::session::SessionState;
 
 #[cfg(feature = "hydrate")]
 use super::state::CellOutputData;
@@ -51,18 +53,85 @@ pub(super) struct CellRunCtx {
     /// emitted only while a session is live (PRD-0052) — otherwise they
     /// would pile into the model's buffer and flush as a stale backlog the
     /// moment a session starts.
-    pub(super) session: Option<crate::session::SessionState>,
+    pub(super) session: Option<SessionState>,
+    /// The epoch behind this cell's [`RunGuard`]: minted when a run starts
+    /// compiling, revoked by a Stop.
+    pub(super) run_epoch: RwSignal<u64>,
+}
+
+/// Emit a compile/execution event for connected agents, gated on a live
+/// session (see [`CellRunCtx::session`]). Free so the page-level cancel path,
+/// which has no cell context, gates the same way.
+fn emit_session_event(
+    model: NotebookModel,
+    session: Option<SessionState>,
+    event: ironpad_common::protocol::Event,
+) {
+    if session.is_some_and(|s| s.active.try_get_untracked() == Some(true)) {
+        model.emit_event(event);
+    }
+}
+
+/// What a cancel reports: the stopped cell first (a direct run never queued
+/// it, and an agent may be waiting on it), then every queued cell the cancel
+/// dropped. With no stopped cell (leaving the editor) it is just the drops.
+fn queue_drops_on_cancel(target: Option<&str>, dropped: Vec<String>) -> Vec<String> {
+    target
+        .map(str::to_string)
+        .into_iter()
+        .chain(dropped)
+        .collect()
+}
+
+/// Empty the run queue for a cancel and report it to agents as ONE
+/// `RunCancelled` naming `target` (the stopped cell, if any) and every
+/// dropped queued cell. Free rather than a `CellRunCtx` method because the
+/// editor's Preview toggle cancels too, and it has no cell. Drops are always
+/// reported (PRD-0052): without this, a waiting agent learned only at its
+/// timeout.
+pub(super) fn cancel_run_queue(
+    state: &NotebookState,
+    model: NotebookModel,
+    session: Option<SessionState>,
+    target: Option<&str>,
+) {
+    let cell_ids = queue_drops_on_cancel(target, state.run_all_queue.cancel(target));
+    if !cell_ids.is_empty() {
+        emit_session_event(
+            model,
+            session,
+            ironpad_common::protocol::Event::RunCancelled { cell_ids },
+        );
+    }
 }
 
 impl CellRunCtx {
     /// Emit a compile/execution event for connected agents, gated on a live
     /// session (see the `session` field docs).
     fn emit_session_event(&self, event: ironpad_common::protocol::Event) {
-        if self
-            .session
-            .is_some_and(|s| s.active.try_get_untracked() == Some(true))
-        {
-            self.model.emit_event(event);
+        emit_session_event(self.model, self.session, event);
+    }
+
+    /// The Stop button: ONE policy for both phases, so neither can skip the
+    /// report. During the compile there is nothing to abort (the server fn
+    /// is unabortable and the worker holds nothing of this run), so the run
+    /// gives up its claim and its result is discarded when it lands; the
+    /// queue is cancelled and reported here. During execution the worker
+    /// holds the run, so `terminate()` aborts it and the `AbortError`
+    /// completion cancels the queue (see `wire_run_effect`).
+    pub(super) fn cancel(&self) {
+        match self.cell_status.get_untracked() {
+            CellStatus::Compiling => {
+                RunGuard::revoke(self.run_epoch);
+                self.cell_status.set(CellStatus::Idle);
+                let cid = self.cell_id.get_value();
+                cancel_run_queue(&self.state, self.model, self.session, Some(&cid));
+            }
+            CellStatus::Running => {
+                #[cfg(feature = "hydrate")]
+                crate::components::executor::terminate_executor();
+            }
+            _ => {}
         }
     }
 
@@ -141,6 +210,7 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
         source,
         cargo_toml,
         source_handle,
+        run_epoch,
         ..
     } = ctx;
     let emit_session_event = move |event: ironpad_common::protocol::Event| {
@@ -224,6 +294,9 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
         // (see below) can tell this cell's own re-run (status == Compiling) apart from
         // an upstream re-run that invalidated us (status still Idle/Success/Error).
         cell_status.set(CellStatus::Compiling);
+        // This run's claim on the cell: a Stop, a newer run, or disposal
+        // revokes it, and the completion below checks it.
+        let guard = RunGuard::mint(run_epoch);
         emit_session_event(ironpad_common::protocol::Event::CellCompiling {
             cell_id: cid.clone(),
         });
@@ -302,13 +375,15 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
             #[cfg(not(feature = "hydrate"))]
             let result = compile_cell(request).await;
 
-            // Proceed only if the cell is still mid-compile. Two other cases
-            // land here and must drop the result: the cell/page was DISPOSED
-            // (try_ read is None — a reclaimed slot would panic, PRD-0045), or
-            // the user CANCELLED during the compile (the ⏹ set status back to
-            // Idle — the compile server fn is unabortable, so this is the
-            // Compiling-phase cancel path).
-            if !matches!(cell_status.try_get_untracked(), Some(CellStatus::Compiling)) {
+            // Proceed only if this run still owns the cell. Three cases land
+            // here and must drop the result: the cell/page was DISPOSED (a
+            // reclaimed slot would panic on a plain read, PRD-0045), the user
+            // STOPPED the compile (the compile server fn is unabortable, so
+            // this is the compile-phase cancel), or stopped it and started a
+            // NEWER run whose compile is still in flight. A status check
+            // cannot tell the last apart: the status reads Compiling again,
+            // and this old compile would run the old source.
+            if !guard.is_current() {
                 return;
             }
 
@@ -451,19 +526,15 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                                 // AbortError means the user cancelled via terminate().
                                 if err_msg.contains("AbortError") {
                                     cell_status.set(CellStatus::Idle);
-                                    // Cancelling drops every queued cell —
-                                    // report the drops BEFORE clearing, or a
-                                    // waiting agent only learns at its
-                                    // timeout (drops are always reported).
-                                    let dropped =
-                                        state.run_all_queue.cancel(Some(&cell_id_for_exec));
-                                    if !dropped.is_empty() {
-                                        emit_session_event(
-                                            ironpad_common::protocol::Event::RunCancelled {
-                                                cell_ids: dropped,
-                                            },
-                                        );
-                                    }
+                                    // Cancelling drops every queued cell; the
+                                    // one report shared with a compile-phase
+                                    // Stop (`cancel_run_queue`).
+                                    cancel_run_queue(
+                                        &state,
+                                        ctx.model,
+                                        ctx.session,
+                                        Some(&cell_id_for_exec),
+                                    );
                                 } else {
                                     execution_result.set(Some(ExecutionResult {
                                         display_text: Some(err_msg),
@@ -855,6 +926,25 @@ mod tests {
         // Unknown id degrades to index 0 (invalidate everything runnable),
         // never to a panic.
         assert_eq!(downstream_code_ids(&cells, "gone").len(), 3);
+    }
+
+    #[test]
+    fn queue_drops_on_cancel_name_the_cancelled_cell_once() {
+        // Review soc-app-client-2: a Stop reports the stopped cell itself
+        // (an agent waiting on it may never have queued it, a direct run
+        // never does) and every queued cell the Stop dropped.
+        let drops = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            queue_drops_on_cancel(Some("a"), drops(&["b", "c"])),
+            drops(&["a", "b", "c"])
+        );
+        assert_eq!(queue_drops_on_cancel(Some("a"), Vec::new()), drops(&["a"]));
+        // Leaving the editor names whatever was queued, front included.
+        assert_eq!(
+            queue_drops_on_cancel(None, drops(&["a", "b"])),
+            drops(&["a", "b"])
+        );
+        assert!(queue_drops_on_cancel(None, Vec::new()).is_empty());
     }
 
     #[test]

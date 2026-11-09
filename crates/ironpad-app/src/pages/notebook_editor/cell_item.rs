@@ -532,6 +532,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         cargo_toml,
         source_handle,
         session: session_for_events,
+        run_epoch: RwSignal::new(0),
     };
     pipeline::wire_run_effect(&run_ctx, run_trigger);
 
@@ -1366,20 +1367,12 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         })
                         on:click=move |ev: leptos::ev::MouseEvent| {
                             ev.stop_propagation();
-                            match cell_status.get_untracked() {
-                                // During compile the in-flight work is the
-                                // (unabortable) compile server fn — terminate()
-                                // would only respawn the worker and evict every
-                                // other loaded cell for nothing. Mark Idle; the
-                                // pipeline discards the result when it resolves.
-                                CellStatus::Compiling => cell_status.set(CellStatus::Idle),
-                                // During execution the worker holds the run, so
-                                // terminate() aborts it (AbortError path).
-                                CellStatus::Running => {
-                                    #[cfg(feature = "hydrate")]
-                                    crate::components::executor::terminate_executor();
-                                }
-                                _ => run_trigger.update(|g| *g += 1),
+                            // Stop is one policy in the pipeline, for both
+                            // phases (`CellRunCtx::cancel`).
+                            if matches!(cell_status.get_untracked(), CellStatus::Compiling | CellStatus::Running) {
+                                run_ctx.cancel();
+                            } else {
+                                run_trigger.update(|g| *g += 1);
                             }
                         }
                     >

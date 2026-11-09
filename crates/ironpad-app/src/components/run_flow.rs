@@ -169,6 +169,55 @@ pub async fn load_and_execute(
     Ok((result, js_sys::Date::now() - exec_start))
 }
 
+// ── Run ownership ───────────────────────────────────────────────────────────
+
+/// A run's claim on its cell, as an epoch that a Stop and the next run both
+/// invalidate.
+///
+/// A Stop during the compile has no other lever: the compile server fn
+/// cannot be aborted (and for a Linux cell the pod runtime is not even loaded
+/// yet), so the click can only be honoured by the spawned task abandoning its
+/// result when it lands. What makes this an epoch rather than a flag or a
+/// status check is the race those lose: Stop, edit, then Run again while the
+/// first compile is still in flight. A flag is cleared by the second click and
+/// the status reads `Compiling` again, so the FIRST compile would pass the
+/// gate, run the old source, and the second's result would be the one
+/// dropped. The editor's `run_trigger` cannot serve either: Ctrl+Enter bumps
+/// it mid-compile.
+#[derive(Clone, Copy)]
+pub(crate) struct RunGuard {
+    epoch: u64,
+    current: RwSignal<u64>,
+}
+
+impl RunGuard {
+    /// Claim the cell for a new run, invalidating every earlier claim.
+    pub(crate) fn mint(current: RwSignal<u64>) -> Self {
+        let epoch = current.try_get_untracked().unwrap_or(0).wrapping_add(1);
+        current.set(epoch);
+        Self { epoch, current }
+    }
+
+    /// Invalidate whatever run holds the cell (a Stop).
+    pub(crate) fn revoke(current: RwSignal<u64>) {
+        current.try_update(|epoch| *epoch = epoch.wrapping_add(1));
+    }
+
+    /// Whether this run still owns its cell: no Stop, no newer run, and the
+    /// component not disposed.
+    pub(crate) fn is_current(self) -> bool {
+        Self::is_current_at(self.current.try_get_untracked(), self.epoch)
+    }
+
+    /// The decision itself, separated from the signal so the invariant is
+    /// testable: a bumped epoch means a Stop or a newer run, and `None` means
+    /// the component was disposed mid-run (navigating away is the ordinary
+    /// way to get there). Both must refuse.
+    pub(crate) fn is_current_at(current: Option<u64>, epoch: u64) -> bool {
+        current == Some(epoch)
+    }
+}
+
 // ── The run queue ───────────────────────────────────────────────────────────
 
 /// The ordered queue of cells waiting to run, front first: the front is the
@@ -439,7 +488,7 @@ pub fn clear_blame_held_by(
 
 #[cfg(test)]
 mod tests {
-    use super::{fail_in_queue_core, merged, RunQueue};
+    use super::{fail_in_queue_core, merged, RunGuard, RunQueue};
     use leptos::prelude::*;
     use std::collections::HashMap;
 
@@ -458,6 +507,45 @@ mod tests {
         let mut additions = ids(unexecuted);
         additions.push(target.to_string());
         merged(order, &ids(queue), &additions, Some(target))
+    }
+
+    // ── Run ownership ───────────────────────────────────────────────────
+
+    #[test]
+    fn a_click_meaning_stop_never_lets_the_run_continue() {
+        // Moved from linux_cell.rs, where a continued run is a metered pod
+        // boot; in the editor it is the old source executing.
+        assert!(
+            RunGuard::is_current_at(Some(7), 7),
+            "nothing has intervened"
+        );
+        // A Stop, which bumps the epoch.
+        assert!(!RunGuard::is_current_at(Some(8), 7));
+        // Disposed mid-run: nobody is left to read the output.
+        assert!(!RunGuard::is_current_at(None, 7));
+        // Why an epoch rather than a flag: Stop and then Run again while the
+        // first compile is still in flight. A flag would have been cleared by
+        // the second click and the first task would carry on anyway.
+        assert!(!RunGuard::is_current_at(Some(9), 7));
+    }
+
+    #[test]
+    fn a_bumped_epoch_invalidates_the_guard() {
+        Owner::new().with(|| {
+            let epoch = RwSignal::new(0u64);
+            let first = RunGuard::mint(epoch);
+            assert!(first.is_current());
+
+            // Stop: the in-flight run loses its claim.
+            RunGuard::revoke(epoch);
+            assert!(!first.is_current());
+
+            // Stop, edit, Run: the new run owns the cell, the old one never
+            // gets it back.
+            let second = RunGuard::mint(epoch);
+            assert!(second.is_current());
+            assert!(!first.is_current());
+        });
     }
 
     // ── The merge ───────────────────────────────────────────────────────

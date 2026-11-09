@@ -73,7 +73,7 @@ When the execution worker raises an uncaught error, the system SHALL reject ever
 - **AND** a cancel then spawns a worker again and resets the crash count
 
 ### Requirement: Cancelling a cell
-While an editor cell compiles or runs, its Run button SHALL become a Stop button titled "Cancel execution". Stopping a run SHALL terminate and respawn the worker, return the cell to idle and empty the run queue, and SHALL NOT re-run the cell on the main thread; a run already retrying on the main thread SHALL be abandoned with an `AbortError`. Stopping a compile SHALL return the cell to idle at once and discard the compile result when it arrives. (PRD-0013, PRD-0032)
+While an editor cell compiles or runs, its Run button SHALL become a Stop button titled "Cancel execution". Stopping a run SHALL terminate and respawn the worker, return the cell to idle and empty the run queue, and SHALL NOT re-run the cell on the main thread; a run already retrying on the main thread SHALL be abandoned with an `AbortError`. Stopping a compile SHALL return the cell to idle at once, empty the run queue, and discard the compile result when it arrives, even when the cell has been run again before it does. Either Stop SHALL report the stopped cell and every dropped queued cell to agents as cancelled. (PRD-0013, PRD-0032)
 
 #### Scenario: Stop during execution
 - **WHEN** an author clicks "Cancel execution" on a cell whose WASM is running
@@ -86,9 +86,13 @@ While an editor cell compiles or runs, its Run button SHALL become a Stop button
 - **AND** nothing runs on the main-thread executor and no fallback warning is logged
 
 #### Scenario: Stop during compile
-- **WHEN** an author clicks "Cancel execution" while the cell is still compiling
-- **THEN** the cell shows idle immediately and the worker is left untouched
+- **WHEN** an author clicks "Cancel execution" while the cell is still compiling, with more cells queued behind it
+- **THEN** the cell shows idle immediately, no cell is left showing "queued", and the worker is left untouched
 - **AND** the server's compile response, when it arrives, is discarded without executing
+
+#### Scenario: Stop, edit, and run again
+- **WHEN** an author stops a compile, edits the cell, and runs it again before the first compile's response arrives
+- **THEN** the first response is discarded and the cell shows the edited source's output
 
 ### Requirement: Execution error messages
 The system SHALL report a failed blob load as "WASM load error: ..." and a failed run as "Execution error: ...". A Rust panic SHALL be reported by its message, in the worker and on the main-thread fallback alike, cut before the `Stack:` trace the panic hook appends. A WASM trap with no captured panic message SHALL be translated into a diagnosis that names the cell's linear-memory size in MB. (PRD-0001, PRD-0033)

@@ -1,6 +1,7 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { MENU, menuClick } from "./helpers/menu";
 import { setCellSource } from "./helpers/monaco";
+import { gateCompiles } from "./helpers/compile-gate";
 import { createNotebook as newNotebook, ADD_CODE, ADD_MARKDOWN } from "./helpers/session";
 
 /**
@@ -353,6 +354,83 @@ test.describe("Editor UX (PRD-0032)", () => {
     await expect(page.getByText(/\/shared\//).first()).toBeVisible({
       timeout: 30_000,
     });
+  });
+
+  // ── Cancel (review soc-app-client-2) ────────────────────────────────
+  //
+  // Stop during the compile phase used to set the cell Idle and nothing
+  // else: the queue behind it stayed Queued forever, and a later run's
+  // in-flight compile could execute the OLD source.
+
+  test("Stop during a queued compile drops the queue and discards the result", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await newNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    await page.locator(ADD_CODE).last().click();
+    const cells = page.locator(".ironpad-cell-card");
+    await expect(cells).toHaveCount(2);
+    await expect(cells.nth(1).locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cells.nth(0), "8101u32 + 0");
+    await setCellSource(page, cells.nth(1), "8102u32 + 0");
+
+    const gate = await gateCompiles(page);
+    await page.locator(".ironpad-run-all-button").click();
+    await gate.waitForHeld(1);
+    await expect(cells.nth(0).locator(".ironpad-cell-status--compiling")).toBeVisible();
+    await expect(cells.nth(1).locator(".ironpad-cell-status--queued")).toBeVisible();
+
+    const rows = page.locator(".ironpad-cell-row");
+    await rows.nth(0).locator('button[title="Cancel execution"]').click();
+    await expect(page.locator(".ironpad-cell-status--queued")).toHaveCount(0, {
+      timeout: 5_000,
+    });
+    await expect(cells.nth(0).locator(".ironpad-cell-status--idle")).toBeVisible();
+
+    // The compile lands after the Stop and is thrown away.
+    gate.releaseAll();
+    await page.waitForTimeout(8_000);
+    await expect(cells.nth(0).locator(".ironpad-cell-status--idle")).toBeVisible();
+    await expect(cells.nth(1).locator(".ironpad-cell-status--idle")).toBeVisible();
+    await expect(page.locator(".ironpad-output-display-text")).toHaveCount(0);
+  });
+
+  test("Stop, edit, Run executes the edited source", async ({ page }) => {
+    test.setTimeout(240_000);
+    await newNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    const row = page.locator(".ironpad-cell-row").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cell, "3001u32 + 0");
+
+    const gate = await gateCompiles(page);
+    await row.locator('button[title="Run cell"]').click();
+    await gate.waitForHeld(1);
+    await row.locator('button[title="Cancel execution"]').click();
+
+    // The "oops, typo" workflow: fix it and run again while the first
+    // compile is still in flight.
+    await setCellSource(page, cell, "4002u32 + 0");
+    await row.locator('button[title="Run cell"]').click();
+    await gate.waitForHeld(2);
+
+    // The OLD compile lands first, while the new run is compiling.
+    gate.release(0);
+    await page.waitForTimeout(8_000);
+    gate.releaseAll();
+
+    await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 120_000,
+    });
+    const output = cell.locator(".ironpad-output-display-text");
+    await expect(output).toContainText("4002");
+    await expect(output).not.toContainText("3001");
   });
 
   // uat-004: cancelling a running cell must NOT re-run it on the main thread.

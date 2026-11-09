@@ -795,4 +795,32 @@ test.describe("Agent run queue", () => {
     });
     expect(jsErrors).toEqual([]);
   });
+
+  test("cancelling a compile is terminal for a waiting agent", async ({ page }) => {
+    // Review soc-app-client-2: Stop during the compile phase set the cell
+    // Idle and nothing else, so an agent that had seen CellCompiling heard
+    // nothing more and waited out its whole timeout.
+    test.setTimeout(180_000);
+    const jsErrors = trackJsErrors(page);
+
+    const [id] = await agentNotebook(page, ["5u32 + 0"]);
+    const gate = await gateCompiles(page);
+
+    const run = cliExecRawAsync(["cells", "run", id, "--timeout-secs", "60"], 80_000);
+    await gate.waitForHeld(1);
+    const card = page.locator(".ironpad-cell-card").first();
+    await expect(card.locator(".ironpad-cell-status--compiling")).toBeVisible();
+
+    const clicked = Date.now();
+    await page.locator(".ironpad-cell-row").first().locator('button[title="Cancel execution"]').click();
+    const result = parseRun(await run);
+    expect(result.status).toBe("cancelled");
+    expect(Date.now() - clicked).toBeLessThan(30_000);
+
+    // The discarded compile, when it lands, changes nothing.
+    gate.releaseAll();
+    await page.waitForTimeout(5_000);
+    await expect(card.locator(".ironpad-cell-status--idle")).toBeVisible();
+    expect(jsErrors).toEqual([]);
+  });
 });

@@ -42,6 +42,8 @@ use crate::components::icon::{Icon, IconLabel};
 use crate::components::icons;
 use crate::components::monaco_editor::MonacoEditor;
 use crate::components::notebook_rail::{RailCellRun, RailCellStatus, RailRunState};
+#[cfg(feature = "hydrate")]
+use crate::components::run_flow::RunGuard;
 use crate::components::view_only_notebook::{cell_body_class, ViewOnlyCellHeaderLead};
 
 // ── Pod runtime bindings (client-side only) ─────────────────────────────────
@@ -323,36 +325,6 @@ impl Outcome {
     }
 }
 
-/// A run's claim on the cell, as an epoch that Terminate and the next Run both
-/// invalidate.
-///
-/// Terminate has no other lever during `Compiling`: the pod runtime is not
-/// even loaded yet, so there is nothing to tear down and the click can only be
-/// honoured by the spawned task abandoning itself. What makes this an epoch
-/// rather than a flag is the race a flag loses — Stop, then Run again while
-/// the first compile is still in flight, would clear the flag and let the
-/// abandoned task boot after all.
-#[derive(Clone, Copy)]
-struct RunGuard {
-    epoch: u64,
-    current: RwSignal<u64>,
-}
-
-impl RunGuard {
-    /// Whether this run may still spend a metered pod boot.
-    fn may_boot(self) -> bool {
-        Self::may_boot_at(self.current.try_get_untracked(), self.epoch)
-    }
-
-    /// The decision itself, separated from the signal so the invariant is
-    /// testable: a bumped epoch means Terminate or a newer run, and `None`
-    /// means the component was disposed mid-compile (a reader who navigated
-    /// away is the ordinary way to get there). Both must refuse.
-    fn may_boot_at(current: Option<u64>, epoch: u64) -> bool {
-        current == Some(epoch)
-    }
-}
-
 // ── ViewOnlyLinuxCell ───────────────────────────────────────────────────────
 
 /// A Linux cell on a view-only page: read-only source, a Run affordance that
@@ -420,7 +392,7 @@ pub(crate) fn ViewOnlyLinuxCell(
     let error_message: RwSignal<Option<String>> = RwSignal::new(None);
     let outcome: RwSignal<Option<Outcome>> = RwSignal::new(None);
     let compile_time_ms: RwSignal<Option<f64>> = RwSignal::new(None);
-    // Bumped by every Run and every Terminate; see [`RunGuard`].
+    // Bumped by every Run and every Terminate; see `run_flow::RunGuard`.
     let run_epoch = RwSignal::new(0u64);
 
     // Mirror the run into the rail (PRD-0065 T-006), derived from the same
@@ -489,11 +461,7 @@ pub(crate) fn ViewOnlyLinuxCell(
             error_message.set(None);
             outcome.set(None);
             output.set(String::new());
-            let guard = RunGuard {
-                epoch: run_epoch.get_untracked().wrapping_add(1),
-                current: run_epoch,
-            };
-            run_epoch.set(guard.epoch);
+            let guard = RunGuard::mint(run_epoch);
 
             leptos::task::spawn_local(async move {
                 // Every `StoredValue` this task needs is read HERE, before the
@@ -552,7 +520,7 @@ pub(crate) fn ViewOnlyLinuxCell(
                 // during the compile can possibly be honoured — the pod
                 // runtime is not even loaded yet, so there is nothing for
                 // Terminate itself to tear down.
-                if !guard.may_boot() {
+                if !guard.is_current() {
                     return;
                 }
 
@@ -612,7 +580,7 @@ pub(crate) fn ViewOnlyLinuxCell(
         #[cfg(feature = "hydrate")]
         {
             let was = stage.get_untracked();
-            run_epoch.update(|e| *e = e.wrapping_add(1));
+            RunGuard::revoke(run_epoch);
             if !stop_needs_teardown(was) {
                 // Nothing will report this run's end, so say it here, or the
                 // click reads as a dead button.
@@ -935,7 +903,7 @@ async fn execute_in_pod(
     // script has executed, so the same epoch that covers the compile has to
     // cover this window too. Checked again after the key fetch below, since
     // that is another await and the last one before a machine exists.
-    if !guard.may_boot() {
+    if !guard.is_current() {
         return Ok(Outcome::cancelled());
     }
 
@@ -956,7 +924,7 @@ async fn execute_in_pod(
         }
     }
 
-    if !guard.may_boot() {
+    if !guard.is_current() {
         return Ok(Outcome::cancelled());
     }
 
@@ -1028,7 +996,7 @@ fn pod_error_message(err: &wasm_bindgen::JsValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{stop_needs_teardown, stop_title, Outcome, RunGuard, Stage};
+    use super::{stop_needs_teardown, stop_title, Outcome, Stage};
     use ironpad_common::{CellType, IronpadCell};
 
     fn cell(cell_type: CellType) -> IronpadCell {
@@ -1166,23 +1134,5 @@ mod tests {
         assert!(!Stage::Done.busy());
         assert_eq!(Stage::Idle.label(), "");
         assert_eq!(Stage::Done.label(), "");
-    }
-
-    #[test]
-    fn a_click_meaning_stop_never_produces_a_boot() {
-        // The compile is the window this exists for: Terminate has no pod to
-        // tear down there (the runtime script is not even loaded), so the only
-        // way a Stop can be honoured is the spawned task refusing to boot when
-        // it lands. Each of these three is a metered token.
-        assert!(RunGuard::may_boot_at(Some(7), 7), "nothing has intervened");
-        // Terminate, which bumps the epoch.
-        assert!(!RunGuard::may_boot_at(Some(8), 7));
-        // Disposed mid-compile: the reader navigated away, and there is nobody
-        // left to read the output.
-        assert!(!RunGuard::may_boot_at(None, 7));
-        // Why an epoch rather than a flag: Stop and then Run again, while the
-        // first compile is still in flight. A flag would have been cleared by
-        // the second click and the first task would boot anyway.
-        assert!(!RunGuard::may_boot_at(Some(9), 7));
     }
 }
