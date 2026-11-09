@@ -18,12 +18,16 @@ The system SHALL load each Code cell's compiled WASM into a dedicated Web Worker
 - **AND** the output carries no "main thread" badge
 
 ### Requirement: Main-thread fallback
-When the worker fails to load, execute, or tick a cell for any reason other than a user cancel, the system SHALL retry that call once on a main-thread executor with the cell's most recent blob and SHALL flag a result produced there, so its output wears a "main thread" badge. With no blob to retry, the worker's error is reported. When the retry fails too, the system SHALL report the worker's error if it carried a panic message the retry's lacks, or if the call was a tick of a worker that ran it (the fallback instance never ran the cell, so its tick fails on missing state); otherwise it SHALL report the retry's error. (PRD-0017, PRD-0033)
+When the worker fails to load, execute, or tick a cell for any reason other than a user cancel, the system SHALL retry that call once on a main-thread executor with the cell's most recent blob and SHALL flag a result produced there, so its output wears a "main thread" badge. With no blob to retry, the worker's error is reported. When the retry fails too, the system SHALL report the worker's error if it carried a panic message the retry's lacks, or if the call was a tick of a worker that ran it (the fallback instance never ran the cell, so its tick fails on missing state); otherwise it SHALL report the retry's error. A new blob that fails to load in the worker SHALL leave the cell unloaded there rather than keep the previous version, so the next run takes the fallback with the new blob. (PRD-0017, PRD-0033)
 
 #### Scenario: Ticks run on the fallback once the worker is gone
 - **WHEN** the worker has stopped respawning and the page loads a Simulation blob and a LiveView blob and ticks each
 - **THEN** both ticks return results flagged `fallback: true`, a 1x1 frame of `[10, 20, 30]` and the text `hi`
 - **AND** neither blob is reported as loaded in the worker
+
+#### Scenario: A reload that fails only in the worker
+- **WHEN** a cell has run version 1 in the worker and version 2's glue fails to initialize in a worker but not on the page
+- **THEN** the next run returns version 2's output flagged `fallback: true`, never version 1's
 
 #### Scenario: A retry that only saw a trap
 - **WHEN** the worker reports `panicked at x: boom` for a cell and its main-thread retry fails with a bare trap

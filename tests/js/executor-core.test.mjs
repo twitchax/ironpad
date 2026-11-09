@@ -472,3 +472,30 @@ test("an unrelated uncaught error is not claimed by a running async cell", async
   await within(pending);
   assert.equal(other.defaultPrevented, false);
 });
+
+// ── A failed reload (review bug-js-10) ──────────────────────────────────────
+
+test("a failed reload leaves the cell unloaded, not running its previous code", async () => {
+  // loadBlob replaced the entry only on success, so a failed reload kept the
+  // OLD instance: execute then ran the code from before the edit and
+  // reported success, and the bridge's fallback never fired.
+  const { executor } = loadCore();
+  const cell = makeMemory();
+  executor.modules.set("c", { ...rawEntry(cell), hash: "h1" });
+
+  await assert.rejects(executor.loadBlob("c", "h2", new Uint8Array([0, 1, 2]), null));
+
+  assert.equal(executor.modules.has("c"), false);
+  await assert.rejects(executor.execute("c", new Uint8Array(0)), /Cell c not loaded/);
+});
+
+test("reloading the same hash keeps the loaded instance", async () => {
+  const { executor } = loadCore();
+  const cell = makeMemory();
+  const entry = { ...rawEntry(cell), hash: "h1" };
+  executor.modules.set("c", entry);
+
+  await executor.loadBlob("c", "h1", new Uint8Array([0, 1, 2]), null);
+
+  assert.equal(executor.modules.get("c"), entry);
+});

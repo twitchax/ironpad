@@ -366,8 +366,10 @@
       // "Worker unavailable" BEFORE execute()'s own main-thread fallback
       // could fire (the Rust flow loads then executes). Load on the
       // main-thread executor so the cell still runs; execute() then runs it
-      // there too. Do NOT touch _loadedCache — that tracks the WORKER's
-      // loaded state, and this blob is loaded on the main executor.
+      // there too. _loadedCache tracks the WORKER's loaded state: never
+      // claim this blob there, and drop the old hash, since a worker whose
+      // reload failed has dropped the cell (executor-core.js loadBlob).
+      self._loadedCache.delete(cellId);
       return self._mainThreadFallback(cellId, "loadBlob", workerError, null, null);
     });
   };

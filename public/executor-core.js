@@ -529,6 +529,20 @@
       return; // Already loaded, same version.
     }
 
+    // The entry is replaced only once the new module is fully up, so the old
+    // instance keeps serving (a running Simulation's ticks, say) during the
+    // load. A FAILED load must not leave it behind, though: execute would
+    // then run the code from before the edit and report success, and the
+    // bridge's fallback would never fire. Not loaded is the honest state.
+    try {
+      await this._instantiate(cellId, hash, wasmBytes, jsGlue);
+    } catch (e) {
+      this.modules.delete(cellId);
+      throw e;
+    }
+  };
+
+  CellExecutor.prototype._instantiate = async function (cellId, hash, wasmBytes, jsGlue) {
     var globalRef = this._globalRef;
 
     if (jsGlue) {

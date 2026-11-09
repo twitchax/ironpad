@@ -342,3 +342,25 @@ test("a rayon trap fails pending requests with the panic text and replaces the w
   assert.equal(bridge.isLoaded("c1", "h1"), false, "the old worker's cells went with it");
 });
 
+
+// ── A failed worker reload (review bug-js-10) ──────────────────────────────
+
+test("a worker that fails to load a new blob no longer counts as holding the old one", async () => {
+  // The worker drops a cell whose reload failed, so the bridge must not keep
+  // claiming it holds the old hash: execute would skip the load and the
+  // worker would answer "not loaded" at best.
+  const { bridge, workers } = loadBridge();
+  bridge._mainExecutor = fakeMainExecutor();
+
+  const first = bridge.loadBlob("c1", "h1", new Uint8Array([1]), null);
+  bridge._onWorkerMessage({ type: "result", id: workers[0].posted.at(-1).id, value: null });
+  await first;
+  assert.equal(bridge.isLoaded("c1", "h1"), true);
+
+  const second = bridge.loadBlob("c1", "h2", new Uint8Array([2]), null);
+  bridge._onWorkerMessage({ type: "error", id: workers[0].posted.at(-1).id, error: "init failed" });
+  await second;
+
+  assert.equal(bridge.isLoaded("c1", "h1"), false);
+  assert.equal(bridge.isLoaded("c1", "h2"), false);
+});

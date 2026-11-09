@@ -10,14 +10,15 @@ import { test, expect } from "@playwright/test";
  * `dispatchEvent(new ErrorEvent("error"))` exercises the real handler.
  */
 
-// ── A hand-assembled tick module ────────────────────────────────────────────
+// ── Hand-assembled cell modules ─────────────────────────────────────────────
 //
-// The smallest WASM a tick needs: memory, ironpad_alloc (always 1024),
-// a no-op ironpad_dealloc, and a zero-arg cell_tick returning 16, where a
-// data segment holds `data`. No compile, no cache, and the raw loading path
-// the main-thread fallback takes for a blob without JS glue.
+// The smallest WASM a call needs: memory, ironpad_alloc (always 1024), a
+// no-op ironpad_dealloc, and one entry point `entry` taking `params` i32s and
+// returning 16, where a data segment holds `data`. No compile, no cache, and
+// the raw loading path the main-thread fallback takes for a blob without JS
+// glue.
 
-function tickModule(data: number[]): number[] {
+function entryModule(entry: string, params: number, data: number[]): number[] {
   const leb = (n: number): number[] => {
     const out: number[] = [];
     do {
@@ -38,7 +39,7 @@ function tickModule(data: number[]): number[] {
     ...section(1, vec([
       [0x60, 1, I32, 1, I32], // (i32) -> i32: ironpad_alloc
       [0x60, 2, I32, I32, 0], // (i32, i32):   ironpad_dealloc
-      [0x60, 0, 1, I32], //      () -> i32:    cell_tick
+      [0x60, params, ...new Array(params).fill(I32), 1, I32], // entry
     ])),
     ...section(3, vec([[0], [1], [2]])),
     ...section(5, vec([[0x00, 1]])), // one memory, one page
@@ -46,7 +47,7 @@ function tickModule(data: number[]): number[] {
       [...str("memory"), 0x02, 0],
       [...str("ironpad_alloc"), 0x00, 0],
       [...str("ironpad_dealloc"), 0x00, 1],
-      [...str("cell_tick"), 0x00, 2],
+      [...str(entry), 0x00, 2],
     ])),
     ...section(10, vec([
       body([0x41, 0x80, 0x08, 0x0b]), // i32.const 1024
@@ -57,7 +58,31 @@ function tickModule(data: number[]): number[] {
   ];
 }
 
+const tickModule = (data: number[]) => entryModule("cell_tick", 0, data);
+
 const u32 = (n: number) => [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff];
+
+/** A cell_main whose CellResult at 16 carries `text` as display text at 48. */
+function displayModule(text: string): number[] {
+  const bytes = Array.from(text, (c) => c.charCodeAt(0));
+  return entryModule("cell_main", 2, [
+    ...u32(0), ...u32(0), ...u32(48), ...u32(bytes.length), ...u32(0), ...u32(0),
+    ...new Array(8).fill(0), ...bytes,
+  ]);
+}
+
+// wasm-bindgen-style glue for a displayModule blob whose init fails in a
+// worker (as a dependency whose `#[wasm_bindgen(start)]` touches the DOM
+// does) and succeeds on the page.
+const WORKER_HOSTILE_GLUE = `
+let wasm;
+export default async function init(opts) {
+  if (typeof window === "undefined") throw new Error("this build needs a DOM");
+  wasm = (await WebAssembly.instantiate(opts.module_or_path, {})).exports;
+  return wasm;
+}
+export function cell_main(ptr, len) { return wasm.cell_main(ptr, len) >>> 0; }
+`;
 
 // TickResult at 16: rgb at 48, 3 bytes, a 1x1 frame; the RGB bytes at 48.
 const SIM_TICK = tickModule([
@@ -189,4 +214,46 @@ test.describe("Executor worker recovery", () => {
       view: { fallback: true, kind: 0, content: "hi" },
     });
   });
+
+  test("a reload that fails in the worker runs the new code on the fallback, not the old code", async ({
+    page,
+  }) => {
+    // Regression (review bug-js-10): a failed worker load kept the OLD
+    // module, so the bridge's fallback loaded v2 on the main thread while
+    // execute still went to the worker, which ran v1 and reported success.
+    test.setTimeout(60_000);
+    await page.goto("/");
+    await expect(page.locator(".ironpad-home")).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.waitForTimeout(3_000); // hydration (suite convention)
+
+    const result = await page.evaluate(
+      async ([v1, v2, glue]) => {
+        const exec = (window as any).IronpadExecutor;
+        if (!exec || !exec._worker) {
+          return { precondition: false };
+        }
+        const id = "e2e-reload";
+        await exec.loadBlob(id, "h-v1", new Uint8Array(v1), null);
+        const first = await exec.execute(id, new Uint8Array(0));
+        await exec.loadBlob(id, "h-v2", new Uint8Array(v2), glue);
+        const second = await exec.execute(id, new Uint8Array(0));
+        exec.unload(id);
+        return {
+          precondition: true,
+          first: { text: first.displayText, fallback: first.fallback === true },
+          second: { text: second.displayText, fallback: second.fallback === true },
+        };
+      },
+      [displayModule("v1"), displayModule("v2"), WORKER_HOSTILE_GLUE] as const,
+    );
+
+    expect(result).toEqual({
+      precondition: true,
+      first: { text: "v1", fallback: false },
+      second: { text: "v2", fallback: true },
+    });
+  });
 });
+
