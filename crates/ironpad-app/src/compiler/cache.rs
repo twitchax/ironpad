@@ -5,6 +5,7 @@
 //! `ironpad_common::cache_key` (see [`content_hash`]).
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use super::build::MAX_CELL_BLOB_BYTES;
 use super::toolchain::toolchain_fingerprint;
@@ -59,6 +60,28 @@ pub fn cache_diag_path(cache_dir: &Path, hash: &str) -> PathBuf {
     cache_dir.join("blobs").join(format!("{hash}.diag.json"))
 }
 
+/// Upper bound on `{cache_dir}/blobs/` (review bug-server-4).
+///
+/// The boot valve deliberately never clears this tier, and `compile_cell` is
+/// anonymous, so without a write-time bound it only ever grew: each
+/// `CACHE_EPOCH` or toolchain bump strands a generation of unreachable
+/// entries, and a client can buy new entries at the build rate limit. Share
+/// snapshots are separate copies under the data dir, so evicting here only
+/// ever costs a recompile.
+const MAX_BLOB_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// What an eviction trims the tier down to: a low-water mark, so a cache
+/// sitting at the cap does not rescan the directory on every store.
+const fn evict_blobs_to(max: u64) -> u64 {
+    max / 4 * 3
+}
+
+/// A hit on an entry whose mtime is older than this refreshes it, so the
+/// eviction order (oldest mtime first) means least recently USED rather than
+/// least recently built. A day keeps the hot path at most one metadata write
+/// per entry per day.
+const REFRESH_MTIME_AFTER: Duration = Duration::from_hours(24);
+
 /// Cached compilation result: WASM blob, optional JS glue, and any diagnostics
 /// (warnings) from the original compile so they survive a cache hit.
 pub struct CacheHit {
@@ -84,7 +107,7 @@ pub async fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
     // (one cached before the build-side cap existed) would be an unmetered
     // allocation per request. Refusing it costs one recompile, which the
     // build-side cap then fails cleanly.
-    match tokio::fs::metadata(&path).await {
+    let modified = match tokio::fs::metadata(&path).await {
         Ok(meta) if meta.len() > MAX_CELL_BLOB_BYTES => {
             tracing::Span::current().record("hit", false);
             tracing::warn!(
@@ -94,7 +117,7 @@ pub async fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
             );
             return None;
         }
-        Ok(_) => {}
+        Ok(meta) => meta.modified().ok(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::Span::current().record("hit", false);
             tracing::info!(hash, "cache miss");
@@ -105,7 +128,7 @@ pub async fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
             tracing::warn!(hash, error = %e, "cache stat error — treating as miss");
             return None;
         }
-    }
+    };
 
     let wasm_bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
@@ -141,11 +164,36 @@ pub async fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
         "cache hit"
     );
 
+    refresh_stale_mtime(&path, modified).await;
+
     Some(CacheHit {
         wasm_bytes,
         js_glue,
         diagnostics,
     })
+}
+
+/// Bump a hit entry's mtime to now when it is older than
+/// [`REFRESH_MTIME_AFTER`], so eviction ages entries by last use. Best
+/// effort: a failure only means the entry ages from its build time.
+async fn refresh_stale_mtime(path: &Path, modified: Option<SystemTime>) {
+    let stale = modified
+        .and_then(|m| SystemTime::now().duration_since(m).ok())
+        .is_some_and(|age| age > REFRESH_MTIME_AFTER);
+    if !stale {
+        return;
+    }
+    let path = path.to_path_buf();
+    let touched = tokio::task::spawn_blocking(move || {
+        std::fs::File::options()
+            .write(true)
+            .open(&path)?
+            .set_modified(SystemTime::now())
+    })
+    .await;
+    if let Ok(Err(e)) = touched {
+        tracing::debug!(error = %e, "could not refresh a cache entry's mtime");
+    }
 }
 
 /// A uniquely-named temp sibling of `path`, for the write-then-rename
@@ -205,7 +253,7 @@ pub(crate) async fn atomic_copy(src: &Path, dst: &Path) -> anyhow::Result<()> {
 ///
 /// Creates the `blobs/` directory if it doesn't already exist. Diagnostics
 /// (warnings from a successful compile) are cached so they survive a cache hit.
-#[tracing::instrument(name = "cache_store", level = "info", skip_all, fields(hash = %hash, bytes = wasm_bytes.len()))]
+/// The tier is bounded at [`MAX_BLOB_CACHE_BYTES`]; see [`store_blob_capped`].
 pub async fn store_blob(
     cache_dir: &Path,
     hash: &str,
@@ -213,10 +261,38 @@ pub async fn store_blob(
     js_glue: Option<&str>,
     diagnostics: &[ironpad_common::Diagnostic],
 ) -> anyhow::Result<()> {
+    store_blob_capped(
+        cache_dir,
+        hash,
+        wasm_bytes,
+        js_glue,
+        diagnostics,
+        MAX_BLOB_CACHE_BYTES,
+    )
+    .await
+}
+
+/// [`store_blob`] with an explicit cap on the `blobs/` tier, so tests can
+/// exercise eviction without writing gigabytes. Evicts BEFORE writing, and
+/// only here: a store runs only on the miss path, after a build, so the scan
+/// never lands on the cache-hit hot path.
+#[tracing::instrument(name = "cache_store", level = "info", skip_all, fields(hash = %hash, bytes = wasm_bytes.len()))]
+async fn store_blob_capped(
+    cache_dir: &Path,
+    hash: &str,
+    wasm_bytes: &[u8],
+    js_glue: Option<&str>,
+    diagnostics: &[ironpad_common::Diagnostic],
+    max_bytes: u64,
+) -> anyhow::Result<()> {
     let path = cache_blob_path(cache_dir, hash);
 
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
+        let incoming = wasm_bytes.len() + js_glue.map_or(0, str::len);
+        if let Err(e) = evict_blobs_if_needed(parent, incoming as u64, max_bytes).await {
+            tracing::warn!(error = %e, "compile cache eviction failed; storing anyway");
+        }
     }
 
     atomic_write(&path, wasm_bytes).await?;
@@ -245,6 +321,119 @@ pub async fn store_blob(
         "cached WASM blob",
     );
 
+    Ok(())
+}
+
+/// One cache entry's files, grouped by hash so they are evicted together.
+#[derive(Default)]
+struct BlobEntry {
+    bytes: u64,
+    /// The `.wasm`'s mtime, which ages the whole entry. `None` for an orphan
+    /// (glue or diagnostics with no blob), which nothing can hit, so it
+    /// sorts first.
+    modified: Option<SystemTime>,
+    wasm: Option<PathBuf>,
+    /// Glue and diagnostics: removed only after the `.wasm`.
+    siblings: Vec<PathBuf>,
+}
+
+/// Split a `blobs/` file name into its hash and whether it is the `.wasm`.
+/// `None` for anything that is not a cache entry file.
+fn split_blob_name(name: &str) -> Option<(&str, bool)> {
+    if let Some(hash) = name.strip_suffix(".wasm") {
+        return Some((hash, true));
+    }
+    name.strip_suffix(".diag.json")
+        .or_else(|| name.strip_suffix(".js"))
+        .map(|hash| (hash, false))
+}
+
+/// Delete whole cache entries, oldest `.wasm` mtime first, until the tier
+/// plus `incoming` fits under [`evict_blobs_to`]`(max_bytes)`. A no-op while
+/// it fits under `max_bytes`.
+///
+/// Modeled on the OG card cache's eviction, with two differences that
+/// matter here. Entries are deleted WHOLE and the `.wasm` goes FIRST:
+/// [`try_cache_hit`] reads a missing `.js` as an older glue-less entry, so a
+/// `.wasm` that outlived its glue would serve a blob with `js_glue: None`.
+/// And names containing `.tmp.` are skipped, because they are in-flight
+/// [`atomic_write`]s that are about to be renamed into place.
+async fn evict_blobs_if_needed(
+    blobs_dir: &Path,
+    incoming: u64,
+    max_bytes: u64,
+) -> anyhow::Result<()> {
+    let mut read_dir = match tokio::fs::read_dir(blobs_dir).await {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "failed to read {}: {e}",
+                blobs_dir.display()
+            ))
+        }
+    };
+
+    let mut entries: std::collections::HashMap<String, BlobEntry> =
+        std::collections::HashMap::new();
+    let mut total: u64 = 0;
+    while let Some(dirent) = read_dir.next_entry().await? {
+        let name = dirent.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.contains(".tmp.") {
+            continue;
+        }
+        let Some((hash, is_wasm)) = split_blob_name(name) else {
+            continue;
+        };
+        let Ok(meta) = dirent.metadata().await else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        total = total.saturating_add(meta.len());
+        let entry = entries.entry(hash.to_owned()).or_default();
+        entry.bytes = entry.bytes.saturating_add(meta.len());
+        if is_wasm {
+            entry.modified = meta.modified().ok();
+            entry.wasm = Some(dirent.path());
+        } else {
+            entry.siblings.push(dirent.path());
+        }
+    }
+
+    if total.saturating_add(incoming) <= max_bytes {
+        return Ok(());
+    }
+
+    let low_water = evict_blobs_to(max_bytes);
+    let mut oldest_first: Vec<BlobEntry> = entries.into_values().collect();
+    oldest_first.sort_by_key(|e| e.modified);
+
+    let mut removed = 0_usize;
+    for entry in oldest_first {
+        if total.saturating_add(incoming) <= low_water {
+            break;
+        }
+        for file in entry.wasm.iter().chain(&entry.siblings) {
+            match tokio::fs::remove_file(file).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(file = %file.display(), error = %e, "cache eviction could not remove a file");
+                }
+            }
+        }
+        total = total.saturating_sub(entry.bytes);
+        removed += 1;
+    }
+
+    tracing::info!(
+        removed,
+        remaining_bytes = total,
+        "evicted compile cache entries to stay under the cache cap"
+    );
     Ok(())
 }
 
@@ -688,6 +877,106 @@ mod tests {
         );
         let hit = try_cache_hit(dir.path(), "beefbeef").await.unwrap();
         assert!(hit.diagnostics.is_empty());
+    }
+
+    /// Back-date a file's mtime by `age`.
+    fn age_file(path: &Path, age: Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() - age)
+            .unwrap();
+    }
+
+    fn hours(n: u64) -> Duration {
+        Duration::from_hours(n)
+    }
+
+    /// The tier is bounded at write time (review bug-server-4,
+    /// bug-security-13): past the cap the OLDEST entries go, whole, and the
+    /// newest survives. An in-flight `.tmp.` write is never touched.
+    #[tokio::test]
+    async fn store_blob_capped_evicts_oldest_groups_past_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = dir.path().join("blobs");
+        let diag = vec![ironpad_common::Diagnostic {
+            message: "warning".into(),
+            severity: ironpad_common::Severity::Warning,
+            spans: vec![],
+            code: None,
+        }];
+        // Three 110-byte entries (100-byte blob + 10-byte glue); only the
+        // oldest also carries a diagnostics file.
+        for (hash, age) in [("old", 72), ("mid", 48), ("new", 1)] {
+            let diagnostics = if hash == "old" { diag.as_slice() } else { &[] };
+            store_blob(dir.path(), hash, &[1; 100], Some("0123456789"), diagnostics)
+                .await
+                .unwrap();
+            age_file(&blobs.join(format!("{hash}.wasm")), hours(age));
+        }
+        let in_flight = blobs.join("zzz.wasm.tmp.1234");
+        std::fs::write(&in_flight, [0; 500]).unwrap();
+
+        // Below the cap: a store evicts nothing.
+        store_blob_capped(dir.path(), "fits", &[2; 10], None, &[], 10_000)
+            .await
+            .unwrap();
+        for hash in ["old", "mid", "new", "fits"] {
+            assert!(blobs.join(format!("{hash}.wasm")).exists(), "{hash} kept");
+        }
+
+        // 350 bytes plus the diagnostics file are stored and 100 more are
+        // incoming, so a 460 cap is exceeded only by the diagnostics, and its
+        // 345 low-water mark is met by dropping exactly the oldest entry.
+        let diag_len = std::fs::metadata(blobs.join("old.diag.json"))
+            .unwrap()
+            .len();
+        assert!(diag_len > 10, "the arithmetic above needs a real diag file");
+        store_blob_capped(dir.path(), "incoming", &[3; 100], None, &[], 460)
+            .await
+            .unwrap();
+
+        for gone in ["old.wasm", "old.js", "old.diag.json"] {
+            assert!(!blobs.join(gone).exists(), "{gone} must be evicted whole");
+        }
+        for kept in ["mid.wasm", "mid.js", "new.wasm", "new.js", "incoming.wasm"] {
+            assert!(blobs.join(kept).exists(), "{kept} must survive");
+        }
+        assert!(
+            in_flight.exists(),
+            "an in-flight temp file is never evicted"
+        );
+    }
+
+    /// A hit refreshes a stale mtime, so eviction's age means unused rather
+    /// than old (review bug-server-4). A recent one is left alone, which
+    /// keeps the hot path free of a write per hit.
+    #[tokio::test]
+    async fn a_cache_hit_refreshes_a_stale_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let mtime = |hash: &str| {
+            std::fs::metadata(cache_blob_path(dir.path(), hash))
+                .unwrap()
+                .modified()
+                .unwrap()
+        };
+
+        store_blob(dir.path(), "stale", b"wasm", None, &[])
+            .await
+            .unwrap();
+        age_file(&cache_blob_path(dir.path(), "stale"), hours(48));
+        assert!(try_cache_hit(dir.path(), "stale").await.is_some());
+        let age = SystemTime::now().duration_since(mtime("stale")).unwrap();
+        assert!(age < hours(1), "a two-day-old hit is refreshed: {age:?}");
+
+        store_blob(dir.path(), "fresh", b"wasm", None, &[])
+            .await
+            .unwrap();
+        age_file(&cache_blob_path(dir.path(), "fresh"), hours(1));
+        let before = mtime("fresh");
+        assert!(try_cache_hit(dir.path(), "fresh").await.is_some());
+        assert_eq!(mtime("fresh"), before, "an hour-old hit is not rewritten");
     }
 
     // Fingerprint-variation tests live with the shared recipe in

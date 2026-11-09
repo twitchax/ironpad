@@ -357,6 +357,13 @@ The system SHALL answer a compile whose key exists under `{cache_dir}/blobs/` wi
 - **WHEN** a cell fails to compile and is compiled again unchanged
 - **THEN** the second compile runs cargo again
 
+### Requirement: Compile cache size bound
+The system SHALL bound `{cache_dir}/blobs/` at 2 GiB when it stores an entry: if the tier plus the incoming entry would exceed that, it SHALL first delete whole entries (blob, glue and diagnostics together, the blob first), least recently used first, until the tier fits under 1.5 GiB, never touching an in-flight temporary file. A cache hit on an entry last used more than a day ago SHALL mark it used. A share snapshot racing an eviction SHALL treat the evicted entry as a miss.
+
+#### Scenario: Oldest entries go first
+- **WHEN** storing a new entry would push the tier past its cap
+- **THEN** the least recently used entries are deleted whole until it fits under the low-water mark, and the newest entries survive
+
 ### Requirement: Force recompile
 The system SHALL skip the cache lookup when a request sets `force: true`, build afresh through admission control, and on success overwrite the cached entry under the same key with the new result. (PRD-0047)
 

@@ -1170,9 +1170,12 @@ async fn write_cell_blobs_capped(
         // Content-addressed and immutable (`/share-blobs/` is served that
         // way), so a copy another share already made is final: re-copying it
         // on every Push re-wrote megabytes to change nothing.
-        copy_unless_present(&cached_wasm, &blobs_dir.join(format!("{hash}.wasm"))).await?;
-        if has_js_glue {
-            copy_unless_present(&cached_glue, &blobs_dir.join(format!("{hash}.js"))).await?;
+        let copied = copy_cached(&cached_wasm, &blobs_dir.join(format!("{hash}.wasm"))).await?
+            && (!has_js_glue
+                || copy_cached(&cached_glue, &blobs_dir.join(format!("{hash}.js"))).await?);
+        if !copied {
+            tracing::debug!(cell_id = %cell.id, hash = %hash, "share snapshot: cache entry evicted mid-copy, skipping cell");
+            continue;
         }
         fresh_entries.insert(
             cell.id.clone(),
@@ -1196,6 +1199,19 @@ async fn copy_unless_present(src: &std::path::Path, dst: &std::path::Path) -> an
         return Ok(());
     }
     crate::compiler::cache::atomic_copy(src, dst).await
+}
+
+/// [`copy_unless_present`] from the compile cache, which evicts (review
+/// bug-server-4): `Ok(false)` when the cache entry vanished between the
+/// existence check and the copy, so a snapshot racing an eviction treats that
+/// cell as a miss instead of failing the whole share.
+#[cfg(feature = "ssr")]
+async fn copy_cached(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<bool> {
+    match copy_unless_present(src, dst).await {
+        Ok(()) => Ok(true),
+        Err(_) if !tokio::fs::try_exists(src).await.unwrap_or(false) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// Core snapshot logic with an explicit blob-dir cap (so tests can exercise
@@ -3321,6 +3337,28 @@ mod tests {
         assert!(
             !entries.contains_key("cell-2"),
             "a cell bound to a hostile tag must get no manifest entry: {entries:?}"
+        );
+    }
+
+    /// A compile-cache entry evicted between the snapshot's existence check
+    /// and its copy is a miss, not a failed share (review bug-server-4). A
+    /// copy that fails with its source still present is a real error.
+    #[tokio::test]
+    async fn a_cache_entry_evicted_mid_copy_is_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("evicted.wasm");
+        let dst = dir.path().join("copy.wasm");
+        assert!(!copy_cached(&src, &dst).await.unwrap(), "gone = miss");
+        assert!(!dst.exists());
+
+        std::fs::write(&src, b"wasm").unwrap();
+        assert!(copy_cached(&src, &dst).await.unwrap());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"wasm");
+
+        let blocked = dir.path().join("no-such-dir").join("copy.wasm");
+        assert!(
+            copy_cached(&src, &blocked).await.is_err(),
+            "a failure with the source present still fails"
         );
     }
 
