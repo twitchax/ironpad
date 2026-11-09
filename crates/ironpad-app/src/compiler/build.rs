@@ -1585,6 +1585,65 @@ mod tests {
         );
     }
 
+    /// The image's warmups exist to leave behind artifacts the FIRST default
+    /// cell reuses, and cargo fingerprints a registry crate by its absolute
+    /// source path (so `CARGO_HOME`), its profile, and its resolved version.
+    /// Every new notebook builds with [`ironpad_common::DEFAULT_SHARED_CARGO_TOML`]'s
+    /// profile under `{cache}/cargo-home`, so the warmups must too, or the
+    /// first default compile rebuilds the whole tree and the first live check
+    /// times out. `docker/check-warm-seed.sh` (run by docker-uat) checks the
+    /// result end to end; this holds the inputs.
+    #[test]
+    fn warmup_manifests_match_the_default_notebook_profile() {
+        let profile: Vec<&str> = ironpad_common::DEFAULT_SHARED_CARGO_TOML
+            .split_once("[profile.release]")
+            .expect("the default notebook manifest carries a release profile")
+            .1
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert!(!profile.is_empty());
+
+        for file in [
+            "docker/warmup-Cargo.toml",
+            "docker/warmup-atomics-Cargo.toml",
+            "docker/check-warm-seed.sh",
+        ] {
+            let text = read_workspace_file(file);
+            for line in &profile {
+                assert!(
+                    text.lines().any(|l| l.trim() == *line),
+                    "{file} lacks the default notebook profile's `{line}`"
+                );
+            }
+            // The scaffold's edition, so the warmup resolves with the same
+            // MSRV-aware resolver the cell will.
+            assert!(
+                text.contains("edition = \"2024\""),
+                "{file} must use edition 2024, as the scaffold does"
+            );
+        }
+
+        let dockerfile = read_workspace_file("docker/Dockerfile");
+        assert_eq!(
+            dockerfile
+                .matches("CARGO_HOME=/ironpad/cache/cargo-home")
+                .count(),
+            2,
+            "both image warmups must build under the CARGO_HOME cells use"
+        );
+        // The warmups pin wasm-bindgen to the CLI the image ships, as
+        // `wasm_bindgen_dependency_line` does for every cell.
+        assert_eq!(
+            dockerfile
+                .matches("wasm-bindgen --version | cut -d' ' -f2")
+                .count(),
+            2,
+            "both image warmups must pin wasm-bindgen to the shipped CLI"
+        );
+    }
+
     /// Read a file by its workspace-relative path.
     fn read_workspace_file(rel: &str) -> String {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1648,11 +1707,15 @@ mod tests {
     /// Both atomics warmups (the image's and `cargo make warmup-atomics`)
     /// exist only to leave behind artifacts a runtime rayon build reuses, and
     /// cargo fingerprints those by toolchain, RUSTFLAGS and the `-Zbuild-std`
-    /// set. A warmup that differs in any of the three produces a sysroot the
-    /// runtime silently rebuilds from scratch, which can blow the build
-    /// timeout, and nothing fails to say so. The flags are hand copies of
+    /// set, and also by `CARGO_HOME` (a registry crate's absolute source path),
+    /// the profile and the resolved dependency versions. A warmup that differs
+    /// in any of them produces a sysroot the runtime silently rebuilds from
+    /// scratch, which can blow the build timeout, and nothing fails to say so.
+    /// This test holds the first three: the flags are hand copies of
     /// [`compose_rustflags`]' output (shell cannot call Rust), so they are held
     /// to it here, token for token, extras included.
+    /// `warmup_manifests_match_the_default_notebook_profile` holds the rest
+    /// for the image.
     #[test]
     fn atomics_warmup_flags_match_the_runtime() {
         let runtime_flags =

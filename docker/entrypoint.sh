@@ -5,6 +5,21 @@ set -e
 # hand-over to the build user further down runs again.
 seeded=0
 
+# Seed the cargo registry the image's warmups built under. It must sit at
+# /ironpad/cache/cargo-home, the CARGO_HOME every cell build uses, because
+# cargo fingerprints a registry crate by its absolute source path: the warm
+# target dirs below are only warm next to this exact registry.
+if [ ! -d /ironpad/cache/cargo-home ]; then
+    if [ -d /warmup-cache/cargo-home ]; then
+        echo "Seeding cargo registry into volume..."
+        mkdir -p /ironpad/cache
+        cp -a /warmup-cache/cargo-home /ironpad/cache/cargo-home
+        seeded=1
+    else
+        echo "WARN: no pre-built cargo registry in image (/warmup-cache); the first compile downloads and rebuilds its dependencies."
+    fi
+fi
+
 # Seed pre-built atomics sysroot into the persistent volume if missing.
 # The Docker image builds these to /warmup-cache (outside /ironpad) so they
 # survive the Fly persistent volume mount that shadows /ironpad at runtime.

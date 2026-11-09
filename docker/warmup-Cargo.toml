@@ -16,7 +16,7 @@ members = ["crates/ironpad-cell"]
 [package]
 name = "ironpad-warmup"
 version = "0.0.0"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [lib]
@@ -25,5 +25,13 @@ crate-type = ["cdylib"]
 [dependencies]
 ironpad-cell = { path = "crates/ironpad-cell" }
 
+# The profile every new notebook builds with (DEFAULT_SHARED_CARGO_TOML), and
+# edition 2024 above, both as the scaffold writes them: cargo fingerprints
+# dependencies by profile, so a warmup built any other way leaves artifacts the
+# first cell recompiles from scratch. `warmup_manifests_match_the_default_notebook_profile`
+# in compiler/build.rs holds the two together. wasm-bindgen is pinned to the
+# image's CLI by the Dockerfile at build time, as the scaffold pins it.
 [profile.release]
-opt-level = "z"
+opt-level = 1
+lto = false
+codegen-units = 16

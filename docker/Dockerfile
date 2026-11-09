@@ -217,16 +217,26 @@ RUN groupadd --system --gid 2000 cellbuild \
 # build LOUDLY — a `|| true` here once hid a manifest error for months, shipping
 # images with no warmed cache and (via the entrypoint seed) crashing fresh
 # deployments.
+#
+# A warm artifact is only warm if cargo's fingerprint for it matches a real
+# cell's, and three things here used to differ, each enough to rebuild the
+# whole tree on the first compile: the registry's ABSOLUTE source path (so the
+# warmups build under the CARGO_HOME cells use, /ironpad/cache/cargo-home, and
+# move it aside below), the profile (the manifests carry the default notebook
+# profile), and the resolved wasm-bindgen (pinned below to the CLI this image
+# ships, exactly as the scaffold pins it for every cell). docker-uat proves the
+# result with docker/check-warm-seed.sh.
 COPY crates/ironpad-cell /tmp/warmup/crates/ironpad-cell
 COPY docker/warmup-Cargo.toml /tmp/warmup/Cargo.toml
 RUN mkdir -p /tmp/warmup/src && echo "" > /tmp/warmup/src/lib.rs \
     && cd /tmp/warmup \
+    && sed -i "/^\[dependencies\]/a wasm-bindgen = \"=$(wasm-bindgen --version | cut -d' ' -f2)\"" Cargo.toml \
+    && export CARGO_HOME=/ironpad/cache/cargo-home \
     && CARGO_TARGET_DIR=/warmup-cache/targets/default \
        cargo +nightly-2026-05-19 build --target wasm32-unknown-unknown --release \
     && CARGO_TARGET_DIR=/warmup-cache/targets/default \
        cargo +nightly-2026-05-19 check --target wasm32-unknown-unknown --release \
-    && rm -rf /tmp/warmup \
-    && rm -rf /usr/local/cargo/registry/src
+    && rm -rf /tmp/warmup
 
 # Pre-build the atomics sysroot for rayon-enabled cells. This needs its own
 # target dir and RUSTFLAGS (a `-Zbuild-std` std rebuilt with +atomics is a
@@ -240,6 +250,8 @@ COPY crates/ironpad-cell /tmp/warmup-atomics/crates/ironpad-cell
 COPY docker/warmup-atomics-Cargo.toml /tmp/warmup-atomics/Cargo.toml
 RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs \
     && cd /tmp/warmup-atomics \
+    && sed -i "/^\[dependencies\]/a wasm-bindgen = \"=$(wasm-bindgen --version | cut -d' ' -f2)\"" Cargo.toml \
+    && export CARGO_HOME=/ironpad/cache/cargo-home \
     && CARGO_TARGET_DIR=/warmup-cache/targets/atomics-shared \
        RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
                   -C link-arg=--shared-memory \
@@ -252,6 +264,16 @@ RUN mkdir -p /tmp/warmup-atomics/src && echo "" > /tmp/warmup-atomics/src/lib.rs
        cargo +nightly-2026-05-19 build --target wasm32-unknown-unknown --release \
        -Zbuild-std=std,panic_abort \
     && rm -rf /tmp/warmup-atomics
+
+# Both warmups are done, so move their registry out of /ironpad, which the
+# volume shadows at runtime; the entrypoint seeds it back into a fresh volume
+# like the target dirs. Safe because VOLUME is declared below this line.
+# registry/src goes: cargo re-extracts it from registry/cache on demand, and
+# the warm artifacts still fingerprint fresh without it.
+RUN rm -rf /ironpad/cache/cargo-home/registry/src \
+    && mkdir -p /warmup-cache \
+    && mv /ironpad/cache/cargo-home /warmup-cache/cargo-home \
+    && rm -rf /ironpad
 
 WORKDIR /app
 

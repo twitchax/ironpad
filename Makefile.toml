@@ -501,6 +501,12 @@ for probe in 'touch /ironpad/cache/blobs/x' 'cat /proc/1/environ' 'cat /ironpad/
     esac
 done
 
+echo "==> Checking the image's warm seed is one a default cell reuses..."
+# In a throwaway container: its /ironpad is a fresh anonymous volume, so this
+# measures the seed itself, whatever the compose volume already holds.
+docker run --rm -i --network none --entrypoint sh ironpad -s < docker/check-warm-seed.sh \
+    || { echo "    ERROR: the warm seed is stale for a default cell"; cargo make docker-down; exit 1; }
+
 echo "==> Running Playwright tests against container..."
 # IRONPAD_DOCKER_UAT enables the container-only specs (build-sandbox.spec.ts).
 IRONPAD_DOCKER_UAT=1 cargo make playwright || { cargo make docker-down; exit 1; }
