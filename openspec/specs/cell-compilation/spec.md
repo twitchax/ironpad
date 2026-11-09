@@ -343,11 +343,11 @@ The system SHALL link cells that call host-provided runtime functions, including
 - **THEN** the compile succeeds and produces a WASM module
 
 ### Requirement: Content-addressed compile cache
-The system SHALL key each compile by a 64-hex blake3 digest of length-framed inputs: source, cell manifest, target triple, the referenced upstream type tags (none for Linux cells), shared manifest and shared source (absent distinct from empty), the atomics, autodiff and SIMD verdicts, cache epoch 12, and the toolchain fingerprint. (PRD-0001, PRD-0031, PRD-0038, PRD-0060)
+The system SHALL key each compile by a 64-hex blake3 digest of length-framed inputs: source, cell manifest, target triple, the referenced upstream type tags (none for Linux cells), shared manifest and shared source (absent distinct from empty), the atomics, autodiff and SIMD verdicts, cache epoch 13, and the toolchain fingerprint. (PRD-0001, PRD-0031, PRD-0038, PRD-0060)
 
 #### Scenario: Pinned key
 - **WHEN** the key is computed for source `40 + 2`, an empty manifest, no upstream types, no shared inputs, a Code cell and fingerprint `tc`
-- **THEN** it is `25d1ed89955f7de1e4f55a60f6792d551689b5d61dab349057bac0d9fdd8f313`
+- **THEN** it is `8b635c54f7b58f792342bef3be856a0050a5e542cdd27f1ba1d572fed14d9c55`
 
 #### Scenario: Field boundaries are unambiguous
 - **WHEN** keys are computed for source `ab` with manifest `c` and for source `a` with manifest `bc`

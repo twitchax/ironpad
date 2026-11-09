@@ -158,7 +158,24 @@ impl From<crate::types::CellType> for CellTarget {
 ///   instead of copying every upstream output (cell-inputs-1). The JSON,
 ///   animation, panel, widget and plot refactors in the same package are
 ///   byte-identical in output and needed no bump of their own.
-pub const CACHE_EPOCH: u32 = 12;
+///
+/// Bumped 12 -> 13 (second fanout review), one bump for every change in that
+/// batch that reaches a blob without reaching this hash:
+/// - `Plot` (bug-cell-4/5/9) skips non-finite points and clamps its axes, so
+///   a cached blob can still spin forever on an infinite value; bars label
+///   every category at its centre and negative bars draw below a zero
+///   baseline.
+/// - JSON panels (dry-web-tools-3) colour through the `--ip-tok-*` syntax
+///   tokens instead of dark-only hex, which a cached blob keeps emitting.
+/// - Vec/tuple type tags (bug-cell-6) are advertised only when a downstream
+///   cell can name them; a cached blob still hands out tags whose generated
+///   binding fails to compile.
+/// - Progress-bar ids (bug-cell-8) carry a per-instance salt, so two cells'
+///   first bars no longer share one DOM id.
+/// - The deploy image now installs binaryen (bug-tools-config-3), so
+///   `wasm-opt -O3` actually runs; blobs built while it was silently skipped
+///   are unoptimized.
+pub const CACHE_EPOCH: u32 = 13;
 
 // ── Feature set ──────────────────────────────────────────────────────────────
 
@@ -925,7 +942,7 @@ mod tests {
         );
         assert_eq!(
             plain,
-            "25d1ed89955f7de1e4f55a60f6792d551689b5d61dab349057bac0d9fdd8f313"
+            "8b635c54f7b58f792342bef3be856a0050a5e542cdd27f1ba1d572fed14d9c55"
         );
 
         // Every field populated: a rayon dependency (atomics) and a
@@ -942,7 +959,7 @@ mod tests {
         );
         assert_eq!(
             rayon_simd,
-            "67db2312aa08f96b69c57328a813c7ebc9409e75fc032139de52c1279a886c5a"
+            "178f85e1a5878482fcec5a36a20e8a3cf45d3aeb32b7b75efaac7569c1572756"
         );
 
         // Autodiff on its own, so each flag byte is pinned in its position.
@@ -957,7 +974,7 @@ mod tests {
         );
         assert_eq!(
             autodiff,
-            "0d6551468585b304e77b00fc49f123b98506d3fa94b6d3da03ff21251659b5c9"
+            "92397b5361a56b660b91321bce77fa9589e64004e973efa0fdf2f833713968b6"
         );
 
         // A Linux cell that mentions `std::simd`: its key hashes the RAW
@@ -973,7 +990,7 @@ mod tests {
         );
         assert_eq!(
             linux,
-            "d2a95197bb3f21670318faa0436bd21b24ad2e524c09b72b2d05620bad0fac66"
+            "017228ddcd34ec1ffd293832e3884b4574bc40bfb783df0d8a2f2ea0806608dc"
         );
     }
 
