@@ -610,6 +610,19 @@ mod tests {
     }
 
     #[test]
+    fn style_keeps_a_themed_color_with_its_fallback() {
+        // JSON panels colour their tokens through the page's syntax tokens
+        // with a fallback (ironpad-cell's render_json_html), which only works
+        // if the colour declaration survives the CSS filter intact.
+        let clean =
+            sanitize_html(r#"<span style="color:var(--ip-tok-string, #539D6C)">"x"</span>"#);
+        assert!(
+            clean.contains("color:var(--ip-tok-string, #539D6C)"),
+            "kept the themed colour: {clean}"
+        );
+    }
+
+    #[test]
     fn style_keeps_presentation_declarations() {
         // The filter must not eat the presentation properties rich output relies
         // on: colors, typography, spacing, borders, and flow layout.

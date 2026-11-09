@@ -204,3 +204,70 @@ test.describe("Plot theme", () => {
     expect(inline.hasImg, "an <img> would break var() resolution").toBe(false);
   });
 });
+
+/**
+ * JSON panels carried the same dark-only bug Plot did: `render_json_html`
+ * baked hex colours into inline styles (punctuation #eaeaea was 1.11:1 on the
+ * light surface). They now resolve through the `--ip-tok-*` syntax tokens.
+ * Measured from the saved outputs of a public notebook, in both themes.
+ */
+test.describe("JSON panel theme", () => {
+  for (const theme of ["light", "dark"] as const) {
+    test(`JSON syntax colours clear WCAG AA in ${theme} theme`, async ({ page }) => {
+      await page.goto("/public/working-with-json");
+      const pre = page.locator(".view-only-output-html pre").first();
+      await expect(pre).toBeVisible({ timeout: 30_000 });
+      await setTheme(page, theme);
+
+      const result = await page.evaluate(() => {
+        const relLum = (r: number, g: number, b: number) => {
+          const f = (v: number) => {
+            v /= 255;
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+          };
+          return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+        };
+        const rgb = (s: string): [number, number, number] => {
+          const n = (s.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+          return [n[0] ?? 0, n[1] ?? 0, n[2] ?? 0];
+        };
+        const painted = (el: Element): [number, number, number] => {
+          let cur: Element | null = el;
+          while (cur) {
+            const c = getComputedStyle(cur).backgroundColor;
+            if (c && !/rgba\(0, 0, 0, 0\)|transparent/.test(c)) return rgb(c);
+            cur = cur.parentElement;
+          }
+          return [255, 255, 255];
+        };
+        let worst = Infinity;
+        let sample = "";
+        let count = 0;
+        let markup = "";
+        for (const pre of document.querySelectorAll(".view-only-output-html pre")) {
+          markup += pre.outerHTML;
+          for (const span of pre.querySelectorAll('span[style*="color"]')) {
+            count += 1;
+            const fg = relLum(...rgb(getComputedStyle(span).color));
+            const bg = relLum(...painted(span));
+            const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+            if (ratio < worst) {
+              worst = ratio;
+              sample = `${(span.textContent ?? "").trim()} (${getComputedStyle(span).color})`;
+            }
+          }
+        }
+        return { worst, sample, count, markup };
+      });
+
+      expect(result.count, "found highlighted JSON tokens").toBeGreaterThan(0);
+      expect(
+        result.worst,
+        `worst token ${result.sample} at ${result.worst.toFixed(2)}:1 in ${theme} theme`,
+      ).toBeGreaterThanOrEqual(CONTRAST_FLOOR);
+      expect(result.markup, "the old baked punctuation colour is gone").not.toContain(
+        "color:#eaeaea",
+      );
+    });
+  }
+});

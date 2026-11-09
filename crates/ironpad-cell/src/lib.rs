@@ -1233,11 +1233,16 @@ fn html_escape_into(out: &mut String, s: &str) {
 fn render_json_html(value: &serde_json::Value) -> String {
     use std::fmt::Write as _;
 
-    const COLOR_KEY: &str = "#e94560";
-    const COLOR_STRING: &str = "#40c080";
-    const COLOR_NUMBER: &str = "#40a0f0";
-    const COLOR_KEYWORD: &str = "#b080f0";
-    const COLOR_PUNCT: &str = "#eaeaea";
+    // The page's syntax tokens, so a snapshot persisted into `saved_output`
+    // reads in whichever theme renders it (the same reason Plot emits
+    // `--ip-plot-*`). Each fallback is the midpoint of the token's light and
+    // dark values, for markup read outside ironpad's stylesheet: Export HTML
+    // and the copy button.
+    const COLOR_KEY: &str = "var(--ip-tok-keyword, #D34E68)";
+    const COLOR_STRING: &str = "var(--ip-tok-string, #539D6C)";
+    const COLOR_NUMBER: &str = "var(--ip-tok-number, #996ACC)";
+    const COLOR_KEYWORD: &str = "var(--ip-tok-type, #3E8FC8)";
+    const COLOR_PUNCT: &str = "var(--ip-tok-punct, #787894)";
 
     fn open_span(buf: &mut String, color: &str) {
         buf.push_str("<span style=\"color:");
@@ -2666,51 +2671,51 @@ mod tests {
     #[test]
     fn json_render_golden() {
         let expected = concat!(
-            r##"<pre style="margin:0; font-family:monospace; line-height:1.5"><span style="color:#eaeaea">{</span>"##,
+            r##"<pre style="margin:0; font-family:monospace; line-height:1.5"><span style="color:var(--ip-tok-punct, #787894)">{</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;array&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">[</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;array&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-punct, #787894)">[</span>"##,
             "\n",
-            r##"    <span style="color:#40a0f0">1</span><span style="color:#eaeaea">,</span>"##,
+            r##"    <span style="color:var(--ip-tok-number, #996ACC)">1</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"    <span style="color:#eaeaea">{</span>"##,
+            r##"    <span style="color:var(--ip-tok-punct, #787894)">{</span>"##,
             "\n",
-            r##"      <span style="color:#e94560">&quot;b&quot;</span><span style="color:#eaeaea">: </span><span style="color:#b080f0">false</span>"##,
+            r##"      <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;b&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-type, #3E8FC8)">false</span>"##,
             "\n",
-            r##"    <span style="color:#eaeaea">}</span><span style="color:#eaeaea">,</span>"##,
+            r##"    <span style="color:var(--ip-tok-punct, #787894)">}</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"    <span style="color:#eaeaea">[]</span><span style="color:#eaeaea">,</span>"##,
+            r##"    <span style="color:var(--ip-tok-punct, #787894)">[]</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"    <span style="color:#40c080">&quot;x&quot;</span>"##,
+            r##"    <span style="color:var(--ip-tok-string, #539D6C)">&quot;x&quot;</span>"##,
             "\n",
-            r##"  <span style="color:#eaeaea">]</span><span style="color:#eaeaea">,</span>"##,
+            r##"  <span style="color:var(--ip-tok-punct, #787894)">]</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;bool&quot;</span><span style="color:#eaeaea">: </span><span style="color:#b080f0">true</span><span style="color:#eaeaea">,</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;bool&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-type, #3E8FC8)">true</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;empty_array&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">[]</span><span style="color:#eaeaea">,</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;empty_array&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-punct, #787894)">[]</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;empty_object&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">{}</span><span style="color:#eaeaea">,</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;empty_object&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-punct, #787894)">{}</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;nested&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">{</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;nested&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-punct, #787894)">{</span>"##,
             "\n",
-            r##"    <span style="color:#e94560">&quot;inner&quot;</span><span style="color:#eaeaea">: </span><span style="color:#eaeaea">[</span>"##,
+            r##"    <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;inner&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-punct, #787894)">[</span>"##,
             "\n",
-            r##"      <span style="color:#40a0f0">2.5</span><span style="color:#eaeaea">,</span>"##,
+            r##"      <span style="color:var(--ip-tok-number, #996ACC)">2.5</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"      <span style="color:#40a0f0">-3</span>"##,
+            r##"      <span style="color:var(--ip-tok-number, #996ACC)">-3</span>"##,
             "\n",
-            r##"    <span style="color:#eaeaea">]</span>"##,
+            r##"    <span style="color:var(--ip-tok-punct, #787894)">]</span>"##,
             "\n",
-            r##"  <span style="color:#eaeaea">}</span><span style="color:#eaeaea">,</span>"##,
+            r##"  <span style="color:var(--ip-tok-punct, #787894)">}</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;null&quot;</span><span style="color:#eaeaea">: </span><span style="color:#b080f0">null</span><span style="color:#eaeaea">,</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;null&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-type, #3E8FC8)">null</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;number&quot;</span><span style="color:#eaeaea">: </span><span style="color:#40a0f0">42</span><span style="color:#eaeaea">,</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;number&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-number, #996ACC)">42</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;string&quot;</span><span style="color:#eaeaea">: </span><span style="color:#40c080">&quot;&lt;a href=&#x27;x&#x27;&gt;&amp;&quot;&quot;</span><span style="color:#eaeaea">,</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;string&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-string, #539D6C)">&quot;&lt;a href=&#x27;x&#x27;&gt;&amp;&quot;&quot;</span><span style="color:var(--ip-tok-punct, #787894)">,</span>"##,
             "\n",
-            r##"  <span style="color:#e94560">&quot;z&lt;k&gt;&amp;&quot;</span><span style="color:#eaeaea">: </span><span style="color:#40c080">&quot;v&quot;</span>"##,
+            r##"  <span style="color:var(--ip-tok-keyword, #D34E68)">&quot;z&lt;k&gt;&amp;&quot;</span><span style="color:var(--ip-tok-punct, #787894)">: </span><span style="color:var(--ip-tok-string, #539D6C)">&quot;v&quot;</span>"##,
             "\n",
-            r##"<span style="color:#eaeaea">}</span></pre>"##,
+            r##"<span style="color:var(--ip-tok-punct, #787894)">}</span></pre>"##,
         );
         assert_eq!(render_json_html(&json_golden_fixture()), expected);
     }
@@ -2732,16 +2737,25 @@ mod tests {
         });
         let html = render_json_html(&val);
 
-        // Keys colored with accent red.
-        assert!(html.contains("#e94560"), "keys should use #e94560");
-        // String values colored green.
-        assert!(html.contains("#40c080"), "strings should use #40c080");
-        // Numbers colored blue.
-        assert!(html.contains("#40a0f0"), "numbers should use #40a0f0");
-        // Booleans/null colored purple.
-        assert!(html.contains("#b080f0"), "bools/null should use #b080f0");
-        // Punctuation colored light.
-        assert!(html.contains("#eaeaea"), "punctuation should use #eaeaea");
+        // Every role resolves through the page's syntax tokens, each with a
+        // fallback for markup read outside ironpad's stylesheet.
+        for (role, color) in [
+            ("keys", "var(--ip-tok-keyword, #D34E68)"),
+            ("strings", "var(--ip-tok-string, #539D6C)"),
+            ("numbers", "var(--ip-tok-number, #996ACC)"),
+            ("bools/null", "var(--ip-tok-type, #3E8FC8)"),
+            ("punctuation", "var(--ip-tok-punct, #787894)"),
+        ] {
+            assert!(
+                html.contains(&format!("color:{color}")),
+                "{role} should use {color}"
+            );
+        }
+        // No theme-specific colour is baked in: the old dark-only palette is
+        // unreadable on the light surface (punctuation was 1.11:1).
+        for baked in ["#eaeaea", "#e94560", "#40c080", "#40a0f0", "#b080f0"] {
+            assert!(!html.contains(baked), "baked dark-theme colour {baked}");
+        }
     }
 
     #[test]
@@ -2777,7 +2791,7 @@ mod tests {
         match &panels[0] {
             DisplayPanel::Html(html) => {
                 assert!(html.contains("<pre "));
-                assert!(html.contains("#40a0f0")); // numbers
+                assert!(html.contains("var(--ip-tok-number, #996ACC)")); // numbers
             }
             other => panic!("expected Html panel, got {other:?}"),
         }

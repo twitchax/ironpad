@@ -85,7 +85,7 @@ The system SHALL provide `Html(String)`, `Svg(String)`, `Md(String)`, `Table::ne
 
 #### Scenario: Highlighted JSON
 - **WHEN** a cell that declares `serde_json` ends with `Json(serde_json::json!({"name": "ironpad", "ok": true}))`
-- **THEN** its output shows a pretty-printed `<pre>` block with keys in `#e94560`, strings in `#40c080`, numbers in `#40a0f0`, and `true`, `false`, `null` in `#b080f0`
+- **THEN** its output shows a pretty-printed `<pre>` block colored through the page's syntax tokens, each with a fallback: keys `var(--ip-tok-keyword, #D34E68)`, strings `var(--ip-tok-string, #539D6C)`, numbers `var(--ip-tok-number, #996ACC)`, `true`, `false`, `null` `var(--ip-tok-type, #3E8FC8)`, and punctuation `var(--ip-tok-punct, #787894)`, so every token reaches 4.5:1 contrast in both themes, saved snapshots included
 - **AND** string content is HTML-escaped before it is placed in the block
 
 #### Scenario: JSON parsed from text
