@@ -616,6 +616,50 @@ async fn guest_idle_timeout_closes_stale_connection() {
     }
 }
 
+/// The CLI daemon's keepalive: a guest that sends only Pings, faster than
+/// the idle window, is never reaped, and each Ping is answered with a Pong
+/// (the frame the daemon's own read timeout counts on).
+#[tokio::test]
+async fn pinging_guest_outlives_the_idle_timeout() {
+    let ws = WsState::default().with_guest_idle_timeout(Duration::from_millis(200));
+    let store = ws.sessions.clone();
+    let base = start_server(state_with_ws(ws)).await;
+
+    let result = store
+        .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+        .await;
+
+    let url = format!("{base}/ws/connect?token={}", result.token);
+    let (guest_ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("guest ws connect");
+    let (mut sink, mut stream) = guest_ws.split();
+
+    // Five idle windows. Reading in the same loop keeps the stream polled,
+    // which is what lets the client flush its Pings and see the Pongs.
+    let deadline = tokio::time::sleep(Duration::from_secs(1));
+    tokio::pin!(deadline);
+    let mut ping = tokio::time::interval(Duration::from_millis(50));
+    let mut pongs = 0u32;
+    loop {
+        tokio::select! {
+            () = &mut deadline => break,
+            _ = ping.tick() => sink
+                .send(tungstenite::Message::Ping(tungstenite::Bytes::new()))
+                .await
+                .expect("the relay must still accept frames"),
+            frame = stream.next() => match frame {
+                Some(Ok(tungstenite::Message::Pong(_))) => pongs += 1,
+                Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => {
+                    panic!("a pinging guest was reaped: {frame:?}")
+                }
+                Some(Ok(_)) => {}
+            },
+        }
+    }
+    assert!(pongs > 0, "the relay must answer Pings with Pongs");
+}
+
 /// A guest connection over the global cap is refused with HTTP 503.
 #[tokio::test]
 async fn guest_connection_cap_rejects_over_limit() {

@@ -74,12 +74,12 @@ pub const DEFAULT_MAX_GUESTS: usize = 512;
 /// connect and never claim. Generous for a single-author deployment.
 pub const DEFAULT_MAX_HOSTS: usize = 256;
 
-/// Default idle timeout (seconds) for a guest connection. Guests (CLI
-/// daemons) don't send heartbeats and don't auto-reconnect, so this is
-/// deliberately generous: it exists to reap a half-open connection (a
-/// network drop with no FIN), not to police an agent's normal think-time.
-/// Any inbound frame resets the window. Also the clap default in
-/// `config.rs`.
+/// Default idle timeout (seconds) for a guest connection. It exists to reap
+/// a half-open connection (a network drop with no FIN), not to police an
+/// agent's normal think-time: any inbound frame resets the window, a Ping
+/// included, and the CLI daemon pings every 30 seconds whether or not its
+/// agent is doing anything. Guests don't auto-reconnect, so it stays
+/// generous. Also the clap default in `config.rs`.
 pub const DEFAULT_GUEST_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// [`DEFAULT_GUEST_IDLE_TIMEOUT_SECS`] as a `Duration` for in-crate use.

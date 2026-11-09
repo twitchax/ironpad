@@ -147,8 +147,8 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
         Ok((ws_stream, _response)) => {
             tracing::info!("WebSocket connected");
 
-            let (mut ws_sink, mut ws_source) = ws_stream.split();
-            let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<String>();
+            let (ws_sink, ws_source) = ws_stream.split();
+            let (ws_tx, ws_rx) = mpsc::unbounded_channel::<String>();
 
             // Publish the WS sender so IPC handlers can use it.
             *state.ws_tx.write().await = Some(ws_tx.clone());
@@ -168,27 +168,12 @@ pub async fn run(host: &str, token: &str) -> anyhow::Result<()> {
             }
 
             // ── Task: forward channel → WebSocket ───────────────────────
-            let ws_send_task = tokio::spawn(async move {
-                while let Some(msg) = ws_rx.recv().await {
-                    if ws_sink
-                        .send(tungstenite::Message::Text(msg.into()))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
+            let ws_send_task = tokio::spawn(ws_send_pump(ws_sink, ws_rx, WS_PING_INTERVAL));
 
             // ── Task: read WebSocket → dispatch ─────────────────────────
             let state_ws = Arc::clone(&state);
             let ws_recv_task = tokio::spawn(async move {
-                while let Some(Ok(msg)) = ws_source.next().await {
-                    if let tungstenite::Message::Text(text) = msg {
-                        handle_ws_message(&text, &state_ws).await;
-                    }
-                }
-                tracing::info!("WebSocket closed");
+                ws_recv_loop(ws_source, &state_ws, WS_READ_TIMEOUT).await;
             });
 
             // Wait for the initial notebook fetch. The recv path cached it
@@ -305,6 +290,70 @@ async fn cleanup(sock: &Path, pid: &Path) {
 }
 
 // ── WebSocket message handling ──────────────────────────────────────────────
+
+/// How often the daemon pings the relay: the browser host's Heartbeat
+/// cadence. The relay's guest idle timer resets only on inbound frames, and
+/// an agent that only reads (`cells list`, `notebook get`, `status`, a long
+/// `cells run` wait) sends none, so without this a healthy daemon is reaped
+/// as half-open once the idle window passes.
+const WS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long the daemon waits for ANY inbound frame before treating the link
+/// as dead. The relay's tungstenite answers each ping with a Pong, so a live
+/// link is never quiet for longer than a ping interval; three missed rounds
+/// is a half-open connection (a network drop with no FIN), not a slow relay.
+const WS_READ_TIMEOUT: std::time::Duration = WS_PING_INTERVAL.saturating_mul(3);
+
+/// Forward queued protocol messages to the WebSocket, pinging every
+/// `ping_every`. Ends when the queue closes or a send fails.
+async fn ws_send_pump<S>(
+    mut sink: S,
+    mut rx: mpsc::UnboundedReceiver<String>,
+    ping_every: std::time::Duration,
+) where
+    S: futures::Sink<tungstenite::Message> + Unpin,
+{
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + ping_every, ping_every);
+    // A send that stalls past several ticks owes one ping, not a burst.
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let msg = tokio::select! {
+            queued = rx.recv() => match queued {
+                Some(text) => tungstenite::Message::Text(text.into()),
+                None => break,
+            },
+            _ = ping.tick() => tungstenite::Message::Ping(tungstenite::Bytes::new()),
+        };
+        if sink.send(msg).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Read the WebSocket and dispatch each text frame, until it closes or
+/// nothing at all (not even a Pong) arrives within `idle`.
+async fn ws_recv_loop<S>(mut source: S, state: &DaemonState, idle: std::time::Duration)
+where
+    S: futures::Stream<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin,
+{
+    loop {
+        match tokio::time::timeout(idle, source.next()).await {
+            Err(_) => {
+                tracing::warn!(
+                    idle_secs = idle.as_secs_f64(),
+                    "no frame from the server within the read timeout; treating the link as dead"
+                );
+                break;
+            }
+            Ok(Some(Ok(tungstenite::Message::Text(text)))) => {
+                handle_ws_message(&text, state).await;
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(None | Some(Err(_))) => break,
+        }
+    }
+    tracing::info!("WebSocket closed");
+}
 
 async fn handle_ws_message(text: &str, state: &DaemonState) {
     let Ok(msg) = serde_json::from_str::<protocol::Message>(text) else {
@@ -1208,6 +1257,111 @@ mod tests {
                 .contains("exceeds the IPC frame limit"),
             "{:?}",
             response.error
+        );
+    }
+
+    // ── WebSocket keepalive ──────────────────────────────────────────────
+
+    /// The relay reaps a guest after its idle window with no inbound frame,
+    /// and reads, `status` and a `cells run` wait send nothing, so the pump
+    /// must ping on its own while still forwarding protocol traffic.
+    #[tokio::test]
+    async fn ws_send_pump_pings_and_still_forwards_text() {
+        use std::time::Duration;
+
+        let (sink, mut sent) = futures::channel::mpsc::unbounded::<tungstenite::Message>();
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        let pump = tokio::spawn(ws_send_pump(sink, rx, Duration::from_millis(20)));
+        tx.send("hello".to_string()).unwrap();
+
+        let (mut saw_text, mut saw_ping) = (false, false);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !(saw_text && saw_ping) {
+                match sent.next().await {
+                    Some(tungstenite::Message::Text(text)) => {
+                        assert_eq!(text.as_str(), "hello");
+                        saw_text = true;
+                    }
+                    Some(tungstenite::Message::Ping(_)) => saw_ping = true,
+                    Some(other) => panic!("unexpected frame {other:?}"),
+                    None => break,
+                }
+            }
+        })
+        .await
+        .ok();
+        assert!(saw_text, "queued text must still be forwarded");
+        assert!(saw_ping, "an idle link must be pinged");
+
+        // The pump ends with its queue, as before.
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(2), pump)
+            .await
+            .expect("the pump ends when its queue closes")
+            .unwrap();
+    }
+
+    /// A half-open link (a network drop with no FIN) delivers nothing, ever;
+    /// the recv loop must give up so the daemon exits instead of serving a
+    /// stale cache under `"connected":true`.
+    #[tokio::test]
+    async fn ws_recv_loop_gives_up_on_a_silent_link() {
+        use std::time::Duration;
+
+        let state = test_state();
+        let silent = futures::stream::pending::<Result<tungstenite::Message, tungstenite::Error>>();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            ws_recv_loop(silent, &state, Duration::from_millis(50)),
+        )
+        .await
+        .expect("a silent link must end the recv loop");
+    }
+
+    /// The positive control: Pongs alone, arriving faster than the read
+    /// timeout, keep the loop alive well past that timeout, so a later text
+    /// frame is still dispatched.
+    #[tokio::test]
+    async fn ws_recv_loop_survives_on_pongs_alone() {
+        use std::time::Duration;
+
+        let state = test_state();
+        let (tx, rx) = oneshot::channel::<String>();
+        state.pending.write().await.insert("p1".to_string(), tx);
+        let reply = serde_json::to_string(&protocol::Message {
+            id: "p1".to_string(),
+            kind: MessageKind::Response(protocol::Response::Notebook {
+                notebook: IronpadNotebook::new("Late"),
+            }),
+        })
+        .unwrap();
+
+        // Ten Pongs 20ms apart (200ms, four read timeouts), then the reply.
+        let pongs = futures::stream::unfold(0u32, |n| async move {
+            if n == 10 {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Some((
+                Ok(tungstenite::Message::Pong(tungstenite::Bytes::new())),
+                n + 1,
+            ))
+        });
+        let frames = pongs
+            .chain(futures::stream::iter([Ok(tungstenite::Message::Text(
+                reply.into(),
+            ))]))
+            .chain(futures::stream::pending());
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            ws_recv_loop(Box::pin(frames), &state, Duration::from_millis(50)),
+        )
+        .await
+        .expect("the loop ends once the link goes silent");
+        assert!(
+            rx.await.is_ok(),
+            "the reply behind the Pongs must be dispatched"
         );
     }
 

@@ -480,8 +480,9 @@ async fn handle_guest(
     let idle_timeout = state.ws.guest_idle_timeout();
     let mut recv_task = tokio::spawn(async move {
         // Idle timeout: reap a half-open guest (a network drop with no FIN).
-        // Guests don't heartbeat, so this window is generous (see `WsState`);
-        // any inbound frame resets it.
+        // Any inbound frame resets it, and the CLI daemon pings every 30s,
+        // so a live guest outlives it however quiet its agent is (see
+        // `WsState`).
         loop {
             match next_text(&mut ws_receiver, idle_timeout).await {
                 Ok(text) => handle_guest_message(&text, &nid, &cid, &permissions, &st).await,

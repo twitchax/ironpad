@@ -31,7 +31,7 @@ The `ironpad-cli` binary is how an AI agent drives a collaboration session from 
 - **THEN** it exits 1 without touching that socket or its pidfile, and the running daemon keeps serving its session
 
 ### Requirement: Daemon lifetime follows the session
-The daemon SHALL exit when its WebSocket closes, whether the session ended, the host left, or the server dropped the connection, and SHALL NOT reconnect; a new session needs a new daemon. On that exit, and on SIGINT or SIGTERM, it SHALL remove its socket and pidfile, but only while `daemon.pid` still holds its own pid; files another daemon has since claimed SHALL be left in place. (PRD-0035, PRD-0038)
+The daemon SHALL exit when its WebSocket closes, whether the session ended, the host left, or the server dropped the connection, and SHALL NOT reconnect; a new session needs a new daemon. It SHALL send a WebSocket Ping every 30 seconds, so the relay's guest idle timeout never reaps a daemon whose agent is only reading or waiting on a run, and SHALL treat 90 seconds without any inbound frame (the relay answers each Ping with a Pong) as a closed WebSocket. On that exit, and on SIGINT or SIGTERM, it SHALL remove its socket and pidfile, but only while `daemon.pid` still holds its own pid; files another daemon has since claimed SHALL be left in place. (PRD-0035, PRD-0038)
 
 #### Scenario: Host tab closes
 - **WHEN** the browser tab hosting the session closes
@@ -40,6 +40,14 @@ The daemon SHALL exit when its WebSocket closes, whether the session ended, the 
 #### Scenario: Stopped by signal
 - **WHEN** the daemon receives SIGTERM
 - **THEN** `~/.ironpad/daemon.sock` and `~/.ironpad/daemon.pid` no longer exist
+
+#### Scenario: An agent that only reads
+- **WHEN** an agent issues no mutation for longer than the relay's guest idle timeout while the session stays live
+- **THEN** the daemon is still connected and `ironpad-cli status` reports `"connected":true`
+
+#### Scenario: Silent network drop
+- **WHEN** the link to the relay stops delivering frames without closing
+- **THEN** the daemon exits within 90 seconds instead of serving a stale cache
 
 ### Requirement: Stopping the daemon
 `ironpad-cli daemon-stop` SHALL send SIGTERM to the pid in `~/.ironpad/daemon.pid` and print `sent stop signal to daemon (pid N)`. It SHALL exit 1 with `daemon is not running (no pidfile)` when no pidfile exists, and, where `/proc` exists, SHALL refuse to signal a pid whose command line lacks `ironpad`, deleting that stale pidfile. (PRD-0036, PRD-0038)
