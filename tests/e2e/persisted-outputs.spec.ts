@@ -106,7 +106,7 @@ test.describe("Persisted cell outputs (PRD-0056)", () => {
     page,
     browser,
   }) => {
-    test.setTimeout(240_000);
+    test.setTimeout(480_000);
     await loginTestUser(page, "alice");
     await createNotebook(page);
     await addRunCell(page, 'CellOutput::text(format!("{}", 41 + 1))', "42");
@@ -114,38 +114,51 @@ test.describe("Persisted cell outputs (PRD-0056)", () => {
     // Share Mutable: the create path embeds outputs like Share Immutable.
     const shareId = await shareMutable(page);
 
-    const readerSeesSaved = async () => {
+    const readerSeesSaved = async (expected: string) => {
       const anon = await browser.newContext();
       try {
         const reader = await anon.newPage();
         await reader.goto(`/mutable/${shareId}`);
         const saved = reader.locator(".view-only-output--saved").first();
         await expect(saved).toBeVisible({ timeout: 30_000 });
-        await expect(saved).toContainText("42");
+        await expect(saved).toContainText(expected);
       } finally {
         await anon.close();
       }
     };
-    await readerSeesSaved();
+    await readerSeesSaved("42");
 
-    // Now the PUSH path (uat-003): dirty the draft with a rename (a lean
-    // 1.5s autosave writes it WITHOUT outputs), then Push. The pre-push
-    // durable save must re-embed the outputs — if it saved lean, the
-    // promote would publish a draft with no saved_output and the reader's
-    // snapshot below would vanish.
-    await page.locator(".ironpad-notebook-title--editable").click();
-    const input = page.locator(".ironpad-header-title-input");
-    await input.fill("Pushed With Outputs");
-    await input.press("Enter");
+    // Now the PUSH path (uat-003): change the cell and run it again, so the
+    // session holds a FRESH capture that no saved copy has, then Push. Only
+    // the pre-push durable save embedding outputs can get "43" to readers:
+    // a lean save would publish the draft's carried-over "42". (A rename
+    // and a push without a run could not tell the two apart, since the
+    // model loaded after the hard navigation already carried "42".)
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cell, 'CellOutput::text(format!("{}", 41 + 2))');
+    await expect(cell.locator(".ironpad-tab-dirty")).toHaveCount(0, {
+      timeout: 10_000,
+    });
+    await page.locator('button[title="Run cell"]').first().click();
+    // A new source, so a cold compile.
+    await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 240_000,
+    });
+    await expect(cell.locator(".ironpad-output-display-text")).toContainText(
+      "43",
+      { timeout: 5_000 },
+    );
     const push = page.locator(".ironpad-push-button");
     await expect(push).toBeEnabled({ timeout: 10_000 });
-    await page.waitForTimeout(3_000); // let the lean autosave land first
     await push.click();
     await expect(
       page.locator(".ironpad-toast-title", { hasText: "Pushed" }),
     ).toBeVisible({ timeout: 30_000 });
 
-    await readerSeesSaved();
+    await readerSeesSaved("43");
   });
 
   test("published outputs survive a lean autosave, a reload and another push", async ({
