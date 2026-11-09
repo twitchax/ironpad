@@ -851,4 +851,44 @@ test.describe("Agent run queue", () => {
     await page.locator('button[aria-label="Edit"]').click();
     expect(jsErrors).toEqual([]);
   });
+
+  test("run after update during an in-flight compile reports the new source", async ({
+    page,
+  }) => {
+    // Review bug-common-cli-6: the in-flight run of the OLD source satisfied
+    // the second `cells run`, which then reported the old output as success
+    // and cleared the stale flag the update had set.
+    test.setTimeout(300_000);
+    const jsErrors = trackJsErrors(page);
+
+    const [id] = await agentNotebook(page, ["111u32 + 0"]);
+    const gate = await gateCompiles(page);
+
+    const queued = await cliExecRawAsync(["cells", "run", id, "--no-wait"]);
+    expect(queued.exitCode).toBe(0);
+    await gate.waitForHeld(1);
+
+    const updated = await cliExecRawAsync(["cells", "update", id, "--source", "222u32 + 0"]);
+    expect(updated.exitCode).toBe(0);
+    const card = page.locator(".ironpad-cell-card").first();
+    await expect(card.locator(".monaco-editor").first()).toContainText("222u32", {
+      timeout: 10_000,
+    });
+
+    // Waiting first, then releasing, so the old compile lands while the
+    // second run is listening.
+    const run = cliExecRawAsync(["cells", "run", id, "--timeout-secs", "150"], 170_000);
+    await page.waitForTimeout(1_000);
+    gate.releaseAll();
+
+    const result = parseRun(await run);
+    expect(result.status).toBe("executed");
+    expect(result.display_text).toContain("222");
+    expect(result.display_text).not.toContain("111");
+    await expect(card.locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(card.locator(".ironpad-stale-indicator")).toHaveCount(0);
+    expect(jsErrors).toEqual([]);
+  });
 });

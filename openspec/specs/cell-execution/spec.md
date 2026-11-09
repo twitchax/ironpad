@@ -262,7 +262,7 @@ Starting a cell's run in the editor SHALL discard the live outputs of that cell 
 - **AND** `before` keeps its output
 
 ### Requirement: Staleness
-Changing a Code cell's source SHALL mark that cell and every later runnable cell stale, by position rather than by dependency, shown as an indicator titled "Cell output is stale", until each next runs successfully. Editing a markdown or Linux cell stales nothing, since neither feeds another cell. Adding, deleting or moving a cell SHALL mark stale every runnable cell after the change that reads a piped input (`cellN` or `last`), since those bind by position; cells that read none stay fresh. Markdown, shared, and Linux cells never go stale. (PRD-0025)
+Changing a Code cell's source SHALL mark that cell and every later runnable cell stale, by position rather than by dependency, shown as an indicator titled "Cell output is stale", until each next runs successfully. Editing a markdown or Linux cell stales nothing, since neither feeds another cell. Adding, deleting or moving a cell SHALL mark stale every runnable cell after the change that reads a piped input (`cellN` or `last`), since those bind by position; cells that read none stay fresh. A run SHALL NOT clear the indicator when the cell, a runnable cell above it, or the shared source or dependencies changed while it was in flight. When the run queue was running the cell and what it compiled changed, the run's result SHALL be discarded unreported and the cell run again on its current source. Markdown, shared, and Linux cells never go stale. (PRD-0025)
 
 #### Scenario: Positional, not dependency-aware
 - **WHEN** an author edits the second of three Code cells that have all run, none of which references another
@@ -276,6 +276,14 @@ Changing a Code cell's source SHALL mark that cell and every later runnable cell
 #### Scenario: Inserting a cell above a reader
 - **WHEN** Code cells `1u32`, `cell0 + 1` and `42` have run and a cell is added at the top
 - **THEN** `cell0 + 1` shows the stale indicator and `1u32` and `42` do not
+
+#### Scenario: Typing during a compile
+- **WHEN** an author clicks Run and edits the cell before its compile returns
+- **THEN** the old source's output is shown and the cell keeps the stale indicator
+
+#### Scenario: An agent edits a cell mid-run
+- **WHEN** `cells run c --no-wait` is still compiling `111u32 + 0`, the agent sets `c`'s source to `222u32 + 0`, and runs `cells run c`
+- **THEN** the command prints `executed` with the output of `222u32 + 0` and never that of `111u32 + 0`, and `c` shows no stale indicator
 
 ### Requirement: Reactive mode
 The editor's gear-menu "Reactive Mode" toggle SHALL persist as the notebook's `reactive_mode` flag and, while on, SHALL queue every stale runnable cell in notebook order 500 ms after the most recent change that staled a cell; while a run is already queued it SHALL try again every 500 ms until the queue drains rather than drop the change, and it SHALL queue nothing while the editor shows Preview. Stale cells then show "Pending re-execution (reactive mode)". (PRD-0025)

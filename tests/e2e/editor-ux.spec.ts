@@ -433,6 +433,33 @@ test.describe("Editor UX (PRD-0032)", () => {
     await expect(output).not.toContainText("3001");
   });
 
+  test("typing during a compile keeps the cell stale", async ({ page }) => {
+    // Review bug-common-cli-6: the completion of a compile that started
+    // before the edit cleared the stale flag the edit had set, so the
+    // output read as current for code that never ran.
+    test.setTimeout(240_000);
+    await newNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cell, "5005u32 + 0");
+
+    const gate = await gateCompiles(page);
+    await page.locator(".ironpad-cell-row").first().locator('button[title="Run cell"]').click();
+    await gate.waitForHeld(1);
+    await setCellSource(page, cell, "6006u32 + 0");
+    // Past the 1s save debounce, which marks the cell stale.
+    await page.waitForTimeout(2_000);
+    gate.releaseAll();
+
+    await expect(
+      cell.locator(".ironpad-cell-status--success, .ironpad-cell-status--error"),
+    ).toBeVisible({ timeout: 120_000 });
+    await expect(cell.locator(".ironpad-stale-indicator")).toBeVisible();
+  });
+
   // uat-004: cancelling a running cell must NOT re-run it on the main thread.
   // This is guarded at the source (executor-bridge.js rethrows AbortError instead
   // of falling back). Automating it reliably requires a long-running cell and

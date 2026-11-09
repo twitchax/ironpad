@@ -10,7 +10,8 @@
 //! `fail_in_run_queue`) rather than re-wrapping them.
 
 use ironpad_common::{
-    CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult, Severity,
+    CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult,
+    IronpadNotebook, Severity,
 };
 use leptos::prelude::*;
 
@@ -190,6 +191,102 @@ fn downstream_code_ids(cells: &[CellManifest], cell_id: &str) -> Vec<String> {
         .collect()
 }
 
+// ── Superseded runs ─────────────────────────────────────────────────────────
+
+/// What a run was built from, captured at dispatch and compared when it
+/// completes. Nothing else ties a result to the text it compiled: an edit
+/// during a compile (a human typing on, or an agent's `cells update` then
+/// `cells run`, which the in-flight run satisfies) used to be reported as
+/// that edit's result, and the completion wiped the stale flag the edit set.
+#[derive(Clone, PartialEq)]
+struct RunInputs {
+    source: String,
+    cargo_toml: String,
+    shared_cargo_toml: Option<String>,
+    /// The notebook-level shared source plus every shared cell (PRD-0044).
+    shared_source: Option<String>,
+    /// Each upstream runnable cell's source. Not compiled into this cell
+    /// (its OUTPUT is, and an edit does not change that), but editing one
+    /// marks this cell stale, and a run must not wipe a flag set after its
+    /// inputs were taken.
+    upstream: Vec<String>,
+}
+
+impl RunInputs {
+    /// `cell_id`'s inputs right now; `None` once the cell or page is gone.
+    /// The cell's own signals are read first, so a disposed page is never
+    /// reached through `state`.
+    fn current(ctx: &CellRunCtx, cell_id: &str) -> Option<Self> {
+        let source = ctx.source.try_get_untracked()?;
+        let cargo_toml = ctx.cargo_toml.try_get_untracked()?;
+        let state = ctx.state;
+        let shared_cargo_toml = state.shared_cargo_toml.try_get_untracked()?;
+        let shared_source = state.notebook.try_with_untracked(|nb| {
+            nb.as_ref()
+                .and_then(IronpadNotebook::effective_shared_source)
+        })?;
+        let sources = state.current_cell_sources();
+        let upstream = state
+            .cells
+            .try_with_untracked(|cells| upstream_runnable_sources(cells, cell_id, &sources))?;
+        Some(Self {
+            source,
+            cargo_toml,
+            shared_cargo_toml,
+            shared_source,
+            upstream,
+        })
+    }
+
+    /// Whether `now` would compile a different program than `self` did.
+    fn recompile_needed(&self, now: &Self) -> bool {
+        self.source != now.source
+            || self.cargo_toml != now.cargo_toml
+            || self.shared_cargo_toml != now.shared_cargo_toml
+            || self.shared_source != now.shared_source
+    }
+}
+
+/// The sources of the runnable cells before `cell_id`, in notebook order.
+/// Positional, like the stale marking it guards (`mark_downstream_stale`).
+fn upstream_runnable_sources(
+    cells: &[CellManifest],
+    cell_id: &str,
+    sources: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    let my_idx = cells.iter().position(|c| c.id == cell_id).unwrap_or(0);
+    cells[..my_idx]
+        .iter()
+        .filter(|c| c.is_runnable())
+        .map(|c| sources.get(&c.id).cloned().unwrap_or_default())
+        .collect()
+}
+
+/// A run whose compiled inputs changed while it was in flight, at the front
+/// of the queue: drop its result and dispatch the cell again on what it says
+/// now. Returns whether it did. Nothing is reported for the dropped result,
+/// so a waiting `cells run` sees only the new run's events (a fresh
+/// `CellCompiling` first) and never a stale success or `compile_error`. No
+/// wire format changes, and older daemons are unaffected.
+///
+/// A run that is not the queue's (a human's direct click) keeps its result
+/// and its events; the cell just stays stale (see the completion below).
+fn redispatch_if_superseded(
+    ctx: &CellRunCtx,
+    compiled: &RunInputs,
+    cell_id: &str,
+    run_trigger: RwSignal<u64>,
+) -> bool {
+    let superseded =
+        RunInputs::current(ctx, cell_id).is_some_and(|now| compiled.recompile_needed(&now));
+    if !superseded || !ctx.state.run_all_queue.is_front_untracked(cell_id) {
+        return false;
+    }
+    ctx.cell_status.set(CellStatus::Idle);
+    run_trigger.update(|g| *g += 1);
+    true
+}
+
 // ── The run pipeline ────────────────────────────────────────────────────────
 
 /// Wire the compile/execute flow to `run_trigger`: cascade prerequisites,
@@ -289,6 +386,11 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
 
         // Used inside #[cfg(feature = "hydrate")] below.
         let _ = &input_bytes;
+
+        // What this run compiles, for the completion to compare against.
+        let Some(compiled) = RunInputs::current(&ctx, &cid) else {
+            return;
+        };
 
         // Mark compiling BEFORE invalidating outputs so the downstream-clear effect
         // (see below) can tell this cell's own re-run (status == Compiling) apart from
@@ -390,6 +492,11 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
             if !guard.is_current() {
                 return;
             }
+            // Edited while compiling and dispatched by the queue: this
+            // result describes text the cell no longer has.
+            if redispatch_if_superseded(&ctx, &compiled, &cell_id_for_exec, run_trigger) {
+                return;
+            }
 
             #[cfg(feature = "hydrate")]
             compile_time_ms.set(Some(js_sys::Date::now() - start));
@@ -440,13 +547,26 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
 
                             last_compile.set(Some(CompileSummary::from(&response)));
 
-                            let exec_err = match run_flow::load_and_execute(
+                            let executed = run_flow::load_and_execute(
                                 &cell_id_for_exec,
                                 &response,
                                 &input_bytes,
                             )
-                            .await
+                            .await;
+                            // Edited during the run. A user cancel keeps its
+                            // own path below, or a Stop would re-dispatch.
+                            let aborted = matches!(&executed, Err(e) if e.contains("AbortError"));
+                            if !aborted
+                                && redispatch_if_superseded(
+                                    &ctx,
+                                    &compiled,
+                                    &cell_id_for_exec,
+                                    run_trigger,
+                                )
                             {
+                                return;
+                            }
+                            let exec_err = match executed {
                                 Ok((
                                     (output_bytes, display_text, type_tag, ran_on_main_thread),
                                     exec_ms,
@@ -492,10 +612,22 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                                     }));
                                     cell_status.set(CellStatus::Success);
 
-                                    // Clear stale flag on successful execution.
-                                    state.cell_stale.update(|stale| {
-                                        stale.remove(&cell_id_for_exec);
-                                    });
+                                    // Clear the stale flag, unless the cell
+                                    // (or an upstream cell) was edited while
+                                    // this ran: the output does not describe
+                                    // it any more, and reactive mode re-runs
+                                    // it.
+                                    let edited_since = RunInputs::current(&ctx, &cell_id_for_exec)
+                                        .is_some_and(|now| now != compiled);
+                                    if edited_since {
+                                        if state.reactive_mode.get_untracked() {
+                                            state.schedule_reactive_execution();
+                                        }
+                                    } else {
+                                        state.cell_stale.update(|stale| {
+                                            stale.remove(&cell_id_for_exec);
+                                        });
+                                    }
 
                                     // Blame held by this cell is stale now.
                                     run_flow::clear_blame_held_by(
@@ -949,6 +1081,80 @@ mod tests {
             drops(&["a", "b"])
         );
         assert!(queue_drops_on_cancel(None, Vec::new()).is_empty());
+    }
+
+    // ── Superseded runs (review bug-common-cli-6) ───────────────────────
+
+    fn inputs(source: &str) -> RunInputs {
+        RunInputs {
+            source: source.to_string(),
+            cargo_toml: "[dependencies]".to_string(),
+            shared_cargo_toml: None,
+            shared_source: None,
+            upstream: vec!["1 + 1".to_string()],
+        }
+    }
+
+    #[test]
+    fn an_edit_to_what_was_compiled_supersedes_the_run() {
+        let compiled = inputs("old");
+        assert!(!compiled.recompile_needed(&inputs("old")));
+        assert!(compiled.recompile_needed(&inputs("new")), "own source");
+
+        let mut manifest = inputs("old");
+        manifest.cargo_toml = "[dependencies]\nrand = \"0.8\"".to_string();
+        assert!(compiled.recompile_needed(&manifest), "own manifest");
+
+        let mut shared = inputs("old");
+        shared.shared_source = Some("fn helper() {}".to_string());
+        assert!(
+            compiled.recompile_needed(&shared),
+            "shared source is compiled in"
+        );
+
+        let mut shared_manifest = inputs("old");
+        shared_manifest.shared_cargo_toml = Some("[dependencies]".to_string());
+        assert!(compiled.recompile_needed(&shared_manifest));
+    }
+
+    #[test]
+    fn an_upstream_edit_keeps_the_cell_stale_without_a_recompile() {
+        // The upstream cell's TEXT is not compiled into this one (its output
+        // is, and that did not change), so the result stands; but the edit
+        // marked this cell stale after its inputs were taken, and the run
+        // must not wipe that.
+        let compiled = inputs("x");
+        let mut now = inputs("x");
+        now.upstream = vec!["2 + 2".to_string()];
+        assert!(!compiled.recompile_needed(&now));
+        assert!(compiled != now);
+    }
+
+    #[test]
+    fn upstream_sources_are_the_runnable_cells_before_this_one() {
+        let mut shared = manifest("shared", CellType::Code);
+        shared.shared = true;
+        let cells = vec![
+            manifest("a", CellType::Code),
+            manifest("md", CellType::Markdown),
+            shared,
+            manifest("me", CellType::Code),
+            manifest("after", CellType::Code),
+        ];
+        let sources: std::collections::HashMap<String, String> = [
+            ("a", "1"),
+            ("md", "# hi"),
+            ("shared", "fn f() {}"),
+            ("me", "cell0"),
+            ("after", "2"),
+        ]
+        .into_iter()
+        .map(|(id, src)| (id.to_string(), src.to_string()))
+        .collect();
+        assert_eq!(
+            upstream_runnable_sources(&cells, "me", &sources),
+            vec!["1".to_string()]
+        );
     }
 
     #[test]

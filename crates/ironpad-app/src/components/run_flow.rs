@@ -266,6 +266,13 @@ impl RunQueue {
         self.0.try_with(Vec::is_empty).unwrap_or(true)
     }
 
+    /// Untracked: whether `id` is the front, the cell the queue is running.
+    pub(crate) fn is_front_untracked(&self, id: &str) -> bool {
+        self.0
+            .try_with_untracked(|queue| queue.first().is_some_and(|front| front == id))
+            .unwrap_or(false)
+    }
+
     /// Untracked [`Self::is_idle`].
     pub(crate) fn is_empty_untracked(&self) -> bool {
         self.0.try_with_untracked(Vec::is_empty).unwrap_or(true)
