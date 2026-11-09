@@ -349,4 +349,37 @@ test.describe("Cell execution and output", () => {
 
     expect(jsErrors).toEqual([]);
   });
+
+  test("progress bars from two cells keep distinct ids, so each update reaches its own bar", async ({
+    page,
+  }) => {
+    // Regression (review bug-cell-8): the id counter is per wasm instance and
+    // each cell is its own instance, so every cell's first bar was
+    // progress-00000000 and an update found the first such bar in the DOM.
+    test.setTimeout(300_000);
+    const jsErrors = trackJsErrors(page);
+
+    const cells = await newNotebookWithCells(page, [
+      'ui::progress_bar().label("first")',
+      'ProgressHandle::new(cell0).update(10.0);\nCellOutput::text("moved the first bar".to_string())',
+      'ui::progress_bar().label("second")',
+      'ProgressHandle::new(cell2).update(50.0);\nCellOutput::text("moved the second bar".to_string())',
+    ]);
+    await page.locator(".ironpad-run-all-button").click();
+    for (let i = 0; i < 4; i += 1) {
+      await expect(cells.nth(i).locator(".ironpad-cell-status--success")).toBeVisible({
+        timeout: 240_000,
+      });
+    }
+
+    const ids = await page
+      .locator("[data-progress-id]")
+      .evaluateAll((els) => els.map((el) => el.getAttribute("data-progress-id")));
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+    await expect(cells.nth(0).locator(".ironpad-progress-value")).toHaveText("10%");
+    await expect(cells.nth(2).locator(".ironpad-progress-value")).toHaveText("50%");
+
+    expect(jsErrors).toEqual([]);
+  });
 });

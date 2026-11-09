@@ -21,10 +21,20 @@ fn encode_bincode<T: serde::Serialize>(value: &T) -> Vec<u8> {
         .expect("serialization of primitive widget value cannot fail")
 }
 
+/// A page-unique widget id. The counter alone is not: each cell is its own
+/// wasm instance with its own `COUNTER`, so every cell's first id was the
+/// same and a `progress_update` found whichever bar came first in the DOM. A
+/// random salt keeps ids from different cells apart. (`js_sys` cannot be
+/// called natively, where the salt is zero.)
 fn simple_id() -> String {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
-    format!("{:08x}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let salt = (js_sys::Math::random() * f64::from(u32::MAX)) as u32;
+    #[cfg(not(target_arch = "wasm32"))]
+    let salt = 0u32;
+    format!("{salt:08x}{:08x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 // ── Widget plumbing ──────────────────────────────────────────────────────────
@@ -1143,6 +1153,18 @@ mod tests {
         let a = progress_bar();
         let b = progress_bar();
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn progress_bar_id_carries_an_instance_salt() {
+        // Eight hex digits of salt, then eight of counter: the counter alone
+        // repeats across cells, since each cell is its own wasm instance.
+        // Natively the salt is zero.
+        let id = progress_bar().id;
+        let digits = id.strip_prefix("progress-").expect("prefix");
+        assert_eq!(digits.len(), 16, "{id}");
+        assert!(digits.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
+        assert!(digits.starts_with("00000000"), "{id}");
     }
 
     #[test]

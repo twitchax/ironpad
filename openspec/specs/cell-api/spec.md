@@ -271,11 +271,15 @@ The system SHALL publish widget values to the simulation bus when the page rende
 - **THEN** moving the slider changes the next simulation frames with no re-run of either cell
 
 ### Requirement: Progress bars
-The system SHALL render `ui::progress_bar()` (with `.label` and `.initial(pct)` clamped to 0 to 100) as a bar showing a whole percentage, pipe its id as a `String`, and let any later-running cell call `ProgressHandle::new(id).update(pct)` to move that bar live, with values clamped to 0 to 100 and NaN shown as 0. (PRD-0008, PRD-0015)
+The system SHALL render `ui::progress_bar()` (with `.label` and `.initial(pct)` clamped to 0 to 100) as a bar showing a whole percentage, pipe its id as a `String`, and let any later-running cell call `ProgressHandle::new(id).update(pct)` to move that bar live, with values clamped to 0 to 100 and NaN shown as 0. A bar's id SHALL be unique on the page, including among bars made by different cells. (PRD-0008, PRD-0015)
 
 #### Scenario: Updating from a downstream cell
 - **WHEN** cell 1 outputs `ui::progress_bar().label("Download Progress").initial(25.0)` and cell 2 runs `ProgressHandle::new(cell1).update(75.0)`
 - **THEN** cell 1's bar first shows `25%` and changes to `75%` while cell 2 runs, including when cell 2 executes in the worker
+
+#### Scenario: Bars from two cells
+- **WHEN** cells 0 and 2 each output `ui::progress_bar()`, cell 1 runs `ProgressHandle::new(cell0).update(10.0)` and cell 3 runs `ProgressHandle::new(cell2).update(50.0)`
+- **THEN** the two bars carry different ids, cell 0's bar shows `10%` and cell 2's shows `50%`
 
 #### Scenario: An unknown id
 - **WHEN** `update` is called with an id no bar on the page carries
