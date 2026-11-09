@@ -21,6 +21,20 @@ WORKDIR /build
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
+# ── Stage 1a': Monaco ────────────────────────────────────────────────────
+#
+# public/monaco/vs/ is gitignored and only `cargo make setup-monaco` fills it,
+# so a clean checkout (the CI docker job, `cargo make docker-build`) has no
+# editor to copy and every code pane in the image rendered blank. Fetch it
+# here from package.json, whose EXACT monaco-editor pin matters: init.js names
+# that release's content-hashed worker files (`dockerfile_ships_monaco` in
+# compiler/build.rs holds both).
+
+FROM node:22-slim AS monaco
+WORKDIR /m
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+
 # ── Stage 1b: Builder ────────────────────────────────────────────────────
 
 FROM rust:1.93.0 AS builder
@@ -50,6 +64,12 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 # Now copy source and build (only recompiles our code).
 COPY . .
+
+# Whatever editor the build context happened to hold is replaced by the
+# pinned one, so the image never depends on the state of the tree it was
+# built from.
+RUN rm -rf public/monaco/vs
+COPY --from=monaco /m/node_modules/monaco-editor/min/vs public/monaco/vs
 
 RUN cargo leptos build --release
 RUN cargo build --release -p ironpad-cli
@@ -261,6 +281,14 @@ COPY --from=builder /build/target/release/hash.txt /app/hash.txt
 
 # Copy the site assets (CSS, JS, WASM frontend bundle).
 COPY --from=builder /build/target/site /app/target/site
+
+# Fail here, before anything is pushed, if the site has no editor or names a
+# worker file the bundled Monaco does not ship.
+RUN test -f /app/target/site/monaco/vs/loader.js \
+    && for w in $(grep -oE '[a-z]+\.worker-[A-Za-z0-9_-]+\.js' /app/target/site/monaco/init.js); do \
+           test -f "/app/target/site/monaco/vs/assets/$w" \
+               || { echo "ERROR: Monaco worker $w is missing from the image" >&2; exit 1; }; \
+       done
 
 # Copy the ironpad-cell crate (injected as path dep into user cells).
 COPY crates/ironpad-cell /app/crates/ironpad-cell

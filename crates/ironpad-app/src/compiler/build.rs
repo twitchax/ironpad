@@ -1553,6 +1553,38 @@ mod tests {
         }
     }
 
+    /// `public/monaco/vs/` is gitignored, so a clean checkout (the CI docker
+    /// job, `cargo make docker-build`) has no editor to copy: the image must
+    /// fetch Monaco itself or every code pane renders blank. The version is
+    /// pinned EXACTLY because `public/monaco/init.js` hard-codes the release's
+    /// content-hashed worker filenames, and package-lock.json is gitignored,
+    /// so a `^` range would let the image float to a release whose worker
+    /// names no longer match.
+    #[test]
+    fn dockerfile_ships_monaco() {
+        let dockerfile = read_workspace_file("docker/Dockerfile");
+        assert!(
+            dockerfile.contains("monaco-editor/min/vs"),
+            "docker/Dockerfile must copy Monaco's min/vs into the site"
+        );
+        assert!(
+            dockerfile.contains("monaco/vs/loader.js"),
+            "docker/Dockerfile must fail the build when the site has no Monaco loader"
+        );
+
+        let package = read_workspace_file("package.json");
+        let version = package
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("\"monaco-editor\": \""))
+            .and_then(|rest| rest.split('"').next())
+            .expect("package.json depends on monaco-editor");
+        assert!(
+            version.starts_with(|c: char| c.is_ascii_digit()),
+            "package.json pins monaco-editor as {version:?}; pin an exact version, \
+             because public/monaco/init.js names that release's worker files"
+        );
+    }
+
     /// Read a file by its workspace-relative path.
     fn read_workspace_file(rel: &str) -> String {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

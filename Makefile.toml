@@ -474,6 +474,10 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
+echo "==> Checking the image ships the editor..."
+curl -fs -o /dev/null http://localhost:3111/monaco/vs/loader.js \
+    || { echo "    ERROR: /monaco/vs/loader.js is not served"; cargo make docker-down; exit 1; }
+
 echo "==> Checking the build user's isolation..."
 # Cell builds run as uid 2000 (docker/entrypoint.sh). Each probe must be
 # refused with a permission error: writing the blob cache every reader is
