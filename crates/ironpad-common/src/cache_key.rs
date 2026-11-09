@@ -67,8 +67,10 @@ impl From<crate::types::CellType> for CellTarget {
 /// Bump this whenever the compilation pipeline changes in a way that should
 /// invalidate all cached blobs (e.g. RUSTFLAGS changes, wasm-bindgen
 /// post-processing changes, scaffold template changes, `ironpad-cell` source
-/// edits — there is no automatic hash of the injected `ironpad-cell` crate's
-/// contents, so bump this manually when it changes).
+/// edits). The injected `ironpad-cell` crate and the scaffold are not hashed
+/// into the key; instead `cell_runtime_changes_are_acknowledged` fails on any
+/// change to either until it is acknowledged, by a bump here when the change
+/// reaches a blob or by updating its digest when it is byte-identical.
 ///
 /// Bumped 1 -> 2 for PRD-0031 T-003: folding the toolchain fingerprint into
 /// the key should invalidate all pre-existing blobs once, since their
@@ -1076,5 +1078,87 @@ mod tests {
             content_hash_with_fingerprint("x", "y", &[], None, None, CellTarget::Executor, "tc");
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// The digest of everything a cached blob bakes in that the cache key
+    /// cannot see, as last acknowledged. See
+    /// [`cell_runtime_changes_are_acknowledged`].
+    const ACKNOWLEDGED_CELL_RUNTIME_DIGEST: &str =
+        "9e89b5c3af39c0c4ff27de0916033509ab336d5aef8f8caac3e2b2dfc8145f27";
+
+    /// Neither the injected ironpad-cell runtime nor the scaffold's templates
+    /// are in the cache key, and folding a digest of them in would cold-start
+    /// every blob on a byte-identical refactor. So [`CACHE_EPOCH`] is the
+    /// only lever, and it used to depend on someone remembering it: 85e70dc
+    /// changed what LiveView/Simulation blobs emit with no bump, and cached
+    /// blobs kept the old behavior until an unrelated bump three days later.
+    /// This makes the decision unavoidable instead.
+    ///
+    /// Digested, in order: each `crates/ironpad-cell/src/*.rs` by name, then
+    /// its content up to its test module; ironpad-cell's Cargo.toml without
+    /// the package `version =` line (every release edits it); and
+    /// `compiler/scaffold.rs` up to its test module. Test modules are cut
+    /// because they never reach a blob.
+    #[test]
+    fn cell_runtime_changes_are_acknowledged() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |rel: &str| {
+            std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"))
+        };
+        let production = |text: &str| {
+            text.split_once("\n#[cfg(test)]\n")
+                .map_or(text, |(prod, _)| prod)
+                .to_owned()
+        };
+
+        let mut hasher = blake3::Hasher::new();
+        let mut frame = |part: &[u8]| {
+            hasher.update(&(part.len() as u64).to_le_bytes());
+            hasher.update(part);
+        };
+
+        let src = root.join("crates/ironpad-cell/src");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&src)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        files.sort();
+        for file in &files {
+            // Flat on purpose: a module in a subdirectory would otherwise
+            // drop out of the digest without a sound.
+            assert!(
+                file.is_file() && file.extension().is_some_and(|ext| ext == "rs"),
+                "{} is not a .rs file; extend this digest to cover it",
+                file.display()
+            );
+            frame(file.file_name().unwrap().as_encoded_bytes());
+            frame(production(&std::fs::read_to_string(file).unwrap()).as_bytes());
+        }
+
+        let manifest = read("crates/ironpad-cell/Cargo.toml");
+        let mut package_version_seen = false;
+        let manifest: Vec<&str> = manifest
+            .lines()
+            .filter(|line| {
+                let is_version = !package_version_seen && line.starts_with("version =");
+                package_version_seen |= is_version;
+                !is_version
+            })
+            .collect();
+        assert!(
+            package_version_seen,
+            "ironpad-cell's Cargo.toml lost its package version line"
+        );
+        frame(manifest.join("\n").as_bytes());
+
+        frame(production(&read("crates/ironpad-app/src/compiler/scaffold.rs")).as_bytes());
+
+        let digest = hasher.finalize().to_hex().to_string();
+        assert_eq!(
+            digest, ACKNOWLEDGED_CELL_RUNTIME_DIGEST,
+            "ironpad-cell or the scaffold changed. If anything a cached blob bakes in \
+             changed, bump CACHE_EPOCH and document why; if the change is byte-identical, \
+             update only ACKNOWLEDGED_CELL_RUNTIME_DIGEST to {digest}."
+        );
     }
 }
