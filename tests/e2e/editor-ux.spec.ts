@@ -159,6 +159,75 @@ test.describe("Editor UX (PRD-0032)", () => {
       .toBe("Renamed Then Left");
   });
 
+  // Two stacked bugs: Sortable's global never existed on the editor route,
+  // and its indices counted the add-cell rows between cells, so a drag
+  // (once it worked at all) moved the wrong cell and left the DOM and the
+  // store disagreeing.
+  test("drag-to-reorder moves the dragged cell, down and up", async ({ page }) => {
+    await newNotebook(page);
+    for (let i = 0; i < 3; i++) {
+      await page.locator(ADD_CODE).last().click();
+      await expect(page.locator(".ironpad-cell-row")).toHaveCount(i + 1);
+    }
+    const id = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+    // Fallback mode drives the drag with plain pointer events, which
+    // page.mouse produces; native HTML5 drag events it does not.
+    await page.evaluate(() => {
+      const el = document.querySelector(".ironpad-cells-container");
+      (window as any).Sortable.get(el).option("forceFallback", true);
+    });
+    const labels = () =>
+      page
+        .locator(".ironpad-cell-row .ironpad-cell-label-input")
+        .evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
+    await expect.poll(labels).toEqual(["Cell 0", "Cell 1", "Cell 2"]);
+
+    const drag = async (from: number, to: number) => {
+      const rows = page.locator(".ironpad-cell-row");
+      await rows.nth(from).hover();
+      const handle = (await rows
+        .nth(from)
+        .locator(".ironpad-drag-handle")
+        .boundingBox())!;
+      const target = (await rows.nth(to).boundingBox())!;
+      const x = handle.x + handle.width / 2;
+      const y = handle.y + handle.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x, y + (to > from ? 8 : -8), { steps: 4 });
+      const ty =
+        to > from ? target.y + target.height * 0.8 : target.y + target.height * 0.2;
+      await page.mouse.move(x, ty, { steps: 25 });
+      await page.mouse.up();
+    };
+
+    await drag(0, 1);
+    await expect.poll(labels).toEqual(["Cell 1", "Cell 0", "Cell 2"]);
+    await drag(2, 0);
+    await expect.poll(labels).toEqual(["Cell 2", "Cell 1", "Cell 0"]);
+    await expect
+      .poll(() =>
+        page.evaluate(async (nid) => {
+          const nb = await (window as any).IronpadStorage.getNotebook(nid);
+          return (nb?.cells ?? []).map((c: any) => c.label);
+        }, id),
+      )
+      .toEqual(["Cell 2", "Cell 1", "Cell 0"]);
+    // The add-cell rows were not dragged around with the cells' DOM.
+    const kinds = await page.evaluate(() =>
+      Array.from(document.querySelector(".ironpad-cells-container")!.children)
+        .map((c) =>
+          c.classList.contains("ironpad-cell-row")
+            ? "cell"
+            : c.classList.contains("ironpad-add-cell-row")
+              ? "add"
+              : "other",
+        )
+        .filter((k) => k !== "other"),
+    );
+    expect(kinds).toEqual(["add", "cell", "add", "cell", "add", "cell", "add"]);
+  });
+
   // The notebook-level actions (hamburger menu, close) survive the flip to
   // view mode; editing-only chrome (Run All, session, gear) does not — view
   // mode's own header carries Run All and the cache/fresh toggle.

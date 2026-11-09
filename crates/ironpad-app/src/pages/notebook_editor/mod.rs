@@ -80,6 +80,41 @@ enum LoadFailure {
     Unreadable(String),
 }
 
+/// Return the row a `SortableJS` drag moved to where it was, `old_raw`
+/// being its position among ALL the container's children.
+///
+/// Removing first is what makes `old_raw` the right anchor: before the
+/// removal, a row dragged UP has shifted everything between its two places
+/// down by one, so `children[old_raw]` would be one position early.
+#[cfg(feature = "hydrate")]
+fn undo_sortable_move(evt: &wasm_bindgen::JsValue, old_raw: usize) {
+    use wasm_bindgen::JsCast;
+
+    let get = |target: &wasm_bindgen::JsValue, key: &str| {
+        js_sys::Reflect::get(target, &key.into()).unwrap_or(wasm_bindgen::JsValue::UNDEFINED)
+    };
+    let call = |target: &wasm_bindgen::JsValue, method: &str| {
+        get(target, method).dyn_into::<js_sys::Function>().ok()
+    };
+    let (from, item) = (get(evt, "from"), get(evt, "item"));
+    let (Some(remove_child), Some(insert_before)) =
+        (call(&from, "removeChild"), call(&from, "insertBefore"))
+    else {
+        return;
+    };
+    if remove_child.call1(&from, &item).is_err() {
+        return;
+    }
+    let Ok(old_raw) = u32::try_from(old_raw) else {
+        return;
+    };
+    let anchor = js_sys::Reflect::get_u32(&get(&from, "children"), old_raw)
+        .ok()
+        .filter(|anchor| !anchor.is_undefined())
+        .unwrap_or(wasm_bindgen::JsValue::NULL);
+    let _ = insert_before.call2(&from, &item, &anchor);
+}
+
 /// What `ServerDraft` mode needs at mount (PRD-0054/PRD-0064): the share this
 /// editor persists into, its preloaded draft, and the two flags the toolbar
 /// reads.
@@ -640,6 +675,11 @@ fn NotebookContent() -> impl IntoView {
             let options = js_sys::Object::new();
             let _ =
                 js_sys::Reflect::set(&options, &"handle".into(), &".ironpad-drag-handle".into());
+            // Only cell rows move. Sortable's default (every child) also
+            // counted the add-cell rows between cells, so its indices were
+            // not indices into the cell list and a drag moved the wrong cell.
+            let _ =
+                js_sys::Reflect::set(&options, &"draggable".into(), &".ironpad-cell-row".into());
             let _ = js_sys::Reflect::set(&options, &"animation".into(), &150.into());
             let _ = js_sys::Reflect::set(
                 &options,
@@ -650,18 +690,26 @@ fn NotebookContent() -> impl IntoView {
             let on_end = Closure::<dyn Fn(JsValue)>::new(move |evt: JsValue| {
                 // JS indices are non-negative integers that fit in usize.
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let old_index = js_sys::Reflect::get(&evt, &"oldIndex".into())
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as usize);
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let new_index = js_sys::Reflect::get(&evt, &"newIndex".into())
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as usize);
+                let index = |key: &str| {
+                    js_sys::Reflect::get(&evt, &key.into())
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .map(|v| v as usize)
+                };
+                // Positions among the cell rows: indices into the cell list.
+                let old_index = index("oldDraggableIndex");
+                let new_index = index("newDraggableIndex");
 
                 if let (Some(old_idx), Some(new_idx)) = (old_index, new_index) {
                     if old_idx != new_idx {
+                        // Put the dragged row back first. Sortable moved a
+                        // node that <For> owns, and <For> reconciles from the
+                        // DOM it built, so the reorder must start from the
+                        // pre-drag DOM, exactly as Move Up and Move Down do;
+                        // each add-cell row then moves with its cell.
+                        if let Some(old_raw) = index("oldIndex") {
+                            undo_sortable_move(&evt, old_raw);
+                        }
                         let mut ids: Vec<String> = state
                             .cells
                             .get_untracked()

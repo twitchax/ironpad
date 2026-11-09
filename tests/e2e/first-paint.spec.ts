@@ -180,6 +180,9 @@ test.describe("Shell critical path", () => {
         monaco: typeof w.IronpadMonaco,
         storage: typeof w.IronpadStorage,
         executor: typeof w.IronpadExecutor,
+        // A UMD bundle too: registered as an anonymous AMD module instead,
+        // it left drag-to-reorder silently doing nothing.
+        sortable: typeof w.Sortable,
       };
     });
 
@@ -190,6 +193,7 @@ test.describe("Shell critical path", () => {
       monaco: "object",
       storage: "object",
       executor: "object",
+      sortable: "function",
     });
   });
 

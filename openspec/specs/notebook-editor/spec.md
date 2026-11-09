@@ -101,6 +101,10 @@ The system SHALL let the author reorder cells by dragging a cell's handle within
 - **WHEN** the third cell's handle is dragged above the first cell and released
 - **THEN** the cells read in the order third, first, second, the order badges renumber, and the new order is saved
 
+#### Scenario: Drag a cell down
+- **WHEN** the first cell's handle is dragged below the second cell and released
+- **THEN** the cells read second, first, third on screen and in the saved notebook, with an add-cell row still between every two cells
+
 #### Scenario: Appendix is not a drop target
 - **WHEN** a cell is dragged toward the shared and metadata sections below the list
 - **THEN** it can only be dropped among cells

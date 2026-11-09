@@ -30,13 +30,14 @@
     sortable: ["/sortable.min.js"],
   };
 
-  // KaTeX and Prism ship UMD bundles that check for AMD's `define` and, when
-  // they find it, register as anonymous modules and never assign their globals.
-  // Monaco's loader defines it. Ordering the tags used to be what kept them
-  // apart, which stops being true the moment loading is route-dependent, so
-  // these hide `define` for the duration of their own load instead. That makes
-  // the two independent of each other rather than merely ordered.
-  var UMD = { katex: true, prism: true };
+  // KaTeX, Prism and Sortable ship UMD bundles that check for AMD's `define`
+  // and, when they find it, register as anonymous modules and never assign
+  // their globals. Monaco's loader defines it. Ordering the tags used to be
+  // what kept them apart, which stops being true the moment loading is
+  // route-dependent, so these hide `define` for the duration of their own load
+  // instead. That makes them independent of Monaco rather than merely ordered.
+  // Sortable was missed once, and drag-to-reorder silently did nothing.
+  var UMD = { katex: true, prism: true, sortable: true };
 
   /** Load one file, preserving execution order against other pending loads. */
   function loadFile(src) {
