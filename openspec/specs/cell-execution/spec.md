@@ -18,12 +18,16 @@ The system SHALL load each Code cell's compiled WASM into a dedicated Web Worker
 - **AND** the output carries no "main thread" badge
 
 ### Requirement: Main-thread fallback
-When the worker fails to load, execute, or tick a cell for any reason other than a user cancel, the system SHALL retry that call once on a main-thread executor with the cell's most recent blob and SHALL flag a result produced there, so its output wears a "main thread" badge. With no blob to retry, the worker's error is reported. (PRD-0017, PRD-0033)
+When the worker fails to load, execute, or tick a cell for any reason other than a user cancel, the system SHALL retry that call once on a main-thread executor with the cell's most recent blob and SHALL flag a result produced there, so its output wears a "main thread" badge. With no blob to retry, the worker's error is reported. When the retry fails too, the system SHALL report the worker's error if it carried a panic message the retry's lacks, or if the call was a tick of a worker that ran it (the fallback instance never ran the cell, so its tick fails on missing state); otherwise it SHALL report the retry's error. (PRD-0017, PRD-0033)
 
 #### Scenario: Ticks run on the fallback once the worker is gone
 - **WHEN** the worker has stopped respawning and the page loads a Simulation blob and a LiveView blob and ticks each
 - **THEN** both ticks return results flagged `fallback: true`, a 1x1 frame of `[10, 20, 30]` and the text `hi`
 - **AND** neither blob is reported as loaded in the worker
+
+#### Scenario: A retry that only saw a trap
+- **WHEN** the worker reports `panicked at x: boom` for a cell and its main-thread retry fails with a bare trap
+- **THEN** the call fails with the worker's `boom` message
 
 #### Scenario: Nothing to fall back with
 - **WHEN** a tick is requested for a cell that was never loaded while the worker is unavailable
@@ -57,11 +61,16 @@ While an editor cell compiles or runs, its Run button SHALL become a Stop button
 - **AND** the server's compile response, when it arrives, is discarded without executing
 
 ### Requirement: Execution error messages
-The system SHALL report a failed blob load as "WASM load error: ..." and a failed run as "Execution error: ...", and SHALL translate a WASM trap into a diagnosis that names the cell's linear-memory size in MB. (PRD-0001, PRD-0033)
+The system SHALL report a failed blob load as "WASM load error: ..." and a failed run as "Execution error: ...". A Rust panic SHALL be reported by its message, in the worker and on the main-thread fallback alike, cut before the `Stack:` trace the panic hook appends. A WASM trap with no captured panic message SHALL be translated into a diagnosis that names the cell's linear-memory size in MB. (PRD-0001, PRD-0033)
 
-#### Scenario: A trap that usually means out of memory
-- **WHEN** a cell's WASM traps with `unreachable`
-- **THEN** the error reads "Execution trapped (linear memory: N MB) — this usually means the cell ran out of memory. Try reducing the problem size (e.g., lower the resolution or iteration count)."
+#### Scenario: A panic names itself
+- **WHEN** a cell runs `panic!("kaboom-123")`
+- **THEN** the cell shows error and its output contains `kaboom-123`
+- **AND** the output does not say the cell ran out of memory
+
+#### Scenario: A bare trap
+- **WHEN** a cell's WASM traps with `unreachable` and no panic message was captured
+- **THEN** the error reads "Execution trapped (linear memory: N MB) — the cell aborted (a panic or a failed allocation). The browser console may have more detail."
 
 #### Scenario: Out-of-bounds access
 - **WHEN** a cell's WASM traps on an out-of-bounds memory access

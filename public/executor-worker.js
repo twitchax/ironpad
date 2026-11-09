@@ -6,23 +6,6 @@
 
 "use strict";
 
-// ── Panic message capture ───────────────────────────────────────────────────
-//
-// When WASM panics, console_error_panic_hook logs the real message to
-// console.error, but the JS catch only sees a generic "unreachable" trap.
-// We intercept console.error to capture the last panic message so we can
-// include it in the error sent back to the main thread.
-
-var _lastPanicMessage = null;
-var _origConsoleError = console.error;
-console.error = function () {
-  var msg = Array.prototype.join.call(arguments, " ");
-  if (msg.indexOf("panicked at") !== -1) {
-    _lastPanicMessage = msg;
-  }
-  _origConsoleError.apply(console, arguments);
-};
-
 // ── DOM shim for wasm text measurement ──────────────────────────────────────
 //
 // plotters (and anything else compiled for wasm32-unknown-unknown) measures
@@ -168,22 +151,9 @@ executor._handleHostMessage = function (cellId, text) {
 //   Outgoing:  { type: "result"|"error", id, value?|error? }
 //              { type: "hostMessage", cellId, messageJson }
 
-// Run an awaited executor op, correlating any WASM panic captured by the patched
-// console.error to THIS op. console.error is global, so a captured panic can't
-// carry a request id; resetting `_lastPanicMessage` immediately before the call
-// and consuming it in the catch keeps a panic from a *prior* op from bleeding
-// into an unrelated error message. (Two genuinely-interleaved async cells still
-// share this single global — a fully race-free fix would serialize onmessage.)
-async function runWithPanicCapture(op) {
-  _lastPanicMessage = null;
-  try {
-    return await op();
-  } catch (err) {
-    throw new Error(_lastPanicMessage || err.message || String(err));
-  } finally {
-    _lastPanicMessage = null;
-  }
-}
+// Each executor op reports a WASM panic's captured message itself
+// (CellExecutor.prototype._withPanicCapture in executor-core.js), so the
+// main-thread fallback does too.
 
 self.onmessage = async function (e) {
   var msg = e.data;
@@ -197,18 +167,14 @@ self.onmessage = async function (e) {
 
   if (msg.type === "loadBlob") {
     try {
-      await runWithPanicCapture(function () {
-        return executor.loadBlob(msg.cellId, msg.hash, msg.wasmBytes, msg.jsGlue || null);
-      });
+      await executor.loadBlob(msg.cellId, msg.hash, msg.wasmBytes, msg.jsGlue || null);
       self.postMessage({ type: "result", id: msg.id, value: null });
     } catch (err) {
       self.postMessage({ type: "error", id: msg.id, error: err.message });
     }
   } else if (msg.type === "execute") {
     try {
-      var result = await runWithPanicCapture(function () {
-        return executor.execute(msg.cellId, msg.inputBytes);
-      });
+      var result = await executor.execute(msg.cellId, msg.inputBytes);
       // Transfer outputBytes buffer for zero-copy when possible.
       var transfer = result.outputBytes && result.outputBytes.buffer.byteLength > 0
         ? [result.outputBytes.buffer]
@@ -219,9 +185,7 @@ self.onmessage = async function (e) {
     }
   } else if (msg.type === "tick") {
     try {
-      var result = await runWithPanicCapture(function () {
-        return executor.tick(msg.cellId);
-      });
+      var result = await executor.tick(msg.cellId);
       // Transfer rgbBytes buffer for zero-copy when possible.
       var transfer = result.rgbBytes && result.rgbBytes.buffer.byteLength > 0
         ? [result.rgbBytes.buffer]
@@ -232,9 +196,7 @@ self.onmessage = async function (e) {
     }
   } else if (msg.type === "tick_live") {
     try {
-      var result = await runWithPanicCapture(function () {
-        return executor.tickLive(msg.cellId);
-      });
+      var result = await executor.tickLive(msg.cellId);
       self.postMessage({ type: "result", id: msg.id, value: result });
     } catch (err) {
       self.postMessage({ type: "error", id: msg.id, error: err.message });

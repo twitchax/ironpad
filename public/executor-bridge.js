@@ -52,6 +52,21 @@
     if (entry.ring.length > SIM_BUS_RING_CAP) entry.ring.shift();
   }
 
+  // Which error a failed main-thread retry reports. Each realm captures a
+  // panic's text (executor-core.js), so the worker's panic beats a retry that
+  // only saw a bare trap. A tick keeps the worker's error outright: the
+  // fallback instance never ran cell_main, so its tick fails on state the
+  // worker's instance had, with a message about nothing. A worker that never
+  // ran the call (parked) has no error worth keeping.
+  var PANIC_MARKER = "panicked at"; // mirrors PANIC_MARKER in executor-core.js
+  function _retryFailure(method, workerError, retryError) {
+    if (workerError.workerUnavailable) return retryError;
+    if (method === "tick" || method === "tickLive") return workerError;
+    var workerPanicked = String(workerError.message).indexOf(PANIC_MARKER) !== -1;
+    var retryPanicked = String(retryError && retryError.message).indexOf(PANIC_MARKER) !== -1;
+    return workerPanicked && !retryPanicked ? workerError : retryError;
+  }
+
   // A worker that errors within this window of being spawned counts as a
   // rapid failure; after WORKER_MAX_RAPID_FAILURES consecutive ones the
   // bridge stops respawning and stays on the main-thread fallback. Without
@@ -240,7 +255,14 @@
     // The main-thread executor may not support this call at all.
     if (typeof exec[method] !== "function") throw workerError;
 
-    var result = await exec[method].apply(exec, args);
+    // Retry even after a worker panic: crates that need the DOM panic in the
+    // worker and succeed here.
+    var result;
+    try {
+      result = await exec[method].apply(exec, args);
+    } catch (retryError) {
+      throw _retryFailure(method, workerError, retryError);
+    }
     result.fallback = true;
     return result;
   };
@@ -255,9 +277,9 @@
     // No worker (respawn cap reached): reject so callers with a main-thread
     // fallback (execute and friends) take it immediately.
     if (!this._worker) {
-      return Promise.reject(
-        new Error("Worker unavailable (respawn limit reached)")
-      );
+      var unavailable = new Error("Worker unavailable (respawn limit reached)");
+      unavailable.workerUnavailable = true;
+      return Promise.reject(unavailable);
     }
 
     return new Promise(function (resolve, reject) {

@@ -127,15 +127,40 @@
       return "Stack overflow — the cell likely has unbounded or very deep recursion.";
     }
 
+    // A panic reaches here only when its message was not captured (see
+    // _withPanicCapture), so a bare `unreachable` says the cell aborted and
+    // nothing more: claiming out-of-memory misdiagnosed every panic.
     if (/unreachable/i.test(raw)) {
       return "Execution trapped" + memHint +
-        " — this usually means the cell ran out of memory. " +
-        "Try reducing the problem size (e.g., lower the resolution or iteration count).";
+        " — the cell aborted (a panic or a failed allocation). " +
+        "The browser console may have more detail.";
     }
 
     // Fall back to the raw message with memory context.
     return raw + memHint;
   }
+
+  // ── Panic capture ─────────────────────────────────────────────────────────
+  //
+  // A Rust panic reaches JS as a bare `unreachable` trap; its message goes
+  // only to console.error, through console_error_panic_hook. Patching
+  // console.error once per realm (the worker, or the page once the
+  // main-thread fallback loads) lets _withPanicCapture report the panic in
+  // BOTH contexts. The hook appends the JS stack after "\n\nStack:", which
+  // is wasm frames a cell panel has no use for, so the capture stops there.
+
+  var PANIC_MARKER = "panicked at";
+  var PANIC_STACK_MARKER = "\n\nStack:";
+  var _lastPanicMessage = null;
+  var _origConsoleError = console.error;
+  console.error = function () {
+    var msg = Array.prototype.join.call(arguments, " ");
+    if (msg.indexOf(PANIC_MARKER) !== -1) {
+      var cut = msg.indexOf(PANIC_STACK_MARKER);
+      _lastPanicMessage = cut === -1 ? msg : msg.slice(0, cut);
+    }
+    _origConsoleError.apply(console, arguments);
+  };
 
   // ── Host -> cell copies ───────────────────────────────────────────────────
 
@@ -176,6 +201,23 @@
   CellExecutor.prototype._cellMemory = function (cellId) {
     var x = this._cellExports(cellId);
     return x ? x.memory || null : null;
+  };
+
+  /// Run an executor op, reporting a Rust panic's captured message in place
+  /// of the bare trap it ends in. console.error is global, so a capture can't
+  /// carry a request id: resetting it right before the op and consuming it in
+  /// the catch keeps a panic from a prior op out of this op's error. (Two
+  /// genuinely interleaved async cells still share it.)
+  CellExecutor.prototype._withPanicCapture = async function (op) {
+    _lastPanicMessage = null;
+    try {
+      return await op();
+    } catch (err) {
+      if (_lastPanicMessage) throw new Error(_lastPanicMessage);
+      throw err;
+    } finally {
+      _lastPanicMessage = null;
+    }
   };
 
   // ── Host message infrastructure ─────────────────────────────────────────
@@ -450,7 +492,11 @@
     return n;
   };
 
-  CellExecutor.prototype.loadBlob = async function (cellId, hash, wasmBytes, jsGlue) {
+  CellExecutor.prototype.loadBlob = function (cellId, hash, wasmBytes, jsGlue) {
+    return this._withPanicCapture(this._loadBlob.bind(this, cellId, hash, wasmBytes, jsGlue));
+  };
+
+  CellExecutor.prototype._loadBlob = async function (cellId, hash, wasmBytes, jsGlue) {
     var existing = this.modules.get(cellId);
     if (existing && existing.hash === hash) {
       return; // Already loaded, same version.
@@ -540,7 +586,11 @@
   ///
   /// Always async: wasm-bindgen cells may have async cell_main (via
   /// wasm-bindgen-futures), and the raw path is wrapped transparently.
-  CellExecutor.prototype.execute = async function (cellId, inputBytes) {
+  CellExecutor.prototype.execute = function (cellId, inputBytes) {
+    return this._withPanicCapture(this._execute.bind(this, cellId, inputBytes));
+  };
+
+  CellExecutor.prototype._execute = async function (cellId, inputBytes) {
     // Ensure GPU device is initialized (no-op after first call).
     await Gpu.init();
 
@@ -802,14 +852,18 @@
   ///
   /// Returns Promise<{ width, height, rgbBytes }>.
   CellExecutor.prototype.tick = function (cellId) {
-    return this._tickWith(cellId, TICK_RESULT_SIZE, this._readTickResult);
+    return this._withPanicCapture(
+      this._tickWith.bind(this, cellId, TICK_RESULT_SIZE, this._readTickResult)
+    );
   };
 
   /// Execute a single tick on a loaded LiveView cell.
   ///
   /// Returns Promise<{ kind, content }>.
   CellExecutor.prototype.tickLive = function (cellId) {
-    return this._tickWith(cellId, LIVE_TICK_RESULT_SIZE, this._readLiveTickResult);
+    return this._withPanicCapture(
+      this._tickWith.bind(this, cellId, LIVE_TICK_RESULT_SIZE, this._readLiveTickResult)
+    );
   };
 
   /// Tick a loaded cell and decode its result struct with `reader`, a

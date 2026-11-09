@@ -345,3 +345,86 @@ test("execute decodes display text and type tag out of shared memory", async () 
   assert.equal(result.typeTag, "i32");
   assert.deepEqual(Array.from(result.outputBytes), [42, 0, 0, 0]);
 });
+
+// ── Panic capture (review bug-js-2) ─────────────────────────────────────────
+
+test("a panic's captured text replaces the bare trap, cut before its stack", async () => {
+  // console_error_panic_hook logs the message, then the cell traps with a
+  // bare `unreachable`. The core reports the message in both contexts now,
+  // not only in the worker, and drops the hook's JS stack.
+  const { executor, console } = loadCore();
+  const cell = makeMemory();
+  executor.modules.set(
+    "c",
+    bindgenEntry(cell, {
+      cell_main() {
+        console.error("panicked at y\n\nStack:\n\nError\n    at wasm-function[7]");
+        throw new Error("unreachable");
+      },
+    }),
+  );
+
+  await assert.rejects(executor.execute("c", new Uint8Array(0)), (e) => {
+    assert.match(e.message, /panicked at y/);
+    assert.doesNotMatch(e.message, /Stack:/);
+    return true;
+  });
+});
+
+test("every executor entry point reports a captured panic", async () => {
+  // loadBlob, execute, tick and tickLive each run cell code; a panic in any
+  // of them must surface its text, including the worker's loadBlob, which
+  // captured it before the capture moved into the core.
+  const { executor, console } = loadWorker();
+  const cell = makeMemory();
+  const panicking = () => {
+    console.error("panicked at src/lib.rs:1:1:\nkaboom");
+    throw new Error("unreachable");
+  };
+  executor.modules.set("c", rawEntry(cell, { cell_main: panicking, cell_tick: panicking }));
+
+  // An invalid blob traps while instantiating: stand in a panic for it.
+  const instantiate = WebAssembly.instantiate;
+  WebAssembly.instantiate = async () => panicking();
+  try {
+    await assert.rejects(executor.loadBlob("d", "h", new Uint8Array(0), null), /kaboom/);
+  } finally {
+    WebAssembly.instantiate = instantiate;
+  }
+  await assert.rejects(executor.execute("c", new Uint8Array(0)), /kaboom/);
+  await assert.rejects(executor.tick("c"), /kaboom/);
+  await assert.rejects(executor.tickLive("c"), /kaboom/);
+});
+
+test("a panic captured by one op does not bleed into the next op's error", async () => {
+  const { executor, console } = loadCore();
+  const cell = makeMemory();
+  executor.modules.set("c", rawEntry(cell, { cell_main: () => 0 }));
+
+  console.error("panicked at earlier.rs: stale");
+  await assert.rejects(executor.execute("c", new Uint8Array(0)), (e) => {
+    assert.match(e.message, /cell_main returned null/);
+    return true;
+  });
+});
+
+test("an uncaptured unreachable trap no longer claims the cell ran out of memory", async () => {
+  // A real allocation failure arrives as captured panic text now; a bare
+  // trap only says the cell aborted.
+  const { executor } = loadCore();
+  const cell = makeMemory();
+  executor.modules.set(
+    "c",
+    bindgenEntry(cell, {
+      cell_main() {
+        throw new Error("unreachable");
+      },
+    }),
+  );
+
+  await assert.rejects(executor.execute("c", new Uint8Array(0)), (e) => {
+    assert.match(e.message, /trapped/);
+    assert.doesNotMatch(e.message, /ran out of memory/);
+    return true;
+  });
+});

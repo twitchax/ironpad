@@ -194,3 +194,65 @@ test("the fallback drives the real core executor's tick", async () => {
   assert.equal(frame.fallback, true);
   assert.deepEqual(Array.from(frame.rgbBytes), [10, 20, 30]);
 });
+
+// ── Which error a failed retry reports (review bug-js-2) ───────────────────
+
+/** Send `c1` through a worker error reply, then let the retry fail too. */
+async function failTwice(method, args, workerText, retryText) {
+  const { bridge, workers } = loadBridge();
+  const main = fakeMainExecutor();
+  main[method] = async () => {
+    throw new Error(retryText);
+  };
+  bridge._mainExecutor = main;
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+
+  const pending = bridge[method]("c1", ...args);
+  const request = workers[0].posted.at(-1);
+  bridge._onWorkerMessage({ type: "error", id: request.id, error: workerText });
+  return pending;
+}
+
+test("a worker panic's text survives a main-thread retry that only saw the trap", async () => {
+  // The fallback realm used to have no panic capture, so its bare trap
+  // replaced the panic text the worker had captured.
+  await assert.rejects(
+    failTwice("execute", [new Uint8Array(0)], "panicked at x: boom", "Execution trapped (linear memory: 1 MB)"),
+    /boom/,
+  );
+});
+
+test("a retry that captured its own panic, or failed for a real reason, reports that", async () => {
+  await assert.rejects(
+    failTwice("execute", [new Uint8Array(0)], "panicked at x: boom", "panicked at x: boom-main"),
+    /boom-main/,
+  );
+  await assert.rejects(
+    failTwice("execute", [new Uint8Array(0)], "Cell c1 not loaded", "Out-of-bounds memory access"),
+    /Out-of-bounds/,
+  );
+});
+
+test("a failed tick retry keeps the worker's error", async () => {
+  // The fallback instance never ran cell_main, so its tick fails on missing
+  // state with a message that says nothing about the real failure.
+  for (const method of ["tick", "tickLive"]) {
+    await assert.rejects(
+      failTwice(method, [], "panicked at sim.rs: frame 9", "Execution trapped"),
+      /frame 9/,
+    );
+  }
+});
+
+test("a parked worker never ran the call, so the retry's own error surfaces", async () => {
+  const { bridge } = loadBridge();
+  const main = fakeMainExecutor();
+  main.tick = async () => {
+    throw new Error("panicked at sim.rs: real");
+  };
+  bridge._mainExecutor = main;
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+  park(bridge);
+
+  await assert.rejects(bridge.tick("c1"), /real/);
+});

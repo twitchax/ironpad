@@ -103,7 +103,7 @@ function makeGlobal() {
     run(url.replace(/^\//, "").replace(/\?.*$/, ""));
   }
 
-  return { g, run, stats, posted };
+  return { g, run, stats, posted, console: fakeConsole };
 }
 
 /** The core executor, loaded exactly as the main-thread fallback chain does. */

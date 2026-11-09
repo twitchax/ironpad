@@ -1,6 +1,21 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
+import { ADD_CODE, createNotebook } from "./helpers/session";
+
+/** A fresh notebook with one Code cell per source; returns the cell cards. */
+async function newNotebookWithCells(page: Page, sources: string[]) {
+  await createNotebook(page);
+  for (let i = 0; i < sources.length; i += 1) {
+    await page.locator(ADD_CODE).last().click();
+    const cell = page.locator(".ironpad-cell-card").nth(i);
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cell, sources[i]);
+  }
+  return page.locator(".ironpad-cell-card");
+}
 
 test.describe("Cell execution and output", () => {
   test("cell returning integer displays output", async ({ page }) => {
@@ -214,6 +229,35 @@ test.describe("Cell execution and output", () => {
 
     // ...and the cell ran in the WORKER, not on the main-thread fallback.
     await expect(cell.locator(".ironpad-output-fallback-badge")).toHaveCount(0);
+
+    expect(jsErrors).toEqual([]);
+  });
+
+  test("a panicking cell reports its panic message, not a memory diagnosis", async ({
+    page,
+  }) => {
+    // Regression (review bug-js-2): the worker captured the panic text, then
+    // the main-thread retry hit a bare `unreachable` with nothing patching
+    // console.error there, and its "ran out of memory" sentence replaced it.
+    test.setTimeout(180_000);
+    const jsErrors = trackJsErrors(page);
+
+    const cells = await newNotebookWithCells(page, [
+      [
+        "let rows: Vec<i32> = Vec::new();",
+        'if rows.is_empty() { panic!("kaboom-123"); }',
+        'CellOutput::text(format!("{}", rows.len()))',
+      ].join("\n"),
+    ]);
+    await page.locator('button[title="Run cell"]').first().click();
+
+    const cell = cells.first();
+    await expect(cell.locator(".ironpad-cell-status--error")).toBeVisible({
+      timeout: 120_000,
+    });
+    const output = cell.locator(".ironpad-output-panel");
+    await expect(output).toContainText("kaboom-123");
+    await expect(output).not.toContainText("ran out of memory");
 
     expect(jsErrors).toEqual([]);
   });
