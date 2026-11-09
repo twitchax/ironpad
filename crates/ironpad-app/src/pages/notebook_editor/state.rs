@@ -357,6 +357,10 @@ impl NotebookState {
         self.save_generation.try_update(|g| *g += 1)?;
         #[cfg(feature = "hydrate")]
         yield_for_cell_flush().await;
+        // Checked again AFTER the yield, which is where a navigation lands:
+        // a caller told `Some` goes on to read the page's signals, and a
+        // plain read of a disposed signal panics the whole wasm app.
+        self.save_generation.try_get_untracked()?;
         Some(())
     }
 
@@ -708,7 +712,11 @@ pub(crate) fn persist_notebook(state: &NotebookState) {
         // page, and the spawned write cannot read a disposed one, so the
         // teardown write is what catches the edit then.
         state.mark_persist_pending();
-        if state.server_draft_share.get_untracked().is_some() {
+        // `try_`: callers reach this after awaits, on pages that may be gone.
+        let Some(share) = state.server_draft_share.try_get_untracked() else {
+            return;
+        };
+        if share.is_some() {
             let _ = state.draft_dirty.try_set(true);
             schedule_draft_save(state, DRAFT_SAVE_DEBOUNCE_MS);
             return;
@@ -763,12 +771,14 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState, enrich_outpu
         let _ = state.draft_dirty.try_set(true);
         state.mark_persist_pending();
         // Ours must land last: an earlier request arriving after this write
-        // would revert the draft the promote then publishes.
+        // would revert the draft the promote then publishes. `false` also
+        // means the page was disposed during the wait, and nothing after an
+        // await may assume it is alive.
         if !drain_inflight_drafts(state, None).await {
             return false;
         }
         // Supersede any pending debounce so it can't double-write after us.
-        state.draft_save_epoch.update_untracked(|e| *e += 1);
+        let _ = state.draft_save_epoch.try_update_untracked(|e| *e += 1);
         save_draft_now(state, enrich_outputs).await
     } else {
         // The one copy this path needs: the IndexedDB write awaits, so it

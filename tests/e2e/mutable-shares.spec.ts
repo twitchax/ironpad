@@ -597,4 +597,41 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await save.click();
     await expect(metaSaved).toBeVisible({ timeout: 15_000 });
   });
+
+  test("leaving mid-Push while an autosave is on the wire keeps the app alive", async ({
+    page,
+  }) => {
+    // Push's pre-promote save waits out the autosave on the wire. Leaving
+    // during that wait used to read a disposed signal after it and panic the
+    // whole wasm app, leaving the page navigated to dead.
+    test.setTimeout(150_000);
+    const disposed: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.text().includes("already been disposed")) disposed.push(msg.text());
+    });
+    await publishedNotebookWithCell(page, "lena", "Leave Mid Push");
+    let held = 0;
+    await page.route(
+      (url) => url.pathname.includes("save_mutable_draft"),
+      async (route) => {
+        held++;
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+        await route.continue().catch(() => {});
+      },
+    );
+    await setCellSource(
+      page,
+      page.locator(".ironpad-cell-card").first(),
+      "let left_mid_push = 1;",
+    );
+    await expect.poll(() => held, { timeout: 10_000 }).toBeGreaterThan(0);
+    await page.locator(".ironpad-push-button").click();
+    await page.waitForTimeout(400);
+    await page.locator("a.ironpad-brand").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(3_500);
+    expect(disposed).toEqual([]);
+    await page.locator("button", { hasText: "New Notebook" }).click();
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 15_000 });
+  });
 });

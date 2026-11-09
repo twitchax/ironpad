@@ -120,6 +120,45 @@ test.describe("Editor UX (PRD-0032)", () => {
       .toContain("closing_typed_markdown");
   });
 
+  // Blurring the title onto the brand link commits the rename and starts the
+  // save flush's 120ms yield; the click then disposes the page inside it.
+  // The flush used to report success anyway, and the persist after it read a
+  // disposed signal and panicked the whole wasm app.
+  test("renaming then leaving through the brand link keeps the app alive", async ({
+    page,
+  }) => {
+    const disposed: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.text().includes("already been disposed")) disposed.push(msg.text());
+    });
+    await newNotebook(page);
+    const id = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+    await page.locator(".ironpad-notebook-title").click();
+    const input = page.locator(".ironpad-header-title-input");
+    await expect(input).toBeVisible();
+    await input.fill("Renamed Then Left");
+    await page.locator("a.ironpad-brand").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(500);
+    expect(disposed).toEqual([]);
+
+    // Alive: a control only the wasm app wires up still works.
+    await page.locator("button", { hasText: "New Notebook" }).click();
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 15_000 });
+    // And the rename landed.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            async (nid) =>
+              (await (window as any).IronpadStorage.getNotebook(nid))?.title,
+            id,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe("Renamed Then Left");
+  });
+
   // The notebook-level actions (hamburger menu, close) survive the flip to
   // view mode; editing-only chrome (Run All, session, gear) does not — view
   // mode's own header carries Run All and the cache/fresh toggle.
