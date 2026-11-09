@@ -932,9 +932,8 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 )
                 .is_ok()
             {
-                // In the model, not yet stored: whoever bumped the save
-                // generation persists it, and if the page goes away first
-                // the editor's teardown write does.
+                // In the model, not yet stored, until a write takes it: if
+                // the page goes away first, the editor's teardown write does.
                 state.mark_persist_pending();
                 if src_dirty {
                     let _ = source_dirty.try_set(false);
@@ -942,9 +941,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 if toml_dirty {
                     let _ = cargo_toml_dirty.try_set(false);
                 }
-                // Persist here rather than trust the pending debounce: Preview
-                // unmounts this cell right after the flush, which cancels that
-                // timer, and nothing else would write this text.
+                // Persist here rather than trust the pending debounce or the
+                // caller: Preview unmounts this cell right after the flush,
+                // which cancels that timer, and Preview itself writes nothing.
                 persist_notebook(&state);
             }
         };
