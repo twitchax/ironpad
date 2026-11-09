@@ -474,7 +474,9 @@ codegen-units = 16\n";
 /// Maximum accepted size for one notebook upload (share, account save, draft
 /// autosave). Every transport that carries a whole notebook sizes its own
 /// frame cap from this one: the server's request body limit, the WebSocket
-/// relay's message cap, and the CLI daemon's IPC frame.
+/// relay's message cap, and the CLI daemon's IPC frame. The editor keeps the
+/// notebooks it embeds outputs into under it
+/// ([`IronpadNotebook::degrade_saved_outputs_until`]).
 pub const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Default `Cargo.toml` for a new Code cell, and the manifest a cell without
@@ -484,9 +486,9 @@ pub const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
 /// anything per cell, since the manifest is hashed into the cache key).
 pub const DEFAULT_CELL_CARGO_TOML: &str = "[dependencies]";
 
-/// Per-cell budget for a saved output payload (PRD-0056). Inside the 4 MiB
-/// notebook cap with headroom; an over-budget output degrades to
-/// [`SAVED_OUTPUT_TOO_LARGE`] rather than failing the share.
+/// Per-cell budget for a saved output payload (PRD-0056). Inside the
+/// [`MAX_SHARE_BYTES`] notebook cap with headroom; an over-budget output
+/// degrades to [`SAVED_OUTPUT_TOO_LARGE`] rather than failing the share.
 pub const SAVED_OUTPUT_BUDGET_BYTES: usize = 256 * 1024;
 
 /// The placeholder panels JSON substituted for an over-budget saved output.
@@ -505,7 +507,8 @@ impl IronpadNotebook {
     /// what was published rather than reverting the draft to older outputs;
     /// those autosaves never capture anything new themselves. Cells with no
     /// recorded output keep `None`; a cell whose payload exceeds
-    /// `per_cell_budget` gets [`SAVED_OUTPUT_TOO_LARGE`] instead.
+    /// `per_cell_budget` gets [`SAVED_OUTPUT_TOO_LARGE`] instead. The budget
+    /// has no total: [`Self::degrade_saved_outputs_until`] is the other half.
     pub fn embed_saved_outputs(
         &mut self,
         display_texts: &std::collections::HashMap<String, String>,
@@ -524,6 +527,34 @@ impl IronpadNotebook {
             // hard navigation is the concrete case — the session never ran
             // the cell, and assigning `None` here stripped the published
             // snapshot on the very next Push (caught by the push-path e2e).
+        }
+    }
+
+    /// Degrade saved outputs to [`SAVED_OUTPUT_TOO_LARGE`], largest first,
+    /// until `fits` accepts the notebook or no real output is left.
+    ///
+    /// The per-cell budget has no total, so sixteen cells at budget reach the
+    /// [`MAX_SHARE_BYTES`] upload cap on their own, and a notebook whose lean
+    /// autosaves fit would be refused only once its outputs were embedded,
+    /// on every Push and every Share. Degrading the largest keeps the most
+    /// outputs, and the placeholder is the same over-budget rule a single
+    /// cell already follows. The caller measures, because serializing is its
+    /// business: this crate carries no JSON serializer.
+    pub fn degrade_saved_outputs_until(&mut self, mut fits: impl FnMut(&Self) -> bool) {
+        while !fits(self) {
+            let Some(largest) = self
+                .cells
+                .iter_mut()
+                .filter_map(|cell| {
+                    cell.saved_output
+                        .as_mut()
+                        .filter(|output| output.as_str() != SAVED_OUTPUT_TOO_LARGE)
+                })
+                .max_by_key(|output| output.len())
+            else {
+                break;
+            };
+            SAVED_OUTPUT_TOO_LARGE.clone_into(largest);
         }
     }
 
@@ -1422,6 +1453,110 @@ mod tests {
         }"#;
         let cell: IronpadCell = serde_json::from_str(json).unwrap();
         assert_eq!(cell.version, 0);
+    }
+
+    /// A code cell with `id` and `source`, no output.
+    fn code_cell(id: &str, order: u32, source: String) -> IronpadCell {
+        IronpadCell {
+            id: id.into(),
+            order,
+            label: id.into(),
+            cell_type: CellType::Code,
+            source,
+            cargo_toml: None,
+            shared: false,
+            collapsed: false,
+            output_collapsed: false,
+            version: 0,
+            saved_output: None,
+        }
+    }
+
+    /// Whether `nb` serializes within `cap` bytes.
+    fn fits_in(cap: usize) -> impl Fn(&IronpadNotebook) -> bool {
+        move |nb| serde_json::to_string(nb).is_ok_and(|json| json.len() <= cap)
+    }
+
+    #[test]
+    fn degrade_saved_outputs_goes_largest_first_until_the_notebook_fits() {
+        // Twenty cells near the per-cell budget, each under it, together
+        // over the upload cap: the notebook every Push and Share used to
+        // send and get refused.
+        let mut nb = IronpadNotebook::new("t");
+        let mut texts = std::collections::HashMap::new();
+        for i in 0..20_u32 {
+            let id = format!("c{i}");
+            nb.cells.push(code_cell(&id, i, "42".into()));
+            // Distinct sizes, so "largest first" is observable.
+            let size = SAVED_OUTPUT_BUDGET_BYTES - 1_000 * (i as usize + 1);
+            texts.insert(id, "x".repeat(size));
+        }
+        nb.embed_saved_outputs(&texts, SAVED_OUTPUT_BUDGET_BYTES);
+        assert!(
+            !fits_in(MAX_SHARE_BYTES)(&nb),
+            "the fixture must start over the cap"
+        );
+        nb.degrade_saved_outputs_until(fits_in(MAX_SHARE_BYTES));
+
+        assert!(fits_in(MAX_SHARE_BYTES)(&nb));
+        let (degraded, kept): (Vec<_>, Vec<_>) = nb
+            .cells
+            .iter()
+            .partition(|c| c.saved_output.as_deref() == Some(SAVED_OUTPUT_TOO_LARGE));
+        assert!(!degraded.is_empty() && !kept.is_empty());
+        let smallest_degraded = degraded.iter().map(|c| texts[&c.id].len()).min();
+        let largest_kept = kept
+            .iter()
+            .map(|c| c.saved_output.as_ref().map_or(0, String::len))
+            .max();
+        assert!(
+            largest_kept < smallest_degraded,
+            "the largest outputs go first"
+        );
+
+        // And it stopped as soon as it fit: restoring the smallest degraded
+        // output puts the notebook back over.
+        let restore = degraded
+            .iter()
+            .min_by_key(|c| texts[&c.id].len())
+            .map(|c| c.id.clone())
+            .expect("one was degraded");
+        let mut one_fewer = nb.clone();
+        for cell in &mut one_fewer.cells {
+            if cell.id == restore {
+                cell.saved_output = Some(texts[&restore].clone());
+            }
+        }
+        assert!(
+            !fits_in(MAX_SHARE_BYTES)(&one_fewer),
+            "degraded more than it had to"
+        );
+    }
+
+    #[test]
+    fn degrade_saved_outputs_terminates_when_the_source_alone_is_over_the_cap() {
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells
+            .push(code_cell("big", 0, "x".repeat(MAX_SHARE_BYTES + 1)));
+        nb.cells.push(code_cell("ran", 1, "42".into()));
+        nb.cells[1].saved_output = Some(r#"[{"Text":"42"}]"#.to_string());
+        nb.degrade_saved_outputs_until(fits_in(MAX_SHARE_BYTES));
+        assert_eq!(
+            nb.cells[1].saved_output.as_deref(),
+            Some(SAVED_OUTPUT_TOO_LARGE),
+            "every output degrades"
+        );
+        assert_eq!(nb.cells[0].saved_output, None, "and nothing else changes");
+    }
+
+    #[test]
+    fn degrade_saved_outputs_leaves_a_fitting_notebook_alone() {
+        let mut nb = IronpadNotebook::new("t");
+        nb.cells.push(code_cell("ran", 0, "42".into()));
+        nb.cells[0].saved_output = Some(r#"[{"Text":"42"}]"#.to_string());
+        let before = nb.clone();
+        nb.degrade_saved_outputs_until(fits_in(MAX_SHARE_BYTES));
+        assert_eq!(nb.cells[0].saved_output, before.cells[0].saved_output);
     }
 
     #[test]

@@ -805,4 +805,34 @@ test.describe("Account notebooks (PRD-0064)", () => {
     expect(texts.filter((t) => t.includes("Saving"))).toEqual([]);
     await expect(indicator).toHaveText("Draft not saved: storage full");
   });
+
+  test("a draft over the size cap is refused once, not retried every 5s", async ({
+    page,
+  }) => {
+    // "notebook too large" used to count as transient: the editor re-sent
+    // more than 4 MiB every 5s, forever, under a retrying indicator.
+    test.setTimeout(150_000);
+    await accountNotebookWithCell(page, "erin-oversized", "Oversized Draft", {
+      publish: false,
+    });
+    let posts = 0;
+    page.on("request", (r) => {
+      if (r.url().includes("save_mutable_draft")) posts++;
+    });
+    const line = "// " + "x".repeat(197) + "\n";
+    await setCellSource(
+      page,
+      page.locator(".ironpad-cell-card").first(),
+      line.repeat(23_000),
+    );
+    await expect(page.locator(".ironpad-draft-indicator")).toHaveText(
+      "Draft not saved: notebook too large",
+      { timeout: 30_000 },
+    );
+    await page.waitForTimeout(12_000);
+    expect(posts).toBe(1);
+    await expect(
+      page.locator(".ironpad-toast-body", { hasText: "4 MiB" }),
+    ).toHaveCount(1);
+  });
 });

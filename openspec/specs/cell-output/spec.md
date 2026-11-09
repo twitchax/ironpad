@@ -255,6 +255,10 @@ The system SHALL render saved outputs through the same panel renderers and sanit
 - **WHEN** a cell's panels exceeded 256 KiB when the notebook was shared
 - **THEN** its saved output is one text panel reading `(output too large to embed; run the cell to regenerate it)`
 
+#### Scenario: Outputs that together exceed the notebook cap
+- **WHEN** a notebook's outputs each fit 256 KiB but together would take it over the 4 MiB upload cap at a Push, Share or Download
+- **THEN** its largest saved outputs, largest first, become that same placeholder panel until the notebook fits, and the rest are kept
+
 ### Requirement: Theme-aware charts
 The system SHALL draw `Plot` chart colors from `--ip-plot-text`, `-muted`, `-grid`, `-zero`, `-axis`, and `-series-1` custom properties, each with a hex fallback, inside inline SVG, so switching theme repaints every chart on the page, saved snapshots included, with no re-run, and chart text reaches at least 4.5:1 contrast in both themes. (PRD-0065, PRD-0008)
 

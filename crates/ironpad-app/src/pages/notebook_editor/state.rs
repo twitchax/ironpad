@@ -1066,7 +1066,7 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
             return false;
         };
         if let Some(texts) = &texts {
-            nb.embed_saved_outputs(texts, ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES);
+            embed_saved_outputs_within_cap(&mut nb, texts);
         }
         serde_json::to_string(&nb)
     } else {
@@ -1109,10 +1109,7 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
             if let Some(texts) = &texts {
                 let _ = state.notebook.try_update_untracked(|nb| {
                     if let Some(nb) = nb {
-                        nb.embed_saved_outputs(
-                            texts,
-                            ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES,
-                        );
+                        embed_saved_outputs_within_cap(nb, texts);
                     }
                 });
             }
@@ -1147,6 +1144,23 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
             false
         }
     }
+}
+
+/// The editor's ONE way to embed the cells' last-run outputs (PRD-0056) into
+/// a notebook: each within the per-cell budget, then the largest degraded to
+/// the placeholder until the notebook fits the upload cap. Push, both
+/// Shares, Save to Account and Download all go through it, so an output-heavy
+/// notebook whose lean autosaves fit is never made unsendable by its outputs.
+pub(super) fn embed_saved_outputs_within_cap(
+    nb: &mut IronpadNotebook,
+    display_texts: &HashMap<String, String>,
+) {
+    use ironpad_common::types::{MAX_SHARE_BYTES, SAVED_OUTPUT_BUDGET_BYTES};
+
+    nb.embed_saved_outputs(display_texts, SAVED_OUTPUT_BUDGET_BYTES);
+    nb.degrade_saved_outputs_until(|nb| {
+        serde_json::to_string(nb).is_ok_and(|json| json.len() <= MAX_SHARE_BYTES)
+    });
 }
 
 // ── Draft-save state machine ────────────────────────────────────────────────
@@ -1441,6 +1455,42 @@ mod tests {
             }
             assert!(!a.indicator().contains("retrying"));
         }
+    }
+
+    #[test]
+    fn embedded_outputs_keep_the_notebook_under_the_upload_cap() {
+        use ironpad_common::types::{MAX_SHARE_BYTES, SAVED_OUTPUT_BUDGET_BYTES};
+
+        // Twenty cells just under the per-cell budget: every Push and Share
+        // of this notebook used to be refused.
+        let mut nb = IronpadNotebook::new("t");
+        let mut texts = HashMap::new();
+        for i in 0..20 {
+            let id = format!("c{i}");
+            let cell: ironpad_common::IronpadCell = serde_json::from_value(
+                serde_json::json!({ "id": id, "order": i, "label": id, "source": "42" }),
+            )
+            .expect("a minimal cell parses");
+            nb.cells.push(cell);
+            texts.insert(id, "x".repeat(SAVED_OUTPUT_BUDGET_BYTES - 10));
+        }
+        embed_saved_outputs_within_cap(&mut nb, &texts);
+        let json = serde_json::to_string(&nb).expect("serializes");
+        assert!(json.len() <= MAX_SHARE_BYTES, "{} bytes", json.len());
+        assert!(
+            nb.cells
+                .iter()
+                .any(|c| c.saved_output.as_ref().is_some_and(|o| o.len() > 1_000)),
+            "real outputs are kept where they fit"
+        );
+    }
+
+    #[test]
+    fn the_size_refusal_copy_names_the_real_cap() {
+        // The copy says the cap in words; this keeps the words honest.
+        let cap = format!("{} MiB", ironpad_common::types::MAX_SHARE_BYTES >> 20);
+        assert!(DraftRefusal::TooLarge.push_failed_body().contains(&cap));
+        assert!(refusal_toast_body(DraftRefusal::TooLarge, "refused").contains(&cap));
     }
 
     #[test]
