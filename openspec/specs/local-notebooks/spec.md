@@ -168,6 +168,10 @@ The system SHALL export the open notebook from its menu as one self-contained `.
 - **WHEN** a notebook whose cell output a checked checkbox widget is exported
 - **THEN** the file holds an inline `<svg>` painted with `currentColor`, no `<link>`, no `@font-face`, and no `http://` or `https://` reference other than the SVG namespace
 
+#### Scenario: Every output is styled in the file
+- **WHEN** a notebook whose outputs hold a table panel, a Markdown panel, and every widget kind is exported
+- **THEN** every class the file uses has a rule in its own inline stylesheet (the app's stylesheet never reaches it), a Markdown panel is styled like a markdown cell, an icon is sized to its text, and a button or progress widget shows its label rather than `[button widget]`
+
 #### Scenario: Untrusted output is escaped
 - **WHEN** a cell's output carries an image whose MIME type is `x" onerror="alert(1)`
 - **THEN** the export contains `onerror=&quot;alert(1)` and never the live attribute

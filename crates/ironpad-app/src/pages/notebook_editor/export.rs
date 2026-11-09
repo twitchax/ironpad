@@ -71,18 +71,21 @@ pre.code-block {
     border-left: 3px solid #3a3a5c; padding-left: 1rem;
     color: #aaa; margin: 0.5em 0;
 }
-.markdown-content table {
+.markdown-content table, .ironpad-output-table {
     border-collapse: collapse; width: 100%; margin: 0.75em 0;
 }
-.markdown-content th, .markdown-content td {
+.markdown-content th, .markdown-content td,
+.ironpad-output-table th, .ironpad-output-table td {
     border: 1px solid #3a3a5c; padding: 0.4rem 0.75rem; text-align: left;
 }
-.markdown-content th { background: #1a1a3e; color: #fff; font-weight: 600; }
-.markdown-content tr:nth-child(even) { background: #12192e; }
+.markdown-content th, .ironpad-output-table th { background: #1a1a3e; color: #fff; font-weight: 600; }
+.markdown-content tr:nth-child(even), .ironpad-output-table tr:nth-child(even) { background: #12192e; }
 .markdown-content img { max-width: 100%; border-radius: 4px; }
 .output-html { padding: 0.75rem; }
 .output-svg { text-align: center; padding: 0.75rem; }
 .output-svg svg { max-width: 100%; height: auto; }
+.ironpad-interactive-static { padding: 0.4rem 0.75rem; font-size: 0.85rem; color: #b0b0b0; }
+.ironpad-icon { width: 1em; height: 1em; vertical-align: -0.125em; }
 .footer {
     margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #3a3a5c;
     font-size: 0.75rem; color: #666; text-align: center;
@@ -166,10 +169,13 @@ pub(super) fn build_export_html(
                                         writeln!(html, "<div class=\"output-svg\">{safe}</div>");
                                 }
                                 DisplayPanel::Markdown(md) => {
+                                    // The markdown cell's class, so the panel
+                                    // shares its rules: the app's own preview
+                                    // class has none in EXPORT_CSS.
                                     let rendered = render_markdown(md);
                                     let _ = writeln!(
                                         html,
-                                        "<div class=\"ironpad-markdown-cell-preview\">{rendered}</div>"
+                                        "<div class=\"markdown-content\">{rendered}</div>"
                                     );
                                 }
                                 DisplayPanel::Table { headers, rows } => {
@@ -322,6 +328,30 @@ fn render_interactive_static(html: &mut String, kind: &str, config: &str) {
                 html_escape(default)
             );
         }
+        "button" => {
+            // The live widget's own fallback label.
+            let label_text = if label.is_empty() { "Run" } else { label };
+            let _ = writeln!(
+                html,
+                "<div class=\"ironpad-interactive-static\"><strong>{}</strong></div>",
+                html_escape(label_text)
+            );
+        }
+        "progress" => {
+            // Clamped and shown as a whole percentage, as the live bar reads.
+            let pct = cfg
+                .get("initial")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0)
+                .clamp(0.0, 100.0)
+                .trunc();
+            let label_text = if label.is_empty() { "progress" } else { label };
+            let _ = writeln!(
+                html,
+                "<div class=\"ironpad-interactive-static\"><strong>{}</strong>: {pct}%</div>",
+                html_escape(label_text)
+            );
+        }
         _ => {
             let _ = writeln!(
                 html,
@@ -413,7 +443,8 @@ pub(super) fn trigger_ironpad_download(json_content: &str, title: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::build_export_html;
+    use super::{build_export_html, render_interactive_static, EXPORT_CSS};
+    use crate::components::output_render::WIDGET_KINDS;
     use ironpad_common::{CellType, IronpadCell, IronpadNotebook};
     use std::collections::HashMap;
 
@@ -511,5 +542,82 @@ mod tests {
         // And the export ships a script-forbidding CSP.
         assert!(html.contains("Content-Security-Policy"));
         assert!(html.contains("default-src 'none'"));
+    }
+
+    /// Display JSON holding one panel of every `DisplayPanel` variant and one
+    /// widget of every kind. The Markdown and Html payloads carry no classes
+    /// of their own, so every class in the export is one the export emits.
+    fn every_panel_json() -> String {
+        let mut panels = vec![
+            serde_json::json!({"Text": "t"}),
+            serde_json::json!({"Html": "<b>h</b>"}),
+            serde_json::json!({"Svg": "<svg viewBox=\"0 0 1 1\"><rect width=\"1\" height=\"1\"/></svg>"}),
+            serde_json::json!({"Markdown": "## m\n\n| a |\n|---|\n| 1 |"}),
+            serde_json::json!({"Table": {"headers": ["a"], "rows": [["1"]]}}),
+            serde_json::json!({"BlobImage": {"mime_type": "image/png", "base64_data": "AAAA", "width": 1, "height": 1}}),
+            serde_json::json!({"Animation": {"width": 1, "height": 1, "fps": 1, "frame_count": 1, "data": "AAAA"}}),
+            serde_json::json!({"Simulation": {"width": 1, "height": 1, "fps": 1, "first_frame_data": "AAAA", "sliders": []}}),
+            serde_json::json!({"LiveView": {"fps": 1, "kind": "html", "content": ""}}),
+        ];
+        for kind in WIDGET_KINDS {
+            panels.push(serde_json::json!({"Interactive": {
+                "kind": kind,
+                "config": r#"{"label":"l","default":true,"initial":40}"#,
+            }}));
+        }
+        serde_json::Value::Array(panels).to_string()
+    }
+
+    /// Every token of every `class="…"` attribute in `html`.
+    fn class_tokens(html: &str) -> Vec<&str> {
+        html.split("class=\"")
+            .skip(1)
+            .flat_map(|rest| rest[..rest.find('"').unwrap_or(0)].split_whitespace())
+            .collect()
+    }
+
+    /// Does `css` carry a selector naming `.{class}` exactly (not as the
+    /// prefix of a longer class name)?
+    fn css_selects(css: &str, class: &str) -> bool {
+        let needle = format!(".{class}");
+        css.match_indices(&needle).any(|(at, _)| {
+            !css[at + needle.len()..]
+                .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+    }
+
+    /// The exported file carries only `EXPORT_CSS`, never `style/main.scss`,
+    /// so a class the export emits with no rule here renders unstyled.
+    #[test]
+    fn export_css_covers_every_emitted_class() {
+        let mut nb = IronpadNotebook::new("t");
+        let mut md = code_cell("m");
+        md.cell_type = CellType::Markdown;
+        md.source = "# heading\n\ntext".to_string();
+        nb.cells = vec![code_cell("a"), md];
+        let mut dt = HashMap::new();
+        dt.insert("a".to_string(), every_panel_json());
+        let html = build_export_html(&nb, &dt);
+
+        let tokens = class_tokens(&html);
+        assert!(tokens.contains(&"ironpad-icon"), "fixture renders an icon");
+        let missing: Vec<&str> = tokens
+            .into_iter()
+            .filter(|t| !css_selects(EXPORT_CSS, t))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "classes with no EXPORT_CSS rule: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_widget_kind_has_a_static_form() {
+        for kind in WIDGET_KINDS {
+            let mut html = String::new();
+            render_interactive_static(&mut html, kind, r#"{"label":"Knob","initial":40}"#);
+            assert!(!html.contains("widget]"), "{kind} fell through: {html}");
+            assert!(html.contains("Knob"), "{kind} shows its label: {html}");
+        }
     }
 }
