@@ -178,12 +178,16 @@ Each Publish or Push SHALL copy the compile-cache hits of the promoted draft int
 - **THEN** the manifest names only the blobs of the cells as just promoted
 
 ### Requirement: Discard Draft
-For a published notebook, the owner's menu SHALL offer "Discard Draft", which after the confirm "Discard your draft and return to the published copy? Unpushed changes will be lost." clears the draft and reloads the editor on the published copy. For a notebook with no published copy it SHALL NOT be offered, and the server SHALL decline it. (PRD-0054, PRD-0064)
+For a published notebook, the owner's menu SHALL offer "Discard Draft", which after the confirm "Discard your draft and return to the published copy? Unpushed changes will be lost." stops this page's draft saves, waits out one already on the wire, clears the draft and reloads the editor on the published copy; if the discard fails the page resumes saving. For a notebook with no published copy it SHALL NOT be offered, and the server SHALL decline it. (PRD-0054, PRD-0064)
 
 #### Scenario: Discard an edit
 - **WHEN** the owner drafts a rename and discards it
 - **THEN** after the reload a "Draft Discarded" toast says "Back to the published copy."
 - **AND** the editor shows the published title with the button disabled as "Published"
+
+#### Scenario: Autosaves pending at the confirm
+- **WHEN** the owner edits a cell, and a draft save comes due while the Discard confirm is open
+- **THEN** no draft save follows the discard, and after the reload, and after a second reload, the editor shows the published content with the button disabled as "Published"
 
 #### Scenario: Nothing drafted
 - **WHEN** the owner picks Discard Draft with no pending edits

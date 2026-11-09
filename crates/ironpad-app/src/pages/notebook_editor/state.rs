@@ -27,12 +27,12 @@ const DRAFT_SAVE_DEBOUNCE_MS: i32 = 1500;
 #[cfg(feature = "hydrate")]
 const DRAFT_SAVE_RETRY_MS: i32 = 5000;
 
-/// Poll interval (ms) while a durable save drains in-flight autosaves.
+/// Poll interval (ms) while [`drain_inflight_drafts`] waits.
 #[cfg(feature = "hydrate")]
 const DRAFT_SAVE_INFLIGHT_POLL_MS: i32 = 50;
 
-/// Cap (ms) on that drain, so a hung autosave request can't wedge Push
-/// forever — past it we proceed and rely on last-write-wins.
+/// Cap (ms) on that drain, so a hung autosave request can't wedge a save
+/// or a discard forever — past it we proceed and rely on last-write-wins.
 #[cfg(feature = "hydrate")]
 const DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS: i32 = 5000;
 
@@ -628,16 +628,10 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
     if state.server_draft_share.get_untracked().is_some() {
         let _ = state.draft_dirty.try_set(true);
         state.mark_persist_pending();
-        // Drain any autosave POST already on the wire so ours lands last —
-        // an earlier request arriving after this write would revert the
-        // draft the promote then publishes. Bounded: past the cap we
-        // proceed and rely on last-write-wins.
-        let mut waited_ms = 0;
-        while state.draft_save_inflight.try_get_untracked().unwrap_or(0) > 0
-            && waited_ms < DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS
-        {
-            crate::components::run_flow::sleep_ms(DRAFT_SAVE_INFLIGHT_POLL_MS).await;
-            waited_ms += DRAFT_SAVE_INFLIGHT_POLL_MS;
+        // Ours must land last: an earlier request arriving after this write
+        // would revert the draft the promote then publishes.
+        if !drain_inflight_drafts(state, None).await {
+            return false;
         }
         // Supersede any pending debounce so it can't double-write after us.
         state.draft_save_epoch.update_untracked(|e| *e += 1);
@@ -746,6 +740,38 @@ pub(super) fn persist_with_saving_floor(
     {
         persist_notebook(state);
         on_done();
+    }
+}
+
+/// Wait until no draft-save POST is on the wire, so the caller's write (or
+/// discard) lands after every earlier one: the server applies whichever
+/// request arrives last, and an older save arriving late would revert it.
+/// Bounded by [`DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS`]: past the cap the caller
+/// proceeds and relies on last-write-wins, so a hung request cannot wedge it.
+///
+/// Returns whether the caller should go ahead. `false` when the page was
+/// disposed while waiting, or, given `stop_if_epoch_changed`, when a newer
+/// save superseded the caller's epoch meanwhile.
+#[cfg(feature = "hydrate")]
+pub(super) async fn drain_inflight_drafts(
+    state: &NotebookState,
+    stop_if_epoch_changed: Option<u64>,
+) -> bool {
+    let mut waited_ms = 0;
+    loop {
+        let Some(inflight) = state.draft_save_inflight.try_get_untracked() else {
+            return false;
+        };
+        if let Some(epoch) = stop_if_epoch_changed {
+            if state.draft_save_epoch.try_get_untracked() != Some(epoch) {
+                return false;
+            }
+        }
+        if inflight == 0 || waited_ms >= DRAFT_SAVE_INFLIGHT_WAIT_MAX_MS {
+            return true;
+        }
+        crate::components::run_flow::sleep_ms(DRAFT_SAVE_INFLIGHT_POLL_MS).await;
+        waited_ms += DRAFT_SAVE_INFLIGHT_POLL_MS;
     }
 }
 

@@ -386,7 +386,27 @@ pub(super) fn discard_draft_current_notebook(
     ) {
         return;
     }
+    // Before the POST, synchronously: every save debounce that came due
+    // behind the blocking confirm fires the moment this handler returns, and
+    // a draft save landing after the discard would put the discarded edits
+    // back under a "Draft Discarded" toast. The halt stops new writes (and a
+    // cell debounce that fires mid-discard), the epoch bump retires the
+    // scheduled ones, and the drain below waits out one already on the wire.
+    state.halt_persistence();
+    let _ = state.draft_save_epoch.try_update_untracked(|e| *e += 1);
+    let state = *state;
+    // The page stays on a failure, so it must go back to saving, including
+    // the edits whose scheduled save the epoch bump retired.
+    let resume = move || {
+        state.resume_persistence();
+        if state.draft_dirty.try_get_untracked() == Some(true) {
+            super::state::persist_notebook(&state);
+        }
+    };
     leptos::task::spawn_local(async move {
+        if !super::state::drain_inflight_drafts(&state, None).await {
+            return;
+        }
         match crate::server_fns::discard_mutable_draft(share_id).await {
             Ok(true) => {
                 Toaster::toast_after_reload(
@@ -404,13 +424,19 @@ pub(super) fn discard_draft_current_notebook(
             // item is hidden in that state, so this is a stale page rather
             // than a normal path; reloading would still show the same text
             // under a toast claiming a revert.
-            Ok(false) => toaster.toast(
-                ToastIntent::Success,
-                "Nothing to Discard",
-                "This notebook has no published copy to return to.",
-                5,
-            ),
-            Err(e) => toaster.toast(ToastIntent::Error, "Discard Failed", format!("{e}"), 6),
+            Ok(false) => {
+                resume();
+                toaster.toast(
+                    ToastIntent::Success,
+                    "Nothing to Discard",
+                    "This notebook has no published copy to return to.",
+                    5,
+                );
+            }
+            Err(e) => {
+                resume();
+                toaster.toast(ToastIntent::Error, "Discard Failed", format!("{e}"), 6);
+            }
         }
     });
 }

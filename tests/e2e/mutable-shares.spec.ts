@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 
-import { test, expect, APIRequestContext } from "@playwright/test";
+import { test, expect, APIRequestContext, Page } from "@playwright/test";
 import { loginTestUser } from "./helpers/auth";
 import { setCellSource } from "./helpers/monaco";
 import {
@@ -55,6 +55,35 @@ async function rawHtml(
   expect(res.status()).toBe(200);
   return res.text();
 }
+
+/**
+ * A published (Share Mutable), clean notebook with one code cell, signed in
+ * as `login`, its editor mounted at /mutable/{id}. Returns the id.
+ */
+async function publishedNotebookWithCell(
+  page: Page,
+  login: string,
+  title: string,
+): Promise<string> {
+  await loginTestUser(page, login);
+  await createNotebook(page);
+  // Rename BEFORE adding a cell: a new cell steals focus when its Monaco
+  // mounts (pending_focus_cell), which would hijack mid-flight title typing.
+  await renameNotebook(page, title);
+  await page.locator(".ironpad-add-cell-btn").first().click();
+  await expect(
+    page.locator(".ironpad-cell-card .monaco-editor").first(),
+  ).toBeVisible({ timeout: 15_000 });
+  const id = await shareMutable(page);
+  await expect(
+    page.locator(".ironpad-cell-card .monaco-editor").first(),
+  ).toBeVisible({ timeout: 30_000 });
+  return id;
+}
+
+/** The first cell's rendered editor text. */
+const firstCellLines = (page: Page) =>
+  page.locator(".ironpad-cell-card .monaco-editor .view-lines").first();
 
 test.describe("Mutable shares (PRD-0054, draft/published)", () => {
   test("publish, draft invisibly, push: the one-URL owner lifecycle", async ({
@@ -453,5 +482,44 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await expect(
       page.locator(".view-only-notebook .monaco-editor .view-lines").first(),
     ).toContainText("flushed_before_push", { timeout: 30_000 });
+  });
+
+  test("discard wins over autosaves that came due behind its confirm", async ({
+    page,
+  }) => {
+    // The cell debounce has fired and the draft save is scheduled when the
+    // menu opens; the confirm then blocks long enough for that save to come
+    // due, and it used to fire 3ms after the discard POST, putting the
+    // discarded edit back under a "Draft Discarded" toast.
+    test.setTimeout(150_000);
+    await publishedNotebookWithCell(page, "dina", "Discard Race");
+    await setCellSource(
+      page,
+      page.locator(".ironpad-cell-card").first(),
+      "let discarded_edit = 1;",
+    );
+    await page.waitForTimeout(1_200);
+    page.once("dialog", async (dialog) => {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await dialog.accept();
+    });
+    await menuClick(page, "Discard Draft");
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Draft Discarded" }),
+    ).toBeVisible({ timeout: 30_000 });
+
+    // Twice: the first load after the reload, then a cold one, so a save
+    // that landed after the reload's read is caught too.
+    const push = page.locator(".ironpad-push-button");
+    for (const reload of [false, true]) {
+      if (reload) await page.reload();
+      await expectOwnerEditor(page);
+      await expect(firstCellLines(page)).toContainText("42", {
+        timeout: 30_000,
+      });
+      await expect(firstCellLines(page)).not.toContainText("discarded_edit");
+      await expect(push).toHaveText(/Published/);
+      await expect(push).toBeDisabled();
+    }
   });
 });
