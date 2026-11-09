@@ -279,10 +279,13 @@
       ensureMonaco().then(function (monaco) {
         registerCompletionProvider(monaco);
 
+        // No `theme`: Monaco applies a creation-time theme to EVERY editor,
+        // so naming one here flipped a light page's editors dark. The theme
+        // is global state, set from `data-theme` by IronpadLanguages.register
+        // when Monaco loads and by setTheme on a toggle.
         var editor = monaco.editor.create(container, {
           value: value,
           language: language,
-          theme: "ironpad-dark",
           minimap: { enabled: false },
           lineNumbers: "on",
           automaticLayout: true,
@@ -461,8 +464,13 @@
 
     /// Switch the global Monaco theme for all editors.
     /// `themeName` should be "ironpad-dark" or "ironpad-light".
+    /// Never starts a load: with none under way there is no editor to theme,
+    /// and register() reads `data-theme` (written before this is called)
+    /// when one does start. Loading here cost every route Monaco's main
+    /// bundle for a stored-light user.
     setTheme: function (themeName) {
-      ensureMonaco().then(function (monaco) {
+      if (!monacoPromise) return;
+      monacoPromise.then(function (monaco) {
         monaco.editor.setTheme(themeName);
       });
     },

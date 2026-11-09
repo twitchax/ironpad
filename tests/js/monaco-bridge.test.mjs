@@ -189,3 +189,25 @@ test("a program write does not fire onChange; typing does", async () => {
   monaco.created[0].type("human");
   assert.deepEqual(seen, ["human"]);
 });
+
+test("create leaves the global theme alone", async () => {
+  // Monaco applies a creation-time theme to EVERY editor, so naming one here
+  // flipped a light-mode page dark on each new editor.
+  const { bridge, monaco, load } = loadBridge();
+  bridge.create(container(), "", "rust", null);
+  await load();
+  assert.equal("theme" in monaco.created[0].options, false);
+});
+
+test("setTheme never loads Monaco on its own", async () => {
+  const env = loadBridge();
+  env.bridge.setTheme("ironpad-light");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(env.requires, 0, "no editor yet, so nothing to theme");
+
+  // Once a load is under way, the theme applies when it lands.
+  env.bridge.create(container(), "", "rust", null);
+  env.bridge.setTheme("ironpad-light");
+  await env.load();
+  assert.deepEqual(env.monaco.themes, ["ironpad-light"]);
+});

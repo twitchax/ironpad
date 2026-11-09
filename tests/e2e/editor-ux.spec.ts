@@ -682,3 +682,55 @@ test.describe("Markdown editor", () => {
     });
   });
 });
+
+// Regression (review bug-components-8): `create` named the dark theme, and a
+// theme passed at creation applies to EVERY editor, so each new editor turned
+// a light page's editors dark. `setTheme` also loaded Monaco's main bundle on
+// any route for a stored-light user, the home page included.
+test.describe("Monaco theme", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() =>
+      window.localStorage.setItem("ironpad-theme", "light"),
+    );
+  });
+
+  async function expectEditorTheme(page: Page, theme: "vs" | "vs-dark") {
+    const editors = page.locator(".monaco-editor");
+    const count = await editors.count();
+    expect(count).toBeGreaterThan(0);
+    for (let i = 0; i < count; i++) {
+      if (theme === "vs") {
+        await expect(editors.nth(i)).toHaveClass(/(^|\s)vs(\s|$)/);
+        await expect(editors.nth(i)).not.toHaveClass(/vs-dark/);
+      } else {
+        await expect(editors.nth(i)).toHaveClass(/vs-dark/);
+      }
+    }
+  }
+
+  test("a light-mode notebook keeps every editor light", async ({ page }) => {
+    await openSeeded(page, [
+      { type: "Code", source: "1" },
+      { type: "Code", source: "2" },
+    ]);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    // Two editors per code cell: Code and Cargo.toml.
+    await expect(page.locator(".monaco-editor")).toHaveCount(4, {
+      timeout: 15_000,
+    });
+    await expectEditorTheme(page, "vs");
+
+    await page.locator(ADD_CODE).last().click();
+    await expect(page.locator(".monaco-editor")).toHaveCount(6, {
+      timeout: 15_000,
+    });
+    await expectEditorTheme(page, "vs");
+
+    // The toggle still flips them all.
+    const toggle = page.locator(".ironpad-theme-toggle--compact");
+    await toggle.locator('[title="Dark mode"]').click();
+    await expectEditorTheme(page, "vs-dark");
+    await toggle.locator('[title="Light mode"]').click();
+    await expectEditorTheme(page, "vs");
+  });
+});

@@ -300,11 +300,19 @@ The system SHALL show a status bar at the foot of every page except `/` and `/em
 - **THEN** the status bar shows "Ready" and "Cells:" with a non-zero count
 
 ### Requirement: Light and dark theme
-The system SHALL default to the dark theme and offer "Dark mode" and "Light mode" buttons in the header of every non-embed page; the choice is stored in browser local storage under `ironpad-theme`, applied before first paint on later loads, and applied to every Monaco editor. (PRD-0008, PRD-0034)
+The system SHALL default to the dark theme and offer "Dark mode" and "Light mode" buttons in the header of every non-embed page; the choice is stored in browser local storage under `ironpad-theme`, applied before first paint on later loads, and applied to every Monaco editor, including editors created later; applying it never loads the Monaco editor bundle on a page that has no editor. (PRD-0008, PRD-0034)
 
 #### Scenario: Light theme survives a reload
 - **WHEN** the user clicks "Light mode" and reloads
 - **THEN** the page renders light from first paint and the code editors use the light editor theme
+
+#### Scenario: New editors keep the light theme
+- **WHEN** the light theme is stored and the author opens a notebook with code cells and adds another
+- **THEN** every editor, old and new, uses the light editor theme
+
+#### Scenario: The home page loads no editor
+- **WHEN** the light theme is stored and the user opens `/`
+- **THEN** Monaco's `editor.main` bundle is not requested
 
 #### Scenario: No system-preference detection
 - **WHEN** a first-time visitor's operating system prefers a light appearance

@@ -86,6 +86,29 @@ test.describe("Shell critical path", () => {
     ).toEqual([]);
   });
 
+  // Regression (review bug-components-8): the bridge's `setTheme` loaded
+  // Monaco's main bundle to apply a theme to editors that did not exist, so a
+  // stored-light user paid for it on every route, this one included.
+  test("the home page does not load Monaco's main bundle in light mode", async ({
+    page,
+  }) => {
+    await page.addInitScript(() =>
+      window.localStorage.setItem("ironpad-theme", "light"),
+    );
+    const requested: string[] = [];
+    page.on("request", (r) => requested.push(new URL(r.url()).pathname));
+    await page.goto("/");
+    await page.waitForLoadState("load");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await page.waitForTimeout(3_000); // hydration, which applies the theme
+
+    // Guard the guard: the bridge itself is on this route.
+    expect(
+      await page.evaluate(() => typeof (window as any).IronpadMonaco),
+    ).toBe("object");
+    expect(requested.filter((p) => p.includes("editor.main"))).toEqual([]);
+  });
+
   test("a notebook route still renders math and highlighted code", async ({
     page,
   }) => {
