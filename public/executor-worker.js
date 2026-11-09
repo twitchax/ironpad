@@ -147,7 +147,7 @@ executor._handleHostMessage = function (cellId, text) {
 // ── Command handler ─────────────────────────────────────────────────────────
 //
 // Protocol:
-//   Incoming:  { type: "loadBlob"|"execute"|"tick"|"tick_live"|"unload"|"sim_bus_write", id?, cellId, ... }
+//   Incoming:  { type: "loadBlob"|"execute"|"tick"|"tick_live"|"unload"|"sim_bus_write"|"rayon_trap_channel", id?, cellId, ... }
 //   Outgoing:  { type: "result"|"error", id, value?|error? }
 //              { type: "hostMessage", cellId, messageJson }
 
@@ -157,6 +157,13 @@ executor._handleHostMessage = function (cellId, text) {
 
 self.onmessage = async function (e) {
   var msg = e.data;
+
+  if (msg.type === "rayon_trap_channel") {
+    // Where a rayon pool thread reports a trap: the bridge's per-page
+    // BroadcastChannel. The glue's startWorkers hands it to each sub-worker.
+    self.__ironpadRayonTrapName = msg.name;
+    return; // No response needed.
+  }
 
   if (msg.type === "sim_bus_write") {
     // Main thread (e.g. a slider) wrote a value to the bus — mirror it here

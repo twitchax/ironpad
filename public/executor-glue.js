@@ -155,22 +155,46 @@
         "  var workerInit = {\n" +
         "    type: 'wasm_bindgen_worker_init',\n" +
         "    init: { module_or_path: module, memory: memory },\n" +
-        "    receiver: builder.receiver()\n" +
+        "    receiver: builder.receiver(),\n" +
+        "    // Where a pool thread reports a trap (set by executor-worker.js).\n" +
+        "    trapChannel: self.__ironpadRayonTrapName\n" +
         "  };\n" +
         "  var _spawned = [];\n" +
         "  try {\n" +
         "    _rayonWorkers = await Promise.all(\n" +
         "      Array.from({ length: builder.numThreads() }, async function() {\n" +
+        "        // A job that panics traps out of wbg_rayon_start_worker (rayon's\n" +
+        "        // catch_unwind does nothing under panic=abort). The executor worker\n" +
+        "        // is parked on the job's latch and cannot hear it, so the sub-worker\n" +
+        "        // reports to the page on the trap channel, with the panic text its\n" +
+        "        // patched console.error captured (cut at the hook's Stack: suffix,\n" +
+        "        // mirroring executor-core.js).\n" +
         "        var subWorkerCode =\n" +
         "          'self.onmessage = async function(e) {' +\n" +
         "          '  if (e.data && e.data.type === \"wasm_bindgen_worker_init\") {' +\n" +
+        "          '    var panicText = null;' +\n" +
+        "          '    var consoleError = console.error;' +\n" +
+        "          '    console.error = function() {' +\n" +
+        "          '      var m = Array.prototype.join.call(arguments, \" \");' +\n" +
+        "          '      if (m.indexOf(\"panicked at\") !== -1) {' +\n" +
+        "          '        var cut = m.indexOf(\"\\\\n\\\\nStack:\");' +\n" +
+        "          '        panicText = cut === -1 ? m : m.slice(0, cut);' +\n" +
+        "          '      }' +\n" +
+        "          '      consoleError.apply(console, arguments);' +\n" +
+        "          '    };' +\n" +
         "          '    var blob = new Blob([e.data.glueCode], {type:\"application/javascript\"});' +\n" +
         "          '    var url = URL.createObjectURL(blob);' +\n" +
         "          '    try {' +\n" +
         "          '      var pkg = await import(url);' +\n" +
         "          '      await pkg.default(e.data.init);' +\n" +
         "          '      self.postMessage({type:\"wasm_bindgen_worker_ready\"});' +\n" +
-        "          '      pkg.wbg_rayon_start_worker(e.data.receiver);' +\n" +
+        "          '      try {' +\n" +
+        "          '        pkg.wbg_rayon_start_worker(e.data.receiver);' +\n" +
+        "          '      } catch (err) {' +\n" +
+        "          '        if (e.data.trapChannel) {' +\n" +
+        "          '          new BroadcastChannel(e.data.trapChannel).postMessage({ message: panicText || String(err) });' +\n" +
+        "          '        }' +\n" +
+        "          '      }' +\n" +
         "          '    } finally {' +\n" +
         "          '      URL.revokeObjectURL(url);' +\n" +
         "          '    }' +\n" +
@@ -182,7 +206,8 @@
         "        URL.revokeObjectURL(subUrl);\n" +
         "        _spawned.push(worker);\n" +
         "        var msg = { type: workerInit.type, init: workerInit.init,\n" +
-        "                     receiver: workerInit.receiver, glueCode: glueCode };\n" +
+        "                     receiver: workerInit.receiver, glueCode: glueCode,\n" +
+        "                     trapChannel: workerInit.trapChannel };\n" +
         "        worker.postMessage(msg);\n" +
         "        await _waitForMsgType(worker, 'wasm_bindgen_worker_ready', _RAYON_WORKER_INIT_TIMEOUT_MS);\n" +
         "        return worker;\n" +

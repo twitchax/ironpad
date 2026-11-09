@@ -55,16 +55,25 @@ function loadBridge() {
     error() {},
     warn: (...args) => warnings.push(args.join(" ")),
   };
+  const channels = [];
+  class FakeBroadcastChannel {
+    constructor(name) {
+      this.name = name;
+      this.onmessage = null;
+      channels.push(this);
+    }
+  }
   const window = {};
   const document = { currentScript: null, querySelector: () => null };
   // eslint-disable-next-line no-new-func
-  new Function("window", "document", "Worker", "console", BRIDGE_SOURCE)(
+  new Function("window", "document", "Worker", "console", "BroadcastChannel", BRIDGE_SOURCE)(
     window,
     document,
     FakeWorker,
     fakeConsole,
+    FakeBroadcastChannel,
   );
-  return { bridge: window.IronpadExecutor, workers, warnings };
+  return { bridge: window.IronpadExecutor, workers, warnings, channels };
 }
 
 /** A main-thread executor stand-in that records every call it receives. */
@@ -296,5 +305,40 @@ test("a settled retry is not cancelled by a later terminate()", async () => {
   bridge.terminate();
 
   assert.equal(result.fallback, true);
+});
+
+// ── A trap on a rayon pool thread (review bug-cell-14) ─────────────────────
+
+test("each bridge listens for rayon traps on its own channel and tells its worker the name", () => {
+  // BroadcastChannel spans every same-origin tab: a fixed name would let one
+  // tab's rayon panic kill another tab's worker.
+  const a = loadBridge();
+  const b = loadBridge();
+
+  assert.equal(a.channels.length, 1);
+  assert.notEqual(a.channels[0].name, b.channels[0].name);
+  assert.deepEqual(a.workers[0].posted, [{ type: "rayon_trap_channel", name: a.channels[0].name }]);
+});
+
+test("a rayon trap fails pending requests with the panic text and replaces the worker", async () => {
+  // The executor worker is parked in Atomics.wait on the job's latch, so it
+  // can never answer; and rayon cannot block on the main thread either, so
+  // there is nothing to fall back to.
+  const { bridge, workers, channels, warnings } = loadBridge();
+  const main = fakeMainExecutor();
+  bridge._mainExecutor = main;
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+  bridge._loadedCache.set("c1", "h1");
+
+  const pending = bridge.execute("c1", new Uint8Array(0));
+  channels[0].onmessage({ data: { message: "panicked at src/lib.rs:2:3:\nbad row" } });
+
+  await assert.rejects(within(pending), /bad row/);
+  assert.deepEqual(main.calls, [], "never retried on the main thread");
+  assert.deepEqual(warnings, []);
+  assert.equal(workers[0].terminated, true);
+  assert.equal(workers.length, 2, "a fresh worker replaces the wedged one");
+  assert.equal(bridge._pending.size, 0);
+  assert.equal(bridge.isLoaded("c1", "h1"), false, "the old worker's cells went with it");
 });
 

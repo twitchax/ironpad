@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
 import { ADD_CODE, createNotebook } from "./helpers/session";
@@ -15,6 +15,19 @@ async function newNotebookWithCells(page: Page, sources: string[]) {
     await setCellSource(page, cell, sources[i]);
   }
   return page.locator(".ironpad-cell-card");
+}
+
+/** Give `cell` a rayon dependency and `source`, leaving the Code tab open. */
+async function setRayonCell(page: Page, cell: Locator, source: string) {
+  // Each tab owns its own Monaco editor pane: [0] Code, [1] Cargo.toml.
+  const panes = cell.locator(".ironpad-cell-editor-pane");
+  await cell.locator(".ironpad-cell-tab", { hasText: "Cargo.toml" }).click();
+  await expect(panes.nth(1).locator(".monaco-editor")).toBeVisible({
+    timeout: 15_000,
+  });
+  await setCellSource(page, panes.nth(1), '[dependencies]\nrayon = "1"\n');
+  await cell.locator(".ironpad-cell-tab", { hasText: "Code" }).click();
+  await setCellSource(page, panes.nth(0), source);
 }
 
 test.describe("Cell execution and output", () => {
@@ -197,17 +210,9 @@ test.describe("Cell execution and output", () => {
       timeout: 15_000,
     });
 
-    // Each tab owns its own Monaco editor pane: [0] Code, [1] Cargo.toml.
-    const panes = cell.locator(".ironpad-cell-editor-pane");
-    await cell.locator(".ironpad-cell-tab", { hasText: "Cargo.toml" }).click();
-    await expect(panes.nth(1).locator(".monaco-editor")).toBeVisible({
-      timeout: 15_000,
-    });
-    await setCellSource(page, panes.nth(1), '[dependencies]\nrayon = "1"\n');
-    await cell.locator(".ironpad-cell-tab", { hasText: "Code" }).click();
-    await setCellSource(
+    await setRayonCell(
       page,
-      panes.nth(0),
+      cell,
       "let total: u64 = (1..=1000u64).into_par_iter().sum();\n" +
         'sim::emit("e2e-rayon-sum", &total);\n' +
         'CellOutput::text(format!("sum={total}"))'
@@ -305,6 +310,42 @@ test.describe("Cell execution and output", () => {
       () => (window as any).IronpadExecutor._worker === (window as any).__e2eWorkerBefore
     );
     expect(sameWorker).toBe(true);
+
+    expect(jsErrors).toEqual([]);
+  });
+
+  test("a panic inside a rayon closure fails the cell instead of hanging it", async ({
+    page,
+  }) => {
+    // Regression (review bug-cell-14): under panic=abort the panic traps on a
+    // pool thread, whose failure went nowhere, while the executor worker
+    // waited forever on the job's latch. The cell sat on Running with no
+    // message. A cold rayon build rebuilds std with atomics, hence the long
+    // timeout.
+    test.setTimeout(300_000);
+    const jsErrors = trackJsErrors(page);
+
+    await createNotebook(page);
+    await page.locator(ADD_CODE).last().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setRayonCell(
+      page,
+      cell,
+      "let total = (0..100)\n" +
+        "    .into_par_iter()\n" +
+        '    .map(|i| { assert!(i != 50, "bad row"); i })\n' +
+        "    .sum::<i32>();\n" +
+        'CellOutput::text(format!("total={total}"))'
+    );
+
+    await page.locator('button[title="Run cell"]').first().click();
+    await expect(cell.locator(".ironpad-cell-status--error")).toBeVisible({
+      timeout: 240_000,
+    });
+    await expect(cell.locator(".ironpad-output-panel")).toContainText("bad row");
 
     expect(jsErrors).toEqual([]);
   });

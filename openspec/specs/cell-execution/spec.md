@@ -228,12 +228,16 @@ The editor's gear-menu "Reactive Mode" toggle SHALL persist as the notebook's `r
 - **THEN** the gear menu shows Reactive Mode checked
 
 ### Requirement: Threaded cells
-A cell built with rayon SHALL start a thread pool of `navigator.hardwareConcurrency` threads (4 when unknown) inside the execution worker, sharing the cell's memory; that needs `SharedArrayBuffer`, which the cross-origin isolation headers in `server-operations` provide. (PRD-0024)
+A cell built with rayon SHALL start a thread pool of `navigator.hardwareConcurrency` threads (4 when unknown) inside the execution worker, sharing the cell's memory; that needs `SharedArrayBuffer`, which the cross-origin isolation headers in `server-operations` provide. A panic on a pool thread SHALL fail the running cell with the panic's message and replace the execution worker, whose loaded cells reload on their next run, and SHALL NOT be retried on the main thread. The pool thread reports on a channel named per page, so a panic in one tab never touches another tab's worker. (PRD-0024)
 
 #### Scenario: A parallel sum runs in the worker
 - **WHEN** a cell with `rayon = "1"` in its Cargo.toml computes `(1..=1000u64).into_par_iter().sum()`, calls `sim::emit("e2e-rayon-sum", &total)`, and returns `CellOutput::text(format!("sum={total}"))`
 - **THEN** the output shows `sum=500500` with no "main thread" badge
 - **AND** `window.IronpadExecutor.simBusRead("e2e-rayon-sum")` on the page returns `500500`
+
+#### Scenario: A panic inside a parallel closure
+- **WHEN** a rayon cell computes `(0..100).into_par_iter().map(|i| { assert!(i != 50, "bad row"); i }).sum::<i32>()`
+- **THEN** the cell shows error with `bad row` in its output instead of staying on Running
 
 #### Scenario: A pool thread that never starts
 - **WHEN** a pool thread does not report ready within 30 s

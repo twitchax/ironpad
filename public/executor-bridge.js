@@ -90,6 +90,19 @@
     this._mainExecutorPromise = null; // In-flight fallback load (memoized)
     this._fallbackAborts = new Set(); // reject fns of in-flight main-thread retries
 
+    // A rayon pool thread that traps cannot reach the executor worker, which
+    // is parked in Atomics.wait on the job's latch, so it reports to this
+    // page directly. The name is per bridge: BroadcastChannel spans every
+    // same-origin tab, and a fixed name would let one tab's panic kill
+    // another tab's worker.
+    this._rayonTrapName = "ironpad-rayon-trap-" + Math.random().toString(36).slice(2);
+    if (typeof BroadcastChannel === "function") {
+      var self = this;
+      new BroadcastChannel(this._rayonTrapName).onmessage = function (e) {
+        self._onRayonTrap(e.data);
+      };
+    }
+
     this._spawnWorker();
   }
 
@@ -138,6 +151,22 @@
       }
       self._spawnWorker();
     };
+
+    this._worker.postMessage({ type: "rayon_trap_channel", name: this._rayonTrapName });
+  };
+
+  /// A rayon pool thread trapped: the job's latch will never be set, so the
+  /// executor worker is wedged for good. Replace it as terminate() does and
+  /// fail what was pending with the panic text, marked `noFallback` since
+  /// rayon cannot block on the main thread either.
+  BridgeExecutor.prototype._onRayonTrap = function (data) {
+    var err = new Error((data && data.message) || "a rayon worker thread trapped");
+    err.noFallback = true;
+    this._pending.forEach(function (entry) {
+      entry.reject(err);
+    });
+    this._pending.clear();
+    this._respawnWorker();
   };
 
   BridgeExecutor.prototype._onWorkerMessage = function (msg) {
@@ -236,7 +265,8 @@
     // A deliberate cancellation (terminate() rejects pending requests with an
     // AbortError) must NOT fall back to the main thread — re-running a runaway
     // cell there would freeze the tab. Rethrow so the caller sees the cancel.
-    if (workerError && workerError.name === "AbortError") {
+    // Neither may a rayon trap (`noFallback`): the main thread cannot block.
+    if (workerError && (workerError.name === "AbortError" || workerError.noFallback)) {
       throw workerError;
     }
     console.warn(
@@ -480,13 +510,6 @@
   /// All pending Promises are rejected with an AbortError.  The isLoaded
   /// cache is cleared — Rust will re-trigger loadBlob when needed.
   BridgeExecutor.prototype.terminate = function () {
-    // Kill the Worker immediately (it may already be gone if the respawn
-    // cap was reached).
-    if (this._worker) {
-      this._worker.terminate();
-      this._worker = null;
-    }
-
     // Reject all pending requests, and every main-thread retry in flight.
     this._pending.forEach(function (entry) {
       var err = new DOMException("Worker terminated", "AbortError");
@@ -498,10 +521,20 @@
     });
     this._fallbackAborts.clear();
 
-    // Reset state and spawn a fresh Worker. An explicit user-driven
-    // terminate also resets the rapid-failure counter — it is a deliberate
-    // fresh start, not another crash in the loop.
     // NOTE: _blobCache is intentionally preserved for fallback.
+    this._respawnWorker();
+  };
+
+  /// Kill the Worker (it may already be gone if the respawn cap was reached)
+  /// and spawn a fresh one. Its loaded cells die with it, so the isLoaded
+  /// cache is cleared. A deliberate replacement also resets the
+  /// rapid-failure counter: it is a fresh start, not another crash in the
+  /// loop.
+  BridgeExecutor.prototype._respawnWorker = function () {
+    if (this._worker) {
+      this._worker.terminate();
+      this._worker = null;
+    }
     this._loadedCache.clear();
     this._workerRapidFailures = 0;
     this._spawnWorker();
