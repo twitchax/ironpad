@@ -750,14 +750,26 @@ test.describe("Agent run queue", () => {
     // Dismiss the session panel: it floats over the cells' side buttons.
     await page.locator(".ironpad-editor").click({ position: { x: 5, y: 5 } });
     await expect(page.locator(".ironpad-session-panel")).toHaveCount(0);
+    // In notebook order: `cells add` without `--after` inserts at the TOP,
+    // which would reverse every `cellN` reference below.
+    const ids: string[] = [];
     for (const [i, source] of sources.entries()) {
-      const added = cliExecRaw(["cells", "add", "--source", source, "--label", `Q${i}`]);
-      expect(added.exitCode).toBe(0);
+      const args = ["cells", "add", "--source", source, "--label", `Q${i}`];
+      if (ids.length > 0) args.push("--after", ids[ids.length - 1]);
+      expect(cliExecRaw(args).exitCode).toBe(0);
+      await expect(page.locator(".ironpad-cell-card")).toHaveCount(i + 1, {
+        timeout: 15_000,
+      });
+      let id: string | undefined;
+      await expect
+        .poll(() => (id = cliExec(["cells", "list"]).find((c: any) => c.label === `Q${i}`)?.id), {
+          timeout: 10_000,
+        })
+        .toBeTruthy();
+      ids.push(id!);
     }
-    await expect(page.locator(".ironpad-cell-card")).toHaveCount(sources.length, {
-      timeout: 15_000,
-    });
-    return cliExec(["cells", "list"]).map((c: any) => c.id);
+    expect(cliExec(["cells", "list"]).map((c: any) => c.id)).toEqual(ids);
+    return ids;
   }
 
   function parseRun(result: { stdout: string; stderr: string; exitCode: number }) {
