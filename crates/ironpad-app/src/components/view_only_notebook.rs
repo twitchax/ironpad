@@ -190,13 +190,14 @@ pub(crate) fn ViewOnlyNotebook(
         running_all.set(!empty);
     });
 
-    // Auto-execute all code cells on page load (hydrate-only, fires once) when
-    // the route says the content is trusted first-party (`autorun`, PRD-0040)
-    // or the notebook itself opted into reactive mode (PRD-0025).
+    // Auto-execute all code cells on page load (hydrate-only, fires once), and
+    // only when the ROUTE grants it (`autorun`, PRD-0040): the route is what
+    // knows whether the content is trusted first-party. A notebook's own
+    // `reactive_mode` is author-controlled, so honouring it here let any
+    // shared notebook run itself in every reader's browser.
     #[cfg(feature = "hydrate")]
     {
-        let is_reactive = notebook.with_value(|nb| nb.reactive_mode.unwrap_or(false));
-        if autorun || is_reactive {
+        if autorun {
             let auto_run_done = RwSignal::new(false);
             Effect::new(move || {
                 if auto_run_done.get_untracked() {
