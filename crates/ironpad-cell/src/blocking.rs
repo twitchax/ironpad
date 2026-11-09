@@ -3,11 +3,12 @@
 //!
 //! Unlike [`crate::http`] (which requires an async cell — any `.await` in the
 //! cell body), these functions are plain synchronous Rust: callable from trait
-//! impls, iterator adapters, or any helper function, with no function coloring.
-//! Under the hood the executor wraps the `ironpad_blocking_*` imports in
-//! `WebAssembly.Suspending` and enters `cell_main` via `WebAssembly.promising`
-//! (PRD-0043), so a call here parks the entire WASM stack until the promise
-//! settles.
+//! impls (including a `Simulation` or `LiveView` `tick`), iterator adapters,
+//! or any helper function, with no function coloring. Under the hood the
+//! executor wraps the `ironpad_blocking_*` imports in `WebAssembly.Suspending`
+//! and enters both `cell_main` and every `cell_tick` via
+//! `WebAssembly.promising` (PRD-0043), so a call here parks the entire WASM
+//! stack until the promise settles.
 //!
 //! **Browser support**: requires JSPI, shipped by default in Chrome/Edge 137+.
 //! On other browsers the cell fails with a clear error before execution.

@@ -553,3 +553,112 @@ test("a same-hash load keeps the cell's pool", async () => {
 
   assert.equal(live.terminated, false);
 });
+
+// ── Blocking calls inside a tick (review bug-cell-12) ───────────────────────
+
+/**
+ * Run `body` with a fake JSPI on the global WebAssembly (Node has none).
+ * `promising(fn)` counts the wrappers it builds and the exports it enters.
+ */
+async function withFakeJspi(body) {
+  const jspi = { wrappers: 0, entered: [] };
+  WebAssembly.Suspending = function Suspending(fn) {
+    this.fn = fn;
+  };
+  WebAssembly.promising = (fn) => {
+    jspi.wrappers += 1;
+    return async (...args) => {
+      jspi.entered.push(fn.name);
+      return fn(...args);
+    };
+  };
+  try {
+    return await body(jspi);
+  } finally {
+    delete WebAssembly.Suspending;
+    delete WebAssembly.promising;
+  }
+}
+
+/** A JSPI bindgen entry whose glue cell_tick throws the way a browser does. */
+function jspiEntry(cell, rawExports) {
+  return {
+    ...bindgenEntry(
+      cell,
+      {
+        cell_tick() {
+          throw new Error("trying to suspend without WebAssembly.promising");
+        },
+      },
+      rawExports,
+    ),
+    needsJspi: true,
+  };
+}
+
+test("a blocking cell's tick is entered through WebAssembly.promising, wrapped once", async () => {
+  // execute entered JSPI cells through promising, but ticks called cell_tick
+  // directly, so any blocking call in a tick trapped. Frame 0 ran inside
+  // cell_main and hid it.
+  await withFakeJspi(async (jspi) => {
+    const { executor } = loadCore();
+    const cell = makeMemory();
+    function cell_tick() {
+      return 256;
+    }
+    executor.modules.set("c", jspiEntry(cell, { cell_tick }));
+
+    writeLiveTickResult(cell, "frame 1");
+    assert.deepEqual(await executor.tickLive("c"), { kind: 1, content: "frame 1" });
+    writeLiveTickResult(cell, "frame 2");
+    assert.deepEqual(await executor.tickLive("c"), { kind: 1, content: "frame 2" });
+
+    assert.deepEqual(jspi.entered, ["cell_tick", "cell_tick"]);
+    assert.equal(jspi.wrappers, 1, "the promising wrapper is built once per instance");
+  });
+});
+
+test("a blocking cell's tick fails with the browser-support message where JSPI is missing", async () => {
+  const { executor } = loadCore();
+  const cell = makeMemory();
+  executor.modules.set("c", jspiEntry(cell, { cell_tick: () => 256 }));
+
+  await assert.rejects(executor.tickLive("c"), /need WebAssembly JSPI/);
+});
+
+test("a run waits for a blocking tick parked on the same instance", async () => {
+  // __stack_pointer is a single global: entering cell_main while a tick's
+  // stack is suspended would let the two stacks corrupt each other.
+  await withFakeJspi(async () => {
+    const { executor } = loadCore();
+    const cell = makeMemory();
+    writeLiveTickResult(cell, "frame");
+    cell.putU32s(800, [0, 0, 0, 0, 0, 0]);
+    const order = [];
+    let release;
+    const parked = new Promise((resolve) => (release = resolve));
+    function cell_tick() {
+      order.push("tick");
+      return parked.then(() => {
+        order.push("tick resumed");
+        return 256;
+      });
+    }
+    function cell_main() {
+      order.push("main");
+      return 800;
+    }
+    executor.modules.set("c", jspiEntry(cell, { cell_tick, cell_main }));
+
+    const tick = executor.tickLive("c");
+    await settle();
+    const run = executor.execute("c", new Uint8Array(0));
+    await settle();
+    assert.deepEqual(order, ["tick"], "the run has not entered the instance yet");
+
+    release();
+    await within(tick);
+    await within(run);
+    assert.deepEqual(order, ["tick", "tick resumed", "main"]);
+  });
+});

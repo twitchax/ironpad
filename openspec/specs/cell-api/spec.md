@@ -321,11 +321,15 @@ The system SHALL compile a cell whose source contains `.await` anywhere as an as
 - **THEN** the cell runs asynchronously and `body` is `Ok` with the response text, or `Err` with the browser's error message
 
 ### Requirement: Blocking host calls
-The system SHALL provide `blocking::sleep_ms(ms)`, `blocking::fetch_bytes(url)`, `fetch_text(url)`, and `fetch_json::<T>(url)` as plain synchronous calls that suspend the cell until the browser settles them, for cells with no `.await` on browsers with WebAssembly JSPI; a non-2xx fetch returns `Err("HTTP <status> <text>")`. (PRD-0043)
+The system SHALL provide `blocking::sleep_ms(ms)`, `blocking::fetch_bytes(url)`, `fetch_text(url)`, and `fetch_json::<T>(url)` as plain synchronous calls that suspend the cell until the browser settles them, for cells with no `.await` on browsers with WebAssembly JSPI, including from a `Simulation` or `LiveView` `tick`; a non-2xx fetch returns `Err("HTTP <status> <text>")`. (PRD-0043)
 
 #### Scenario: Sleep and fetch from synchronous code
 - **WHEN** a cell runs `blocking::sleep_ms(300.0)` then `blocking::fetch_text("/notebooks/welcome.ironpad")` with no `.await`
 - **THEN** a `Stopwatch` measures at least 250 ms across the sleep and the fetched body is longer than 100 bytes
+
+#### Scenario: Blocking inside a tick
+- **WHEN** a `LiveView` whose `tick` calls `blocking::sleep_ms(1.0)` and returns an incrementing counter runs
+- **THEN** the panel keeps updating past its first frame and its frame counter advances
 
 #### Scenario: A browser without JSPI
 - **WHEN** a cell that calls any `blocking::` function runs in a browser lacking JSPI

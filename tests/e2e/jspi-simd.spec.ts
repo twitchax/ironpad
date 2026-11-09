@@ -109,4 +109,47 @@ test.describe("JSPI blocking cells (PRD-0043)", () => {
 
     expect(jsErrors).toEqual([]);
   });
+
+  test("a LiveView whose tick blocks keeps ticking past its first frame", async ({
+    page,
+  }) => {
+    // Regression (review bug-cell-12): execute entered blocking cells through
+    // WebAssembly.promising, but ticks called cell_tick directly, so every
+    // tick after frame 0 (which runs inside cell_main) trapped and the panel
+    // froze on its first frame.
+    test.setTimeout(180_000);
+    const jsErrors = trackJsErrors(page);
+
+    const cell = await newNotebookWithCell(page);
+    await setCellSource(
+      page,
+      cell,
+      [
+        "struct Poller { n: u32 }",
+        "impl LiveView for Poller {",
+        "    fn init() -> Self { Poller { n: 0 } }",
+        "    fn tick(&mut self) -> LiveContent {",
+        "        blocking::sleep_ms(1.0);",
+        "        self.n += 1;",
+        '        LiveContent::Text(format!("polled {}", self.n))',
+        "    }",
+        "}",
+      ].join("\n")
+    );
+
+    await runCellToSuccess(page, cell);
+
+    const polled = async () => {
+      const text = (await cell.locator(".live-view-content").textContent()) ?? "";
+      return Number(text.match(/polled (\d+)/)?.[1] ?? 0);
+    };
+    const frame = async () => {
+      const text = (await cell.locator(".animation-frame-counter").textContent()) ?? "";
+      return Number(text.match(/Frame (\d+)/)?.[1] ?? 0);
+    };
+    await expect.poll(polled, { timeout: 30_000 }).toBeGreaterThan(3);
+    await expect.poll(frame, { timeout: 30_000 }).toBeGreaterThan(2);
+
+    expect(jsErrors).toEqual([]);
+  });
 });

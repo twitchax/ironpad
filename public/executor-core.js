@@ -687,6 +687,13 @@
       throw new Error(JSPI_UNSUPPORTED_MSG);
     }
 
+    // __stack_pointer is one global per instance, so two suspended stacks on
+    // it would corrupt each other: before entering, wait out a blocking tick
+    // parked mid-call (_tickBindgenWith). Its own caller reports its outcome.
+    if (entry.needsJspi && entry.tickInFlight) {
+      await entry.tickInFlight.catch(function () {});
+    }
+
     // ── Write input bytes into WASM linear memory ────────────────────────
 
     var inputPtr = 0;
@@ -955,9 +962,32 @@
     var tickFn = mod.cell_tick || wasm.cell_tick;
     if (!tickFn) throw new Error("Module does not export cell_tick");
 
+    // A blocking cell's tick enters through WebAssembly.promising, as its
+    // cell_main does (_executeBindgen): called directly, any blocking call in
+    // a tick traps. The wrapper is built once per instance (ticks run every
+    // frame), and the raw export returns a signed i32, hence `>>> 0`.
+    if (entry.needsJspi) {
+      if (!_jspiAvailable()) throw new Error(JSPI_UNSUPPORTED_MSG);
+      if (typeof wasm.cell_tick !== "function") {
+        throw new Error("JSPI cell: missing raw 'cell_tick' export");
+      }
+      if (!entry.promisingTick) entry.promisingTick = WebAssembly.promising(wasm.cell_tick);
+    }
+
     var resultPtr;
     try {
-      resultPtr = await tickFn();
+      if (entry.needsJspi) {
+        // Published so a run on this instance waits it out (_executeBindgen).
+        var inFlight = entry.promisingTick();
+        entry.tickInFlight = inFlight;
+        try {
+          resultPtr = (await inFlight) >>> 0;
+        } finally {
+          if (entry.tickInFlight === inFlight) entry.tickInFlight = null;
+        }
+      } else {
+        resultPtr = await tickFn();
+      }
     } catch (e) {
       throw new Error("WASM tick trapped: " + _describeWasmTrap(e, memory));
     }
