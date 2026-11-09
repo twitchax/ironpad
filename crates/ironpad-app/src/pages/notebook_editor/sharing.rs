@@ -128,19 +128,95 @@ pub(super) fn share_current_notebook(state: &NotebookState, toaster: Toaster) {
 
 // ── Account notebooks (PRD-0064) ────────────────────────────────────────────
 
-/// Confirm copy for Save to Account.
+/// What moving a notebook into the account costs, said by the confirm of
+/// both moves (Save to Account, Share Mutable).
 ///
-/// Gated at all because the move is lossy in a way nothing else on the page
-/// says: `deleteNotebook` takes the notebook's version-history ring
+/// Both are confirm-gated because the move is lossy in a way nothing else on
+/// the page says: `deleteNotebook` takes the notebook's version-history ring
 /// (PRD-0058, up to 30 snapshots) with it, server-side history is an explicit
 /// PRD-0064 non-goal, and Unpublish no longer hands a notebook back to
-/// `/local`. So the snapshots are gone at the moment of the click, and this
-/// is the only place a user can still decide otherwise.
+/// `/local`. So the snapshots are gone at the moment of the click, and the
+/// confirm is the only place a user can still decide otherwise. A macro
+/// rather than a const, so `concat!` can build each confirm from it.
 #[cfg(any(feature = "hydrate", test))]
-pub(super) const SAVE_TO_ACCOUNT_CONFIRM: &str = "Move this notebook into your account? \
-     The copy in this browser is deleted, and its local version history goes with it: \
-     snapshots are a local-notebook feature and do not follow it to the server. \
-     Your notebook stays private until you publish it.";
+macro_rules! move_loses_local_history {
+    () => {
+        "The copy in this browser is deleted, and its local version history goes \
+         with it: snapshots are a local-notebook feature and do not follow it to \
+         the server."
+    };
+}
+
+/// Confirm copy for Save to Account.
+#[cfg(any(feature = "hydrate", test))]
+pub(super) const SAVE_TO_ACCOUNT_CONFIRM: &str = concat!(
+    "Move this notebook into your account? ",
+    move_loses_local_history!(),
+    " Your notebook stays private until you publish it."
+);
+
+/// Confirm copy for Share Mutable: the same move, plus a publish.
+#[cfg(any(feature = "hydrate", test))]
+pub(super) const SHARE_MUTABLE_CONFIRM: &str = concat!(
+    "Publish this notebook at a link anyone can open? It moves into your account. ",
+    move_loses_local_history!()
+);
+
+/// The toast after a move into the account: the flow's own success, or, when
+/// the local copy survived its delete, the leftover-copy warning instead.
+#[cfg(any(feature = "hydrate", test))]
+fn move_outcome(
+    local_copy_survived: bool,
+    moved_title: &'static str,
+    moved_body: String,
+) -> (ToastIntent, &'static str, String) {
+    if local_copy_survived {
+        (
+            ToastIntent::Info,
+            "Saved, With a Leftover Copy",
+            "The notebook is in your account, but the copy in this browser could \
+             not be removed. Delete it from the home page so you do not end up \
+             editing two of them."
+                .to_string(),
+        )
+    } else {
+        (ToastIntent::Success, moved_title, moved_body)
+    }
+}
+
+/// The second half of both moves into the account, once the server holds the
+/// notebook: delete the local copy, check that the delete took, and
+/// hard-navigate to `/mutable/{share_id}` (the URL and storage class both
+/// change) with the outcome toast riding sessionStorage across it.
+///
+/// Move, never copy, but only claim the move happened: a delete that fails
+/// leaves a second, silently diverging copy of the notebook on the home
+/// page, which is exactly the reconciliation problem PRD-0054 removed, so it
+/// is named rather than swallowed. (`delete_notebook` logs and returns
+/// nothing, so the surviving record is the only evidence.) The caller halts
+/// persistence first, or a late save would write the record straight back.
+#[cfg(feature = "hydrate")]
+async fn finish_move_to_account(
+    uuid: &str,
+    share_id: &str,
+    moved_title: &'static str,
+    moved_body: String,
+) {
+    crate::storage::client::delete_notebook(uuid).await;
+    // Only a clean "no such record" proves the delete: a read that fails
+    // says nothing, so it counts as a survivor.
+    let local_copy_survived = !matches!(crate::storage::client::get_notebook(uuid).await, Ok(None));
+    if local_copy_survived {
+        leptos::logging::warn!(
+            "local notebook {uuid} survived the delete after moving it to the account"
+        );
+    }
+    let (intent, title, body) = move_outcome(local_copy_survived, moved_title, moved_body);
+    Toaster::toast_after_reload(intent, title, body, 6);
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().set_href(&format!("/mutable/{share_id}"));
+    }
+}
 
 /// Save to Account (PRD-0064): upload the current notebook into the
 /// signed-in user's account, DELETE the local copy, and hard-navigate to
@@ -178,47 +254,16 @@ pub(super) fn save_to_account_current_notebook(state: &NotebookState, toaster: T
         };
         match crate::server_fns::save_notebook_to_account(json).await {
             Ok(share_id) => {
-                // Move, never copy — but only claim the move happened. A
-                // delete that fails leaves a second, silently diverging copy
-                // of this notebook on the home page, which is exactly the
-                // reconciliation problem PRD-0054 removed, so it is named
-                // rather than swallowed. (`delete_notebook` logs and returns
-                // nothing, so the surviving record is the only evidence.)
-                //
                 // Halted first: a save debounce firing after the delete
                 // would write the record straight back.
                 state.halt_persistence();
-                crate::storage::client::delete_notebook(&uuid).await;
-                // Only a clean "no such record" proves the delete: a read
-                // that fails says nothing, so it counts as a survivor.
-                let local_copy_survived =
-                    !matches!(crate::storage::client::get_notebook(&uuid).await, Ok(None));
-                if local_copy_survived {
-                    leptos::logging::warn!(
-                        "local notebook {uuid} survived the delete after Save to Account"
-                    );
-                }
-                // Hard navigation (the URL and storage class both change);
-                // the toast rides sessionStorage across it.
-                let (intent, title, body) = if local_copy_survived {
-                    (
-                        ToastIntent::Info,
-                        "Saved, With a Leftover Copy",
-                        "The notebook is in your account, but the copy in this browser \
-                         could not be removed. Delete it from the home page so you do \
-                         not end up editing two of them.",
-                    )
-                } else {
-                    (
-                        ToastIntent::Success,
-                        "Saved to Your Account",
-                        "Only you can see it until you publish it.",
-                    )
-                };
-                Toaster::toast_after_reload(intent, title, body, 6);
-                if let Some(window) = web_sys::window() {
-                    let _ = window.location().set_href(&format!("/mutable/{share_id}"));
-                }
+                finish_move_to_account(
+                    &uuid,
+                    &share_id,
+                    "Saved to Your Account",
+                    "Only you can see it until you publish it.".to_string(),
+                )
+                .await;
             }
             Err(e) => toaster.toast(ToastIntent::Error, "Save Failed", format!("{e}"), 6),
         }
@@ -227,12 +272,18 @@ pub(super) fn save_to_account_current_notebook(state: &NotebookState, toaster: T
 
 // ── Mutable shares (PRD-0049 / PRD-0054) ────────────────────────────────────
 
-/// Convert the current notebook into a mutable share (PRD-0054): create the
-/// share server-side under the signed-in account, DELETE the local copy (the
-/// notebook now lives at its public URL), and hard-navigate to
-/// `/mutable/{id}`, which mounts the `ServerDraft` editor.
+/// Convert the current notebook into a mutable share (PRD-0054): confirm,
+/// create the share server-side under the signed-in account, DELETE the
+/// local copy (the notebook now lives at its public URL), and hard-navigate
+/// to `/mutable/{id}`, which mounts the `ServerDraft` editor. The same move
+/// as Save to Account, with the same confirm about what it costs.
 pub(super) fn share_mutable_current_notebook(state: &NotebookState, toaster: Toaster) {
     let state = *state;
+    // The confirm is browser-only; this fn also compiles for the server.
+    #[cfg(feature = "hydrate")]
+    if !crate::components::dialog::confirm(SHARE_MUTABLE_CONFIRM) {
+        return;
+    }
     // Same immediate ack as Share Immutable.
     toaster.toast(
         ToastIntent::Info,
@@ -259,20 +310,9 @@ pub(super) fn share_mutable_current_notebook(state: &NotebookState, toaster: Toa
                     // would only drift (PRD-0054). Halted first, so a late
                     // save cannot write it back.
                     state.halt_persistence();
-                    crate::storage::client::delete_notebook(&uuid).await;
                     let url = format!("{}/mutable/{share_id}", window_origin());
                     copy_to_clipboard(&url).await;
-                    // Hard navigation (the URL and storage class both change);
-                    // the toast rides sessionStorage across it.
-                    Toaster::toast_after_reload(
-                        ToastIntent::Success,
-                        "Published! Link Copied",
-                        url,
-                        6,
-                    );
-                    if let Some(window) = web_sys::window() {
-                        let _ = window.location().set_href(&format!("/mutable/{share_id}"));
-                    }
+                    finish_move_to_account(&uuid, &share_id, "Published! Link Copied", url).await;
                 }
                 Err(e) => toaster.toast(ToastIntent::Error, "Share Failed", format!("{e}"), 5),
             }
@@ -695,9 +735,42 @@ mod tests {
         );
     }
 
+    /// Share Mutable deletes the same history ring through the same
+    /// `deleteNotebook`, so its confirm has to say so too.
+    #[test]
+    fn share_mutable_confirm_names_the_history_loss() {
+        let copy = SHARE_MUTABLE_CONFIRM.to_ascii_lowercase();
+        assert!(copy.contains("version history"), "{copy}");
+        assert!(copy.contains("deleted"), "{copy}");
+        assert!(copy.contains("publish"), "{copy}");
+    }
+
     /// User-visible strings carry no em-dashes (repo-wide style pass).
     #[test]
     fn save_to_account_confirm_has_no_em_dash() {
         assert!(!SAVE_TO_ACCOUNT_CONFIRM.contains('—'));
+        assert!(!SHARE_MUTABLE_CONFIRM.contains('—'));
+    }
+
+    #[test]
+    fn a_move_toasts_its_own_success() {
+        let (intent, title, body) = move_outcome(
+            false,
+            "Published! Link Copied",
+            "https://x/mutable/1".into(),
+        );
+        assert_eq!(intent, ToastIntent::Success);
+        assert_eq!(title, "Published! Link Copied");
+        assert_eq!(body, "https://x/mutable/1");
+    }
+
+    #[test]
+    fn a_surviving_local_copy_is_named_whichever_move_left_it() {
+        for title in ["Saved to Your Account", "Published! Link Copied"] {
+            let (intent, shown, body) = move_outcome(true, title, "unused".into());
+            assert_eq!(intent, ToastIntent::Info);
+            assert_eq!(shown, "Saved, With a Leftover Copy");
+            assert!(body.contains("home page"), "{body}");
+        }
     }
 }

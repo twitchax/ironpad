@@ -32,10 +32,10 @@ For a signed-in user, the local editor's notebook menu SHALL offer "Save to Acco
 - **THEN** no "History" item is listed, since version history is a local-notebook feature that does not follow the notebook to the server
 
 ### Requirement: Share Mutable
-The local editor's menu SHALL offer "Share Mutable", which saves the notebook into the signed-in user's account and publishes it in one act, deletes the local copy, copies the `/mutable/{id}` URL to the clipboard, and hard-navigates there. If the publish half fails, the server SHALL keep nothing and the local copy SHALL remain. (PRD-0049, PRD-0054, PRD-0056, PRD-0064)
+The local editor's menu SHALL offer "Share Mutable", which after a confirm (saying the browser copy and its local version history are deleted) saves the notebook into the signed-in user's account and publishes it in one act, deletes the local copy, copies the `/mutable/{id}` URL to the clipboard, and hard-navigates there; like Save to Account, a local copy that survives the delete is named by a "Saved, With a Leftover Copy" toast. If the publish half fails, the server SHALL keep nothing and the local copy SHALL remain. (PRD-0049, PRD-0054, PRD-0056, PRD-0064)
 
 #### Scenario: Publish from local
-- **WHEN** a signed-in user picks Share Mutable
+- **WHEN** a signed-in user picks Share Mutable and accepts the confirm
 - **THEN** a "Publishing…" toast appears, then after navigation a "Published! Link Copied" toast with the URL
 - **AND** the editor's button reads "Published" and is disabled
 
@@ -43,8 +43,12 @@ The local editor's menu SHALL offer "Share Mutable", which saves the notebook in
 - **WHEN** a user runs a cell and then picks Share Mutable
 - **THEN** the published copy carries that cell's output panels as its saved output, subject to the 256 KiB per-cell limit
 
+#### Scenario: The confirm names the cost
+- **WHEN** a user picks Share Mutable
+- **THEN** the confirm says the browser copy is deleted and that its local version history does not follow it
+
 #### Scenario: Anonymous attempt
-- **WHEN** an anonymous user picks Share Mutable
+- **WHEN** an anonymous user picks Share Mutable and accepts the confirm
 - **THEN** a toast says "sign in with GitHub to save or publish notebooks" and the local notebook is untouched
 
 #### Scenario: Publish failure rolls back

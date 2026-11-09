@@ -100,6 +100,8 @@ test.describe("Accounts (PRD-0053)", () => {
     // Anonymous: the Share Mutable action exists but the server refuses it
     // with a toast that says what to do.
     await createNotebook(page);
+    // Accept the move confirm; an auto-dismissed one never reaches the server.
+    page.once("dialog", (d) => void d.accept());
     await menuClick(page, "Share Mutable");
     await expect(
       page.locator(".ironpad-toast-body", { hasText: "sign in" }),

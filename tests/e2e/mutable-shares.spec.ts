@@ -634,4 +634,18 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await page.locator("button", { hasText: "New Notebook" }).click();
     await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 15_000 });
   });
+
+  test("Share Mutable confirms, naming the local history it deletes", async ({
+    page,
+  }) => {
+    // Save to Account confirmed this loss; Share Mutable deleted the same
+    // history ring with no warning at all.
+    test.setTimeout(150_000);
+    await loginTestUser(page, "cora");
+    await createNotebook(page);
+    await renameNotebook(page, "Confirm Share");
+    let message = "";
+    await shareMutable(page, { onConfirm: (m) => (message = m) });
+    expect(message.toLowerCase()).toContain("version history");
+  });
 });

@@ -21,8 +21,19 @@ export async function expectOwnerEditor(page: Page): Promise<void> {
 /**
  * Share Mutable: converts, deletes the local copy, and hard-navigates to
  * /mutable/{id} where the owner's editor mounts. Returns the minted id.
+ *
+ * Confirm-gated like Save to Account, for the same reason: the local copy
+ * and its version history go. Playwright AUTO-DISMISSES an unhandled
+ * dialog, which would turn every call here into a no-op.
  */
-export async function shareMutable(page: Page): Promise<string> {
+export async function shareMutable(
+  page: Page,
+  opts: { onConfirm?: (message: string) => void } = {},
+): Promise<string> {
+  page.once("dialog", (d) => {
+    opts.onConfirm?.(d.message());
+    void d.accept();
+  });
   await menuClick(page, "Share Mutable");
   await expect(page).toHaveURL(/\/mutable\/[a-f0-9]{16}/, { timeout: 30_000 });
   const shareId = page.url().match(/\/mutable\/([a-f0-9]{16})/)![1];
