@@ -467,8 +467,11 @@ test.describe.serial("Agent Session", () => {
       timeout: 10_000,
     });
     await codeToggle.click();
+    // `collapsed: false` is the default, which the cell's JSON omits.
     await expect
-      .poll(() => cliExec(["cells", "get", cellId]).collapsed, { timeout: 10_000 })
+      .poll(() => cliExec(["cells", "get", cellId]).collapsed ?? false, {
+        timeout: 10_000,
+      })
       .toBe(false);
   });
 
