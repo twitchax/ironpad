@@ -849,54 +849,67 @@ impl Db {
         .await
     }
 
-    /// Promote the draft to published (a Push): published := draft, manifest
-    /// replaced, `pushed_at` bumped, draft cleared — one statement, so a
-    /// concurrent autosave either lands before (and is promoted) or after
-    /// (and stays a fresh draft). No-op when no draft exists.
+    /// Promote the draft to published (a Push): published := `expected_draft`,
+    /// manifest replaced, `pushed_at` bumped. Returns whether a row matched.
     ///
-    /// The WHERE guard makes this promote-or-nothing; the caller decides "was
-    /// there anything to push" via [`get_share_for_edit`](Self::get_share_for_edit)
-    /// beforehand (a benign race, last-write-wins by design, PRD-0054).
+    /// Publishes exactly the JSON the caller snapshotted, never "whatever
+    /// draft is newest" (review bug-db-auth-4). The manifest maps cell ids to
+    /// blobs built from `expected_draft`, and readers run a manifest entry
+    /// without comparing it to the source they display, so publishing a newer
+    /// autosave under it would show one program and run another. An autosave
+    /// that landed after the caller's read therefore stays a fresh draft: the
+    /// draft slot is cleared only when it still holds `expected_draft`.
     ///
+    /// `draft_bytes` is assigned before `draft_json` so its condition reads
+    /// the draft as it was, whatever order `SurrealDB` evaluates the
+    /// assignments in.
+    ///
+    /// The WHERE guard makes this promote-or-nothing: `false` means there was
+    /// no draft (a concurrent Discard, or a Delete), so nothing was published.
     /// A FIRST publish (PRD-0064: `notebook_json` and `pushed_at` still NONE
-    /// on an account notebook) is the same statement, not a special case:
-    /// `draft_json ?? notebook_json` takes the draft, and `pushed_at` moves
-    /// from NONE to now.
+    /// on an account notebook) is the same statement, not a special case.
     ///
-    /// `published_bytes` is the BYTE length of the draft the caller read
-    /// (every other path stores Rust `.len()` bytes; the in-DB
-    /// `string::len` this replaced counted CHARS, silently undercounting
-    /// multibyte notebooks). If an autosave lands between the caller's read
-    /// and this promote, the recorded size lags by one autosave — the same
-    /// last-write-wins drift as the content itself, corrected on next push.
+    /// `bytes` is the BYTE length of `expected_draft` (every other path
+    /// stores Rust `.len()` bytes; an in-DB `string::len` counts CHARS and
+    /// silently undercounts multibyte notebooks).
     #[tracing::instrument(name = "db_promote_draft", level = "info", skip_all, fields(id = %id))]
     pub async fn promote_draft(
         &self,
         id: &str,
+        expected_draft: &str,
         manifest_json: Option<String>,
-        published_bytes: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         with_conflict_retry(|| async {
-            self.inner
+            #[derive(SurrealValue)]
+            struct Row {
+                id: String,
+            }
+            let rows: Vec<Row> = self
+                .inner
                 .query(
                     "UPDATE type::record('mutable_share', $id) SET \
-                        notebook_json = draft_json ?? notebook_json, \
+                        notebook_json = $nb, \
                         manifest_json = $mf, \
                         bytes = $bytes, \
                         pushed_at = $now, \
-                        draft_json = NONE, \
-                        draft_bytes = NONE \
-                     WHERE draft_json != NONE",
+                        draft_bytes = IF draft_json = $nb THEN NONE ELSE draft_bytes END, \
+                        draft_json = IF draft_json = $nb THEN NONE ELSE draft_json END \
+                     WHERE draft_json != NONE \
+                     RETURN record::id(id) AS id",
                 )
                 .bind(("id", id.to_string()))
+                .bind(("nb", expected_draft.to_string()))
                 .bind(("mf", manifest_json.clone()))
-                .bind(("bytes", i64::try_from(published_bytes).unwrap_or(i64::MAX)))
+                .bind((
+                    "bytes",
+                    i64::try_from(expected_draft.len()).unwrap_or(i64::MAX),
+                ))
                 .bind(("now", now_rfc3339()))
                 .await
                 .context("draft promote failed")?
-                .check()
+                .take(0)
                 .context("draft promote returned an error")?;
-            Ok(())
+            Ok(!rows.is_empty())
         })
         .await
     }
@@ -1361,9 +1374,10 @@ mod tests {
             .create_account_notebook(owner_github_id, notebook_json)
             .await
             .unwrap();
-        db.promote_draft(&id, manifest_json, notebook_json.len() as u64)
+        assert!(db
+            .promote_draft(&id, notebook_json, manifest_json)
             .await
-            .unwrap();
+            .unwrap());
         id
     }
 
@@ -1577,13 +1591,9 @@ mod tests {
         // edit lands in the draft slot and a promote publishes it.
         let pushed = "{\"title\":\"nb2\"}";
         db.save_draft(&id, pushed).await.unwrap();
-        db.promote_draft(
-            &id,
-            Some("{\"version\":1}".to_string()),
-            pushed.len() as u64,
-        )
-        .await
-        .unwrap();
+        db.promote_draft(&id, pushed, Some("{\"version\":1}".to_string()))
+            .await
+            .unwrap();
         let row = db.get_mutable_share(&id).await.unwrap().unwrap();
         assert_eq!(row.notebook_json.as_deref(), Some(pushed));
         assert_eq!(row.manifest_json.as_deref(), Some("{\"version\":1}"));
@@ -1666,7 +1676,9 @@ mod tests {
         db.save_draft(&a, "12345678901234567890").await.unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 35);
         // ...and both promote and discard return it to published-only.
-        db.promote_draft(&a, None, 20).await.unwrap();
+        db.promote_draft(&a, "12345678901234567890", None)
+            .await
+            .unwrap();
         assert_eq!(db.total_mutable_bytes().await.unwrap(), 30);
         db.save_draft(&b, "xx").await.unwrap();
         assert!(db.discard_draft(&b).await.unwrap());
@@ -1713,7 +1725,7 @@ mod tests {
         );
 
         // Promote: published := draft, manifest replaced, clean again.
-        db.promote_draft(&id, Some("{\"m\":1}".into()), 7)
+        db.promote_draft(&id, "{\"v\":2}", Some("{\"m\":1}".into()))
             .await
             .unwrap();
         let reader = db.get_mutable_share(&id).await.unwrap().unwrap();
@@ -1722,7 +1734,7 @@ mod tests {
         assert!(!db.get_share_for_edit(&id).await.unwrap().unwrap().dirty);
 
         // Promote with no draft: a no-op (published and manifest untouched).
-        db.promote_draft(&id, None, 0).await.unwrap();
+        assert!(!db.promote_draft(&id, "{\"v\":2}", None).await.unwrap());
         let reader = db.get_mutable_share(&id).await.unwrap().unwrap();
         assert_eq!(reader.notebook_json.as_deref(), Some("{\"v\":2}"));
         assert_eq!(reader.manifest_json.as_deref(), Some("{\"m\":1}"));
@@ -1870,13 +1882,74 @@ mod tests {
         assert!(!edit.published);
     }
 
+    /// A Push publishes exactly the draft it snapshotted (review
+    /// bug-db-auth-4). The manifest maps cell ids to blobs built from THAT
+    /// copy, so publishing an autosave that landed during the snapshot would
+    /// show readers one program and run another. The newer autosave stays a
+    /// draft for the next Push.
+    #[tokio::test]
+    async fn promote_publishes_the_snapshotted_copy_when_an_autosave_landed_first() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+        let id = published_share(&db, "1", "{\"v\":0}", None).await;
+
+        let snapshotted = "{\"v\":1}";
+        let newer = "{\"v\":22}";
+        db.save_draft(&id, snapshotted).await.unwrap();
+        db.save_draft(&id, newer).await.unwrap(); // lands mid-push
+
+        assert!(db
+            .promote_draft(&id, snapshotted, Some("{\"m\":1}".into()))
+            .await
+            .unwrap());
+
+        let row = db.get_mutable_share(&id).await.unwrap().unwrap();
+        assert_eq!(row.notebook_json.as_deref(), Some(snapshotted));
+        assert_eq!(row.manifest_json.as_deref(), Some("{\"m\":1}"));
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(edit.dirty, "the newer autosave is still a draft");
+        assert_eq!(edit.notebook_json, newer);
+        assert_eq!(
+            db.total_mutable_bytes().await.unwrap(),
+            (snapshotted.len() + newer.len()) as u64,
+            "bytes is the published copy's size and draft_bytes the draft's"
+        );
+    }
+
+    /// The ordinary Push clears the draft; a first publish of an account
+    /// notebook is the same statement; a promote whose draft was discarded
+    /// first publishes nothing and says so.
+    #[tokio::test]
+    async fn promote_clears_a_matching_draft_and_reports_a_missing_one() {
+        let (_dir, db) = test_db().await;
+        db.upsert_user("1", "author", "").await.unwrap();
+
+        let id = db.create_account_notebook("1", "{\"v\":1}").await.unwrap();
+        assert!(db.promote_draft(&id, "{\"v\":1}", None).await.unwrap());
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(
+            edit.published && !edit.dirty,
+            "a first publish leaves it clean"
+        );
+        assert_eq!(db.total_mutable_bytes().await.unwrap(), 7);
+
+        db.save_draft(&id, "{\"v\":2}").await.unwrap();
+        assert!(db.discard_draft(&id).await.unwrap());
+        assert!(
+            !db.promote_draft(&id, "{\"v\":2}", None).await.unwrap(),
+            "nothing to promote once the draft was discarded"
+        );
+        let row = db.get_mutable_share(&id).await.unwrap().unwrap();
+        assert_eq!(row.notebook_json.as_deref(), Some("{\"v\":1}"));
+    }
+
     #[tokio::test]
     async fn first_publish_promotes_the_draft_and_sets_pushed_at_from_none() {
         let (_dir, db) = test_db().await;
         db.upsert_user("1", "author", "").await.unwrap();
         let id = db.create_account_notebook("1", "{\"v\":1}").await.unwrap();
 
-        db.promote_draft(&id, Some("{\"m\":1}".to_string()), 7)
+        db.promote_draft(&id, "{\"v\":1}", Some("{\"m\":1}".to_string()))
             .await
             .unwrap();
 
@@ -1897,7 +1970,7 @@ mod tests {
         // ...and the same id round-trips back out of published and in again.
         db.unpublish_share(&id).await.unwrap();
         assert!(!db.get_share_for_edit(&id).await.unwrap().unwrap().published);
-        db.promote_draft(&id, None, 7).await.unwrap();
+        assert!(db.promote_draft(&id, "{\"v\":1}", None).await.unwrap());
         let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
         assert!(edit.published);
         assert_eq!(edit.notebook_json, "{\"v\":1}");

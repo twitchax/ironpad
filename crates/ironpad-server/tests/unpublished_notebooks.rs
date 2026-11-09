@@ -204,7 +204,7 @@ async fn an_unpublished_account_notebook_is_invisible_on_every_anonymous_surface
     // Positive control: publish it, and the same requests start working.
     // (`promote_draft` is what `push_mutable` calls once the owner grant and
     // the blob snapshot are settled; neither is under test here.)
-    db.promote_draft(&id, None, json.len() as u64)
+    db.promote_draft(&id, &json, None)
         .await
         .expect("owner publishes");
 

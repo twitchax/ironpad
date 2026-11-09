@@ -182,6 +182,11 @@ Before promoting, Publish and Push SHALL flush in-progress cell edits and durabl
 - **WHEN** the draft save is refused because the notebook is over 4 MiB, is no longer the owner's, or the owner is signed out, and the owner clicks Push
 - **THEN** the "Push Failed" toast names that cause and its remedy: remove cells or large outputs, use Download .ironpad to keep the text, or sign in again from a new tab
 
+#### Scenario: An autosave lands during the Push
+- **WHEN** a newer draft is saved (by a second tab, or by typing on) after the Push read the draft and before it promoted it
+- **THEN** the published copy is exactly the draft the Push snapshotted its blob manifest from
+- **AND** the newer save remains the draft, still waiting for the next Push
+
 ### Requirement: Blob snapshot on publish
 Each Publish or Push SHALL copy the compile-cache hits of the promoted draft into the shared `/share-blobs/` store and SHALL replace the notebook's blob manifest with exactly those entries; draft autosaves do no blob work. A notebook whose snapshot finds no hits or fails SHALL still publish, with no manifest. (PRD-0049, PRD-0054)
 

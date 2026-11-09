@@ -1682,18 +1682,19 @@ pub(crate) async fn push_mutable_core(
     let notebook: IronpadNotebook = serde_json::from_str(&edit.notebook_json)
         .map_err(|e| anyhow::anyhow!("invalid stored draft: {e}"))?;
     let manifest = snapshot_mutable_manifest(data_dir, cache_dir, &notebook, cell_type_tags).await;
-    // A concurrent autosave between the read and this promote is fine: the
-    // promote takes whatever draft is newest (last-write-wins, PRD-0054);
-    // the recorded byte size then lags by the same one autosave.
-    db.promote_draft(
-        id,
-        manifest_to_json(manifest),
-        edit.notebook_json.len() as u64,
-    )
-    .await?;
+    // Publish exactly the copy that was snapshotted (review bug-db-auth-4):
+    // the manifest maps cell ids to blobs built from it, and readers run a
+    // manifest entry without comparing it to the source they display. An
+    // autosave that landed during the snapshot stays a fresh draft. `false`
+    // means the draft was discarded or the notebook deleted meanwhile.
+    let promoted = db
+        .promote_draft(id, &edit.notebook_json, manifest_to_json(manifest))
+        .await?;
 
-    tracing::info!(id = %id, "mutable share pushed");
-    Ok(true)
+    if promoted {
+        tracing::info!(id = %id, "mutable share pushed");
+    }
+    Ok(promoted)
 }
 
 /// The ONE "is there a reader-facing copy" predicate (PRD-0064). A share
@@ -3918,7 +3919,7 @@ mod tests {
             .create_account_notebook(owner_github_id, notebook_json)
             .await
             .unwrap();
-        db.promote_draft(&id, Some(manifest), notebook_json.len() as u64)
+        db.promote_draft(&id, notebook_json, Some(manifest))
             .await
             .unwrap();
         id
