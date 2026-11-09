@@ -127,7 +127,7 @@ The system SHALL size every Monaco editor in the app to its content, no shorter 
 - **THEN** the first editor is about 60 pixels tall and the second stops at 600 pixels and scrolls
 
 ### Requirement: Markdown cells
-The system SHALL render a markdown cell as formatted HTML (tables, strikethrough, task lists, math spans, fenced code with its language class) with raw HTML's active parts removed, switch it to a markdown editor on double-click, save what is typed there one second after typing stops (as a code cell's editor does), and close the editor on Escape, on blur, on Ctrl+S and on entering Preview. (PRD-0032)
+The system SHALL render a markdown cell as formatted HTML (tables, strikethrough, task lists, math spans, fenced code with its language class) with raw HTML's active parts removed, switch it to a markdown editor on double-click, save what is typed there one second after typing stops (as a code cell's editor does), and close the editor on Escape, on a click outside it, on Ctrl+S and on entering Preview; Monaco's own find widget, command palette and context menu open inside the editor and do not close it. (PRD-0032)
 
 #### Scenario: Editing a markdown cell
 - **WHEN** the author double-clicks a rendered markdown cell
@@ -137,6 +137,11 @@ The system SHALL render a markdown cell as formatted HTML (tables, strikethrough
 #### Scenario: Typing saves with the editor still open
 - **WHEN** the author types into an open markdown editor and waits two seconds without closing it
 - **THEN** the stored notebook holds the typed text, and after a reload the cell shows it rendered
+
+#### Scenario: Find inside a markdown editor
+- **WHEN** the author presses Ctrl+F in an open markdown editor
+- **THEN** the find widget opens and the editor stays open
+- **AND** the first Escape closes the find widget, the second closes the editor, and the cell keeps its text
 
 #### Scenario: Preview commits an open edit
 - **WHEN** a markdown cell is open in its editor and the author clicks Preview

@@ -44,6 +44,17 @@ mod js {
             callback: &js_sys::Function,
         );
 
+        /// [`add_action`], firing only while the Monaco context-key
+        /// expression `precondition` holds.
+        #[wasm_bindgen(js_namespace = IronpadMonaco, js_name = "addAction")]
+        pub fn add_action_when(
+            id: f64,
+            action_id: &str,
+            keybindings: &js_sys::Array,
+            callback: &js_sys::Function,
+            precondition: &str,
+        );
+
         /// Focus the editor identified by `id`.
         #[wasm_bindgen(js_namespace = IronpadMonaco)]
         pub fn focus(id: f64);
@@ -128,11 +139,30 @@ impl MonacoEditorHandle {
     #[cfg(feature = "hydrate")]
     pub fn add_action(&self, action_id: &str, keybindings: &[i32], callback: &js_sys::Function) {
         if let Some(id) = self.editor_id.get_untracked() {
-            let kb_array = js_sys::Array::new();
-            for &kb in keybindings {
-                kb_array.push(&wasm_bindgen::JsValue::from(kb));
-            }
-            js::add_action(id, action_id, &kb_array, callback);
+            js::add_action(id, action_id, &keybinding_array(keybindings), callback);
+        }
+    }
+
+    /// [`Self::add_action`], firing only while the Monaco context-key
+    /// expression `precondition` holds (e.g. `"!findWidgetVisible"`, so a
+    /// binding leaves a key to Monaco's own widget while it is open).
+    /// Only available in the `hydrate` (client-side) build.
+    #[cfg(feature = "hydrate")]
+    pub fn add_action_when(
+        &self,
+        action_id: &str,
+        keybindings: &[i32],
+        precondition: &str,
+        callback: &js_sys::Function,
+    ) {
+        if let Some(id) = self.editor_id.get_untracked() {
+            js::add_action_when(
+                id,
+                action_id,
+                &keybinding_array(keybindings),
+                callback,
+                precondition,
+            );
         }
     }
 
@@ -184,6 +214,15 @@ impl MonacoEditorHandle {
             js::set_cell_context(id, context);
         }
     }
+}
+
+/// Monaco's numeric keybindings as the JS array `addAction` takes.
+#[cfg(feature = "hydrate")]
+fn keybinding_array(keybindings: &[i32]) -> js_sys::Array {
+    keybindings
+        .iter()
+        .map(|&kb| wasm_bindgen::JsValue::from(kb))
+        .collect()
 }
 
 // ── Component ───────────────────────────────────────────────────────────────

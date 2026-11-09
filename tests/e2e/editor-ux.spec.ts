@@ -464,4 +464,133 @@ test.describe("Markdown editor", () => {
       page.locator(".ironpad-markdown-cell-preview").first(),
     ).toContainText("MD_SAVED_5", { timeout: 15_000 });
   });
+
+  // Regression (review bug-components-1): every focusout from the editor's
+  // wrapper committed, including focus moving INTO a Monaco widget, and the
+  // re-entrant commit fired by disposal wrote '' over the cell. Ctrl+F, F1
+  // and right-click each closed the editor; the find and command palette
+  // cases also erased the cell, and the debounce persisted the erase.
+  test("Ctrl+F opens find in a markdown editor; Escape closes find, then the editor", async ({
+    page,
+  }) => {
+    const id = await openSeeded(page, [{ source: "# original" }]);
+    const md = page.locator(".ironpad-cell-card").first();
+    await openMarkdown(md);
+    await typeAtEnd(page, md, " FIND_KEEP");
+
+    await page.keyboard.press("Control+f");
+    await expect(md.locator(".find-widget.visible")).toBeVisible();
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(1);
+
+    // The first Escape belongs to find, not to the cell.
+    await page.keyboard.press("Escape");
+    await expect(md.locator(".find-widget.visible")).toHaveCount(0);
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(1);
+
+    await page.keyboard.press("Escape");
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
+    await expect(md.locator(".ironpad-markdown-cell-preview")).toContainText(
+      "FIND_KEEP",
+    );
+    await expect
+      .poll(async () => (await storedSources(page, id))[0], { timeout: 5_000 })
+      .toContain("FIND_KEEP");
+
+    await page.reload();
+    await expect(
+      page.locator(".ironpad-markdown-cell-preview").first(),
+    ).toContainText("FIND_KEEP", { timeout: 15_000 });
+  });
+
+  test("clicking away from an open find widget keeps the text", async ({
+    page,
+  }) => {
+    const id = await openSeeded(page, [{ source: "# original" }]);
+    const md = page.locator(".ironpad-cell-card").first();
+    await openMarkdown(md);
+    await typeAtEnd(page, md, " FIND_AWAY");
+    await page.keyboard.press("Control+f");
+    await expect(md.locator(".find-widget.visible")).toBeVisible();
+
+    await page.locator(".ironpad-status-bar").click();
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
+    await expect(md.locator(".ironpad-markdown-cell-preview")).toContainText(
+      "FIND_AWAY",
+    );
+    await expect
+      .poll(async () => (await storedSources(page, id))[0], { timeout: 5_000 })
+      .toContain("FIND_AWAY");
+  });
+
+  test("the F1 command palette does not erase the cell", async ({ page }) => {
+    const id = await openSeeded(page, [{ source: "# original" }]);
+    const md = page.locator(".ironpad-cell-card").first();
+    await openMarkdown(md);
+    await typeAtEnd(page, md, " PALETTE_KEEP");
+
+    await page.keyboard.press("F1");
+    await expect(md.locator(".quick-input-widget")).toBeVisible();
+
+    await page.locator(".ironpad-status-bar").click();
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
+    await expect(md.locator(".ironpad-markdown-cell-preview")).toContainText(
+      "PALETTE_KEEP",
+    );
+    await expect
+      .poll(async () => (await storedSources(page, id))[0], { timeout: 5_000 })
+      .toContain("PALETTE_KEEP");
+  });
+
+  test("right-clicking a markdown editor leaves it open", async ({ page }) => {
+    await openSeeded(page, [{ source: "# original" }]);
+    const md = page.locator(".ironpad-cell-card").first();
+    await openMarkdown(md);
+    const lines = md.locator(".ironpad-markdown-cell-editor .view-lines");
+    await lines.click();
+    await lines.click({ button: "right" });
+    await page.waitForTimeout(500);
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(1);
+  });
+
+  // Guards the scoping: focus landing in ANOTHER cell's Monaco is a click
+  // away from this one, so a selector that matched any `.monaco-editor`
+  // would leave this editor open forever.
+  test("clicking into another cell's editor closes the markdown editor", async ({
+    page,
+  }) => {
+    await openSeeded(page, [
+      { source: "# original" },
+      { type: "Code", source: "42" },
+    ]);
+    const md = page.locator(".ironpad-cell-card").first();
+    const code = page.locator(".ironpad-cell-card").nth(1);
+    await expect(code.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await openMarkdown(md);
+    await typeAtEnd(page, md, " AWAY_KEEP");
+
+    await code.locator(".view-lines").first().click();
+    await expect(page.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
+    await expect(md.locator(".ironpad-markdown-cell-preview")).toContainText(
+      "AWAY_KEEP",
+    );
+  });
+
+  test("Escape with no widget open closes the editor and keeps the text", async ({
+    page,
+  }) => {
+    const id = await openSeeded(page, [{ source: "# original" }]);
+    const md = page.locator(".ironpad-cell-card").first();
+    await openMarkdown(md);
+    await typeAtEnd(page, md, " ESC_KEEP");
+    await page.keyboard.press("Escape");
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
+    await expect(md.locator(".ironpad-markdown-cell-preview")).toContainText(
+      "ESC_KEEP",
+    );
+    await expect
+      .poll(async () => (await storedSources(page, id))[0], { timeout: 5_000 })
+      .toContain("ESC_KEEP");
+  });
 });

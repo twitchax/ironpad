@@ -60,6 +60,11 @@ pub fn MarkdownCell(
     // Handle for the Monaco editor instance.
     let editor_handle: RwSignal<Option<MonacoEditorHandle>> = RwSignal::new(None);
 
+    // The editor's wrapper. Monaco's find widget (Ctrl+F), command palette
+    // (F1) and context menu all take focus inside it, so focus moving within
+    // it is not a click away.
+    let wrapper = NodeRef::<leptos::html::Div>::new();
+
     // Switch to edit mode on double-click.
     let on_dblclick = move |_| {
         editing.set(true);
@@ -105,8 +110,10 @@ pub fn MarkdownCell(
             // disposed) and on unmount, rather than leaking one per edit-entry.
             StoredValue::new_local(cb);
 
-            // Monaco keybinding: Escape = 9 (KeyCode.Escape).
-            handle.add_action("ironpad.markdown.escape", &[9], &f);
+            // Monaco keybinding: Escape = 9 (KeyCode.Escape). Not while find
+            // is open: a dynamic binding outranks Monaco's closeFindWidget, so
+            // without the precondition Escape closed the cell, not the find bar.
+            handle.add_action_when("ironpad.markdown.escape", &[9], "!findWidgetVisible", &f);
         });
     }
 
@@ -129,8 +136,35 @@ pub fn MarkdownCell(
         });
     }
 
-    // Commit on blur (clicking away from the editor).
-    let commit_for_blur = commit;
+    // Commit on blur (clicking away from the editor), but only when focus
+    // left the wrapper. Treating focus moving into a Monaco widget as a click
+    // away closed the editor under the widget the author had just opened.
+    let on_focusout = move |ev: leptos::ev::FocusEvent| {
+        #[cfg(feature = "hydrate")]
+        {
+            use wasm_bindgen::JsCast;
+            let related = ev
+                .related_target()
+                .and_then(|t| t.dyn_into::<web_sys::Node>().ok());
+            if let (Some(el), Some(related)) = (wrapper.get_untracked(), related) {
+                if el.contains(Some(&related)) {
+                    return;
+                }
+            }
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = ev;
+        commit();
+    };
+
+    // A right-button mousedown moves focus out before Monaco's context menu
+    // opens (Monaco does not prevent it), and that focusout carries no
+    // related target to recognize. Keep focus where it is instead.
+    let on_mousedown = move |ev: leptos::ev::MouseEvent| {
+        if ev.button() == 2 {
+            ev.prevent_default();
+        }
+    };
 
     // Suppress unused warnings during SSR.
     #[cfg(not(feature = "hydrate"))]
@@ -143,7 +177,12 @@ pub fn MarkdownCell(
             {move || {
                 if editing.get() {
                     view! {
-                        <div class="ironpad-markdown-cell-editor" on:focusout=move |_| commit_for_blur()>
+                        <div
+                            class="ironpad-markdown-cell-editor"
+                            node_ref=wrapper
+                            on:focusout=on_focusout
+                            on:mousedown=on_mousedown
+                        >
                             <MonacoEditor
                                 initial_value=current_source.get_untracked()
                                 language="markdown"

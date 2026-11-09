@@ -362,7 +362,9 @@
       }
     },
 
-    addAction: function (id, actionId, keybindings, callback) {
+    /// `precondition` (optional) is a Monaco context-key expression the
+    /// binding requires, e.g. "!findWidgetVisible".
+    addAction: function (id, actionId, keybindings, callback, precondition) {
       var record = editors[id];
       if (!record) return;
 
@@ -374,6 +376,7 @@
           callback();
         },
       };
+      if (precondition) action.precondition = precondition;
 
       if (record.editor) {
         record.editor.addAction(action);
@@ -437,10 +440,13 @@
     dispose: function (id) {
       var record = editors[id];
       if (!record) return;
+      // Unregister first: disposing removes the editor's focused input,
+      // which fires a focusout into Rust while this call is still running,
+      // and a read then must find no editor rather than a half-disposed one.
+      delete editors[id];
       if (record.editor) {
         record.editor.dispose();
       }
-      delete editors[id];
     },
 
     /// Switch the global Monaco theme for all editors.
