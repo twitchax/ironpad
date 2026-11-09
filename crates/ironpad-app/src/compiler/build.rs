@@ -13,6 +13,7 @@
 //! `_start`; there is no wasm-bindgen stage for them, because nothing about
 //! that binary crosses a JS boundary — a pod loads it as a process image.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -98,6 +99,65 @@ const SIMD_TARGET_FEATURES: &str = "+simd128";
 
 /// RUSTFLAGS enabling Enzyme autodiff (`std::autodiff`) for a cell build.
 const AUTODIFF_RUSTFLAGS: &str = "-Zautodiff=Enable";
+
+/// Variables a cell build keeps from the server's environment; everything
+/// else is dropped before cargo starts.
+///
+/// cargo, rustc, build scripts and proc macros all run code the cell author
+/// chose, and `env!`/`option_env!` bake whatever rustc can see into the blob,
+/// so the server's own secrets (its OAuth client secret, its telemetry export
+/// token) must never reach them. An allowlist rather than a denylist, because
+/// the next secret somebody adds to the server's environment is one nobody
+/// will remember to deny. What is kept is what a toolchain or a native build
+/// script needs to find its tools: the toolchain itself, a compiler cache,
+/// locale and scratch space, the C toolchain and pkg-config that
+/// `cc`/`openssl-sys`-style build scripts probe (the image installs
+/// pkg-config and libssl-dev for exactly those), CA bundles for git
+/// dependencies, and proxy settings.
+const CELL_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "RUSTUP_HOME",
+    "RUSTC_WRAPPER",
+    "CC",
+    "CXX",
+    "AR",
+    "PKG_CONFIG_PATH",
+    "LD_LIBRARY_PATH",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+];
+
+/// Name prefixes kept whole: sccache is configured entirely through
+/// `SCCACHE_*`, and a wrapper that loses its configuration fails every build.
+const CELL_ENV_ALLOWED_PREFIXES: &[&str] = &["SCCACHE_"];
+
+/// Whether a variable of this name survives into a cell build.
+fn cell_env_allows(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        CELL_ENV_ALLOWLIST.contains(&name)
+            || CELL_ENV_ALLOWED_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+    })
+}
+
+/// The part of `parent` a cell build inherits: [`CELL_ENV_ALLOWLIST`] and
+/// [`CELL_ENV_ALLOWED_PREFIXES`], nothing else.
+fn cell_env(parent: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    parent.filter(|(name, _)| cell_env_allows(name)).collect()
+}
 
 /// Toolchain for Linux cells (PRD-0066), which target
 /// `wasm32-browserpod-linux-musl`.
@@ -437,13 +497,13 @@ async fn prepare_cargo(
 }
 
 /// Apply the cargo invocation shared by [`build_micro_crate`] and
-/// [`check_micro_crate`]: toolchain selection, the `{subcommand} --target
-/// {triple} --release --message-format=json` args,
-/// `CARGO_HOME`/`CARGO_TARGET_DIR`, host-flag scrubbing, the optional compile
-/// proxy, and the atomics/shared-memory flags for rayon cells.
+/// [`check_micro_crate`]: an environment cleared down to [`cell_env`],
+/// toolchain selection, the `{subcommand} --target {triple} --release
+/// --message-format=json` args, `CARGO_HOME`/`CARGO_TARGET_DIR`, the optional
+/// compile proxy, and the atomics/shared-memory flags for rayon cells.
 ///
 /// Extracting this keeps the build and check entry points from silently
-/// drifting — e.g. an `env_remove` added later for correctness lands in both the
+/// drifting — e.g. an env change added later for correctness lands in both the
 /// production build and the `cargo check` guard behind
 /// `all_public_notebook_cells_compile`. Outside tests it is reached only
 /// through [`prepare_cargo`], which owns the stdio piping; the process-group
@@ -463,14 +523,20 @@ fn configure_cargo_cmd(
     target: CellTarget,
     features: CellFeatures,
 ) {
+    // The environment starts EMPTY and gets back only the allowlist, so
+    // nothing the server holds reaches code the cell author chose. That also
+    // drops what the old per-variable removals were for: a RUSTUP_TOOLCHAIN
+    // that would override the `+toolchain` below, and host-target
+    // RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS/CARGO_BUILD_RUSTFLAGS from the parent
+    // (cargo-leptos sets RUSTFLAGS with `-fuse-ld=mold`).
+    cmd.env_clear();
+    cmd.envs(cell_env(std::env::vars_os()));
+
     // Every cell build pins its toolchain explicitly — never the host default,
     // which differs between dev (nightly) and the deploy image, and once let
     // nightly-only cells validate green locally and fail on prod.
     let toolchain = cell_toolchain(target);
     cmd.arg(format!("+{toolchain}"));
-    // Ensure the rustup shim respects our +toolchain over any inherited
-    // override (e.g. RUSTUP_TOOLCHAIN set by the parent process).
-    cmd.env_remove("RUSTUP_TOOLCHAIN");
 
     cmd.arg(subcommand)
         .arg("--target")
@@ -479,16 +545,17 @@ fn configure_cargo_cmd(
         .arg("--message-format=json")
         .current_dir(crate_dir)
         .env("CARGO_HOME", cargo_home)
-        .env("CARGO_TARGET_DIR", target_dir)
-        // Clear host-target flags that may leak from the parent process
-        // (e.g. cargo-leptos setting RUSTFLAGS with `-fuse-ld=mold`).
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("CARGO_BUILD_RUSTFLAGS");
+        .env("CARGO_TARGET_DIR", target_dir);
 
     if let Some(proxy) = compilation_proxy {
-        cmd.env("HTTPS_PROXY", proxy);
-        cmd.env("HTTP_PROXY", proxy);
+        // Every spelling, because the allowlist keeps the parent's: curl,
+        // which cargo fetches through, reads the lowercase forms FIRST, so an
+        // inherited `https_proxy` would route around the configured proxy,
+        // and an inherited `no_proxy` would exempt hosts from it.
+        for name in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+            cmd.env(name, proxy);
+        }
+        cmd.env_remove("NO_PROXY").env_remove("no_proxy");
     }
 
     if features.atomics {
@@ -744,6 +811,140 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    // ── The build environment ───────────────────────────────────────────
+
+    fn env_pairs(names: &[&str]) -> Vec<(OsString, OsString)> {
+        names
+            .iter()
+            .map(|n| (OsString::from(n), OsString::from(format!("value-of-{n}"))))
+            .collect()
+    }
+
+    #[test]
+    fn cell_env_drops_secrets_and_keeps_toolchain_vars() {
+        let kept: Vec<String> = cell_env(
+            env_pairs(&[
+                "GITHUB_CLIENT_SECRET",
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                "PATH",
+                "RUSTUP_HOME",
+                "SCCACHE_DIR",
+                "RUSTUP_TOOLCHAIN",
+                "RUSTFLAGS",
+                "https_proxy",
+            ])
+            .into_iter(),
+        )
+        .into_iter()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+        assert_eq!(kept, ["PATH", "RUSTUP_HOME", "SCCACHE_DIR", "https_proxy"]);
+    }
+
+    /// The cargo command a build or check would run, with a proxy configured.
+    fn configured_cmd_with_proxy(program: &Path, crate_dir: &Path) -> Command {
+        let mut cmd = Command::new(program);
+        configure_cargo_cmd(
+            &mut cmd,
+            "build",
+            crate_dir,
+            Path::new("/cargo-home"),
+            Path::new("/target"),
+            Some("http://127.0.0.1:3112"),
+            CellTarget::Executor,
+            features(false, false, false),
+        );
+        cmd
+    }
+
+    /// Clearing the environment must not take the variables cargo is SET
+    /// with down too: they are what point it at the shared registry, the
+    /// target dir and the egress proxy.
+    #[test]
+    fn configured_cargo_env_keeps_the_explicit_vars() {
+        let cmd = configured_cmd_with_proxy(Path::new("cargo"), Path::new("/crate"));
+        let envs: std::collections::HashMap<String, Option<String>> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(envs["CARGO_HOME"].as_deref(), Some("/cargo-home"));
+        assert_eq!(envs["CARGO_TARGET_DIR"].as_deref(), Some("/target"));
+        // Every spelling of the proxy, since curl reads the lowercase forms
+        // first and the allowlist would otherwise let an inherited one win.
+        for name in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+            assert_eq!(
+                envs[name].as_deref(),
+                Some("http://127.0.0.1:3112"),
+                "{name}"
+            );
+        }
+        // Removed: over a cleared environment that means absent altogether.
+        for name in ["NO_PROXY", "no_proxy"] {
+            assert_eq!(envs.get(name).cloned().flatten(), None, "{name}");
+        }
+    }
+
+    /// What a spawned build actually receives: nothing outside the
+    /// allowlist and the variables `configure_cargo_cmd` sets itself. The
+    /// "cargo" here is a script that prints its environment, so this runs
+    /// the real spawn path without a toolchain.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_spawned_build_sees_only_the_allowlisted_environment() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // Positive control: the test process must hold something the
+        // allowlist refuses (cargo and nextest both set CARGO_*/NEXTEST*),
+        // or an empty result would prove nothing.
+        assert!(
+            std::env::vars_os().any(|(name, _)| !cell_env_allows(&name)),
+            "the test environment has no variable for the allowlist to drop"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("print-env");
+        std::fs::write(&probe, "#!/bin/sh\nexec /usr/bin/env -0\n").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cmd = configured_cmd_with_proxy(&probe, dir.path());
+        cmd.stdout(std::process::Stdio::piped());
+        let output = cmd.output().await.unwrap();
+        assert!(output.status.success());
+
+        let explicit = [
+            "CARGO_HOME",
+            "CARGO_TARGET_DIR",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "https_proxy",
+            "http_proxy",
+        ];
+        // The shell's own bookkeeping, not anything inherited.
+        let shell = ["PWD", "OLDPWD", "SHLVL", "_"];
+        let leaked: Vec<String> = output
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|entry| !entry.is_empty())
+            .filter_map(|entry| {
+                let name = String::from_utf8_lossy(entry)
+                    .split('=')
+                    .next()?
+                    .to_string();
+                let allowed = cell_env_allows(OsStr::new(&name))
+                    || explicit.contains(&name.as_str())
+                    || shell.contains(&name.as_str());
+                (!allowed).then_some(name)
+            })
+            .collect();
+        assert!(leaked.is_empty(), "leaked into the build: {leaked:?}");
     }
 
     /// The toolchain `+arg` (or its absence) for each feature combination.

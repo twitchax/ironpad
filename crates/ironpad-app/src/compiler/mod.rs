@@ -1315,6 +1315,67 @@ pub fn range(angle: f64) -> f64 {
         }
     }
 
+    // ── The build environment ───────────────────────────────────────────
+
+    /// A cell must not be able to read the server's environment at compile
+    /// time: `env!`/`option_env!` bake whatever rustc inherited into the blob,
+    /// and the server's environment carries its OAuth client secret and its
+    /// telemetry token. `NEXTEST` stands in for those (the test process has it
+    /// and nothing allowlists it), and the cell turns a leak into a compile
+    /// error so no blob has to be run to see it.
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn cell_builds_cannot_read_the_server_environment() {
+        // Positive control: without the variable there is nothing to leak,
+        // and a green result would prove nothing.
+        assert!(
+            std::env::var_os("NEXTEST").is_some(),
+            "run under cargo nextest (`cargo make test-integration`): NEXTEST is the probe"
+        );
+
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "env-probe";
+        let source = "    const LEAKED: Option<&str> = option_env!(\"NEXTEST\");\n    \
+                      const _: () = assert!(LEAKED.is_none(), \"the server environment reached the cell build\");\n    \
+                      CellOutput::empty()";
+
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            "[dependencies]",
+            &[],
+            None,
+            None,
+            CellTarget::Executor,
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            CellFeatures::default(),
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+
+        if let BuildResult::Failure { stdout, stderr } = result {
+            panic!(
+                "the probe cell failed to build, so the server environment leaked into it:\n{}\n{}",
+                tail(&stdout, 2000),
+                tail(&stderr, 2000)
+            );
+        }
+    }
+
     /// The shared module is the notebook's library, but rustc only ever compiles
     /// ONE cell's crate at a time. Every shared helper that *this* cell does not
     /// call therefore looked like `dead_code` ("never used") even though a

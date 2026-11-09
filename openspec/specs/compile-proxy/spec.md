@@ -5,7 +5,7 @@
 
 ## Requirements
 ### Requirement: Cell builds route through the proxy when configured
-The system SHALL, when `--compilation-proxy` / `IRONPAD_COMPILATION_PROXY` is set, run every cell build and live check's cargo process with `HTTPS_PROXY` and `HTTP_PROXY` set to that URL, and SHALL set neither when it is unset (the default), leaving the server's own traffic unproxied either way. (PRD-0023 T-002)
+The system SHALL, when `--compilation-proxy` / `IRONPAD_COMPILATION_PROXY` is set, run every cell build and live check's cargo process with `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` and `http_proxy` set to that URL and with `NO_PROXY` and `no_proxy` removed, and SHALL set none of them when it is unset (the default), leaving the server's own traffic unproxied either way. (PRD-0023 T-002)
 
 #### Scenario: Proxy configured
 - **WHEN** the server starts with `--compilation-proxy http://127.0.0.1:3112`

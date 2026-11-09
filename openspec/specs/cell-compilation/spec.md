@@ -203,6 +203,13 @@ The system SHALL build every Code cell with the explicitly selected toolchain `n
 - **WHEN** the cell toolchain, the workspace `rust-toolchain.toml` channel, the Dockerfile install, CI, or `BROWSERPOD_NIGHTLY` in `docker/browserpod.env` disagree
 - **THEN** `cargo make test` fails
 
+### Requirement: Cell builds inherit only an allowlisted environment
+The system SHALL start every cell build's and live check's cargo process from an empty environment, adding back from the server's only `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `TMPDIR`, `RUSTUP_HOME`, `RUSTC_WRAPPER`, `SCCACHE_*`, `CC`, `CXX`, `AR`, `PKG_CONFIG_PATH`, `LD_LIBRARY_PATH`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, and the upper- and lowercase `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, then setting `CARGO_HOME`, `CARGO_TARGET_DIR`, the compile proxy and the cell's `RUSTFLAGS` itself, so no server secret reaches `env!`, `option_env!`, a build script or a proc macro.
+
+#### Scenario: A cell reads a server secret
+- **WHEN** a cell's source uses `env!("GITHUB_CLIENT_SECRET")` or `option_env!` of any variable outside the allowlist
+- **THEN** rustc sees the variable as unset
+
 ### Requirement: Build invocation and timeout
 The system SHALL build with `cargo build --target <triple> --release --message-format=json`, bounded by `IRONPAD_BUILD_TIMEOUT_SECS` (default 300 seconds); on expiry it MUST kill the whole cargo process group and fail the call with `build invocation failed: compilation timed out after <N>s`. (PRD-0001, PRD-0036)
 
