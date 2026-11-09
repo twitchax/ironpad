@@ -284,6 +284,10 @@ The system SHALL provide `Plot::line` and `Plot::scatter` over `&[(f64, f64)]` a
 - **WHEN** a cell ends with `Plot::bar(&[("Q1", 12.0), ("Q2", -7.5)])`
 - **THEN** the y axis reaches below zero, `Q2`'s bar extends down from a zero baseline with its value label below its end, and an all-negative chart hangs every bar from a top tick of 0
 
+#### Scenario: Non-finite data
+- **WHEN** a chart's data holds `NaN`, an infinity, or values whose span overflows `f64`, such as `Plot::line(&[(0.0, f64::INFINITY), (1.0, 1.0)])`
+- **THEN** the chart still renders: non-finite points and bars are skipped rather than drawn at the axis limit, and coordinates are clamped to ±1e300
+
 #### Scenario: Axes and gridlines
 - **WHEN** any chart renders
 - **THEN** it draws horizontal dashed gridlines only, at most 6 ticks per axis, and a zero baseline only when 0 lies inside the y range

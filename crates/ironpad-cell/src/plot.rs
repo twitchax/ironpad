@@ -228,7 +228,7 @@ impl Plot {
 
         chart
             .draw_series(LineSeries::new(
-                data.iter().copied(),
+                plottable(data),
                 COLOR_SERIES_1.stroke_width(2),
             ))
             .expect("drawing line series cannot fail");
@@ -247,11 +247,12 @@ impl Plot {
             return;
         }
 
-        let (min_val, max_val) = data
+        // A non-finite value has no bar; see `plottable_value`.
+        let values: Vec<Option<f64>> = data.iter().map(|(_, v)| plottable_value(*v)).collect();
+        let (min_val, max_val) = values
             .iter()
-            .map(|(_, v)| *v)
-            .filter(|v| v.is_finite())
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            .flatten()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
                 (lo.min(v), hi.max(v))
             });
         // Bars grow from zero, so the axis always holds it, with 10% headroom
@@ -316,16 +317,15 @@ impl Plot {
         let ranks = value_ranks(data);
 
         chart
-            .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
+            .draw_series(values.iter().enumerate().filter_map(|(i, val)| {
+                let val = (*val)?;
                 let x0 = i as f64 - 0.4;
                 let x1 = i as f64 + 0.4;
                 let opacity = BAR_RANK_OPACITY[ranks[i].min(BAR_RANK_OPACITY.len() - 1)];
-                let mut bar = Rectangle::new(
-                    [(x0, 0.0), (x1, *val)],
-                    COLOR_SERIES_1.mix(opacity).filled(),
-                );
+                let mut bar =
+                    Rectangle::new([(x0, 0.0), (x1, val)], COLOR_SERIES_1.mix(opacity).filled());
                 bar.set_margin(0, 0, 2, 2);
-                bar
+                Some(bar)
             }))
             .expect("drawing bar series cannot fail");
 
@@ -336,16 +336,27 @@ impl Plot {
         let above = end_label.pos(Pos::new(HPos::Center, VPos::Bottom));
         let below = end_label.pos(Pos::new(HPos::Center, VPos::Top));
         chart
-            .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
-                let style = if *val < 0.0 { &below } else { &above };
-                Text::new(format!("{val:.1}"), (i as f64, *val), style.clone())
-            }))
+            .draw_series(
+                data.iter()
+                    .zip(&values)
+                    .enumerate()
+                    .filter_map(|(i, ((_, raw), val))| {
+                        let val = (*val)?;
+                        let style = if val < 0.0 { &below } else { &above };
+                        Some(Text::new(
+                            format!("{raw:.1}"),
+                            (i as f64, val),
+                            style.clone(),
+                        ))
+                    }),
+            )
             .expect("drawing bar value labels cannot fail");
 
         if self.tooltips {
-            for (i, (label, val)) in data.iter().enumerate() {
-                let (px, py) = chart.backend_coord(&(i as f64, *val));
-                tooltip_points.push((px, py, format!("{label}: {val}")));
+            for (i, ((label, raw), val)) in data.iter().zip(&values).enumerate() {
+                let Some(val) = *val else { continue };
+                let (px, py) = chart.backend_coord(&(i as f64, val));
+                tooltip_points.push((px, py, format!("{label}: {raw}")));
             }
         }
     }
@@ -361,10 +372,7 @@ impl Plot {
         let mut chart = self.build_chart_context(root, x_range, y_range);
 
         chart
-            .draw_series(
-                data.iter()
-                    .map(|(x, y)| Circle::new((*x, *y), 4, COLOR_SERIES_1.filled())),
-            )
+            .draw_series(plottable(data).map(|xy| Circle::new(xy, 4, COLOR_SERIES_1.filled())))
             .expect("drawing scatter series cannot fail");
 
         self.draw_point_extras(&mut chart, data, tooltip_points);
@@ -392,7 +400,7 @@ impl Plot {
     ) {
         if self.point_labels {
             chart
-                .draw_series(data.iter().map(|&(x, y)| {
+                .draw_series(plottable(data).map(|(x, y)| {
                     Text::new(
                         format!("{y:.1}"),
                         (x, y),
@@ -403,7 +411,7 @@ impl Plot {
         }
 
         if self.tooltips {
-            for &(x, y) in data {
+            for (x, y) in plottable(data) {
                 let (px, py) = chart.backend_coord(&(x, y));
                 tooltip_points.push((px, py, format!("({x}, {y})")));
             }
@@ -560,37 +568,57 @@ fn themed(name: &str, color: RGBColor) -> String {
     format!("var(--ip-plot-{name}, {})", hex(color))
 }
 
-/// Compute x/y ranges from `(x, y)` data with a small margin so points aren't
-/// clipped against the axes.
-fn xy_ranges(data: &[(f64, f64)]) -> (std::ops::Range<f64>, std::ops::Range<f64>) {
-    if data.is_empty() {
-        return (0.0..1.0, 0.0..1.0);
-    }
+/// The largest magnitude a plotted coordinate may have.
+///
+/// plotters' f64 tick search (`compute_f64_key_points`) loops forever on an
+/// infinite span, and a span between two finite values near `f64::MAX`
+/// overflows into one. A drawn point outside the axis is no better: its pixel
+/// math overflows (a panic in debug, a silent wrap in release). Clamping both
+/// the range and every drawn point to this bound keeps all of it finite.
+const MAX_AXIS: f64 = 1e300;
 
+/// `value` as something the renderer can draw: `None` for NaN and the
+/// infinities, otherwise clamped to [`MAX_AXIS`]. The one rule for every chart
+/// kind, so no path can hand plotters a coordinate the range does not hold.
+fn plottable_value(value: f64) -> Option<f64> {
+    value.is_finite().then(|| value.clamp(-MAX_AXIS, MAX_AXIS))
+}
+
+/// The drawable points of `data` (see [`plottable_value`]). A NaN point is
+/// skipped rather than mapped to the axis limit, where it drew a spike.
+fn plottable(data: &[(f64, f64)]) -> impl Iterator<Item = (f64, f64)> + '_ {
+    data.iter()
+        .filter_map(|&(x, y)| Some((plottable_value(x)?, plottable_value(y)?)))
+}
+
+/// Compute x/y ranges from the drawable points of `data` with a small margin
+/// so points aren't clipped against the axes. An axis with nothing drawable
+/// on it (no data, or none of it finite) falls back to `0..1`.
+fn xy_ranges(data: &[(f64, f64)]) -> (std::ops::Range<f64>, std::ops::Range<f64>) {
     let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut y_min, mut y_max) = (f64::INFINITY, f64::NEG_INFINITY);
-    for &(x, y) in data {
+    for (x, y) in plottable(data) {
         x_min = x_min.min(x);
         x_max = x_max.max(x);
         y_min = y_min.min(y);
         y_max = y_max.max(y);
     }
 
-    let x_pad = if (x_max - x_min).abs() < f64::EPSILON {
-        1.0
-    } else {
-        (x_max - x_min) * 0.05
-    };
-    let y_pad = if (y_max - y_min).abs() < f64::EPSILON {
-        1.0
-    } else {
-        (y_max - y_min) * 0.05
-    };
+    (padded(x_min, x_max), padded(y_min, y_max))
+}
 
-    (
-        (x_min - x_pad)..(x_max + x_pad),
-        (y_min - y_pad)..(y_max + y_pad),
-    )
+/// `min..max` widened by 5% each side (by 1 for a single value), or `0..1`
+/// when `min > max`, i.e. nothing was folded in.
+fn padded(min: f64, max: f64) -> std::ops::Range<f64> {
+    if min > max {
+        return 0.0..1.0;
+    }
+    let pad = if (max - min).abs() < f64::EPSILON {
+        1.0
+    } else {
+        (max - min) * 0.05
+    };
+    (min - pad)..(max + pad)
 }
 
 /// Inject SVG `<title>` tooltip elements at the given pixel coordinates.
@@ -1007,7 +1035,11 @@ mod tests {
         svg.lines()
             .filter(|l| l.starts_with("<rect") && l.contains("var(--ip-plot-series-1,"))
             .map(|l| {
-                let n = |name| attr(l, name).parse::<f64>().expect("numeric rect attribute");
+                let n = |name| {
+                    attr(l, name)
+                        .parse::<f64>()
+                        .expect("numeric rect attribute")
+                };
                 (n("x"), n("y"), n("width"), n("height"))
             })
             .collect()
@@ -1035,7 +1067,11 @@ mod tests {
                     .filter(|(t, _)| t == label)
                     .map(|&(_, tx)| tx)
                     .collect();
-                assert_eq!(at.len(), 1, "{label} labelled exactly once at n={n}: {at:?}");
+                assert_eq!(
+                    at.len(),
+                    1,
+                    "{label} labelled exactly once at n={n}: {at:?}"
+                );
                 assert!(
                     (at[0] - center).abs() <= 1.0,
                     "{label} sits at x={} but its bar is centred at {center} (n={n})",
@@ -1097,6 +1133,55 @@ mod tests {
                 "bar at x={x} hangs from the zero line ({zero_y}), not from y={y}"
             );
         }
+    }
+
+    /// Render `plot` on a worker thread, failing instead of hanging if the
+    /// renderer never returns.
+    fn render_within_deadline(name: &str, plot: Plot) -> String {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(plot.render_svg());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("{name}: the renderer did not return within 5s"))
+    }
+
+    #[test]
+    fn non_finite_data_cannot_hang_the_renderer() {
+        let cases = [
+            ("y = +inf", Plot::line(&[(0.0, f64::INFINITY), (1.0, 1.0)])),
+            ("x = +inf", Plot::line(&[(f64::INFINITY, 0.0), (1.0, 1.0)])),
+            ("all NaN", Plot::line(&[(f64::NAN, f64::NAN)])),
+            (
+                "scatter y = -inf",
+                Plot::scatter(&[(0.0, f64::NEG_INFINITY), (1.0, 1.0)]),
+            ),
+            (
+                "x span overflows",
+                Plot::line(&[(-1e308, 0.0), (1e308, 1.0)]),
+            ),
+            (
+                "y span overflows",
+                Plot::line(&[(0.0, 8.9e307), (1.0, -8.9e307)]),
+            ),
+            ("bar = +inf", Plot::bar(&[("a", f64::INFINITY), ("b", 1.0)])),
+            ("bar near f64::MAX", Plot::bar(&[("a", 1.7e308)])),
+        ];
+        for (name, plot) in cases {
+            let svg = render_within_deadline(name, plot);
+            assert!(svg.contains("<svg"), "{name}: no SVG");
+        }
+    }
+
+    #[test]
+    fn a_nan_point_is_skipped_rather_than_spiking_to_the_axis() {
+        let svg = Plot::line(&[(0.0, f64::NAN), (1.0, 1.0), (2.0, 2.0)]).render_svg();
+        let series = svg
+            .lines()
+            .find(|l| l.starts_with("<polyline") && l.contains("var(--ip-plot-series-1,"))
+            .expect("the series is drawn as a polyline");
+        let points = attr(series, "points").split_whitespace().count();
+        assert_eq!(points, 2, "only the two finite points are drawn: {series}");
     }
 
     #[test]
