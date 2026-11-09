@@ -230,11 +230,15 @@ The system SHALL provide `ui::slider(name, min, max)`, `ui::number(min, max)`, `
 - **THEN** cell 6 sees an `f64`, a `String`, an `f64`, and a `bool` holding the widgets' current values
 
 ### Requirement: Widget changes update the piped value
-The system SHALL, when a reader changes a live widget, replace that cell's piped value with the new value so downstream cells read it on their next run, and in the editor SHALL mark every runnable code cell below it stale (re-run automatically when Reactive Mode is on) without re-running the widget's own cell. (PRD-0005, PRD-0007, PRD-0025)
+The system SHALL, when a reader changes a live widget that is its cell's whole output, replace that cell's piped value with the new value so downstream cells read it on their next run; a widget inside a tuple output publishes to the simulation bus only and leaves the tuple's piped value as it was. In the editor it SHALL mark every runnable code cell below it stale (re-run automatically when Reactive Mode is on) without re-running the widget's own cell. (PRD-0005, PRD-0007, PRD-0025)
 
 #### Scenario: Slider feeds a downstream cell
 - **WHEN** a reader drags a slider in cell 1 to 7.5 and then runs cell 2, which reads `cell1`
 - **THEN** cell 2 sees `7.5` while cell 1 keeps its rendered slider and is not re-run
+
+#### Scenario: A slider inside a tuple
+- **WHEN** cell 0 ends with `(ui::slider("a", 0.0, 10.0), ui::slider("b", 0.0, 10.0))`, a reader moves the first slider, and then runs cell 1, which reads `let (a, b) = cell0;`
+- **THEN** cell 1 runs without a deserialization error and sees the tuple's original values
 
 #### Scenario: Read-only pages
 - **WHEN** a widget value changes on a read-only notebook page

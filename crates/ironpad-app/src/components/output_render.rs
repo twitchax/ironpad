@@ -230,15 +230,31 @@ pub(crate) struct WidgetSink {
 }
 
 /// Update cell outputs and — in the editor — mark downstream cells stale after
-/// a widget value change.
+/// a widget value change. `value_tag` is the type tag of the widget's own
+/// value (`f64`, `String`, `bool`), which [`widget_write_applies`] checks
+/// against the cell's.
 #[cfg(feature = "hydrate")]
-fn update_cell_output(new_bytes: Vec<u8>, cell_id: Option<&str>, sink: Option<WidgetSink>) {
+fn update_cell_output(
+    new_bytes: Vec<u8>,
+    value_tag: &str,
+    cell_id: Option<&str>,
+    sink: Option<WidgetSink>,
+) {
     let Some(cid) = cell_id else { return };
     let Some(sink) = sink else { return };
 
     sink.cell_outputs.update(|map| {
         if let Some(data) = map.get_mut(cid) {
-            data.bytes = new_bytes;
+            if widget_write_applies(data.type_tag.as_deref(), value_tag) {
+                data.bytes = new_bytes;
+            } else {
+                leptos::logging::warn!(
+                    "widget in cell {cid} is part of a `{}` output; its value reaches \
+                     the simulation bus only, and downstream cells keep the output's \
+                     original value",
+                    data.type_tag.as_deref().unwrap_or("untagged")
+                );
+            }
         }
     });
 
@@ -254,6 +270,18 @@ fn update_cell_output(new_bytes: Vec<u8>, cell_id: Option<&str>, sink: Option<Wi
             map.insert(id, true);
         }
     });
+}
+
+/// May a widget's new value replace its cell's piped bytes? Only when the
+/// cell's output IS the widget, i.e. the cell is tagged with the widget's own
+/// value type. A widget inside a tuple shares the cell's bytes with its
+/// siblings under a tag like `(f64, f64)`: its value alone would not decode
+/// as the tuple, and a downstream cell reading it panicked. Splicing the
+/// field's byte range in place is possible later; until then such a widget
+/// publishes through the simulation bus only.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn widget_write_applies(type_tag: Option<&str>, value_tag: &str) -> bool {
+    type_tag == Some(value_tag)
 }
 
 /// Strictly-downstream runnable cells of `cell_id`, in notebook order — what
@@ -605,7 +633,7 @@ fn render_numeric(
             value.set(new_val.clone());
             if let Ok(f) = new_val.parse::<f64>() {
                 let bytes = bincode_encode_f64(f);
-                update_cell_output(bytes, cell_id.as_deref(), sink);
+                update_cell_output(bytes, "f64", cell_id.as_deref(), sink);
                 if let Some(ref key) = bus_key {
                     sim_bus_js::sim_bus_write_f64(key, f);
                 }
@@ -691,7 +719,7 @@ fn render_dropdown(
             let new_val = leptos::prelude::event_target_value(&ev);
             value.set(new_val.clone());
             let bytes = bincode_encode_string(&new_val);
-            update_cell_output(bytes, cell_id.as_deref(), sink);
+            update_cell_output(bytes, "String", cell_id.as_deref(), sink);
             if let Some(ref key) = bus_key {
                 #[allow(clippy::cast_precision_loss)]
                 let idx = options_for_bus
@@ -769,7 +797,7 @@ fn render_toggle(
                 let new_val = input.checked();
                 checked.set(new_val);
                 let bytes = bincode_encode_bool(new_val);
-                update_cell_output(bytes, cell_id.as_deref(), sink);
+                update_cell_output(bytes, "bool", cell_id.as_deref(), sink);
                 if let Some(ref key) = bus_key {
                     sim_bus_js::sim_bus_write_bool(key, new_val);
                 }
@@ -829,7 +857,7 @@ fn render_text_input(
             let new_val = leptos::prelude::event_target_value(&ev);
             value.set(new_val.clone());
             let bytes = bincode_encode_string(&new_val);
-            update_cell_output(bytes, cell_id.as_deref(), sink);
+            update_cell_output(bytes, "String", cell_id.as_deref(), sink);
         }
     };
 
@@ -1067,6 +1095,19 @@ mod tests {
         let html = widget_html("progress", r#"{"id":"p","initial":40}"#);
         assert!(!html.contains("ironpad-widget-label"), "{html}");
         assert!(html.contains("40%"), "{html}");
+    }
+
+    #[test]
+    fn a_widget_overwrites_only_an_output_that_is_itself() {
+        // A bare widget's output IS its value, so a new value replaces it.
+        assert!(widget_write_applies(Some("f64"), "f64"));
+        assert!(widget_write_applies(Some("String"), "String"));
+        // Inside a tuple the bytes are every field's; one widget's value
+        // alone would not decode under the tuple's tag.
+        assert!(!widget_write_applies(Some("(f64, f64)"), "f64"));
+        assert!(!widget_write_applies(Some("(String, f64)"), "String"));
+        // An untagged output pipes nothing a widget value could stand for.
+        assert!(!widget_write_applies(None, "f64"));
     }
 
     #[test]
