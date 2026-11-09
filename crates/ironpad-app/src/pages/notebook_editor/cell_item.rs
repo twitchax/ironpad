@@ -757,11 +757,18 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // inactivity.  The debounce plumbing only exists in the `hydrate`
     // (client-side) build; SSR simply updates the reactive signal.
 
+    // The two panes' pending debounce timers, owned out here so the one
+    // teardown flush below can cancel both.
+    #[cfg(feature = "hydrate")]
+    let source_debounce: RwSignal<i32> = RwSignal::new(0);
+    #[cfg(feature = "hydrate")]
+    let cargo_toml_debounce: RwSignal<i32> = RwSignal::new(0);
+
     #[cfg(feature = "hydrate")]
     let on_source_change = {
         use wasm_bindgen::prelude::*;
 
-        let debounce_handle: RwSignal<i32> = RwSignal::new(0);
+        let debounce_handle = source_debounce;
 
         // Build a reusable JS function that reads the *current* source from
         // the signal and persists it via the model.
@@ -802,17 +809,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         // leaking it with forget().
         StoredValue::new_local(closure);
 
-        // Cancel a pending debounced save when the cell is disposed (e.g.
-        // deleted) so it doesn't fire against disposed signals / a gone cell.
-        on_cleanup(move || {
-            let prev = debounce_handle.get_untracked();
-            if prev != 0 {
-                if let Some(win) = web_sys::window() {
-                    win.clear_timeout_with_handle(prev);
-                }
-            }
-        });
-
         Callback::new(move |val: String| {
             source.set(val);
             source_dirty.set(true);
@@ -839,7 +835,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     let on_cargo_toml_change = {
         use wasm_bindgen::prelude::*;
 
-        let debounce_handle: RwSignal<i32> = RwSignal::new(0);
+        let debounce_handle = cargo_toml_debounce;
 
         let closure = Closure::<dyn Fn()>::new(move || {
             let val = cargo_toml.get_untracked();
@@ -868,16 +864,6 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         // Hold the closure in the arena (dropped on cell disposal) rather than
         // leaking it with forget().
         StoredValue::new_local(closure);
-
-        // Cancel a pending debounced save on cell disposal.
-        on_cleanup(move || {
-            let prev = debounce_handle.get_untracked();
-            if prev != 0 {
-                if let Some(win) = web_sys::window() {
-                    win.clear_timeout_with_handle(prev);
-                }
-            }
-        });
 
         Callback::new(move |val: String| {
             cargo_toml.set(val);
@@ -912,21 +898,22 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     #[cfg(feature = "hydrate")]
     {
-        let prev_save_gen = RwSignal::new(state.save_generation.get_untracked());
-
-        Effect::new(move || {
-            let gen = state.save_generation.get();
-            if gen == prev_save_gen.get_untracked() {
+        // The ONE pane flush, shared by the save generation and teardown.
+        // `try_` throughout: on teardown it runs inside this cell's own
+        // cleanup. A deleted cell answers CellNotFound, which is ignored.
+        let flush_dirty_panes = move || {
+            let (Some(src_dirty), Some(toml_dirty)) = (
+                source_dirty.try_get_untracked(),
+                cargo_toml_dirty.try_get_untracked(),
+            ) else {
                 return;
-            }
-            prev_save_gen.set(gen);
-
-            let src_dirty = source_dirty.get_untracked();
-            let toml_dirty = cargo_toml_dirty.get_untracked();
+            };
             if !src_dirty && !toml_dirty {
                 return;
             }
-            let cid = cell_id.get_value();
+            let Some(cid) = cell_id.try_get_value() else {
+                return;
+            };
             let version = model.cell_version(&cid);
 
             // Flush the unsaved editor content into the model.
@@ -945,17 +932,46 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 )
                 .is_ok()
             {
+                // In the model, not yet stored: whoever bumped the save
+                // generation persists it, and if the page goes away first
+                // the editor's teardown write does.
+                state.mark_persist_pending();
                 if src_dirty {
-                    source_dirty.set(false);
+                    let _ = source_dirty.try_set(false);
                 }
                 if toml_dirty {
-                    cargo_toml_dirty.set(false);
+                    let _ = cargo_toml_dirty.try_set(false);
                 }
                 // Persist here rather than trust the pending debounce: Preview
                 // unmounts this cell right after the flush, which cancels that
                 // timer, and nothing else would write this text.
                 persist_notebook(&state);
             }
+        };
+
+        let prev_save_gen = RwSignal::new(state.save_generation.get_untracked());
+
+        Effect::new(move || {
+            let gen = state.save_generation.get();
+            if gen == prev_save_gen.get_untracked() {
+                return;
+            }
+            prev_save_gen.set(gen);
+            flush_dirty_panes();
+        });
+
+        // On disposal (navigation, deletion) the pending debounces die with
+        // the cell, so cancel them and flush what they would have saved,
+        // rather than dropping the last second of typing.
+        on_cleanup(move || {
+            if let Some(win) = web_sys::window() {
+                for handle in [source_debounce, cargo_toml_debounce] {
+                    if let Some(prev) = handle.try_get_untracked().filter(|h| *h != 0) {
+                        win.clear_timeout_with_handle(prev);
+                    }
+                }
+            }
+            flush_dirty_panes();
         });
     }
 

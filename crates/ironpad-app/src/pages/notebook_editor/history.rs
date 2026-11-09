@@ -195,7 +195,14 @@ fn restore_snapshot(state: &NotebookState, toaster: Toaster, saved_at: f64) {
             crate::storage::client::snapshot_now(&id).await;
             match serde_json::from_str::<ironpad_common::IronpadNotebook>(&json) {
                 Ok(nb) => {
+                    // From here on the stored record is the snapshot, and
+                    // the model is what it replaces: a teardown write (the
+                    // reload's `pagehide`) or a late debounce would put the
+                    // replaced version straight back.
+                    state.halt_persistence();
                     if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+                        // The page stays, so it must keep saving.
+                        state.resume_persistence();
                         toaster.toast(
                             ToastIntent::Error,
                             "Restore Failed",

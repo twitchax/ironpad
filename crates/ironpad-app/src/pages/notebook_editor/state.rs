@@ -220,6 +220,24 @@ pub(crate) struct NotebookState {
     /// have not fired yet, but a request already on the wire could land
     /// AFTER the durable write and revert the draft the promote publishes.
     pub(super) draft_save_inflight: RwSignal<u32>,
+    /// The model holds edits that no write has captured yet. Read by the
+    /// editor's teardown write ([`persist_on_teardown`]): navigating away
+    /// disposes the debounce timers and the scheduled draft save, so without
+    /// it the last edits never leave the page. Gating that write on this
+    /// flag is what keeps a plain open-and-close from bumping `updated_at`,
+    /// minting a history snapshot, or creating a draft on a clean published
+    /// notebook.
+    ///
+    /// Cleared when a write TAKES its copy of the model, not when it lands:
+    /// an edit flushed in while that write is on the wire marks it again,
+    /// which a clear-on-success would erase. A failed write marks it again.
+    pub(super) persist_pending: RwSignal<bool>,
+    /// Stop persisting, for good. Set by the flows that remove or replace
+    /// what this page would write to (Delete, Save to Account, Share
+    /// Mutable, Discard Draft, History Restore): a save landing after them
+    /// would resurrect a deleted notebook or overwrite the restored or
+    /// discarded state. The ONE halt flag; every persist path checks it.
+    pub(super) persist_halted: RwSignal<bool>,
     /// App-level toast handle, resolved once at mount.
     ///
     /// Carried here rather than threaded through `persist_notebook`: the
@@ -282,6 +300,39 @@ impl NotebookState {
     pub(super) async fn flush_and_read(&self) -> Option<IronpadNotebook> {
         self.flush_cells().await?;
         self.notebook.try_get_untracked().flatten()
+    }
+
+    /// Record that the model now holds edits no write has captured
+    /// ([`Self::persist_pending`]). Untracked: nothing renders from it.
+    #[cfg(feature = "hydrate")]
+    pub(super) fn mark_persist_pending(&self) {
+        let _ = self.persist_pending.try_update_untracked(|p| *p = true);
+    }
+
+    /// A write is taking its copy of the model now, so nothing is pending
+    /// until the next edit ([`Self::persist_pending`]).
+    #[cfg(feature = "hydrate")]
+    pub(super) fn take_persist_pending(&self) {
+        let _ = self.persist_pending.try_update_untracked(|p| *p = false);
+    }
+
+    /// Whether a flow has halted persistence ([`Self::persist_halted`]).
+    #[cfg(feature = "hydrate")]
+    pub(super) fn persistence_halted(&self) -> bool {
+        self.persist_halted.try_get_untracked() == Some(true)
+    }
+
+    /// Halt every further persist from this page ([`Self::persist_halted`]).
+    #[cfg(feature = "hydrate")]
+    pub(super) fn halt_persistence(&self) {
+        let _ = self.persist_halted.try_update_untracked(|h| *h = true);
+    }
+
+    /// Undo [`Self::halt_persistence`] for a flow that failed and leaves the
+    /// page editing.
+    #[cfg(feature = "hydrate")]
+    pub(super) fn resume_persistence(&self) {
+        let _ = self.persist_halted.try_update_untracked(|h| *h = false);
     }
 }
 
@@ -535,6 +586,10 @@ impl NotebookState {
 pub(crate) fn persist_notebook(state: &NotebookState) {
     #[cfg(feature = "hydrate")]
     {
+        // Pending until a write takes it: the debounce below dies with the
+        // page, and the spawned write cannot read a disposed one, so the
+        // teardown write is what catches the edit then.
+        state.mark_persist_pending();
         if state.server_draft_share.get_untracked().is_some() {
             let _ = state.draft_dirty.try_set(true);
             schedule_draft_save(state, DRAFT_SAVE_DEBOUNCE_MS);
@@ -566,6 +621,7 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
     }
     if state.server_draft_share.get_untracked().is_some() {
         let _ = state.draft_dirty.try_set(true);
+        state.mark_persist_pending();
         // Drain any autosave POST already on the wire so ours lands last —
         // an earlier request arriving after this write would revert the
         // draft the promote then publishes. Bounded: past the cap we
@@ -586,12 +642,62 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
         let Some(nb) = state.notebook.try_get_untracked().flatten() else {
             return false;
         };
+        state.take_persist_pending();
         if let Err(e) = crate::storage::client::save_notebook(&nb).await {
             leptos::logging::error!("failed to persist notebook to IndexedDB: {e:?}");
+            state.mark_persist_pending();
             false
         } else {
             true
         }
+    }
+}
+
+/// The editor's last write, as the page is torn down (navigation) or hidden
+/// (Local mode's `pagehide`): if the model holds edits no write has landed
+/// ([`NotebookState::persist_pending`]) and no flow halted persistence,
+/// write them now.
+///
+/// Every read happens HERE, synchronously, while the signals are still
+/// alive; the spawned write touches no signal, because by the time it runs
+/// the page's arena is gone. On teardown this runs after every `CellItem`
+/// has flushed its unsaved panes into the model (an owner cleans up its
+/// children before running its own cleanups), so it carries the last
+/// keystrokes too.
+#[cfg(feature = "hydrate")]
+pub(super) fn persist_on_teardown(state: &NotebookState) {
+    if state.persist_pending.try_get_untracked() != Some(true) || state.persistence_halted() {
+        return;
+    }
+    let Some(Some(mut nb)) = state.notebook.try_get_untracked() else {
+        return;
+    };
+    let Some(share) = state.server_draft_share.try_get_untracked() else {
+        return;
+    };
+    // A later teardown signal (a `pagehide`, then the page's disposal on
+    // the way back from the bfcache) must not write the same content twice.
+    state.take_persist_pending();
+    if let Some(share_id) = share {
+        let json = match serde_json::to_string(&nb) {
+            Ok(json) => json,
+            Err(e) => {
+                leptos::logging::error!("draft serialize failed on teardown: {e}");
+                return;
+            }
+        };
+        leptos::task::spawn_local(async move {
+            if let Err(e) = crate::server_fns::save_mutable_draft(share_id, json).await {
+                leptos::logging::warn!("draft save on teardown failed: {e}");
+            }
+        });
+    } else {
+        nb.updated_at = chrono::Utc::now();
+        leptos::task::spawn_local(async move {
+            if let Err(e) = crate::storage::client::save_notebook(&nb).await {
+                leptos::logging::error!("notebook save on teardown failed: {e:?}");
+            }
+        });
     }
 }
 
@@ -745,6 +851,7 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
             return false;
         }
     };
+    state.take_persist_pending();
     let _ = state.draft_save_state.try_set(DraftSaveState::Saving);
     let _ = state.draft_save_inflight.try_update(|n| *n += 1);
     let result = crate::server_fns::save_mutable_draft(share_id, json).await;
@@ -757,6 +864,7 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
             true
         }
         Err(e) => {
+            state.mark_persist_pending();
             let message = e.to_string();
             if is_permanent_refusal(&message) {
                 leptos::logging::warn!("draft autosave refused, not retrying: {message}");

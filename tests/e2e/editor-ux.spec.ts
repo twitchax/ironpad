@@ -91,6 +91,35 @@ test.describe("Editor UX (PRD-0032)", () => {
     await expect(page.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
   });
 
+  // Closing the editor blurs an open markdown editor, which commits into the
+  // cell's 1s save debounce; the navigation used to cancel that timer, so
+  // everything typed since the double-click was lost.
+  test("closing mid-edit keeps a markdown cell's typing", async ({ page }) => {
+    await newNotebook(page);
+    await page.locator(ADD_MARKDOWN).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell).toBeVisible();
+    const id = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+    const storedSource = () =>
+      page.evaluate(async (nid) => {
+        const nb = await (window as any).IronpadStorage.getNotebook(nid);
+        return nb?.cells?.[0]?.source ?? "";
+      }, id);
+    await expect.poll(storedSource, { timeout: 10_000 }).toContain("New Section");
+
+    await cell.locator(".ironpad-markdown-cell-preview").dblclick();
+    const editor = cell.locator(".ironpad-markdown-cell-editor .monaco-editor");
+    await expect(editor).toBeVisible({ timeout: 15_000 });
+    await editor.click();
+    await page.keyboard.press("Control+End");
+    await page.keyboard.type(" closing_typed_markdown", { delay: 20 });
+    await page.locator(".ironpad-toolbar-close").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(storedSource, { timeout: 10_000 })
+      .toContain("closing_typed_markdown");
+  });
+
   // The notebook-level actions (hamburger menu, close) survive the flip to
   // view mode; editing-only chrome (Run All, session, gear) does not — view
   // mode's own header carries Run All and the cache/fresh toggle.

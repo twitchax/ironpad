@@ -9,6 +9,7 @@ import {
   expectOwnerEditor,
   menuClick,
   saveToAccount,
+  shareMutable,
 } from "./helpers/mutable";
 import { ADD_CODE, createNotebook, renameNotebook } from "./helpers/session";
 
@@ -123,6 +124,37 @@ async function expectNotFoundPanel(page: Page): Promise<void> {
     }),
   ).toBeVisible({ timeout: 30_000 });
 }
+
+/**
+ * An account notebook with one code cell, its editor mounted at
+ * /mutable/{id}: unpublished through Save to Account, or published (and
+ * clean) through Share Mutable. Returns the id.
+ */
+async function accountNotebookWithCell(
+  page: Page,
+  login: string,
+  title: string,
+  { publish }: { publish: boolean },
+): Promise<string> {
+  await loginTestUser(page, login);
+  await createNotebook(page);
+  // Rename BEFORE adding a cell: a new cell steals focus when its Monaco
+  // mounts (pending_focus_cell), which would hijack mid-flight typing.
+  await renameNotebook(page, title);
+  await page.locator(ADD_CODE).first().click();
+  await expect(
+    page.locator(".ironpad-cell-card .monaco-editor").first(),
+  ).toBeVisible({ timeout: 15_000 });
+  const id = publish ? await shareMutable(page) : await saveToAccount(page);
+  await expect(
+    page.locator(".ironpad-cell-card .monaco-editor").first(),
+  ).toBeVisible({ timeout: 30_000 });
+  return id;
+}
+
+/** The first cell's rendered editor text. */
+const firstCellLines = (page: Page) =>
+  page.locator(".ironpad-cell-card .monaco-editor .view-lines").first();
 
 test.describe("Account notebooks (PRD-0064)", () => {
   test("save, reload, publish, unpublish, delete: one URL throughout", async ({
@@ -613,5 +645,60 @@ test.describe("Account notebooks (PRD-0064)", () => {
     expect(accepted).toBe(dismissed);
     expect(await localRecord(page, localUuid)).toBeNull();
     await expect(page).toHaveURL(new RegExp(`/mutable/${shareId}$`));
+  });
+
+  test("closing inside the draft debounce still saves the edit", async ({
+    page,
+  }) => {
+    // The 1.5s draft autosave used to wake after the page was gone and
+    // return without saving. For an unpublished notebook the draft is the
+    // ONLY copy, so the edit was simply lost.
+    test.setTimeout(150_000);
+    const id = await accountNotebookWithCell(page, "erin-closes", "Close Keeps Draft", {
+      publish: false,
+    });
+    await setCellSource(
+      page,
+      page.locator(".ironpad-cell-card").first(),
+      "let typed_before_close = 1;",
+    );
+    // Past the cell's 1s debounce, inside the draft's 1.5s one.
+    await page.waitForTimeout(1_200);
+    const saved = page.waitForResponse(
+      (r) => r.url().includes("save_mutable_draft"),
+      { timeout: 10_000 },
+    );
+    await page.locator(".ironpad-toolbar-close").click();
+    expect((await saved).ok()).toBe(true);
+    await page.goto(`/mutable/${id}`);
+    await expectOwnerEditor(page);
+    await expect(firstCellLines(page)).toContainText("typed_before_close", {
+      timeout: 30_000,
+    });
+  });
+
+  test("opening and closing a clean published notebook saves nothing", async ({
+    page,
+  }) => {
+    // The negative half: an unconditional teardown write would create a
+    // draft on every visit and arm Push on a notebook nobody touched.
+    test.setTimeout(150_000);
+    const id = await accountNotebookWithCell(page, "erin-idles", "Idle Close", {
+      publish: true,
+    });
+    const push = page.locator(".ironpad-push-button");
+    await expect(push).toBeDisabled();
+    let drafts = 0;
+    page.on("request", (r) => {
+      if (r.url().includes("save_mutable_draft")) drafts++;
+    });
+    await page.locator(".ironpad-toolbar-close").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(3_000);
+    expect(drafts).toBe(0);
+    await page.goto(`/mutable/${id}`);
+    await expectOwnerEditor(page);
+    await expect(push).toHaveText("Published", { timeout: 15_000 });
+    await expect(push).toBeDisabled();
   });
 });

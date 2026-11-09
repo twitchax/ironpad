@@ -16,7 +16,7 @@ The system SHALL keep local notebooks only in the browser's IndexedDB, keyed by 
 - **THEN** that retired store is deleted and its local notebooks are kept
 
 ### Requirement: Saving local notebooks
-The system SHALL write a local notebook to the browser store after every change, stamping its `updated_at`: cell source and Cargo.toml edits one second after typing stops, and every other change (adding, deleting, reordering, title, labels, collapse flags, Reactive Mode, metadata, shared code) at once. (PRD-0001, PRD-0032)
+The system SHALL write a local notebook to the browser store after every change, stamping its `updated_at`: cell source and Cargo.toml edits one second after typing stops or at once when the author leaves the editor, and every other change (adding, deleting, reordering, title, labels, collapse flags, Reactive Mode, metadata, shared code) at once. Leaving writes only edits no save has captured yet. (PRD-0001, PRD-0032)
 
 #### Scenario: Source survives navigation
 - **WHEN** the author adds a code cell, presses Ctrl+S, goes home through the brand link and opens the notebook's card
@@ -25,6 +25,14 @@ The system SHALL write a local notebook to the browser store after every change,
 #### Scenario: Collapse flag reaches the store
 - **WHEN** the author collapses a cell's code with its default toggle
 - **THEN** the stored notebook's first cell has `collapsed: true` within seconds, with no explicit save
+
+#### Scenario: Leaving inside the save window
+- **WHEN** the author types into a cell, or into an open markdown editor, and clicks "Back to notebook list" within the second
+- **THEN** the stored notebook carries the typed text
+
+#### Scenario: Leaving an untouched notebook
+- **WHEN** the author opens a notebook and leaves without changing anything
+- **THEN** the stored notebook's `updated_at` is unchanged
 
 ### Requirement: Listing tolerates bad records
 The system SHALL list local notebooks most recently updated first, sorting records whose `updated_at` cannot be read last, and SHALL skip, with a console warning, any record that does not parse as a notebook while still listing every other one. (PRD-0033)

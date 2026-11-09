@@ -1,7 +1,24 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, Page } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
-import { ADD_CODE } from "./helpers/session";
+import {
+  createNotebook,
+  waitForPersistedCells,
+  ADD_CODE,
+} from "./helpers/session";
+
+/** The open local notebook's id, from the URL. */
+function localId(page: Page): string {
+  return page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+}
+
+/** The stored record for a local notebook, or null when there is none. */
+function storedNotebook(page: Page, id: string): Promise<any> {
+  return page.evaluate(
+    (nid) => (window as any).IronpadStorage.getNotebook(nid),
+    id,
+  );
+}
 
 test.describe("Notebook", () => {
   test("create notebook and add cell", async ({ page }) => {
@@ -334,5 +351,54 @@ test.describe("Notebook", () => {
 
     // Verify no JS errors occurred.
     expect(jsErrors).toEqual([]);
+  });
+});
+
+test.describe("Leaving the editor", () => {
+  /** A fresh notebook with one persisted code cell whose editor is mounted. */
+  async function notebookWithCell(page: Page) {
+    await createNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await waitForPersistedCells(page, 1);
+    return cell;
+  }
+
+  test("closing right after typing keeps the edit", async ({ page }) => {
+    // The 1s save debounce used to die with the page: in-app navigation
+    // cancelled the timer and nothing flushed, so the store kept `42`.
+    const cell = await notebookWithCell(page);
+    const id = localId(page);
+    await setCellSource(page, cell, "42 + 777");
+    await page.locator(".ironpad-toolbar-close").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(async () => (await storedNotebook(page, id))?.cells?.[0]?.source, {
+        timeout: 10_000,
+      })
+      .toBe("42 + 777");
+  });
+
+  test("opening and closing an untouched notebook writes nothing", async ({
+    page,
+  }) => {
+    // The negative half of the teardown write: it fires only for edits no
+    // write has landed. Unconditional, it would bump `updated_at` and mint
+    // a history snapshot on every visit.
+    await notebookWithCell(page);
+    const id = localId(page);
+    await page.reload();
+    await expect(
+      page.locator(".ironpad-cell-card .monaco-editor").first(),
+    ).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(1_500);
+    const before = (await storedNotebook(page, id)).updated_at;
+    await page.locator(".ironpad-toolbar-close").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(2_000);
+    expect((await storedNotebook(page, id)).updated_at).toBe(before);
   });
 });

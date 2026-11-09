@@ -155,6 +155,8 @@ pub fn NotebookEditor(
         draft_save_state: RwSignal::new(DraftSaveState::Synced),
         draft_save_epoch: RwSignal::new(0),
         draft_save_inflight: RwSignal::new(0),
+        persist_pending: RwSignal::new(false),
+        persist_halted: RwSignal::new(false),
         // Resolved HERE, under the component's owner: the autosave chain that
         // needs it runs inside `spawn_local`, which does not carry the owner
         // (and therefore cannot look up context) across an await.
@@ -185,6 +187,38 @@ pub fn NotebookEditor(
     // session.
     #[cfg(feature = "hydrate")]
     on_cleanup(move || crate::session::end_session(&session_state));
+
+    // The last write on the way out: in-app navigation disposes the cells'
+    // debounce timers and the scheduled draft save, so edits made just
+    // before leaving would otherwise never be stored. Runs after every
+    // CellItem has flushed its unsaved panes (children clean up first).
+    #[cfg(feature = "hydrate")]
+    on_cleanup(move || state::persist_on_teardown(&state));
+
+    // Closing or reloading the tab runs no cleanup at all, so Local mode
+    // also writes on `pagehide`, best-effort. Not `ServerDraft`: a request
+    // started while the page unloads is cancelled with it.
+    #[cfg(feature = "hydrate")]
+    if server_draft.is_none() {
+        use wasm_bindgen::prelude::*;
+
+        let on_pagehide = Closure::<dyn Fn()>::new(move || state::persist_on_teardown(&state));
+        if let Some(window) = web_sys::window() {
+            let _ = window
+                .add_event_listener_with_callback("pagehide", on_pagehide.as_ref().unchecked_ref());
+        }
+        let stored = StoredValue::new_local(on_pagehide);
+        on_cleanup(move || {
+            if let Some(window) = web_sys::window() {
+                stored.try_with_value(|closure| {
+                    let _ = window.remove_event_listener_with_callback(
+                        "pagehide",
+                        closure.as_ref().unchecked_ref(),
+                    );
+                });
+            }
+        });
+    }
 
     // Load the notebook: `ServerDraft` mode arrives preloaded (the mutable
     // page already fetched the draft); Local mode reads IndexedDB.

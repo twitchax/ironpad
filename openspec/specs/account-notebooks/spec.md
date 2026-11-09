@@ -111,12 +111,20 @@ A notebook with no published copy SHALL answer `/mutable/{id}` with HTTP 404 for
 - **THEN** the not-found copy shows immediately
 
 ### Requirement: Draft autosave
-In the owner's editor, edits SHALL autosave to the server draft after a 1.5 s debounce, coalescing a burst into one write, and SHALL not change what readers see until Publish or Push. The indicator after the publish button SHALL read "Saving draft…" during a save and "Draft not saved; retrying" after a failed one, which retries after 5 s. Concurrent drafts are last-write-wins. (PRD-0054)
+In the owner's editor, edits SHALL autosave to the server draft after a 1.5 s debounce, coalescing a burst into one write, or at once when the owner leaves the editor before it fires, and SHALL not change what readers see until Publish or Push. Leaving without unsaved edits SHALL save nothing. The indicator after the publish button SHALL read "Saving draft…" during a save and "Draft not saved; retrying" after a failed one, which retries after 5 s. Concurrent drafts are last-write-wins. (PRD-0054)
 
 #### Scenario: Same draft on every device
 - **WHEN** the owner renames a published notebook to "Device One WIP" on one device and opens its URL on a second device signed in to the same account
 - **THEN** the second device's editor shows "Device One WIP" with Push armed
 - **AND** another account still reads the published title until a Push
+
+#### Scenario: Leaving inside the debounce
+- **WHEN** the owner edits a cell and clicks "Back to notebook list" before the draft autosave fires
+- **THEN** the draft is saved anyway, and reopening the notebook shows the edit
+
+#### Scenario: Leaving a clean notebook
+- **WHEN** the owner opens a clean published notebook and leaves
+- **THEN** no draft is saved and the button still reads "Published"
 
 #### Scenario: Network failure
 - **WHEN** draft saves fail at the network layer
