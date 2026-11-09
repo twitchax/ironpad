@@ -449,25 +449,33 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await page.locator(".ironpad-add-cell-btn").first().click();
     await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
     await shareMutable(page);
-    await expect(
-      page.locator(".ironpad-cell-card .monaco-editor").first(),
-    ).toBeVisible({ timeout: 15_000 });
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
 
-    // Edit a cell and push IMMEDIATELY — inside the ~1s editor->model
-    // debounce. Push promotes whatever the SERVER holds, so without the
-    // flush-before-serialize discipline this keystroke would be missing from
-    // the copy readers get, behind a success toast.
+    // Arm Push FIRST, with a rename. A fresh share is clean, so the button
+    // is disabled, and click() waits for it to enable: arming it with the
+    // cell edit itself let the click land only after the 1s debounce had
+    // already put the edit in the model, so the flush had nothing to do and
+    // the test passed without it.
+    await renameNotebook(page, "Push Flush v2");
+    const push = page.locator(".ironpad-push-button");
+    await expect(push).toBeEnabled({ timeout: 10_000 });
+
+    // Edit a cell and push IMMEDIATELY, inside the ~1s editor->model
+    // debounce (the dirty dot says it has not fired). Push promotes whatever
+    // the SERVER holds, so without the flush-before-serialize discipline
+    // this keystroke would be missing from the copy readers get, behind a
+    // success toast.
     //
     // This assertion used to ride Unpublish, whose local save was for one
     // moment the only surviving copy of the notebook (PRD-0064 removed that
     // moment, and the flow with it). Push is where promoting stale content
     // is still the failure.
-    await setCellSource(
-      page,
-      page.locator(".ironpad-cell-card").first(),
-      "let flushed_before_push = 42;",
-    );
-    await page.locator(".ironpad-push-button").click();
+    await setCellSource(page, cell, "let flushed_before_push = 42;");
+    await expect(cell.locator(".ironpad-tab-dirty")).toHaveCount(1);
+    await push.click();
     await expect(
       page.locator(".ironpad-toast-title", { hasText: "Pushed" }),
     ).toBeVisible({ timeout: 30_000 });
