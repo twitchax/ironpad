@@ -247,11 +247,24 @@ impl Plot {
             return;
         }
 
-        let max_val = data
+        let (min_val, max_val) = data
             .iter()
             .map(|(_, v)| *v)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let y_top = if max_val <= 0.0 { 1.0 } else { max_val * 1.1 };
+            .filter(|v| v.is_finite())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            });
+        // Bars grow from zero, so the axis always holds it, with 10% headroom
+        // past whichever ends the data reaches. A negative value outside the
+        // range would be clamped to the axis and drawn as a flat sliver.
+        let y_bottom = if min_val < 0.0 { min_val * 1.1 } else { 0.0 };
+        let y_top = if max_val > 0.0 {
+            max_val * 1.1
+        } else if min_val < 0.0 {
+            0.0
+        } else {
+            1.0
+        };
         let n = data.len() as f64;
 
         let mut builder = ChartBuilder::on(root);
@@ -269,7 +282,7 @@ impl Plot {
         // and plotters halved the tick density to fit, dropping every other
         // category label and leaving the rest at the bars' left edges.
         let mut chart = builder
-            .build_cartesian_2d(-0.5..(n - 0.5), 0.0..y_top)
+            .build_cartesian_2d(-0.5..(n - 0.5), y_bottom..y_top)
             .expect("building bar chart context cannot fail");
 
         let category = |x: &f64| {
@@ -287,6 +300,17 @@ impl Plot {
                 .x_labels(data.len())
                 .draw()
                 .expect("drawing bar chart mesh cannot fail");
+        }
+
+        // The same zero baseline `build_chart_context` draws, when bars grow
+        // both ways from it.
+        if y_bottom < 0.0 && y_top > 0.0 {
+            chart
+                .draw_series(LineSeries::new(
+                    [(-0.5, 0.0), (n - 0.5, 0.0)],
+                    COLOR_ZERO.stroke_width(1),
+                ))
+                .expect("drawing baseline cannot fail");
         }
 
         let ranks = value_ranks(data);
@@ -307,13 +331,14 @@ impl Plot {
 
         // Value labels at the bar end, always: the handoff trades a dense value
         // axis for these, so there is nothing for `point_labels` to toggle.
-        let end_label = ("sans-serif", 11)
-            .into_font()
-            .color(&COLOR_TEXT)
-            .pos(Pos::new(HPos::Center, VPos::Bottom));
+        // Past the end either way: above a positive bar, below a negative one.
+        let end_label = ("sans-serif", 11).into_font().color(&COLOR_TEXT);
+        let above = end_label.pos(Pos::new(HPos::Center, VPos::Bottom));
+        let below = end_label.pos(Pos::new(HPos::Center, VPos::Top));
         chart
             .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
-                Text::new(format!("{val:.1}"), (i as f64, *val), end_label.clone())
+                let style = if *val < 0.0 { &below } else { &above };
+                Text::new(format!("{val:.1}"), (i as f64, *val), style.clone())
             }))
             .expect("drawing bar value labels cannot fail");
 
@@ -1017,6 +1042,60 @@ mod tests {
                     at[0]
                 );
             }
+        }
+    }
+
+    /// `(label, y)` of each y-axis tick label (muted, right-anchored).
+    fn y_ticks(svg: &str) -> Vec<(String, f64)> {
+        let lines: Vec<&str> = svg.lines().collect();
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                l.starts_with("<text")
+                    && l.contains("text-anchor=\"end\"")
+                    && l.contains("var(--ip-plot-muted,")
+            })
+            .map(|(i, l)| {
+                let y: f64 = attr(l, "y").parse().expect("numeric y");
+                (lines[i + 1].trim().to_owned(), y)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn negative_bars_extend_below_zero() {
+        let mixed = Plot::bar(&[("a", -5.0), ("b", 10.0)]).render_svg();
+        let rects = bar_rects(&mixed);
+        assert!(
+            rects[0].3 > 1.0,
+            "the negative bar is drawn with real height: {rects:?}"
+        );
+        let ticks = y_ticks(&mixed);
+        assert!(
+            ticks.iter().any(|(t, _)| t.starts_with('-')),
+            "the axis reaches below zero: {ticks:?}"
+        );
+        assert!(
+            mixed.contains("var(--ip-plot-zero,"),
+            "a chart crossing zero carries the baseline"
+        );
+
+        let negative = Plot::bar(&[("a", -5.0), ("b", -1.0)]).render_svg();
+        let ticks = y_ticks(&negative);
+        let zero_y = ticks
+            .iter()
+            .find(|(t, _)| t.parse::<f64>().is_ok_and(|v| v == 0.0))
+            .map_or_else(
+                || panic!("an all-negative chart tops out at a 0 tick: {ticks:?}"),
+                |&(_, y)| y,
+            );
+        for (x, y, w, h) in bar_rects(&negative) {
+            assert!(h > 1.0, "bar at x={x} (w={w}) is flat");
+            assert!(
+                (y - zero_y).abs() <= 1.0,
+                "bar at x={x} hangs from the zero line ({zero_y}), not from y={y}"
+            );
         }
     }
 

@@ -280,6 +280,10 @@ The system SHALL provide `Plot::line` and `Plot::scatter` over `&[(f64, f64)]` a
 - **THEN** every bar is labelled with its value at one decimal and the bars' opacities by rank are `0.62`, `1`, `0.78`, `0.46` in input order
 - **AND** every category name sits on the x axis under the centre of its own bar, however many bars there are
 
+#### Scenario: Negative bars
+- **WHEN** a cell ends with `Plot::bar(&[("Q1", 12.0), ("Q2", -7.5)])`
+- **THEN** the y axis reaches below zero, `Q2`'s bar extends down from a zero baseline with its value label below its end, and an all-negative chart hangs every bar from a top tick of 0
+
 #### Scenario: Axes and gridlines
 - **WHEN** any chart renders
 - **THEN** it draws horizontal dashed gridlines only, at most 6 ticks per axis, and a zero baseline only when 0 lies inside the y range
