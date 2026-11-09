@@ -3,6 +3,7 @@ import { test, expect, Page } from "@playwright/test";
 import { loginTestUser } from "./helpers/auth";
 import { openMetadataPanel } from "./helpers/metadata";
 import { setCellSource } from "./helpers/monaco";
+import { countToasts } from "./helpers/toasts";
 import {
   MENU,
   expectLiveCard,
@@ -773,6 +774,7 @@ test.describe("Account notebooks (PRD-0064)", () => {
     );
     const cell = page.locator(".ironpad-cell-card").first();
     const indicator = page.locator(".ironpad-draft-indicator");
+    const refusalToasts = await countToasts(page, "Draft Not Saved");
     await setCellSource(page, cell, "let a = 1;");
     // Proves the fixture is classified as a refusal: a mis-encoded one would
     // read "retrying" and pass the rest of this test for the wrong reason.
@@ -794,11 +796,7 @@ test.describe("Account notebooks (PRD-0064)", () => {
       await expect.poll(() => posts, { timeout: 10_000 }).toBeGreaterThan(before);
       await page.waitForTimeout(500);
     }
-    expect(
-      await page
-        .locator(".ironpad-toast-title", { hasText: "Draft Not Saved" })
-        .count(),
-    ).toBe(1);
+    expect(await refusalToasts()).toBe(1);
     const texts: string[] = await page.evaluate(
       () => (window as any).__indicatorTexts,
     );
@@ -819,6 +817,7 @@ test.describe("Account notebooks (PRD-0064)", () => {
     page.on("request", (r) => {
       if (r.url().includes("save_mutable_draft")) posts++;
     });
+    const refusalToasts = await countToasts(page, "Draft Not Saved");
     const line = "// " + "x".repeat(197) + "\n";
     await setCellSource(
       page,
@@ -829,10 +828,11 @@ test.describe("Account notebooks (PRD-0064)", () => {
       "Draft not saved: notebook too large",
       { timeout: 30_000 },
     );
-    await page.waitForTimeout(12_000);
-    expect(posts).toBe(1);
     await expect(
       page.locator(".ironpad-toast-body", { hasText: "4 MiB" }),
     ).toHaveCount(1);
+    await page.waitForTimeout(12_000);
+    expect(posts).toBe(1);
+    expect(await refusalToasts()).toBe(1);
   });
 });

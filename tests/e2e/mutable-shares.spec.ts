@@ -11,6 +11,7 @@ import {
   shareMutable,
 } from "./helpers/mutable";
 import { openMetadataPanel } from "./helpers/metadata";
+import { countToasts } from "./helpers/toasts";
 import { createNotebook, renameNotebook } from "./helpers/session";
 
 /**
@@ -572,15 +573,9 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     // and a panel's Save toasted success whatever its write returned.
     test.setTimeout(150_000);
     await publishedNotebookWithCell(page, "nora", "Explicit Save");
-    const notSaved = page
-      .locator(".ironpad-toast-title")
-      .filter({ hasText: /^Not Saved$/ });
-    const saved = page.locator(".ironpad-toast-title", {
-      hasText: "Notebook saved",
-    });
-    const metaSaved = page.locator(".ironpad-toast-title", {
-      hasText: "Notebook metadata saved",
-    });
+    const notSaved = await countToasts(page, "Not Saved");
+    const saved = await countToasts(page, "Notebook saved");
+    const metaSaved = await countToasts(page, "Notebook metadata saved");
     const header = page.locator(".ironpad-cell-card .ironpad-cell-header").first();
 
     await page.route(
@@ -589,21 +584,21 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     );
     await header.click();
     await page.keyboard.press("Control+s");
-    await expect(notSaved).toHaveCount(1, { timeout: 15_000 });
-    await expect(saved).toHaveCount(0);
+    await expect.poll(notSaved, { timeout: 15_000 }).toBe(1);
+    expect(await saved()).toBe(0);
     const panel = await openMetadataPanel(page);
     const save = panel.locator("button.ironpad-btn--primary", { hasText: "Save" });
     await save.click();
-    await expect(notSaved).toHaveCount(2, { timeout: 15_000 });
-    await expect(metaSaved).toHaveCount(0);
+    await expect.poll(notSaved, { timeout: 15_000 }).toBe(2);
+    expect(await metaSaved()).toBe(0);
 
     // Saves land again, and so do the success toasts.
     await page.unrouteAll();
     await header.click();
     await page.keyboard.press("Control+s");
-    await expect(saved).toBeVisible({ timeout: 15_000 });
+    await expect.poll(saved, { timeout: 15_000 }).toBe(1);
     await save.click();
-    await expect(metaSaved).toBeVisible({ timeout: 15_000 });
+    await expect.poll(metaSaved, { timeout: 15_000 }).toBe(1);
   });
 
   test("leaving mid-Push while an autosave is on the wire keeps the app alive", async ({

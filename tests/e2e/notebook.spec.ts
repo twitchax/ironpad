@@ -1,6 +1,7 @@
 import { test, expect, Page } from "@playwright/test";
 import { menuClick } from "./helpers/menu";
 import { setCellSource } from "./helpers/monaco";
+import { countToasts } from "./helpers/toasts";
 import { trackJsErrors } from "./helpers/errors";
 import {
   createNotebook,
@@ -434,9 +435,8 @@ test.describe("Save results", () => {
       timeout: 15_000,
     });
     await waitForPersistedCells(page, 1);
-    const notSaved = page
-      .locator(".ironpad-toast-title")
-      .filter({ hasText: /^Not Saved$/ });
+    const notSaved = await countToasts(page, "Not Saved");
+    const saved = await countToasts(page, "Notebook saved");
 
     // The store starts refusing writes, the way a full or private-mode
     // browser does. The storage binding resolves the global at call time.
@@ -449,26 +449,22 @@ test.describe("Save results", () => {
     });
     // Two autosaves, one toast.
     await setCellSource(page, cell, "42 + 1");
-    await expect(notSaved).toHaveCount(1, { timeout: 10_000 });
+    await expect.poll(notSaved, { timeout: 10_000 }).toBe(1);
     await setCellSource(page, cell, "42 + 2");
     await page.waitForTimeout(2_000);
-    await expect(notSaved).toHaveCount(1);
+    expect(await notSaved()).toBe(1);
     // An explicit save always reports, and never claims success.
     await cell.locator(".ironpad-cell-header").click();
     await page.keyboard.press("Control+s");
-    await expect(notSaved).toHaveCount(2, { timeout: 10_000 });
-    await expect(
-      page.locator(".ironpad-toast-title", { hasText: "Notebook saved" }),
-    ).toHaveCount(0);
+    await expect.poll(notSaved, { timeout: 10_000 }).toBe(2);
+    expect(await saved()).toBe(0);
 
     await page.evaluate(() => {
       const storage = (window as any).IronpadStorage;
       storage.saveNotebook = storage.__realSave;
     });
     await page.keyboard.press("Control+s");
-    await expect(
-      page.locator(".ironpad-toast-title", { hasText: "Notebook saved" }),
-    ).toBeVisible({ timeout: 10_000 });
+    await expect.poll(saved, { timeout: 10_000 }).toBe(1);
   });
 });
 

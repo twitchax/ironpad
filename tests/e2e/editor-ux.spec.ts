@@ -171,10 +171,14 @@ test.describe("Editor UX (PRD-0032)", () => {
     }
     const id = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
     // Fallback mode drives the drag with plain pointer events, which
-    // page.mouse produces; native HTML5 drag events it does not.
+    // page.mouse produces; native HTML5 drag events it does not. With the
+    // swap animation off, each row the pointer crosses swaps at once rather
+    // than ignoring the pointer while the previous swap animates.
     await page.evaluate(() => {
       const el = document.querySelector(".ironpad-cells-container");
-      (window as any).Sortable.get(el).option("forceFallback", true);
+      const sortable = (window as any).Sortable.get(el);
+      sortable.option("forceFallback", true);
+      sortable.option("animation", 0);
     });
     const labels = () =>
       page
@@ -182,6 +186,7 @@ test.describe("Editor UX (PRD-0032)", () => {
         .evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
     await expect.poll(labels).toEqual(["Cell 0", "Cell 1", "Cell 2"]);
 
+    // Row by row, pausing on each, so every swap on the way registers.
     const drag = async (from: number, to: number) => {
       const rows = page.locator(".ironpad-cell-row");
       await rows.nth(from).hover();
@@ -189,15 +194,24 @@ test.describe("Editor UX (PRD-0032)", () => {
         .nth(from)
         .locator(".ironpad-drag-handle")
         .boundingBox())!;
-      const target = (await rows.nth(to).boundingBox())!;
       const x = handle.x + handle.width / 2;
       const y = handle.y + handle.height / 2;
+      const step = to > from ? 1 : -1;
+      const targets = [];
+      for (let i = from + step; i !== to + step; i += step) {
+        const box = (await rows.nth(i).boundingBox())!;
+        targets.push(step > 0 ? box.y + box.height * 0.8 : box.y + box.height * 0.2);
+      }
       await page.mouse.move(x, y);
       await page.mouse.down();
-      await page.mouse.move(x, y + (to > from ? 8 : -8), { steps: 4 });
-      const ty =
-        to > from ? target.y + target.height * 0.8 : target.y + target.height * 0.2;
-      await page.mouse.move(x, ty, { steps: 25 });
+      await page.mouse.move(x, y + 8 * step, { steps: 4 });
+      let at = y + 8 * step;
+      for (const ty of targets) {
+        await page.mouse.move(x, ty, { steps: 15 });
+        at = ty;
+        await page.waitForTimeout(150);
+      }
+      await page.mouse.move(x, at + 2 * step, { steps: 2 });
       await page.mouse.up();
     };
 
