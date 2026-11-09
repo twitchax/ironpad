@@ -92,11 +92,16 @@ The editor SHALL live-check a cell immediately only when neither the notebook's 
 - **THEN** cells in the notebook wait for a clean compile before being live-checked
 
 ### Requirement: Checks skip cells whose inputs are missing
-The editor SHALL NOT live-check a cell that references an upstream input (`cellN`, `last`, or the raw input buffer) while no upstream cell has yet produced a typed output, since the check cannot run its predecessors. (PRD-0045 T-003, PRD-0060)
+The editor SHALL NOT live-check a cell that references a slot `cellN` whose upstream cell has not produced a typed output, or that references `last` while no upstream cell has, since the generated crate binds only typed slots and the check cannot run its predecessors. A reference to a slot past the cells above, or to the raw input buffer, SHALL still be checked: the first is a real error and the second is always bound. (PRD-0045 T-003, PRD-0060)
 
 #### Scenario: Fresh notebook referencing an earlier cell
 - **WHEN** a cell's source reads `cell0 + 1` and no cell above it has run
 - **THEN** no check is dispatched and no false "cannot find value" marker appears
+
+#### Scenario: Only some cells above have run
+- **WHEN** only the first of three cells has run and the third's source reads `cell1 + 1`
+- **THEN** no check is dispatched for the third cell and no false "cannot find value" marker appears
+- **AND** once the second cell has run too, the third is checked
 
 ### Requirement: Freshest result owns the markers
 The editor SHALL apply a check's result only if it answers the cell's newest dispatch, SHALL replace the cell's inline markers with a `Clean` or `Errors` result (a `Clean` result clears them), and SHALL let compile and check results share the markers with the most recent one winning. A failed request MUST leave existing markers untouched. (PRD-0045 T-003)

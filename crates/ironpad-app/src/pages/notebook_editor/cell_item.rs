@@ -795,17 +795,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // Live check-on-type (PRD-0045): the model is current here by
                 // construction (the save just landed), so this is the one
                 // honest moment to type-check what the user sees.
-                pipeline::dispatch_live_check(
-                    &state,
-                    cell_id.get_value(),
-                    cell_type,
-                    is_shared,
-                    cell_status,
-                    source,
-                    cargo_toml,
+                pipeline::dispatch_live_check(&pipeline::LiveCheckCtx {
+                    run: run_ctx,
                     last_check,
                     check_generation,
-                );
+                });
             }
         });
         let save_fn: js_sys::Function =

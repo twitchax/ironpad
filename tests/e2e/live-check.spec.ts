@@ -46,4 +46,50 @@ test.describe("Live check-on-type (PRD-0045)", () => {
 
     expect(jsErrors).toEqual([]);
   });
+
+  test("a reference to an unrun upstream slot is not checked (review soc-app-client-4)", async ({
+    page,
+  }) => {
+    // The eligibility gate skipped only when EVERY upstream type was empty,
+    // while the scaffold binds a slot only when its own type is known. Run
+    // just the first cell, and a third cell reading the unrun second one was
+    // checked against a scaffold with no `cell1` binding: a false E0425
+    // squiggle on code that runs fine (Run cascades the second cell first).
+    test.setTimeout(300_000);
+    const jsErrors = trackJsErrors(page);
+
+    await createNotebook(page);
+    for (let i = 0; i < 3; i++) {
+      await page.locator(ADD_CODE).last().click();
+    }
+    const cells = page.locator(".ironpad-cell-card");
+    await expect(cells).toHaveCount(3);
+    await expect(cells.nth(2).locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cells.nth(0), "10u32");
+    await setCellSource(page, cells.nth(1), "cell0 + 1");
+    await setCellSource(page, cells.nth(2), "5u32");
+
+    await page.locator(".ironpad-cell-row").first().locator('button[title="Run cell"]').click();
+    await expect(cells.nth(0).locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 180_000,
+    });
+
+    // Negative FIRST: a skipped check leaves earlier markers in place, so a
+    // positive control run before this would make it fail for the wrong
+    // reason.
+    await setCellSource(page, cells.nth(2), "cell1 + 1");
+    await page.waitForTimeout(20_000);
+    await expect(cells.nth(2).locator(".squiggly-error")).toHaveCount(0);
+
+    // Positive control: checks are live for this cell.
+    await setCellSource(page, cells.nth(2), 'let x: i32 = "not a number";\nx');
+    await expect(cells.nth(2).locator(".squiggly-error").first()).toBeVisible({
+      timeout: 120_000,
+    });
+
+    expect(jsErrors).toEqual([]);
+  });
 });
+

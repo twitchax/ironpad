@@ -9,6 +9,8 @@
 //! `unexecuted_dependencies`, `probe_local`/`store_unless_served`,
 //! `fail_in_run_queue`) rather than re-wrapping them.
 
+use std::collections::{HashMap, HashSet};
+
 use ironpad_common::{
     CellManifest, CellType, CompileRequest, CompileResponse, Diagnostic, ExecutionResult,
     IronpadNotebook, Severity,
@@ -22,9 +24,7 @@ use crate::model::NotebookModel;
 use crate::server_fns::compile_cell;
 use crate::session::SessionState;
 
-#[cfg(feature = "hydrate")]
-use super::state::CellOutputData;
-use super::state::{CellStatus, NotebookState};
+use super::state::{CellOutputData, CellStatus, NotebookState};
 
 // ── Run context ─────────────────────────────────────────────────────────────
 
@@ -252,7 +252,7 @@ impl RunInputs {
 fn upstream_runnable_sources(
     cells: &[CellManifest],
     cell_id: &str,
-    sources: &std::collections::HashMap<String, String>,
+    sources: &HashMap<String, String>,
 ) -> Vec<String> {
     let my_idx = cells.iter().position(|c| c.id == cell_id).unwrap_or(0);
     cells[..my_idx]
@@ -789,43 +789,160 @@ pub(super) fn diagnostics_to_markers(diagnostics: &[Diagnostic]) -> js_sys::Arra
     markers
 }
 
-/// Fire a live check for `cid` if the cell is eligible, discarding the
-/// response unless it is still the newest dispatch (generation match).
+/// Everything the live-check policy reads, borrowed, so the policy itself
+/// ([`plan_live_check`]) is a pure function with no signals in it.
+pub(super) struct LiveCheckInput<'a> {
+    pub(super) notebook_id: &'a str,
+    pub(super) cell_id: &'a str,
+    pub(super) cell_type: CellType,
+    pub(super) shared: bool,
+    /// Compiling or running: the run reports its own diagnostics.
+    pub(super) busy: bool,
+    /// The editor's live text (the model can lag it by the save debounce).
+    pub(super) source: &'a str,
+    pub(super) cargo_toml: &'a str,
+    pub(super) notebook: &'a IronpadNotebook,
+    pub(super) cells: &'a [CellManifest],
+    pub(super) outputs: &'a HashMap<String, CellOutputData>,
+    /// Manifests that compiled cleanly this session (`warm_manifest_key`).
+    pub(super) warm: &'a HashSet<String>,
+}
+
+/// The cell body sent with a shared-cell check: the real code under test
+/// rides in `shared_source`, but the scaffold still needs a valid cell.
+const SHARED_CHECK_BODY: &str = "String::new()";
+
+/// The live-check policy (PRD-0045): the request to send for this cell, or
+/// `None` when it should not be checked.
 ///
-/// Eligibility (PRD-0045): code cell, not mid-compile, warm by the manifest
-/// policy, and not referencing piped inputs that have no outputs yet (those
-/// would produce false "cannot find value cellN" noise — the run path
-/// cascades predecessors, a check cannot).
+/// Eligible means: a cell that compiles, not busy, warm by the manifest
+/// policy (default deps are pre-checked by the image warmup; custom deps must
+/// have compiled once this session), and not reading a piped slot that has no
+/// type yet. The scaffold binds a slot only when its OWN type is known, so a
+/// reference to an unrun slot is a false "cannot find value `cellN`" squiggle
+/// on code that runs fine (Run cascades the slot's cell first; a check
+/// cannot). An out-of-range slot is a real error and stays checked, and a
+/// raw-buffer reference is always bound.
 ///
 /// Shared cells (PRD-0046) check the assembled `shared.rs` instead: the
-/// request carries a throwaway cell body plus the target cell's line slice,
-/// and the server returns only diagnostics anchored inside that slice,
-/// remapped to cell-local lines.
+/// request carries a throwaway body plus the cell's line slice, and the
+/// server returns only diagnostics anchored inside that slice, remapped to
+/// cell-local lines.
+fn plan_live_check(input: &LiveCheckInput<'_>) -> Option<CompileRequest> {
+    use ironpad_common::{manifest_has_custom_deps, SharedCheckRange};
+
+    let &LiveCheckInput {
+        cell_type, shared, ..
+    } = input;
+
+    // Nothing to check without code. `Unsupported` is included: this build
+    // cannot know what that cell meant, so it must not compile it to guess.
+    if !cell_type.compiles() || input.busy {
+        return None;
+    }
+
+    let shared_cargo = input.notebook.shared_cargo_toml.as_deref();
+    // A shared cell's own manifest never reaches the build (consumers merge
+    // THEIR manifest with the shared one), so its check compiles under the
+    // default cell manifest.
+    let cargo_toml = if shared {
+        ironpad_common::DEFAULT_CELL_CARGO_TOML
+    } else {
+        input.cargo_toml
+    };
+    if manifest_has_custom_deps(shared_cargo, cargo_toml)
+        && !input
+            .warm
+            .contains(&warm_manifest_key(shared_cargo, cargo_toml))
+    {
+        return None;
+    }
+
+    let (shared_check, previous_cell_types) = if shared {
+        // This cell's slice inside the assembly, from the same model state
+        // the shared source below is assembled from. Not (yet) in it (the
+        // shared toggle is still in flight): no slice, so try again next
+        // debounce. Shared cells hold empty piping slots and the check body
+        // references nothing.
+        let start_line = ironpad_common::shared_cell_line_offset(
+            input.notebook.shared_source.as_deref(),
+            &input.notebook.cells,
+            input.cell_id,
+        )?;
+        let cell = input
+            .notebook
+            .cells
+            .iter()
+            .find(|c| c.id == input.cell_id)?;
+        let line_count = u32::try_from(cell.source.split('\n').count()).ok()?;
+        (
+            Some(SharedCheckRange {
+                start_line,
+                line_count,
+            }),
+            Vec::new(),
+        )
+    } else {
+        // THE shared projection: the same vector the compile path scaffolds
+        // and cache-keys from (`assemble_cell_inputs`), so a check never
+        // forks its scaffold or cache key from the eventual compile.
+        let my_idx = input
+            .cells
+            .iter()
+            .position(|c| c.id == input.cell_id)
+            .unwrap_or(0);
+        let types =
+            crate::components::executor::previous_cell_types(input.cells, my_idx, input.outputs);
+        // The shared detection recipe (PRD-0060), slot by slot.
+        let refs = ironpad_common::cell_deps::referenced_slots(input.source);
+        let unbound_slot = refs
+            .slots
+            .iter()
+            .any(|&i| types.get(i).is_some_and(String::is_empty));
+        if unbound_slot || (refs.last && types.iter().all(String::is_empty)) {
+            return None;
+        }
+        (None, types)
+    };
+
+    Some(CompileRequest {
+        // A shared cell's check compiles SHARED_CHECK_BODY through the Code
+        // scaffold regardless of the cell's own type, so it reports Code; any
+        // other cell reports what it is, and the server derives the target.
+        cell_type: if shared { CellType::Code } else { cell_type },
+        notebook_id: input.notebook_id.to_string(),
+        cell_id: input.cell_id.to_string(),
+        source: if shared {
+            SHARED_CHECK_BODY
+        } else {
+            input.source
+        }
+        .to_string(),
+        cargo_toml: cargo_toml.to_string(),
+        previous_cell_types,
+        shared_cargo_toml: shared_cargo.map(str::to_string),
+        shared_source: input.notebook.effective_shared_source(),
+        force: false,
+        shared_check,
+    })
+}
+
+/// What a live-check dispatch touches: the cell's run context plus the
+/// check's own two signals.
 #[cfg(feature = "hydrate")]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn dispatch_live_check(
-    state: &NotebookState,
-    cid: String,
-    cell_type: CellType,
-    is_shared: Signal<bool>,
-    cell_status: RwSignal<CellStatus>,
-    source: RwSignal<String>,
-    cargo_toml: RwSignal<String>,
-    last_check: RwSignal<Option<Vec<Diagnostic>>>,
-    check_generation: RwSignal<u64>,
-) {
-    dispatch_live_check_with_retries(
-        state,
-        cid,
-        cell_type,
-        is_shared,
-        cell_status,
-        source,
-        cargo_toml,
-        last_check,
-        check_generation,
-        CHECK_SKIP_RETRIES,
-    );
+#[derive(Clone, Copy)]
+pub(super) struct LiveCheckCtx {
+    pub(super) run: CellRunCtx,
+    pub(super) last_check: RwSignal<Option<Vec<Diagnostic>>>,
+    pub(super) check_generation: RwSignal<u64>,
+}
+
+/// Fire a live check for the cell if [`plan_live_check`] says it is
+/// eligible, discarding the response unless it is still the newest dispatch
+/// (generation match).
+#[cfg(feature = "hydrate")]
+pub(super) fn dispatch_live_check(ctx: &LiveCheckCtx) {
+    dispatch_live_check_with_retries(ctx, CHECK_SKIP_RETRIES);
 }
 
 /// Retries after a `Skipped` check (the pool was busy). Each retry re-reads
@@ -840,144 +957,57 @@ const CHECK_SKIP_RETRIES: u8 = 5;
 const CHECK_SKIP_RETRY_MS: i32 = 3_000;
 
 #[cfg(feature = "hydrate")]
-#[allow(clippy::too_many_arguments)]
-fn dispatch_live_check_with_retries(
-    state: &NotebookState,
-    cid: String,
-    cell_type: CellType,
-    is_shared: Signal<bool>,
-    cell_status: RwSignal<CellStatus>,
-    source: RwSignal<String>,
-    cargo_toml: RwSignal<String>,
-    last_check: RwSignal<Option<Vec<Diagnostic>>>,
-    check_generation: RwSignal<u64>,
-    retries_left: u8,
-) {
-    use ironpad_common::{manifest_has_custom_deps, CheckStatus, SharedCheckRange};
+fn dispatch_live_check_with_retries(ctx: &LiveCheckCtx, retries_left: u8) {
+    use ironpad_common::CheckStatus;
 
-    /// The cell body sent with a shared-cell check: the real code under test
-    /// rides in `shared_source`, but the scaffold still needs a valid cell.
-    const SHARED_CHECK_BODY: &str = "String::new()";
+    let LiveCheckCtx {
+        run,
+        last_check,
+        check_generation,
+    } = *ctx;
+    let state = run.state;
+    let cid = run.cell_id.get_value();
+    let source = run.source.get_untracked();
+    let cargo_toml = run.cargo_toml.get_untracked();
+    let notebook_id = state.notebook_id.get_untracked();
 
-    // Nothing to check without code. `Unsupported` is included: this build
-    // cannot know what that cell meant, so it must not compile it to guess.
-    if !cell_type.compiles() {
-        return;
-    }
-    if matches!(
-        cell_status.get_untracked(),
-        CellStatus::Compiling | CellStatus::Running
-    ) {
-        return;
-    }
-
-    let shared = is_shared.get_untracked();
-    let current_source = source.get_untracked();
-    let shared_cargo = state.shared_cargo_toml.get_untracked();
-
-    // A shared cell's own manifest never reaches the build (consumers merge
-    // THEIR manifest with the shared one), so its check compiles under the
-    // default cell manifest.
-    let current_cargo_toml = if shared {
-        ironpad_common::DEFAULT_CELL_CARGO_TOML.to_string()
-    } else {
-        cargo_toml.get_untracked()
-    };
-
-    // Warmth policy: default deps are pre-checked by the image warmup;
-    // custom deps must have compiled once this session.
-    if manifest_has_custom_deps(shared_cargo.as_deref(), &current_cargo_toml) {
-        let key = warm_manifest_key(shared_cargo.as_deref(), &current_cargo_toml);
-        if !state
-            .warm_manifests
-            .with_untracked(|set| set.contains(&key))
-        {
-            return;
-        }
-    }
-
-    // Shared cells: locate this cell's slice inside the assembly, from the
-    // same model state the shared_source below is assembled from.
-    let shared_check: Option<SharedCheckRange> = if shared {
-        let range = state.notebook.with_untracked(|nb| {
-            let nb = nb.as_ref()?;
-            let start_line = ironpad_common::shared_cell_line_offset(
-                nb.shared_source.as_deref(),
-                &nb.cells,
-                &cid,
-            )?;
-            let cell = nb.cells.iter().find(|c| c.id == cid)?;
-            let line_count = u32::try_from(cell.source.split('\n').count()).ok()?;
-            Some(SharedCheckRange {
-                start_line,
-                line_count,
-            })
-        });
-        match range {
-            Some(r) => Some(r),
-            // Not (yet) in the assembly — e.g. the shared toggle is still in
-            // flight. No slice to check against; try again next debounce.
-            None => return,
-        }
-    } else {
-        None
-    };
-
-    // Piped-input references with missing predecessor outputs would produce
-    // false errors; the compile path cascades, a check can't. (Shared cells
-    // hold empty piping slots and their check body references nothing.)
-    let previous_cell_types: Vec<String> = if shared {
-        vec![]
-    } else {
-        // THE shared projection — same vector the compile path scaffolds and
-        // cache-keys from (`assemble_cell_inputs`), so a check never forks
-        // its scaffold or cache key from the eventual compile. Borrowed: this
-        // runs on every 1s typing debounce, and cloning the cells and every
-        // output's bytes to read type tags was the recurring cost here.
-        let types = state.cells.with_untracked(|cells| {
-            let my_idx = cells.iter().position(|c| c.id == cid).unwrap_or(0);
+    // Borrowed: this runs on every 1s typing debounce, and cloning the cells
+    // and every output's bytes to read type tags was the recurring cost here.
+    let request = state.notebook.with_untracked(|nb| {
+        let notebook = nb.as_ref()?;
+        state.cells.with_untracked(|cells| {
             state.cell_outputs.with_untracked(|outputs| {
-                crate::components::executor::previous_cell_types(cells, my_idx, outputs)
+                state.warm_manifests.with_untracked(|warm| {
+                    plan_live_check(&LiveCheckInput {
+                        notebook_id: &notebook_id,
+                        cell_id: &cid,
+                        cell_type: run.cell_type,
+                        shared: run.is_shared.get_untracked(),
+                        busy: matches!(
+                            run.cell_status.get_untracked(),
+                            CellStatus::Compiling | CellStatus::Running
+                        ),
+                        source: &source,
+                        cargo_toml: &cargo_toml,
+                        notebook,
+                        cells,
+                        outputs,
+                        warm,
+                    })
+                })
             })
-        });
-        // The shared detection recipe (PRD-0060): handles slots >= 10 and
-        // the `last` alias, which the old 0..10 substring scan missed.
-        let refs = ironpad_common::cell_deps::referenced_slots(&current_source);
-        if !refs.is_empty() && types.iter().all(String::is_empty) {
-            return;
-        }
-        types
+        })
+    });
+    let Some(request) = request else {
+        return;
     };
 
     let generation = check_generation.get_untracked() + 1;
     check_generation.set(generation);
 
     // Copied for the skip-retry redispatch: leptos context is not reliably
-    // reachable from a detached task, and the handle is `Copy` anyway.
-    let state_for_retry = *state;
-
-    let request = CompileRequest {
-        // A shared cell's check compiles SHARED_CHECK_BODY through the Code
-        // scaffold regardless of the cell's own type, so it reports Code; any
-        // other cell reports what it is, and the server derives the target.
-        cell_type: if shared { CellType::Code } else { cell_type },
-        notebook_id: state.notebook_id.get_untracked(),
-        cell_id: cid.clone(),
-        source: if shared {
-            SHARED_CHECK_BODY.to_string()
-        } else {
-            current_source
-        },
-        cargo_toml: current_cargo_toml,
-        previous_cell_types,
-        shared_cargo_toml: shared_cargo,
-        shared_source: state.notebook.with_untracked(|nb| {
-            nb.as_ref()
-                .and_then(ironpad_common::IronpadNotebook::effective_shared_source)
-        }),
-        force: false,
-        shared_check,
-    };
+    // reachable from a detached task, and the context is `Copy` anyway.
+    let retry_ctx = *ctx;
 
     leptos::task::spawn_local(async move {
         let Ok(response) = crate::server_fns::check_cell(request).await else {
@@ -1009,18 +1039,7 @@ fn dispatch_live_check_with_retries(
                     if check_generation.try_get_untracked().is_none() {
                         return;
                     }
-                    dispatch_live_check_with_retries(
-                        &state_for_retry,
-                        cid,
-                        cell_type,
-                        is_shared,
-                        cell_status,
-                        source,
-                        cargo_toml,
-                        last_check,
-                        check_generation,
-                        retries_left - 1,
-                    );
+                    dispatch_live_check_with_retries(&retry_ctx, retries_left - 1);
                 }
             }
             // Cold: the server spent its whole time budget; a quick retry
@@ -1181,6 +1200,247 @@ mod tests {
             summary.diagnostics[0].code.as_deref(),
             Some("unused_variables")
         );
+    }
+
+    // ── Live-check eligibility (PRD-0045, review soc-app-client-4) ──────
+
+    /// A notebook through serde, the way storage hands one over, so the
+    /// fixture names no field it does not care about.
+    fn notebook(cells: &[(&str, &str, bool)], shared_source: Option<&str>) -> IronpadNotebook {
+        let cells: Vec<serde_json::Value> = cells
+            .iter()
+            .enumerate()
+            .map(|(order, (id, source, shared))| {
+                serde_json::json!({
+                    "id": id, "order": order, "label": id,
+                    "cell_type": "Code", "source": source, "shared": shared,
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "id": "00000000-0000-0000-0000-000000000000",
+            "title": "live check",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "shared_source": shared_source,
+            "cells": cells,
+        }))
+        .expect("fixture notebook")
+    }
+
+    fn typed(ids: &[&str]) -> HashMap<String, CellOutputData> {
+        ids.iter()
+            .map(|id| {
+                (
+                    (*id).to_string(),
+                    CellOutputData {
+                        bytes: vec![0; 4],
+                        type_tag: Some("u32".to_string()),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Plan a check of `cell_id` with `source` in a three-cell notebook
+    /// `a`, `b`, `c` whose cells `ran` have typed outputs.
+    fn plan(cell_id: &str, source: &str, ran: &[&str]) -> Option<CompileRequest> {
+        let nb = notebook(
+            &[
+                ("a", "1u32", false),
+                ("b", "cell0 + 1", false),
+                ("c", "2u32", false),
+            ],
+            None,
+        );
+        let cells: Vec<CellManifest> = nb.cells.iter().map(manifest_of).collect();
+        let outputs = typed(ran);
+        let warm = HashSet::new();
+        plan_live_check(&LiveCheckInput {
+            notebook_id: "nb",
+            cell_id,
+            cell_type: CellType::Code,
+            shared: false,
+            busy: false,
+            source,
+            cargo_toml: "[dependencies]",
+            notebook: &nb,
+            cells: &cells,
+            outputs: &outputs,
+            warm: &warm,
+        })
+    }
+
+    fn manifest_of(cell: &ironpad_common::IronpadCell) -> CellManifest {
+        let mut m = manifest(&cell.id, cell.cell_type);
+        m.shared = cell.shared;
+        m
+    }
+
+    #[test]
+    fn skips_when_a_referenced_slot_is_unrun() {
+        // The regression: run only `a`, then type `cell1 + 1` in `c`. The
+        // types are ["u32", ""], not all empty, so the old gate checked, and
+        // the scaffold (which binds a slot only when its own type is known)
+        // emitted no `cell1`: a false E0425 squiggle on code that runs fine.
+        assert!(plan("c", "cell1 + 1", &["a"]).is_none());
+    }
+
+    #[test]
+    fn checks_when_every_referenced_slot_is_typed() {
+        let request = plan("c", "cell1 + 1", &["a", "b"]).expect("eligible");
+        assert_eq!(
+            request.previous_cell_types,
+            vec!["u32".to_string(), "u32".to_string()]
+        );
+        assert_eq!(request.source, "cell1 + 1");
+        assert!(request.shared_check.is_none());
+        assert!(!request.force);
+    }
+
+    #[test]
+    fn skips_last_with_nothing_typed() {
+        assert!(plan("c", "last + 1", &[]).is_none());
+        assert!(
+            plan("c", "last + 1", &["a"]).is_some(),
+            "the alias has a target"
+        );
+    }
+
+    #[test]
+    fn checks_an_out_of_range_slot() {
+        // `cell5` in the second cell is a real error the author should see.
+        assert!(plan("b", "cell5 + 1", &["a"]).is_some());
+    }
+
+    #[test]
+    fn checks_a_raw_only_reference() {
+        // The scaffold binds the raw buffer whenever any slot exists.
+        assert!(plan("c", "__ironpad_inputs__.len()", &[]).is_some());
+    }
+
+    #[test]
+    fn checks_a_cell_that_references_nothing() {
+        assert!(plan("c", "2u32 + 2", &[]).is_some());
+    }
+
+    #[test]
+    fn cold_custom_deps_skip_and_warm_ones_check() {
+        let nb = notebook(&[("a", "1u32", false)], None);
+        let cells: Vec<CellManifest> = nb.cells.iter().map(manifest_of).collect();
+        let outputs = HashMap::new();
+        let cargo = "[dependencies]\nrand = \"0.8\"";
+        let mut warm = HashSet::new();
+        let input = |warm: &HashSet<String>| {
+            plan_live_check(&LiveCheckInput {
+                notebook_id: "nb",
+                cell_id: "a",
+                cell_type: CellType::Code,
+                shared: false,
+                busy: false,
+                source: "1u32",
+                cargo_toml: cargo,
+                notebook: &nb,
+                cells: &cells,
+                outputs: &outputs,
+                warm,
+            })
+        };
+        assert!(
+            input(&warm).is_none(),
+            "custom deps never built this session"
+        );
+        warm.insert(warm_manifest_key(None, cargo));
+        assert!(input(&warm).is_some());
+    }
+
+    #[test]
+    fn shared_cell_sends_the_stub_body_as_code_with_its_line_range() {
+        let nb = notebook(
+            &[
+                ("helpers", "fn double(x: u32) -> u32 {\n    x * 2\n}", true),
+                ("a", "1u32", false),
+            ],
+            Some("const K: u32 = 1;"),
+        );
+        let cells: Vec<CellManifest> = nb.cells.iter().map(manifest_of).collect();
+        let outputs = HashMap::new();
+        let warm = HashSet::new();
+        let request = plan_live_check(&LiveCheckInput {
+            notebook_id: "nb",
+            cell_id: "helpers",
+            cell_type: CellType::Code,
+            shared: true,
+            busy: false,
+            source: "fn double(x: u32) -> u32 {\n    x * 2\n}",
+            // A shared cell's own manifest never reaches the build.
+            cargo_toml: "[dependencies]\nrand = \"0.8\"",
+            notebook: &nb,
+            cells: &cells,
+            outputs: &outputs,
+            warm: &warm,
+        })
+        .expect("a shared cell checks the assembly");
+        assert_eq!(request.cell_type, CellType::Code);
+        assert_eq!(request.source, "String::new()");
+        assert_eq!(request.cargo_toml, ironpad_common::DEFAULT_CELL_CARGO_TOML);
+        assert!(request.previous_cell_types.is_empty());
+        let range = request.shared_check.expect("the cell's slice");
+        assert_eq!(
+            range.start_line, 2,
+            "after the notebook-level source and its separator"
+        );
+        assert_eq!(range.line_count, 3);
+        assert_eq!(request.shared_source, nb.effective_shared_source());
+    }
+
+    #[test]
+    fn shared_cell_missing_from_the_assembly_skips() {
+        // The shared toggle is still in flight: the model does not yet hold
+        // the cell as shared, so there is no slice to check against.
+        let nb = notebook(&[("helpers", "fn f() {}", false)], None);
+        let cells: Vec<CellManifest> = nb.cells.iter().map(manifest_of).collect();
+        let outputs = HashMap::new();
+        let warm = HashSet::new();
+        assert!(plan_live_check(&LiveCheckInput {
+            notebook_id: "nb",
+            cell_id: "helpers",
+            cell_type: CellType::Code,
+            shared: true,
+            busy: false,
+            source: "fn f() {}",
+            cargo_toml: "[dependencies]",
+            notebook: &nb,
+            cells: &cells,
+            outputs: &outputs,
+            warm: &warm,
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn busy_cell_skips() {
+        let nb = notebook(&[("a", "1u32", false)], None);
+        let cells: Vec<CellManifest> = nb.cells.iter().map(manifest_of).collect();
+        let outputs = HashMap::new();
+        let warm = HashSet::new();
+        let input = |busy, cell_type| LiveCheckInput {
+            notebook_id: "nb",
+            cell_id: "a",
+            cell_type,
+            shared: false,
+            busy,
+            source: "1u32",
+            cargo_toml: "[dependencies]",
+            notebook: &nb,
+            cells: &cells,
+            outputs: &outputs,
+            warm: &warm,
+        };
+        assert!(plan_live_check(&input(true, CellType::Code)).is_none());
+        assert!(plan_live_check(&input(false, CellType::Markdown)).is_none());
+        assert!(plan_live_check(&input(false, CellType::Code)).is_some());
     }
 
     #[test]
