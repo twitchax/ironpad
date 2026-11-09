@@ -237,6 +237,8 @@ test.describe("Executor worker recovery", () => {
         if (!exec || !exec._worker) {
           return { precondition: false };
         }
+        // The home page grants no fallback; grant it as a trusted page does.
+        exec.setMainThreadFallback(true);
         const id = "e2e-reload";
         await exec.loadBlob(id, "h-v1", new Uint8Array(v1), null);
         const first = await exec.execute(id, new Uint8Array(0));

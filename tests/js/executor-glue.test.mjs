@@ -114,11 +114,17 @@ async function runSubWorker(source, init, glueSource, subConsole) {
       this.text = parts.join("");
     }
   }
+  // The sub-worker is a module whose first statement imports the
+  // confinement prelude (pinned by executor-confine.test.mjs). new Function
+  // cannot evaluate an import, so run what follows it.
+  const confineImport = /^import "[^"]*\/executor-confine\.js[^"]*";/;
+  assert.match(source, confineImport);
+  const body = source.replace(confineImport, "");
   const sub = { posted: [], postMessage: (m) => sub.posted.push(m) };
   globalThis.__ironpadTestConsole = subConsole;
   try {
     // eslint-disable-next-line no-new-func
-    new Function("self", "console", "BroadcastChannel", "URL", "Blob", source)(
+    new Function("self", "console", "BroadcastChannel", "URL", "Blob", body)(
       sub,
       subConsole,
       FakeBroadcastChannel,
