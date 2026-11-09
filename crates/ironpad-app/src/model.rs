@@ -376,16 +376,24 @@ impl NotebookModel {
         // every executed cell stale on a plain Ctrl+S. Shared-cell edits
         // change EVERY cell's compilation input, not just downstream: shared
         // source is global, so both "was shared" (source edited) and "became
-        // (un)shared" (flag toggled) widen the staling below.
-        let Some((was_shared, content_changed)) = self.notebook.with_untracked(|nb_opt| {
-            let cell = nb_opt.as_ref()?.cells.iter().find(|c| c.id == cell_id)?;
-            let content_changed = patch.source.as_ref().is_some_and(|s| *s != cell.source)
-                || patch
-                    .cargo_toml
-                    .as_ref()
-                    .is_some_and(|t| *t != cell.cargo_toml);
-            Some((cell.shared, content_changed))
-        }) else {
+        // (un)shared" (flag toggled) widen the staling below. Only a Code
+        // cell feeds the cells after it: markdown and Linux cells hold empty
+        // piping slots, so editing one changes no other cell's input.
+        let Some((was_shared, content_changed, feeds_downstream)) =
+            self.notebook.with_untracked(|nb_opt| {
+                let cell = nb_opt.as_ref()?.cells.iter().find(|c| c.id == cell_id)?;
+                let content_changed = patch.source.as_ref().is_some_and(|s| *s != cell.source)
+                    || patch
+                        .cargo_toml
+                        .as_ref()
+                        .is_some_and(|t| *t != cell.cargo_toml);
+                Some((
+                    cell.shared,
+                    content_changed,
+                    cell.cell_type == CellType::Code,
+                ))
+            })
+        else {
             return Err(ModelError {
                 code: ErrorCode::CellNotFound,
                 message: format!("Cell {cell_id} not found"),
@@ -416,7 +424,7 @@ impl NotebookModel {
 
         if affects_shared {
             self.mark_all_code_cells_stale();
-        } else if content_changed {
+        } else if content_changed && feeds_downstream {
             self.mark_downstream_stale(&cell_id);
         }
 
@@ -732,11 +740,17 @@ mod collapse_tests {
     /// A model over [`notebook_with_one_cell`] plus a second, downstream code
     /// cell `c2`, with the manifest list synced (staling walks it).
     fn two_cell_model() -> (NotebookModel, RwSignal<HashMap<String, bool>>) {
+        two_cell_model_with(CellType::Code)
+    }
+
+    /// [`two_cell_model`] with the upstream cell `c1` of type `first`.
+    fn two_cell_model_with(first: CellType) -> (NotebookModel, RwSignal<HashMap<String, bool>>) {
         let mut nb = notebook_with_one_cell();
         let mut c2 = nb.cells[0].clone();
         c2.id = "c2".into();
         c2.order = 1;
         nb.cells.push(c2);
+        nb.cells[0].cell_type = first;
         let stale = RwSignal::new(HashMap::new());
         let model = NotebookModel::new(
             RwSignal::new(Some(nb)),
@@ -837,6 +851,37 @@ mod collapse_tests {
             assert_eq!(stale.get("c1"), None, "upstream stays fresh");
             assert_eq!(stale.get("c2"), Some(&true));
         });
+    }
+
+    /// Regression (review bug-editor-22): a markdown or Linux cell holds an
+    /// empty piping slot and feeds nothing to the code below it, so editing
+    /// its text changes no compilation input and must stale nothing (in
+    /// reactive mode, every stale cell re-runs).
+    #[test]
+    fn non_code_source_update_stales_nothing() {
+        for kind in [CellType::Markdown, CellType::Linux] {
+            Owner::new().with(|| {
+                let (model, stale) = two_cell_model_with(kind);
+                model
+                    .apply(
+                        update(
+                            "c1",
+                            CellPatch {
+                                source: Some("# new prose".into()),
+                                ..Default::default()
+                            },
+                            0,
+                        ),
+                        ClientId::browser(),
+                    )
+                    .expect("update applies");
+                assert!(
+                    stale.get_untracked().is_empty(),
+                    "a {kind:?} edit must stale nothing: {:?}",
+                    stale.get_untracked()
+                );
+            });
+        }
     }
 
     /// A shared cell's source feeds every cell, so a real edit stales them
