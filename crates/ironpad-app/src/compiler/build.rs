@@ -1356,7 +1356,7 @@ mod tests {
     }
 
     /// The gate measures a link as itself, so it never reports the size of a
-    /// file the build does not own; take_artifact then refuses the link.
+    /// file the build does not own; `take_artifact` then refuses the link.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_size_gate_does_not_follow_a_symlink() {
@@ -1376,7 +1376,7 @@ mod tests {
     }
 
     /// A file swapped in after the gate stats the path is still bounded:
-    /// take_artifact reads at most one byte past the cap and refuses it.
+    /// `take_artifact` reads at most one byte past the cap and refuses it.
     #[tokio::test]
     async fn take_artifact_refuses_a_file_over_the_cap() {
         let dir = tempfile::tempdir().unwrap();
