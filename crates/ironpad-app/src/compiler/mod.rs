@@ -1447,6 +1447,66 @@ pub fn range(angle: f64) -> f64 {
         }
     }
 
+    /// A cell controls its own artifact size, so an artifact over the cap
+    /// must fail the build before wasm-bindgen reads it, and leave nothing
+    /// in the cache (review bug-security-13). The payload is NOT zeros: an
+    /// all-zero static can land in zero-initialized memory and cost the
+    /// module nothing.
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown"]
+    async fn an_oversized_artifact_fails_the_build_and_is_never_cached() {
+        use super::build::MAX_CELL_BLOB_BYTES;
+
+        let cache_dir = tempdir();
+        let payload = cache_dir.join("payload.bin");
+        let size = usize::try_from(MAX_CELL_BLOB_BYTES).unwrap() + 1024 * 1024;
+        std::fs::write(&payload, vec![0xA5_u8; size]).unwrap();
+        let source = format!(
+            "    static PAYLOAD: &[u8] = include_bytes!({:?});\n    std::hint::black_box(PAYLOAD);\n    CellOutput::empty()",
+            payload.display().to_string()
+        );
+        let cell_id = "oversized";
+
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
+            &cache_dir,
+            &ironpad_cell_path(),
+            "e2e-session",
+            cell_id,
+            &source,
+            "[dependencies]",
+            &[],
+            None,
+            None,
+            CellTarget::Executor,
+        )
+        .expect("scaffold should succeed");
+
+        let result = build_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            "e2e-session",
+            cell_id,
+            None,
+            CellTarget::Executor,
+            CellFeatures::default(),
+        )
+        .await
+        .expect("an oversized artifact is a build failure, not an infra error");
+
+        let BuildResult::Failure { stderr, .. } = result else {
+            panic!("an artifact over {MAX_CELL_BLOB_BYTES} bytes must fail the build");
+        };
+        assert!(stderr.contains("-byte limit"), "{stderr}");
+        assert!(
+            !crate_dir.join("wasm-bindgen-out").exists(),
+            "the gate must run before wasm-bindgen"
+        );
+        assert!(
+            !cache_dir.join("blobs").exists(),
+            "a failed build stores nothing"
+        );
+    }
+
     /// The shared module is the notebook's library, but rustc only ever compiles
     /// ONE cell's crate at a time. Every shared helper that *this* cell does not
     /// call therefore looked like `dead_code` ("never used") even though a

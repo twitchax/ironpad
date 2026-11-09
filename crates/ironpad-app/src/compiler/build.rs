@@ -244,6 +244,34 @@ pub(crate) fn build_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Largest compiled cell artifact the server hands on (review
+/// bug-security-13). Everything after the build holds the whole blob in
+/// memory (wasm-bindgen, wasm-opt, the cache store, and a JSON response that
+/// spells each byte as a decimal number), so an unbounded artifact is an
+/// unbounded allocation per request, and a cache hit replays it for free.
+/// Real cells sit far below this: the largest of ~5,000 cached blobs measured
+/// about 2 MB.
+pub(crate) const MAX_CELL_BLOB_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The size of the file at `path` when it is over `cap`, else `None`. Reads
+/// metadata only, so an oversized artifact is refused without being read. A
+/// symlink is measured as itself, not its target: [`take_artifact`] refuses
+/// links, and following one would report the size of a file the build does
+/// not own.
+pub(crate) async fn size_over_cap(path: &Path, cap: u64) -> std::io::Result<Option<u64>> {
+    let bytes = tokio::fs::symlink_metadata(path).await?.len();
+    Ok((bytes > cap).then_some(bytes))
+}
+
+/// The build failure a cell reports when its artifact is over
+/// [`MAX_CELL_BLOB_BYTES`].
+fn blob_too_large_message(bytes: u64) -> String {
+    format!(
+        "the compiled cell is {bytes} bytes, over the {MAX_CELL_BLOB_BYTES}-byte limit for a \
+         cell. Large embedded data (include_bytes!, a big static array) is the usual cause."
+    )
+}
+
 // ── Build Result ─────────────────────────────────────────────────────────────
 
 /// Outcome of a micro-crate build attempt.
@@ -373,6 +401,25 @@ pub async fn build_micro_crate(
         "WASM blob not found at expected path: {}",
         wasm_path.display(),
     );
+
+    // Before take_artifact copies it and before wasm-bindgen, so before
+    // anything reads the artifact (review bug-security-13): a cell controls
+    // its own size (`include_bytes!` of a large file, a big non-zero static),
+    // and every later stage holds the whole blob. A build-shaped failure
+    // renders as an ordinary compile error, and nothing is cached.
+    if let Some(bytes) = size_over_cap(&wasm_path, MAX_CELL_BLOB_BYTES).await? {
+        tracing::warn!(
+            cell_id = %cell_id,
+            bytes,
+            cap = MAX_CELL_BLOB_BYTES,
+            "compiled artifact is over the size cap",
+        );
+        return Ok(BuildResult::Failure {
+            stdout: String::new(),
+            stderr: blob_too_large_message(bytes),
+        });
+    }
+
     let wasm_path = take_artifact(
         &wasm_path,
         &crate_dir.join("artifact").join(target.triple()),
@@ -489,8 +536,18 @@ async fn take_artifact(artifact: &Path, dest_dir: &Path) -> anyhow::Result<PathB
         "build artifact {} is not a regular file",
         artifact.display(),
     );
+    // The caller's size gate stats the path before this open, so a file
+    // swapped in between could be larger; the read is bounded as well.
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).await?;
+    (&mut file)
+        .take(MAX_CELL_BLOB_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    anyhow::ensure!(
+        u64::try_from(bytes.len()).is_ok_and(|len| len <= MAX_CELL_BLOB_BYTES),
+        "build artifact {} grew past the {MAX_CELL_BLOB_BYTES}-byte limit after the size check",
+        artifact.display(),
+    );
 
     let name = artifact
         .file_name()
@@ -1271,6 +1328,67 @@ mod tests {
         .await
         .expect("opening the FIFO blocked");
         assert!(result.is_err(), "read a FIFO as an artifact");
+    }
+
+    /// The size gate reads metadata only (review bug-security-13). The file
+    /// is sparse: over the cap on disk, nothing allocated.
+    #[tokio::test]
+    async fn the_size_gate_refuses_an_artifact_over_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell.wasm");
+        let file = std::fs::File::create(&path).unwrap();
+
+        file.set_len(MAX_CELL_BLOB_BYTES).unwrap();
+        assert_eq!(
+            size_over_cap(&path, MAX_CELL_BLOB_BYTES).await.unwrap(),
+            None,
+            "exactly at the cap is allowed"
+        );
+
+        file.set_len(MAX_CELL_BLOB_BYTES + 1).unwrap();
+        assert_eq!(
+            size_over_cap(&path, MAX_CELL_BLOB_BYTES).await.unwrap(),
+            Some(MAX_CELL_BLOB_BYTES + 1)
+        );
+        let message = blob_too_large_message(MAX_CELL_BLOB_BYTES + 1);
+        assert!(message.contains("67108865 bytes"), "{message}");
+        assert!(message.contains("67108864-byte limit"), "{message}");
+    }
+
+    /// The gate measures a link as itself, so it never reports the size of a
+    /// file the build does not own; take_artifact then refuses the link.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_size_gate_does_not_follow_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let large = dir.path().join("large");
+        std::fs::File::create(&large)
+            .unwrap()
+            .set_len(MAX_CELL_BLOB_BYTES + 1)
+            .unwrap();
+        let artifact = dir.path().join("cell.wasm");
+        std::os::unix::fs::symlink(&large, &artifact).unwrap();
+
+        assert_eq!(
+            size_over_cap(&artifact, MAX_CELL_BLOB_BYTES).await.unwrap(),
+            None
+        );
+    }
+
+    /// A file swapped in after the gate stats the path is still bounded:
+    /// take_artifact reads at most one byte past the cap and refuses it.
+    #[tokio::test]
+    async fn take_artifact_refuses_a_file_over_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("cell_a.wasm");
+        std::fs::File::create(&artifact)
+            .unwrap()
+            .set_len(MAX_CELL_BLOB_BYTES + 1)
+            .unwrap();
+
+        let result = take_artifact(&artifact, &dir.path().join("out")).await;
+        assert!(result.is_err(), "copied an oversized artifact: {result:?}");
+        assert!(!dir.path().join("out/cell_a.wasm").exists());
     }
 
     #[test]

@@ -248,6 +248,13 @@ The system SHALL build with `cargo build --target <triple> --release --message-f
 - **WHEN** the client disconnects mid-build, so the compile is dropped before cargo, wasm-bindgen or wasm-opt exits
 - **THEN** that subprocess's whole process group is killed, as on a timeout, before the cell lock and build slot are reused
 
+### Requirement: Compiled artifact size cap
+The system SHALL fail a build whose artifact exceeds 64 MiB (67,108,864 bytes), before wasm-bindgen reads it, as an ordinary failed compile whose one diagnostic begins `Compilation failed:` and names the size and the limit; nothing is cached. A cached entry over the limit SHALL be treated as a miss without being read.
+
+#### Scenario: A cell that embeds a large file
+- **WHEN** a cell's source embeds a 65 MiB file with `include_bytes!`
+- **THEN** the compile returns a `Compilation failed:` diagnostic naming the 67108864-byte limit, and nothing is stored under `blobs/`
+
 ### Requirement: wasm-bindgen post-processing
 The system SHALL run `wasm-bindgen --target web --no-typescript` over a successful Code cell build, returning the generated ES module as `js_glue` and the transformed module as the blob, bounded at 120 seconds; a wasm-bindgen failure, timeout or missing CLI fails the call with an error saying so. (PRD-0031, PRD-0067)
 

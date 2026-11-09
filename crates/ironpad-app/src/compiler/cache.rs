@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::build::MAX_CELL_BLOB_BYTES;
 use super::toolchain::toolchain_fingerprint;
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -77,6 +78,34 @@ pub struct CacheHit {
 #[tracing::instrument(name = "cache_lookup", level = "info", skip_all, fields(hash = %hash, hit = tracing::field::Empty))]
 pub async fn try_cache_hit(cache_dir: &Path, hash: &str) -> Option<CacheHit> {
     let path = cache_blob_path(cache_dir, hash);
+
+    // Stat before reading (review bug-security-13): a hit is served without
+    // a build token and without the per-cell lock, so an oversized entry
+    // (one cached before the build-side cap existed) would be an unmetered
+    // allocation per request. Refusing it costs one recompile, which the
+    // build-side cap then fails cleanly.
+    match tokio::fs::metadata(&path).await {
+        Ok(meta) if meta.len() > MAX_CELL_BLOB_BYTES => {
+            tracing::Span::current().record("hit", false);
+            tracing::warn!(
+                hash,
+                bytes = meta.len(),
+                "cached blob is over the size cap — treating as miss"
+            );
+            return None;
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::Span::current().record("hit", false);
+            tracing::info!(hash, "cache miss");
+            return None;
+        }
+        Err(e) => {
+            tracing::Span::current().record("hit", false);
+            tracing::warn!(hash, error = %e, "cache stat error — treating as miss");
+            return None;
+        }
+    }
 
     let wasm_bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
@@ -625,6 +654,26 @@ mod tests {
         assert_eq!(hit.diagnostics.len(), 1, "warnings survive a cache hit");
         assert_eq!(hit.diagnostics[0].message, "unused variable: `x`");
         assert_eq!(hit.diagnostics[0].severity, Severity::Warning);
+    }
+
+    /// A hit is served with no build token and no per-cell lock, so an entry
+    /// over the blob cap must not be read at all (review bug-security-13).
+    /// The file is sparse: over the cap on disk, nothing allocated.
+    #[tokio::test]
+    async fn an_oversized_entry_is_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = "0versized";
+        store_blob(dir.path(), hash, b"wasm", Some("glue()"), &[])
+            .await
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(cache_blob_path(dir.path(), hash))
+            .unwrap()
+            .set_len(MAX_CELL_BLOB_BYTES + 1)
+            .unwrap();
+
+        assert!(try_cache_hit(dir.path(), hash).await.is_none());
     }
 
     #[tokio::test]
