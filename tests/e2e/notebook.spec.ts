@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
-import { waitForPersistedCells, ADD_CODE } from "./helpers/session";
+import { ADD_CODE } from "./helpers/session";
 
 test.describe("Notebook", () => {
   test("create notebook and add cell", async ({ page }) => {
@@ -194,7 +194,7 @@ test.describe("Notebook", () => {
   });
 
   test("save and reload notebook preserves cell source", async ({ page }) => {
-    // No compilation needed — just save/navigate; generous timeout for safety.
+    // No compilation needed — just save/reload; generous timeout for safety.
     test.setTimeout(60_000);
 
     // Collect JS errors (filter known WASM hydration noise).
@@ -213,51 +213,52 @@ test.describe("Notebook", () => {
     const cell = page.locator(".ironpad-cell-card").first();
     await expect(cell).toBeVisible();
 
-    // Wait for Monaco editor to mount and show content.
+    // Wait for Monaco editor to mount.
     await expect(cell.locator(".monaco-editor").first()).toBeVisible({
       timeout: 15_000,
     });
-    const monacoContent = cell.locator(".monaco-editor .view-lines").first();
-    await expect(monacoContent).toContainText("42", {
-      timeout: 10_000,
-    });
+
+    // ── Type a source that only this test could have produced ──────────
+    // Every new Code cell is seeded with `42`, so asserting that would hold
+    // even if nothing typed were ever saved.
+    const marker = "saved_marker_9137";
+    await setCellSource(page, cell, `let ${marker} = 1;`);
 
     // ── Save the notebook via Ctrl+S ────────────────────────────────────
     // Ctrl+S flushes editor content into the model and persists; poll the
-    // durable store instead of sleeping (persistence is fire-and-forget).
+    // durable store for the typed source instead of sleeping (persistence is
+    // fire-and-forget).
     await page.keyboard.press("Control+s");
-    await waitForPersistedCells(page, 1);
+    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            async (id) =>
+              (await (window as any).IronpadStorage.getNotebook(id))?.cells?.[0]
+                ?.source ?? "",
+            notebookId
+          ),
+        { timeout: 10_000 }
+      )
+      .toContain(marker);
 
-    // ── Navigate to home page ───────────────────────────────────────────
-    await page.locator("a.ironpad-brand").click();
-    await expect(page.locator(".ironpad-home")).toBeVisible();
-
-    // ── Navigate back to the notebook ───────────────────────────────────
-    // The notebook should appear in the list grid. Click on the first one.
-    const notebookLink = page.locator(".ironpad-notebook-card-link").first();
-    await expect(notebookLink).toBeVisible({ timeout: 5_000 });
-    await notebookLink.click();
-
-    // Verify we're back on the notebook editor page.
-    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/);
-    await expect(page.locator(".ironpad-editor")).toBeVisible();
+    // ── Reload the page ─────────────────────────────────────────────────
+    // A real reload, so the source has to come back out of IndexedDB rather
+    // than out of the still-running wasm instance's model.
+    await page.reload();
+    await expect(page.locator(".ironpad-editor")).toBeVisible({
+      timeout: 15_000,
+    });
 
     // ── Verify cell source is preserved ─────────────────────────────────
     const reloadedCell = page.locator(".ironpad-cell-card").first();
-    await expect(reloadedCell).toBeVisible({ timeout: 10_000 });
-
-    // Wait for Monaco editor to mount.
-    await expect(
-      reloadedCell.locator(".monaco-editor").first()
-    ).toBeVisible({ timeout: 15_000 });
-
-    // Verify the editor still contains the default cell source.
-    const reloadedContent = reloadedCell.locator(
-      ".monaco-editor .view-lines"
-    ).first();
-    await expect(reloadedContent).toContainText("42", {
-      timeout: 10_000,
+    await expect(reloadedCell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
     });
+    await expect(
+      reloadedCell.locator(".monaco-editor .view-lines").first()
+    ).toContainText(marker, { timeout: 10_000 });
 
     // Verify no JS errors occurred.
     expect(jsErrors).toEqual([]);
