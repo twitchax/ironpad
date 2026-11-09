@@ -530,8 +530,25 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert!(cookie.starts_with("ironpad_oauth_state="));
         assert!(cookie.contains("Path=/auth"));
+
+        // The callback's CSRF check compares the state param's nonce with
+        // this cookie, so the two must carry the SAME nonce, and the state
+        // must carry the return path. If they drift, every real sign-in
+        // fails with "state mismatch" while nothing else in the suite moves.
+        let cookie_nonce = cookie
+            .strip_prefix("ironpad_oauth_state=")
+            .and_then(|rest| rest.split(';').next())
+            .expect("the nonce cookie");
+        assert!(!cookie_nonce.is_empty());
+        let url = reqwest::Url::parse(location).unwrap();
+        let state_param = url
+            .query_pairs()
+            .find_map(|(k, v)| (k == "state").then(|| v.into_owned()))
+            .expect("a state param");
+        let (nonce, return_path) = state_param.split_once('|').expect("nonce|return_path");
+        assert_eq!(nonce, cookie_nonce);
+        assert_eq!(return_path, "/local/abc");
     }
 
     #[tokio::test]
@@ -559,15 +576,28 @@ mod tests {
     #[tokio::test]
     async fn callback_rejects_a_state_mismatch() {
         let (_dir, state) = test_state(false, true).await;
+        let uri = "/callback?code=abc&state=deadbeef%7C%2Flocal%2Fx";
+
         // No nonce cookie at all → mismatch → 400 before any network I/O.
-        let res = get_response(
+        let res = get_response(router(state.clone()), uri).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // A nonce cookie that does not match the state param: the case that
+        // makes this CSRF, and the one a presence-only check would pass.
+        let res = get_response_with_headers(
             router(state),
-            "/callback?code=abc&state=deadbeef%7C%2Flocal%2Fx",
+            uri,
+            &[("cookie", "ironpad_oauth_state=cafebabe")],
         )
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"state mismatch");
     }
 
+    /// Logout is a GET, and a notebook can embed `![](/auth/logout)`: the
+    /// image request is same-origin, so `SameSite` does not stop the cookie.
+    /// Only a top-level navigation may sign someone out.
     #[tokio::test]
     async fn logout_refuses_subresource_and_cross_site_requests() {
         let (_dir, state) = test_state(false, false).await;
