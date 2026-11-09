@@ -153,6 +153,16 @@
     };
 
     this._worker.postMessage({ type: "rayon_trap_channel", name: this._rayonTrapName });
+
+    // Replay the sim bus, every ring entry in order so `latest` ends right. A
+    // slider writes the bus only on mount and on change, so a fresh worker
+    // (after terminate() or a crash) would read nothing until one moved.
+    var worker = this._worker;
+    this._simBus.forEach(function (entry, key) {
+      entry.ring.forEach(function (json) {
+        worker.postMessage({ type: "sim_bus_write", key: key, json: json });
+      });
+    });
   };
 
   /// A rayon pool thread trapped: the job's latch will never be set, so the

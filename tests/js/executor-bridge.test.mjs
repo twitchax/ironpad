@@ -18,6 +18,7 @@ import path from "node:path";
 
 import {
   loadCore,
+  loadWorker,
   makeMemory,
   rawEntry,
   settle,
@@ -364,3 +365,43 @@ test("a worker that fails to load a new blob no longer counts as holding the old
   assert.equal(bridge.isLoaded("c1", "h1"), false);
   assert.equal(bridge.isLoaded("c1", "h2"), false);
 });
+
+// ── The sim bus across a worker replacement (review bug-js-9) ──────────────
+
+test("a respawned worker gets the sim bus back, every ring entry in order", async () => {
+  // A slider writes the bus only on mount and on change, so after Stop (or a
+  // crash) the new worker read None for a slider still showing 7.
+  const { bridge, workers } = loadBridge();
+  bridge.simBusWrite("speed", 1);
+  bridge.simBusWrite("speed", 7);
+  bridge.simBusWrite("mode", "fast");
+
+  bridge.terminate();
+
+  const replay = workers[1].posted.filter((m) => m.type === "sim_bus_write");
+  assert.deepEqual(replay, [
+    { type: "sim_bus_write", key: "speed", json: "1" },
+    { type: "sim_bus_write", key: "speed", json: "7" },
+    { type: "sim_bus_write", key: "mode", json: '"fast"' },
+  ]);
+
+  // Replayed into the real worker entry, the bus ends where it was.
+  const worker = loadWorker();
+  for (const data of replay) await worker.g.onmessage({ data });
+  assert.equal(worker.executor.simBusRead("speed"), 7);
+  assert.deepEqual(worker.executor._simBus.get("speed").ring, ["1", "7"]);
+  assert.equal(worker.executor.simBusRead("mode"), "fast");
+});
+
+test("a worker respawned after a crash gets the sim bus back too", () => {
+  const { bridge, workers } = loadBridge();
+  bridge.simBusWrite("k", 3);
+
+  workers[0].onerror({ message: "boom" });
+
+  assert.deepEqual(
+    workers[1].posted.filter((m) => m.type === "sim_bus_write"),
+    [{ type: "sim_bus_write", key: "k", json: "3" }],
+  );
+});
+

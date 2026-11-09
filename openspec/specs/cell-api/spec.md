@@ -196,7 +196,7 @@ The system SHALL run a cell containing a line `impl LiveView for <Name>` as a li
 - **THEN** the cell runs as a simulation
 
 ### Requirement: Simulation bus
-The system SHALL provide a page-wide named-value bus: `sim::emit(key, &value)` publishes a JSON-serializable value and keeps the last 1000 per key, `sim::read::<T>(key)` returns the latest as `Some` (or `None` when absent or not decodable as `T`), and `sim::read_all::<T>(key)` returns the retained history oldest first (empty when absent or not decodable). (PRD-0018)
+The system SHALL provide a page-wide named-value bus: `sim::emit(key, &value)` publishes a JSON-serializable value and keeps the last 1000 per key, `sim::read::<T>(key)` returns the latest as `Some` (or `None` when absent or not decodable as `T`), and `sim::read_all::<T>(key)` returns the retained history oldest first (empty when absent or not decodable). Replacing the execution worker, on a cancel or a crash, SHALL NOT empty the bus: the new worker starts with every retained value. (PRD-0018)
 
 #### Scenario: Emit then read across cells
 - **WHEN** a simulation cell calls `sim::emit("k_eff", &k)` each tick and a later ordinary cell calls `sim::read_all::<f64>("k_eff")`
@@ -209,6 +209,10 @@ The system SHALL provide a page-wide named-value bus: `sim::emit(key, &value)` p
 #### Scenario: Emitted from a worker
 - **WHEN** a rayon cell running in the executor worker calls `sim::emit("e2e-rayon-sum", &total)` with `total == 500500`
 - **THEN** the page-side bus reads back `500500` for that key
+
+#### Scenario: A slider value outlives Stop
+- **WHEN** a slider bound to a bus key is moved to 7, the author stops a running cell, and a cell then calls `sim::read` for that key
+- **THEN** it reads 7
 
 #### Scenario: An unserializable value
 - **WHEN** `sim::emit` receives a value that cannot serialize to JSON, such as a map keyed by tuples
