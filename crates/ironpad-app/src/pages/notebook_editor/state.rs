@@ -342,6 +342,18 @@ impl NotebookState {
         // of leaking it with forget().
         StoredValue::new_local(closure);
         self.reactive_timer_fn.set_value(Some(func));
+
+        // A timer still pending at unmount would call the dropped closure,
+        // which throws. The re-arm above keeps one pending for as long as a
+        // queue runs in reactive mode, so leaving mid-run is the ordinary
+        // way to get there.
+        on_cleanup(move || {
+            if let (Some(window), Some(Some(handle))) =
+                (web_sys::window(), reactive_timer.try_get_untracked())
+            {
+                window.clear_timeout_with_handle(handle);
+            }
+        });
     }
 
     /// No-op on the server side.
