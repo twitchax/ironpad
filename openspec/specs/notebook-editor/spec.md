@@ -33,7 +33,7 @@ The system SHALL render an add-cell row with Code, Markdown and Linux buttons ab
 - **THEN** the new cell becomes the third cell and the order badges of the cells after it shift by one
 
 ### Requirement: Cell header
-The system SHALL show in each cell's header a collapse chevron, an order badge `[N]` giving the cell's live position, a label input committed on blur, and a type badge on markdown (`¶ markdown`), shared (`shared`) and Linux (`linux`) cells. (PRD-0001, PRD-0032)
+The system SHALL show in each cell's header a collapse chevron, an order badge `[N]` giving the cell's live position, a label input committed on blur when its text changed, and a type badge on markdown (`¶ markdown`), shared (`shared`) and Linux (`linux`) cells. (PRD-0001, PRD-0032)
 
 #### Scenario: Badges follow a reorder
 - **WHEN** the first two cells swap places

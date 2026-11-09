@@ -174,10 +174,23 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     // ── Rename action ───────────────────────────────────────────────────
 
     let label = RwSignal::new(cell.label.clone());
+    // The author has typed into the label and not yet blurred it. An agent's
+    // rename waits until then rather than overwrite the typing.
+    let label_dirty = RwSignal::new(false);
 
     let on_label_blur = move |_| {
+        label_dirty.set(false);
         let current = label.get_untracked();
         let cid = cell_id.get_value();
+        // Nothing typed (or typed back to what is stored): write nothing. An
+        // unconditional write here put a stale label back over an agent's
+        // rename on any blur.
+        let unchanged = state
+            .cells
+            .with_untracked(|cells| cells.iter().any(|c| c.id == cid && c.label == current));
+        if unchanged {
+            return;
+        }
         let version = model.cell_version(&cid);
         if model
             .apply(
@@ -237,6 +250,36 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
         output_collapsed.set(new_val);
         persist_collapse_default(None, Some(new_val));
     };
+
+    // ── Pull remote (agent) header edits ────────────────────────────────
+    //
+    // The label and collapse defaults are seeded from the mount-time
+    // manifest, and `<For>` keeps this row across edits. Follow the live
+    // manifest so an agent's rename or collapse change shows here, and so
+    // the toggles flip what is actually stored.
+    Effect::new(move || {
+        let Some(Some((latest_label, latest_collapsed, latest_output_collapsed))) = cell_id
+            .try_with_value(|cid| {
+                state.cells.with(|cells| {
+                    cells
+                        .iter()
+                        .find(|c| c.id == *cid)
+                        .map(|c| (c.label.clone(), c.collapsed, c.output_collapsed))
+                })
+            })
+        else {
+            return;
+        };
+        if !label_dirty.get_untracked() && label.get_untracked() != latest_label {
+            label.set(latest_label);
+        }
+        if default_collapsed.get_untracked() != latest_collapsed {
+            default_collapsed.set(latest_collapsed);
+        }
+        if default_output_collapsed.get_untracked() != latest_output_collapsed {
+            default_output_collapsed.set(latest_output_collapsed);
+        }
+    });
 
     // ── Menu state ──────────────────────────────────────────────────────
 
@@ -1060,6 +1103,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                         prop:value=move || label.get()
                         on:input=move |ev| {
                             let val = event_target_value(&ev);
+                            label_dirty.set(true);
                             label.set(val);
                         }
                         on:blur=on_label_blur

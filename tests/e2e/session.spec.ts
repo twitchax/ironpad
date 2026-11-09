@@ -424,6 +424,54 @@ test.describe.serial("Agent Session", () => {
     await checked;
   });
 
+  // Regression (review bug-editor-21): the label and collapse defaults were
+  // seeded once at mount, so an agent's rename never showed, and blurring the
+  // label wrote the stale local value back over it.
+  test("agent renames and collapse defaults reach the cell header", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+
+    await createNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await waitForPersistedCells(page, 1);
+
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+    await dismissSessionPanel(page);
+    const cellId = cliExec(["cells", "list"])[0].id;
+    const cell = page.locator(".ironpad-cell-card").first();
+
+    expect(
+      cliExecRaw(["cells", "update", cellId, "--label", "AGENT LABEL"]).exitCode,
+    ).toBe(0);
+    const label = cell.locator(".ironpad-cell-label-input");
+    await expect(label).toHaveValue("AGENT LABEL", { timeout: 10_000 });
+
+    // Focus and blur without typing: nothing may be written back.
+    const version = cliExec(["cells", "get", cellId]).version;
+    await label.focus();
+    await label.blur();
+    await page.waitForTimeout(1_000);
+    const after = cliExec(["cells", "get", cellId]);
+    expect(after.label).toBe("AGENT LABEL");
+    expect(after.version).toBe(version);
+
+    // The collapse default follows the agent too, so the toggle flips it back.
+    expect(
+      cliExecRaw(["cells", "update", cellId, "--collapsed", "true"]).exitCode,
+    ).toBe(0);
+    const codeToggle = cell.locator(".ironpad-collapse-default-btn").first();
+    await expect(codeToggle).toHaveClass(/ironpad-collapse-default-btn--collapsed/, {
+      timeout: 10_000,
+    });
+    await codeToggle.click();
+    await expect
+      .poll(() => cliExec(["cells", "get", cellId]).collapsed, { timeout: 10_000 })
+      .toBe(false);
+  });
+
   test("agent updates notebook shared source and cargo", async ({ page }) => {
     test.setTimeout(60_000);
 
