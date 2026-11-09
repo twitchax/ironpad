@@ -368,7 +368,8 @@ test.describe("Viewer runs and the shared worker", () => {
     await gate.waitForHeld(1);
 
     await softNavigate(page, healthy);
-    await expect(page.locator(".view-only-notebook")).toContainText("41i32");
+    // The new page's cell is idle; the old one was mid-compile.
+    await expect(page.locator('button[title="Run this cell"]')).toBeEnabled({ timeout: 15_000 });
     expect(await loadedModules(page)).toEqual([]);
 
     const compiled = page.waitForResponse((r) => r.url().includes("compile_cell"), {
