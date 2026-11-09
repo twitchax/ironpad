@@ -270,7 +270,10 @@
     /// getValue / setValue before the editor is ready are safely queued.
     create: function (container, value, language, onChange) {
       var id = nextId++;
-      var record = { editor: null, pendingValue: null };
+      // The initial value is pending until the editor exists, so a read
+      // before Monaco has loaded returns the text rather than "" (which a
+      // save would then have written over the cell).
+      var record = { editor: null, pendingValue: value };
       editors[id] = record;
 
       ensureMonaco().then(function (monaco) {
@@ -292,11 +295,13 @@
 
         record.editor = editor;
 
-        // Apply any value that was set before the editor was ready.
-        if (record.pendingValue !== null) {
+        // Apply any value that was set before the editor was ready (the
+        // initial value already is the editor's), then stop answering reads
+        // from the record.
+        if (record.pendingValue !== null && record.pendingValue !== value) {
           editor.setValue(record.pendingValue);
-          record.pendingValue = null;
         }
+        record.pendingValue = null;
 
         // Apply any actions that were queued before the editor was ready.
         if (record.pendingActions) {

@@ -147,6 +147,10 @@ The system SHALL render a markdown cell as formatted HTML (tables, strikethrough
 - **WHEN** the author opens and closes a markdown cell's editor several times
 - **THEN** each reopening behaves like the first, and Escape still closes it
 
+#### Scenario: Saving before the editor has loaded
+- **WHEN** the author opens a markdown cell and presses Ctrl+S before the editor has finished loading
+- **THEN** the cell keeps its text
+
 #### Scenario: Preview commits an open edit
 - **WHEN** a markdown cell is open in its editor and the author clicks Preview
 - **THEN** the edit is committed and Preview shows it rendered, with no markdown editor left on the page

@@ -623,4 +623,62 @@ test.describe("Markdown editor", () => {
     );
     expect(panics).toEqual([]);
   });
+
+  // Regression (review bug-components-3): the bridge kept an editor's initial
+  // value only inside the load callback, so before Monaco's bundle arrived
+  // every read returned '' and a save wrote that over the cell.
+  test.describe("while Monaco is still loading", () => {
+    async function holdMonaco(page: Page): Promise<void> {
+      await page.route(/editor\.main/, async (route) => {
+        await new Promise((r) => setTimeout(r, 5_000));
+        await route.continue().catch(() => {});
+      });
+    }
+
+    test("Ctrl+S keeps the markdown cell", async ({ page }) => {
+      const id = await openSeeded(page, [{ source: "# survives the load" }]);
+      await holdMonaco(page);
+      await page.reload();
+      await expect(page.locator(".ironpad-editor")).toBeVisible({
+        timeout: 15_000,
+      });
+      await page.waitForTimeout(3_000); // hydration (suite convention)
+
+      const md = page.locator(".ironpad-cell-card").first();
+      await md.locator(".ironpad-markdown-cell-preview").dblclick();
+      await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(1);
+      expect(await page.evaluate(() => !!(window as any).monaco)).toBe(false);
+
+      await page.keyboard.press("Control+s");
+      await page.waitForTimeout(1_500); // past the save debounce
+      await page.unroute(/editor\.main/);
+
+      expect((await storedSources(page, id))[0]).toBe("# survives the load");
+      await page.reload();
+      await expect(
+        page.locator(".ironpad-markdown-cell-preview").first(),
+      ).toContainText("survives the load", { timeout: 15_000 });
+    });
+
+    test("Preview shows the markdown cell", async ({ page }) => {
+      await openSeeded(page, [{ source: "# survives the preview" }]);
+      await holdMonaco(page);
+      await page.reload();
+      await expect(page.locator(".ironpad-editor")).toBeVisible({
+        timeout: 15_000,
+      });
+      await page.waitForTimeout(3_000); // hydration (suite convention)
+
+      const md = page.locator(".ironpad-cell-card").first();
+      await md.locator(".ironpad-markdown-cell-preview").dblclick();
+      await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(1);
+      expect(await page.evaluate(() => !!(window as any).monaco)).toBe(false);
+
+      await page.locator('button[aria-label="Preview"]').click();
+      const preview = page.locator(".view-only-markdown").first();
+      await expect(preview).toBeVisible({ timeout: 10_000 });
+      await expect(preview).toContainText("survives the preview");
+      await expect(preview).not.toContainText("(empty markdown cell)");
+    });
+  });
 });

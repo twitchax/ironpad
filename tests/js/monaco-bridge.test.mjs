@@ -153,3 +153,25 @@ test("dispose unregisters the editor before disposing it", async () => {
   assert.equal(monaco.created[0].disposed, true);
   assert.equal(readDuringDispose, "");
 });
+
+test("getValue returns the initial value before Monaco has loaded", async () => {
+  const { bridge, monaco, load } = loadBridge();
+  const id = bridge.create(container(), "# original", "markdown", null);
+  assert.equal(bridge.getValue(id), "# original");
+
+  await load();
+  // The seed is the editor's own value: no redundant setValue replay, and
+  // nothing left queued to override a later edit.
+  assert.deepEqual(monaco.created[0].setValueCalls, []);
+  monaco.created[0].type("# edited");
+  assert.equal(bridge.getValue(id), "# edited");
+});
+
+test("a value set before Monaco has loaded still wins", async () => {
+  const { bridge, monaco, load } = loadBridge();
+  const id = bridge.create(container(), "# original", "markdown", null);
+  bridge.setValue(id, "# queued");
+  assert.equal(bridge.getValue(id), "# queued");
+  await load();
+  assert.equal(monaco.created[0].getValue(), "# queued");
+});
