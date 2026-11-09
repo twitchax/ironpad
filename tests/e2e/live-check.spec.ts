@@ -76,18 +76,35 @@ test.describe("Live check-on-type (PRD-0045)", () => {
       timeout: 180_000,
     });
 
+    // Watch the checks themselves: a check that was sent but has not come
+    // back yet paints nothing, so "no squiggle" alone cannot tell a skipped
+    // check from a slow one.
+    const checked: string[] = [];
+    page.on("request", (req) => {
+      if (!req.url().includes("check_cell")) return;
+      const body = req.postData() ?? "";
+      let decoded = body;
+      try {
+        decoded = decodeURIComponent(body.replace(/\+/g, " "));
+      } catch {}
+      checked.push(decoded);
+    });
+
     // Negative FIRST: a skipped check leaves earlier markers in place, so a
     // positive control run before this would make it fail for the wrong
     // reason.
     await setCellSource(page, cells.nth(2), "cell1 + 1");
-    await page.waitForTimeout(20_000);
+    await page.waitForTimeout(5_000);
+    expect(checked.filter((b) => b.includes("cell1 + 1"))).toEqual([]);
     await expect(cells.nth(2).locator(".squiggly-error")).toHaveCount(0);
 
-    // Positive control: checks are live for this cell.
+    // Positive control: checks are live for this cell, and the request
+    // watcher sees them.
     await setCellSource(page, cells.nth(2), 'let x: i32 = "not a number";\nx');
     await expect(cells.nth(2).locator(".squiggly-error").first()).toBeVisible({
       timeout: 120_000,
     });
+    expect(checked.some((b) => b.includes("not a number"))).toBe(true);
 
     expect(jsErrors).toEqual([]);
   });

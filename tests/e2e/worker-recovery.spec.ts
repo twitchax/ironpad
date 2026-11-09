@@ -358,8 +358,9 @@ test.describe("Viewer runs and the shared worker", () => {
     page,
   }) => {
     test.setTimeout(300_000);
-    // Unique, so nothing can serve it without a compile.
-    const stale = await shareOneCell(page, `${Date.now()}i32 + 0`);
+    // Unique, so nothing can serve it without a compile (i64: a millisecond
+    // timestamp overflows i32, which is a compile error, not a run).
+    const stale = await shareOneCell(page, `${Date.now()}i64 + 0`);
     const healthy = await shareOneCell(page, "41i32 + 1");
 
     await openShare(page, stale);
