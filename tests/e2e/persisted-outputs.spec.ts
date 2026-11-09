@@ -210,4 +210,27 @@ test.describe("Saved panels hydrate on a hard load", () => {
       }
     });
   }
+
+  test("a saved BlobImage panel shows its image, not a broken one", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEBgIApD5fRAAAAABJRU5ErkJggg==";
+    const { anon, reader, errors } = await readSavedFirstCell(page, browser, [
+      { BlobImage: { mime_type: "image/png", base64_data: png, width: 1, height: 1 } },
+    ]);
+    try {
+      const img = reader.locator(".view-only-output-visual img").first();
+      await expect
+        .poll(() => img.evaluate((el) => (el as HTMLImageElement).naturalWidth), {
+          timeout: 10_000,
+        })
+        .toBeGreaterThan(0);
+      expect(errors).toEqual([]);
+    } finally {
+      await anon.close();
+    }
+  });
 });

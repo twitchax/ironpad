@@ -431,10 +431,15 @@ pub(crate) fn render_display_panel(
                 revoke_blob_url(&url_for_cleanup);
             });
 
+            // `prop:`, not an attribute: the URL only exists in the browser
+            // (SSR has none), and hydration skips attribute writes on
+            // server-rendered nodes, so `src=` left a saved image as the
+            // server's empty `src` on every hard load. A property is set
+            // during hydration regardless.
             view! {
                 <div class=classes.visual>
                     <img
-                        src=blob_url
+                        prop:src=blob_url
                         width=width
                         height=height
                         style="image-rendering: pixelated;"

@@ -243,6 +243,10 @@ The system SHALL render saved outputs through the same panel renderers and sanit
 - **WHEN** a reader hard-loads a share whose first cell's saved output is an animation or a simulation
 - **THEN** the server renders the same canvas and controls the client hydrates, the page raises no error, and the later cells' controls work
 
+#### Scenario: A saved image on a hard load
+- **WHEN** a reader hard-loads a share whose saved output holds an image panel, such as a small `Canvas`
+- **THEN** the image shows before any run, rather than an empty `src`
+
 #### Scenario: Saved widgets
 - **WHEN** a reader drags a slider in a saved output
 - **THEN** no piped value changes and nothing runs
