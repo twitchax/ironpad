@@ -379,4 +379,41 @@ test.describe("Viewer runs and the shared worker", () => {
     await page.waitForTimeout(5_000);
     expect(await loadedModules(page)).toEqual([]);
   });
+
+  const RUNAWAY =
+    "let mut x = 0u64; loop { x = std::hint::black_box(x + 1); }\n#[allow(unreachable_code)]\nx";
+
+  test("a reader can stop a runaway cell (review bug-viewer-5)", async ({ page }) => {
+    test.setTimeout(300_000);
+    const hung = await shareOneCell(page, RUNAWAY);
+    await openShare(page, hung);
+
+    await page.locator(".run-all-button").click();
+    const stop = page.locator('button[title="Stop this cell"]');
+    await expect(stop).toBeVisible({ timeout: 180_000 });
+    await stop.click();
+
+    await expect(page.locator(".run-all-button")).toBeEnabled({ timeout: 10_000 });
+    await expect(page.locator(".view-only-error")).toHaveCount(0);
+  });
+
+  test("leaving a runaway cell does not hang the next page (review bug-viewer-5)", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const hung = await shareOneCell(page, RUNAWAY);
+    const healthy = await shareOneCell(page, "41i32 + 1");
+    await openShare(page, hung);
+
+    await page.locator(".run-all-button").click();
+    // Executing, not compiling: the worker holds the run.
+    await expect(page.locator('button[title="Stop this cell"], .view-only-timing-badge').first())
+      .toBeVisible({ timeout: 180_000 });
+    await page.waitForTimeout(2_000);
+
+    await softNavigate(page, healthy);
+    await page.waitForTimeout(3_000);
+    await page.locator(".run-all-button").click();
+    await expect(page.locator(".view-only-notebook")).toContainText("42", { timeout: 60_000 });
+  });
 });

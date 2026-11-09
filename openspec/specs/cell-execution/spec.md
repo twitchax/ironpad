@@ -99,6 +99,16 @@ While an editor cell compiles or runs, its Run button SHALL become a Stop button
 - **WHEN** an author stops a compile, edits the cell, and runs it again before the first compile's response arrives
 - **THEN** the first response is discarded and the cell shows the edited source's output
 
+#### Scenario: Stopping a read-only run
+- **WHEN** a reader's cell is executing on a read-only page
+- **THEN** its Run button becomes an enabled Stop button titled "Stop this cell", while its compile phase stays disabled and titled "Compiling…"
+- **AND** clicking it terminates and respawns the worker, drops the queue, and leaves the cell with no error
+
+#### Scenario: Leaving a read-only page mid-run
+- **WHEN** a reader navigates in-app away from a page whose cell is still executing
+- **THEN** that run is stopped, so the next page's cells do not wait behind it
+- **AND** the editor's Preview never stops a run, since it shares the worker with the live editor
+
 ### Requirement: Execution error messages
 The system SHALL report a failed blob load as "WASM load error: ..." and a failed run as "Execution error: ...". A Rust panic SHALL be reported by its message, in the worker and on the main-thread fallback alike, cut before the `Stack:` trace the panic hook appends. A WASM trap with no captured panic message SHALL be translated into a diagnosis that names the cell's linear-memory size in MB. (PRD-0001, PRD-0033)
 

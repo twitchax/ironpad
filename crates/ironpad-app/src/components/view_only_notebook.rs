@@ -180,6 +180,11 @@ pub(crate) fn ViewOnlyNotebook(
                 .collect()
         }));
 
+    // A page that owns its outputs is a reader page, and nothing outlives it
+    // there: a cell still executing when it is left is stopped (see
+    // `ViewOnlyCodeCell`). The editor's Preview passes its own map and shares
+    // the executor with the live editor, so it must never stop a run.
+    let stop_on_dispose = cell_outputs.is_none();
     // Shared state: execution outputs keyed by cell ID (for piping between
     // cells) — the caller's map when provided (editor view mode), else local.
     let cell_outputs: RwSignal<HashMap<String, CellOutputData>> =
@@ -501,6 +506,7 @@ pub(crate) fn ViewOnlyNotebook(
                                 force_recompile=force_recompile
                                 share_blob=share_blob
                                 rail_run=rail_run
+                                stop_on_dispose=stop_on_dispose
                             />
                         }
                     }).collect_view()
@@ -658,6 +664,9 @@ fn ViewOnlyCell(
     share_blob: Option<ironpad_common::ShareBlobEntry>,
     /// The rail's live run state; runnable cells write their own entry.
     rail_run: RailRunState,
+    /// Stop a code cell still executing when it is disposed (reader pages
+    /// only; see `ViewOnlyNotebook`).
+    stop_on_dispose: bool,
 ) -> impl IntoView {
     if cell.shared {
         // Shared cells never execute: their source rides in every other
@@ -684,6 +693,7 @@ fn ViewOnlyCell(
                 force_recompile=force_recompile
                 share_blob=share_blob
                 rail_run=rail_run
+                stop_on_dispose=stop_on_dispose
             />
         }
         .into_any(),
@@ -746,12 +756,18 @@ fn ViewOnlyCodeCell(
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
     rail_run: RailRunState,
+    stop_on_dispose: bool,
 ) -> impl IntoView {
     let cell = StoredValue::new(cell);
     let stored_notebook_id = StoredValue::new(notebook_id);
     let stored_share_blob = StoredValue::new(share_blob);
 
+    // `compiling` spans the whole run (the name predates this); `executing`
+    // is its last phase, when the shared worker holds the run. Only that
+    // phase can be stopped: the compile is server-bounded, and the living
+    // spec keeps its control disabled.
     let compiling = RwSignal::new(false);
+    let executing = RwSignal::new(false);
     let execution_result: RwSignal<Option<ExecutionResult>> = RwSignal::new(None);
     let error_message: RwSignal<Option<String>> = RwSignal::new(None);
     let compile_time_ms: RwSignal<Option<f64>> = RwSignal::new(None);
@@ -931,13 +947,15 @@ fn ViewOnlyCodeCell(
                             if compiling.try_get_untracked().is_none() {
                                 return;
                             }
-                            match crate::components::run_flow::load_and_execute(
+                            executing.set(true);
+                            let executed = crate::components::run_flow::load_and_execute(
                                 &cell_data.id,
                                 &response,
                                 &input_buf,
                             )
-                            .await
-                            {
+                            .await;
+                            executing.set(false);
+                            match executed {
                                 Ok((
                                     (output_bytes, display_text, type_tag, ran_on_main_thread),
                                     exec_ms,
@@ -959,6 +977,15 @@ fn ViewOnlyCodeCell(
                                         type_tag,
                                         ran_on_main_thread,
                                     }));
+                                }
+                                // Stopped by the reader (or by leaving the
+                                // page): not an error. The Stop already
+                                // emptied the queue; nothing below applies to
+                                // a run that did not finish.
+                                Err(e) if e.contains("AbortError") => {
+                                    run_all_queue.cancel(None);
+                                    compiling.set(false);
+                                    return;
                                 }
                                 Err(e) => {
                                     error_message.set(Some(e));
@@ -1001,9 +1028,37 @@ fn ViewOnlyCodeCell(
         }
     });
 
+    // The one control is Run, or Stop while the worker holds this cell's
+    // run. The executor is a single worker shared by the whole SPA, and a
+    // synchronous cell blocks it: without a Stop, a runaway cell left both
+    // controls disabled, and every later page queued behind it until a
+    // reload. Stopping terminates and respawns the worker (its AbortError
+    // arm above ends the run quietly) and drops the queue.
+    let run_or_stop = move |ev| {
+        if executing.get_untracked() {
+            #[cfg(feature = "hydrate")]
+            crate::components::executor::terminate_executor();
+            run_all_queue.cancel(None);
+        } else {
+            run_cell(ev);
+        }
+    };
+
+    // Leaving a reader page mid-run stops the run, for the same reason: the
+    // next page would otherwise wait behind it. Never in Preview, which
+    // shares the executor with the live editor.
+    #[cfg(feature = "hydrate")]
+    on_cleanup(move || {
+        if stop_on_dispose && executing.try_get_untracked() == Some(true) {
+            crate::components::executor::terminate_executor();
+        }
+    });
+    #[cfg(not(feature = "hydrate"))]
+    let _ = stop_on_dispose;
+
     // Suppress unused warning during SSR.
     #[cfg(not(feature = "hydrate"))]
-    let _ = &run_cell;
+    let _ = &run_or_stop;
 
     // Code and output load in the cell's saved default state (the editor's
     // per-cell header toggles); the chevron and the output reveal are
@@ -1028,7 +1083,9 @@ fn ViewOnlyCodeCell(
     // An icon-only control carries its wording in the tooltip and the
     // accessible name (the svg itself is aria-hidden).
     let run_button_label = Signal::derive(move || {
-        if compiling.get() {
+        if executing.get() {
+            "Stop this cell"
+        } else if compiling.get() {
             "Compiling…"
         } else if queued.get() {
             "Queued"
@@ -1080,12 +1137,14 @@ fn ViewOnlyCodeCell(
                 </span>
                 <button
                     class=run_button_class
-                    on:click=run_cell
-                    disabled=move || compiling.get() || queued.get()
+                    on:click=run_or_stop
+                    disabled=move || (compiling.get() && !executing.get()) || queued.get()
                     title=run_button_label
                     aria-label=run_button_label
                 >
-                    {move || if compiling.get() {
+                    {move || if executing.get() {
+                        view! { <Icon icon=icons::STOP/> }.into_any()
+                    } else if compiling.get() {
                         view! { <Icon icon=icons::BUSY/> }.into_any()
                     } else {
                         view! { <Icon icon=icons::RUN/> }.into_any()
