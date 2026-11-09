@@ -125,6 +125,13 @@ test.describe("Accounts (PRD-0053)", () => {
     });
     await setCellSource(page, cell, "![](/auth/logout)");
     await cell.locator(".ironpad-cell-header").click();
+    // setValue never focused Monaco, so no focusout commits the edit; Ctrl+S
+    // does (as in routes.spec.ts), and the preview then shows the trap.
+    await page.keyboard.press("Control+s");
+    await expect(page.locator(".ironpad-status-bar")).toContainText("Saved:", {
+      timeout: 10_000,
+    });
+    await expect(cell.locator('img[src$="/auth/logout"]')).toHaveCount(1);
     await menuClick(page, "Share Immutable");
     const toastBody = page.locator(".ironpad-toast-body", {
       hasText: "/shared/",
