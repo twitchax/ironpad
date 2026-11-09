@@ -1,4 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
+import { menuClick } from "./helpers/menu";
 import { setCellSource } from "./helpers/monaco";
 import { trackJsErrors } from "./helpers/errors";
 import {
@@ -400,5 +401,24 @@ test.describe("Leaving the editor", () => {
     await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
     await page.waitForTimeout(2_000);
     expect((await storedNotebook(page, id)).updated_at).toBe(before);
+  });
+
+  test("a save debounce firing behind Delete's confirm cannot bring the notebook back", async ({
+    page,
+  }) => {
+    // The cell's 1s debounce comes due while the blocking confirm is up and
+    // fires the moment it returns, right beside the delete. Its write used
+    // to land second and resurrect the record.
+    const cell = await notebookWithCell(page);
+    const id = localId(page);
+    await setCellSource(page, cell, "42 + 1");
+    page.once("dialog", async (dialog) => {
+      await new Promise((resolve) => setTimeout(resolve, 1_300));
+      await dialog.accept();
+    });
+    await menuClick(page, "Delete");
+    await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(2_000);
+    expect(await storedNotebook(page, id)).toBeNull();
   });
 });

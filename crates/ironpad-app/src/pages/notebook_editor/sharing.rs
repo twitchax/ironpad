@@ -184,6 +184,10 @@ pub(super) fn save_to_account_current_notebook(state: &NotebookState, toaster: T
                 // reconciliation problem PRD-0054 removed, so it is named
                 // rather than swallowed. (`delete_notebook` logs and returns
                 // nothing, so the surviving record is the only evidence.)
+                //
+                // Halted first: a save debounce firing after the delete
+                // would write the record straight back.
+                state.halt_persistence();
                 crate::storage::client::delete_notebook(&uuid).await;
                 let local_copy_survived =
                     crate::storage::client::get_notebook(&uuid).await.is_some();
@@ -250,7 +254,9 @@ pub(super) fn share_mutable_current_notebook(state: &NotebookState, toaster: Toa
             match crate::server_fns::create_mutable_share(json, Some(tags)).await {
                 Ok(share_id) => {
                     // The notebook's home is the share now; the local copy
-                    // would only drift (PRD-0054).
+                    // would only drift (PRD-0054). Halted first, so a late
+                    // save cannot write it back.
+                    state.halt_persistence();
                     crate::storage::client::delete_notebook(&uuid).await;
                     let url = format!("{}/mutable/{share_id}", window_origin());
                     copy_to_clipboard(&url).await;
@@ -472,6 +478,11 @@ pub(super) fn delete_local_current_notebook(
     if !crate::components::dialog::confirm(crate::components::dialog::DELETE_NOTEBOOK_CONFIRM) {
         return;
     }
+    // Synchronously, before anything else runs: a cell's save debounce that
+    // came due behind the blocking confirm fires the moment this handler
+    // returns, and its write would land after the delete and resurrect the
+    // record.
+    state.halt_persistence();
     leptos::task::spawn_local(async move {
         crate::storage::client::delete_notebook(&id).await;
         navigate("/", leptos_router::NavigateOptions::default());

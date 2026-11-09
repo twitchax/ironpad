@@ -586,6 +586,9 @@ impl NotebookState {
 pub(crate) fn persist_notebook(state: &NotebookState) {
     #[cfg(feature = "hydrate")]
     {
+        if state.persistence_halted() {
+            return;
+        }
         // Pending until a write takes it: the debounce below dies with the
         // page, and the spawned write cannot read a disposed one, so the
         // teardown write is what catches the edit then.
@@ -609,6 +612,9 @@ pub(crate) fn persist_notebook(state: &NotebookState) {
 /// draft the server never received would publish stale content.
 #[cfg(feature = "hydrate")]
 pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
+    if state.persistence_halted() {
+        return false;
+    }
     // Stamp the model in place: cloning the whole notebook to set one field
     // and cloning it again to write it back cost two deep copies per save.
     let stamped = state.notebook.try_update_untracked(|nb| {
@@ -820,6 +826,11 @@ pub(super) fn refusal_toast_body(server_message: &str) -> String {
 /// publishes those outputs, while the 1.5s debounce autosaves stay lean.
 #[cfg(feature = "hydrate")]
 pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) -> bool {
+    // Checked here as well as by the callers: a debounce that wakes after a
+    // Delete or Discard went ahead must not write.
+    if state.persistence_halted() {
+        return false;
+    }
     let Some(share_id) = state.server_draft_share.try_get_untracked().flatten() else {
         return false;
     };
