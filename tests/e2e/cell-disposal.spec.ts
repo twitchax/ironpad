@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { trackJsErrors } from "./helpers/errors";
 import { setCellSource } from "./helpers/monaco";
 import { createNotebook, ADD_CODE } from "./helpers/session";
 
@@ -12,10 +13,9 @@ import { createNotebook, ADD_CODE } from "./helpers/session";
  *   panicked at reactive_graph/traits.rs: Tried to access a reactive value
  *   that has already been disposed.
  *
- * The panic surfaces through `console.error` (then an `unreachable` trap), so we
- * assert on the console signature directly — `trackJsErrors` deliberately drops
- * `unreachable`, which would mask this. The fix guards every post-await access
- * with `try_get_untracked()` and bails when the scope is gone.
+ * The panic surfaces through `console.error` (then an `unreachable` trap), which
+ * `trackJsErrors` records as an app panic. The fix guards every post-await
+ * access with `try_get_untracked()` and bails when the scope is gone.
  */
 
 test.describe("Cell disposal during in-flight async", () => {
@@ -24,11 +24,7 @@ test.describe("Cell disposal during in-flight async", () => {
   }) => {
     test.setTimeout(240_000);
 
-    // Capture error-level console output; the disposed panic lands here.
-    const consoleErrors: string[] = [];
-    page.on("console", (msg) => {
-      if (msg.type() === "error") consoleErrors.push(msg.text());
-    });
+    const jsErrors = trackJsErrors(page);
     // The menu delete uses a native confirm() — accept it automatically.
     page.on("dialog", (dialog) => dialog.accept());
 
@@ -69,9 +65,6 @@ test.describe("Cell disposal during in-flight async", () => {
     // Give the in-flight check time to return onto the now-disposed cell.
     await page.waitForTimeout(15_000);
 
-    const disposed = consoleErrors.filter((t) =>
-      /already been disposed|already borrowed/i.test(t),
-    );
-    expect(disposed).toEqual([]);
+    expect(jsErrors).toEqual([]);
   });
 });

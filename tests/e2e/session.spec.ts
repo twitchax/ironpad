@@ -414,21 +414,10 @@ test.describe.serial("Agent Session", () => {
   }) => {
     test.setTimeout(90_000);
 
-    const jsErrors = trackJsErrors(page);
     // The regression signature: a leaked WS handler reading the disposed
-    // page's signals panics with "already been disposed" (a console.error,
-    // not a pageerror — and the follow-on trap is "unreachable", which
-    // trackJsErrors treats as a benign cell panic). Watch for it directly.
-    const disposedPanics: string[] = [];
-    page.on("console", (msg) => {
-      if (
-        msg.type() === "error" &&
-        (msg.text().includes("already been disposed") ||
-          msg.text().includes("RefCell already borrowed"))
-      ) {
-        disposedPanics.push(msg.text());
-      }
-    });
+    // page's signals panics with "already been disposed", which
+    // trackJsErrors records as an app panic.
+    const jsErrors = trackJsErrors(page);
 
     await createNotebook(page);
     const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
@@ -474,7 +463,6 @@ test.describe.serial("Agent Session", () => {
     await input.press("Enter");
     await expect(title).toHaveText("Still Alive", { timeout: 10_000 });
 
-    expect(disposedPanics).toEqual([]);
     expect(jsErrors).toEqual([]);
   });
 
