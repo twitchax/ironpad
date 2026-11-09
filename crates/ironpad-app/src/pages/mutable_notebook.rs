@@ -150,7 +150,12 @@ pub fn MutableNotebookPage() -> impl IntoView {
     Effect::new(move || {
         let edit_id = id.get();
         // A new target (or a pinned reader) invalidates any resolved editor.
-        owner_edit.set(None);
+        // Guarded because `set` notifies even when the value does not move,
+        // and the page's outer view tracks `owner_edit`: on the first run this
+        // wrote `None` over `None` and rebuilt the reader it had just hydrated.
+        if owner_edit.with_untracked(Option::is_some) {
+            owner_edit.set(None);
+        }
         if force_reader.get() {
             // No probe will run, so nothing is pending: a pinned reader that
             // 404s says so immediately.

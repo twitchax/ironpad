@@ -115,6 +115,58 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await expectLiveCard(request, shareId);
   });
 
+  test("the reader hydrates in place instead of being rebuilt", async ({
+    page,
+    browser,
+  }) => {
+    // The ownership probe's first run used to write `None` over `None`, which
+    // still notifies, so the page's outer view threw away the reader it had
+    // just hydrated and built a new one: every Monaco editor, saved output and
+    // the rail's observed anchors, on every load. The owner swap that the
+    // probe exists for is covered by `shareMutable` (expectOwnerEditor).
+    test.setTimeout(150_000);
+    await loginTestUser(page, "alice");
+    await createNotebook(page);
+    await renameNotebook(page, "Hydrate In Place");
+    const shareId = await shareMutable(page);
+
+    const anon = await browser.newContext();
+    try {
+      const reader = await anon.newPage();
+      await reader.addInitScript(() => {
+        const w = window as unknown as { __readerRemovals: number };
+        w.__readerRemovals = 0;
+        document.addEventListener("DOMContentLoaded", () => {
+          new MutationObserver((records) => {
+            for (const record of records) {
+              for (const node of Array.from(record.removedNodes)) {
+                if (
+                  node instanceof Element &&
+                  (node.matches(".view-only-notebook") ||
+                    node.querySelector(".view-only-notebook"))
+                ) {
+                  w.__readerRemovals++;
+                }
+              }
+            }
+          }).observe(document.documentElement, { childList: true, subtree: true });
+        });
+      });
+      await reader.goto(`/mutable/${shareId}`);
+      await expect(reader.locator(".view-only-title")).toHaveText(
+        "Hydrate In Place",
+        { timeout: 30_000 },
+      );
+      await reader.waitForTimeout(5_000);
+      const removals = await reader.evaluate(
+        () => (window as unknown as { __readerRemovals: number }).__readerRemovals,
+      );
+      expect(removals, "the hydrated reader was torn down").toBe(0);
+    } finally {
+      await anon.close();
+    }
+  });
+
   test("the draft is shared across the owner's devices; others never see it", async ({
     page,
     browser,
