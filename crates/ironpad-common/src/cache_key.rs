@@ -1084,7 +1084,7 @@ mod tests {
     /// cannot see, as last acknowledged. See
     /// [`cell_runtime_changes_are_acknowledged`].
     const ACKNOWLEDGED_CELL_RUNTIME_DIGEST: &str =
-        "9e89b5c3af39c0c4ff27de0916033509ab336d5aef8f8caac3e2b2dfc8145f27";
+        "57121aba194d28144fc2014145c5ee0313ef099d5641dc3eb2a5d85aeddac674";
 
     /// Neither the injected ironpad-cell runtime nor the scaffold's templates
     /// are in the cache key, and folding a digest of them in would cold-start
