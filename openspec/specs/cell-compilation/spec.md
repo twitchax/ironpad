@@ -255,6 +255,10 @@ The system SHALL pass each successful Code cell blob through `wasm-opt -O3 --deb
 - **WHEN** the server has no `wasm-opt`
 - **THEN** compiles still succeed with the unoptimized blob
 
+#### Scenario: The deploy image optimizes
+- **WHEN** the Docker image is built
+- **THEN** its runtime stage installs binaryen from apt and runs `wasm-opt --version`, failing the build if the optimizer cannot start
+
 #### Scenario: Failure leaves no temp files
 - **WHEN** wasm-opt rejects its input, or the compile is abandoned while wasm-opt runs
 - **THEN** no temporary blob is left in the work directory (and on rejection the original bytes are returned)

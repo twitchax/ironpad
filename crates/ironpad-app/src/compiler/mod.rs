@@ -1316,6 +1316,76 @@ pub fn range(angle: f64) -> f64 {
         }
     }
 
+    // ── wasm-opt ────────────────────────────────────────────────────────
+
+    /// wasm-opt really runs and really shrinks a real cell blob.
+    /// `optimize_wasm` degrades silently to the original bytes, which is how
+    /// the deploy image shipped every blob unoptimized: its wasm-opt could not
+    /// load `libbinaryen.so`, and nothing that ran ever had a working one.
+    /// Skips where wasm-opt is absent, EXCEPT under CI, which installs
+    /// binaryen and must fail rather than skip when it cannot run.
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo build --target wasm32-unknown-unknown and wasm-opt"]
+    async fn optimize_wasm_shrinks_a_real_blob() {
+        let wasm_opt_runs = std::process::Command::new("wasm-opt")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success());
+        if !wasm_opt_runs {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI must have a working wasm-opt on PATH (apt-get install binaryen)"
+            );
+            eprintln!("skipping: no working wasm-opt on PATH");
+            return;
+        }
+
+        let cache_dir = tempdir();
+        let session_id = "e2e-session";
+        let cell_id = "wasm-opt-probe";
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
+            &cache_dir,
+            &ironpad_cell_path(),
+            session_id,
+            cell_id,
+            "    CellOutput::text(format!(\"{}\", (1..=10u32).sum::<u32>()))",
+            "[dependencies]",
+            &[],
+            None,
+            None,
+            CellTarget::Executor,
+        )
+        .expect("scaffold should succeed");
+        let result = build_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            CellFeatures::default(),
+        )
+        .await
+        .expect("build_micro_crate should not return an infra error");
+        let BuildResult::Success { wasm_path, .. } = result else {
+            panic!("the probe cell should build");
+        };
+
+        let original = std::fs::read(&wasm_path).unwrap();
+        let optimized = super::optimize::optimize_wasm(&original, &cache_dir, false).await;
+        assert!(
+            optimized.len() < original.len(),
+            "wasm-opt did not shrink the blob ({} -> {} bytes)",
+            original.len(),
+            optimized.len()
+        );
+        assert_eq!(
+            &optimized[..4],
+            b"\0asm",
+            "the optimized blob is still wasm"
+        );
+    }
+
     // ── The build environment ───────────────────────────────────────────
 
     /// A cell must not be able to read the server's environment at compile

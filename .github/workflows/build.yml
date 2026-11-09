@@ -63,6 +63,11 @@ jobs:
       # the binaries, so a plain binstall would skip them and cargo then reports e.g.
       # "no such command: make". Forcing a reinstall keeps the binaries present.
       - run: cargo binstall -y --force cargo-make cargo-nextest wasm-bindgen-cli@0.2.127
+      # wasm-opt for the compiler pipeline's optimize stage.
+      # optimize_wasm_shrinks_a_real_blob (test-integration) skips without it
+      # locally but fails under CI, because a silently skipped optimizer is
+      # how the deploy image shipped unoptimized blobs unnoticed.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends binaryen
       - run: cargo make ci
       # Run the real gate: the #[ignore]'d compiler-pipeline integration tests and a
       # wasm/hydrate compile check, so green CI means the WASM frontend actually builds.

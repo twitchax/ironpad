@@ -84,11 +84,19 @@ FROM rust:1.93.0-slim AS runtime
 # crates like openssl-sys (reqwest via native-tls, e.g. in rtz-build) probe
 # pkg-config for OpenSSL headers at that stage. Dev boxes have these; the slim
 # image didn't, which made cells compile locally and fail only on prod.
+#
+# binaryen is wasm-opt (`compiler/optimize.rs`). It is installed here rather
+# than copied from the builder: Debian's wasm-opt is a thin binary that loads
+# libbinaryen.so, and the copied binary alone failed to start on every
+# compile, so `optimize_wasm` silently served every blob unoptimized.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     clang \
+    binaryen \
     && rm -rf /var/lib/apt/lists/*
+# Fails the image when the optimizer cannot run, as the warmups below do.
+RUN wasm-opt --version
 
 # Cell compilation runs on ONE pinned nightly — never the host default (keep in
 # sync with `cell_toolchain` in crates/ironpad-app/src/compiler/build.rs;
@@ -175,7 +183,6 @@ RUN set -eu; \
 
 # Copy tool binaries from builder (avoids recompiling / reinstalling in runtime).
 COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-bindgen
-COPY --from=builder /usr/bin/wasm-opt /usr/bin/wasm-opt
 
 # Cell builds run as this unprivileged user while the server stays root
 # (PRD-0030's revised sandboxing decision). cargo, rustc, build scripts and
