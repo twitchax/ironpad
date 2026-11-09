@@ -95,6 +95,26 @@ pub fn absolute_url(origin: &str, path: &str) -> String {
     format!("{}{}", origin.trim_end_matches('/'), path)
 }
 
+/// Height of an embed iframe that nothing resizes: the view toolbar's iframe
+/// snippet and the oEmbed response. Only `embed.js` frames resize themselves
+/// (`embed-frame.js` posts heights only to a parent that gave it an
+/// `embed_id`), which is why `embed.js` starts at a 480px placeholder instead.
+pub const EMBED_DEFAULT_HEIGHT: u32 = 600;
+
+/// The one `<iframe>` markup for embedding a notebook, emitted by both the
+/// view toolbar's snippet and the oEmbed response so the two cannot drift.
+///
+/// `escaped_src` and `escaped_title` go in verbatim, so anything carrying
+/// untrusted text must be markup-escaped first. `allow="clipboard-write"` is
+/// load-bearing: a cross-origin frame's clipboard write is refused without it,
+/// and every output panel in the embed carries a Copy button.
+#[must_use]
+pub fn embed_iframe_html(escaped_src: &str, height: u32, escaped_title: &str) -> String {
+    format!(
+        r#"<iframe src="{escaped_src}" style="width:100%;border:0;" height="{height}" loading="lazy" allow="clipboard-write" title="{escaped_title}"></iframe>"#
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +124,18 @@ mod tests {
             public_url: public_url.to_string(),
             ..AppConfig::for_tests(std::path::Path::new("/data"))
         }
+    }
+
+    #[test]
+    fn embed_iframe_html_grants_clipboard_write() {
+        assert_eq!(
+            embed_iframe_html(
+                "https://ironpad.example/embed/public/welcome",
+                600,
+                "Welcome"
+            ),
+            r#"<iframe src="https://ironpad.example/embed/public/welcome" style="width:100%;border:0;" height="600" loading="lazy" allow="clipboard-write" title="Welcome"></iframe>"#
+        );
     }
 
     #[test]

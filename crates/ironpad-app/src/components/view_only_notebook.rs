@@ -301,8 +301,10 @@ pub(crate) fn ViewOnlyNotebook(
                 (embed_spec_stored.get_value(), leptos::web_sys::window())
             {
                 if let Ok(origin) = win.location().origin() {
-                    let iframe = format!(
-                        r#"<iframe src="{origin}/embed/{spec}" style="width:100%;border:0;" height="600" loading="lazy" title="ironpad notebook"></iframe>"#
+                    let iframe = ironpad_common::embed_iframe_html(
+                        &format!("{origin}/embed/{spec}"),
+                        ironpad_common::EMBED_DEFAULT_HEIGHT,
+                        "ironpad notebook",
                     );
                     let script = format!(
                         r#"<script src="{origin}/embed.js" data-notebook="{spec}" async></script>"#

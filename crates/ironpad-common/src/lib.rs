@@ -8,6 +8,6 @@ pub mod paths;
 pub mod protocol;
 pub mod types;
 
-pub use config::{absolute_url, AppConfig};
+pub use config::{absolute_url, embed_iframe_html, AppConfig, EMBED_DEFAULT_HEIGHT};
 pub use paths::is_safe_path_segment;
 pub use types::*;

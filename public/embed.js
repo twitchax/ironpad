@@ -9,10 +9,12 @@
  *                data-notebook="shared/abc123def4567890" async></script>
  *
  *   2. Placeholder divs (one script, many embeds):
- *        <div class="ironpad-embed" data-notebook="public/mandelbrot.ironpad"></div>
+ *        <div class="ironpad-embed" data-notebook="public/mandelbrot"></div>
  *        <script src="https://ironpad.example/embed.js" async></script>
  *
- * `data-notebook` is either "shared/{hash}" or "public/{filename}". The iframe
+ * `data-notebook` is "shared/{hash}", "public/{name}" or "mutable/{id}": the
+ * notebook's own URL path without the leading slash (public names are
+ * extension-less; a legacy "public/{name}.ironpad" still resolves). The iframe
  * origin is derived from this script's own src, so the loader works on any
  * ironpad deployment without configuration.
  *

@@ -332,6 +332,9 @@ test.describe("Notebook embedding", () => {
     const copied = await page.evaluate(() => navigator.clipboard.readText());
     expect(copied).toContain("<iframe");
     expect(copied).toContain('/embed/public/welcome"');
+    // Without it a cross-origin frame's clipboard write is refused, and every
+    // output panel's Copy button inside the embed copies nothing.
+    expect(copied).toContain('allow="clipboard-write"');
 
     expect(jsErrors).toEqual([]);
   });

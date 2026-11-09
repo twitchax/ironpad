@@ -17,17 +17,13 @@
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use ironpad_common::absolute_url;
+use ironpad_common::{absolute_url, embed_iframe_html, EMBED_DEFAULT_HEIGHT};
 use serde::{Deserialize, Serialize};
 
 use crate::escape::markup_escape;
 use crate::notebook_class::Class;
 use crate::state::AppState;
 
-/// Default iframe height, matching the Embed snippet the view-only toolbar
-/// copies. Notebooks self-report their height to the parent frame via
-/// `embed-frame.js`, so this is only the size before that first message.
-const DEFAULT_HEIGHT: u32 = 600;
 const DEFAULT_WIDTH: u32 = 800;
 
 /// Clamp on consumer-supplied `maxheight`, so a hostile or careless value
@@ -131,7 +127,7 @@ pub fn response_for(
     maxheight: Option<u32>,
 ) -> Oembed {
     let height = maxheight
-        .unwrap_or(DEFAULT_HEIGHT)
+        .unwrap_or(EMBED_DEFAULT_HEIGHT)
         .clamp(MIN_HEIGHT, MAX_HEIGHT);
     let src = absolute_url(public_url, &target.embed_path());
 
@@ -142,11 +138,7 @@ pub fn response_for(
         provider_url: absolute_url(public_url, "/"),
         // Escaped because a shared notebook's title is attacker-controlled and
         // this string is embedded verbatim into the consumer's page.
-        html: format!(
-            r#"<iframe src="{}" style="width:100%;border:0;" height="{height}" loading="lazy" title="{}"></iframe>"#,
-            markup_escape(&src),
-            markup_escape(&title),
-        ),
+        html: embed_iframe_html(&markup_escape(&src), height, &markup_escape(&title)),
         title,
         width: DEFAULT_WIDTH,
         height,
@@ -326,11 +318,18 @@ mod tests {
 
         assert_eq!(res.version, "1.0");
         assert_eq!(res.kind, "rich");
-        assert_eq!(res.height, DEFAULT_HEIGHT);
+        assert_eq!(res.height, EMBED_DEFAULT_HEIGHT);
         assert!(res
             .html
             .contains("https://ironpad.twitchax.com/embed/public/cannon"));
         assert!(res.html.starts_with("<iframe "));
+        assert!(res.html.ends_with("></iframe>"));
+        // Copy buttons inside a cross-origin frame need the grant.
+        assert!(
+            res.html.contains("allow=\"clipboard-write\""),
+            "{}",
+            res.html
+        );
     }
 
     #[test]
@@ -379,7 +378,7 @@ mod tests {
         let height = |max: Option<u32>| response_for(ORIGIN, &t, "t".into(), max).height;
 
         assert_eq!(height(Some(900)), 900);
-        assert_eq!(height(None), DEFAULT_HEIGHT);
+        assert_eq!(height(None), EMBED_DEFAULT_HEIGHT);
         assert_eq!(height(Some(0)), MIN_HEIGHT);
         assert_eq!(height(Some(u32::MAX)), MAX_HEIGHT);
     }
