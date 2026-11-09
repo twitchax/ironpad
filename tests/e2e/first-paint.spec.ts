@@ -133,12 +133,25 @@ test.describe("Shell critical path", () => {
   test("UMD globals survive Monaco's AMD loader", async ({ page }) => {
     // Asserted on the editor route, the one place both the UMD bundles and
     // Monaco's AMD loader are present at once, which is the only situation
-    // where they can collide.
+    // where they can collide. `createNotebook` reaches it by client-side
+    // navigation from home, so Monaco's `define` is already there when KaTeX
+    // loads, which is the case the loader's mask exists for.
     await createNotebook(page);
+
+    // The UMD global itself, not the app's wrapper: `render-math.js` assigns
+    // `IronpadKaTeX` unconditionally and then no-ops while `katex` is missing,
+    // so the wrapper exists in exactly the failure this test is for. Polled,
+    // because the route's scripts load after the navigation commits.
+    await expect
+      .poll(() => page.evaluate(() => typeof (window as any).katex), {
+        timeout: 15_000,
+      })
+      .toBe("object");
 
     const globals = await page.evaluate(() => {
       const w = window as never as Record<string, unknown>;
       return {
+        umdKatex: typeof w.katex,
         katex: typeof w.IronpadKaTeX,
         prism: typeof w.IronpadPrism,
         monaco: typeof w.IronpadMonaco,
@@ -148,6 +161,7 @@ test.describe("Shell critical path", () => {
     });
 
     expect(globals).toEqual({
+      umdKatex: "object",
       katex: "object",
       prism: "object",
       monaco: "object",
