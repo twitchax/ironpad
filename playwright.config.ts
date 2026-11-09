@@ -87,6 +87,12 @@ export default defineConfig({
       // is covered by unit tests in compiler/admission.rs.
       IRONPAD_BUILD_RATE_BURST: "100000",
       IRONPAD_BUILD_RATE_PER_MIN: "100000",
+      // A compile now waits for its cargo target dir before its build budget
+      // starts (bug-compiler-5), and an at-capacity refusal is final rather
+      // than retried (bug-compiler-6). Behind the patient live-check budget
+      // above, the production 180s queue would refuse suite compiles that
+      // are only waiting their turn.
+      IRONPAD_BUILD_QUEUE_TIMEOUT_SECS: "600",
       // A DELIBERATELY FAKE BrowserPod key (PRD-0066). Without one the Linux
       // cell path short-circuits on "no key configured" and never reaches the
       // code uat-007 tests, so an outage could not be exercised at all.
