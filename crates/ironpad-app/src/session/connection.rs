@@ -226,37 +226,8 @@ pub(crate) fn start_session(
         });
     ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
 
-    // ── Event bridge: model events → WebSocket ──────────────────────────
-
-    // Store the WS reference for the event bridge Effect.
-    let ws_for_events = ws.clone();
-    Effect::new(move || {
-        // Track the generation counter — this triggers the effect.
-        let _gen = model.event_generation().get();
-
-        // Don't drain while the socket isn't OPEN — a send on a CONNECTING
-        // socket throws InvalidStateError and the drained event would be lost.
-        // Events stay buffered in the model; on_open flushes the pre-open
-        // backlog, and later generation bumps re-run this effect once OPEN.
-        if ws_for_events.ready_state() != web_sys::WebSocket::OPEN {
-            return;
-        }
-
-        // Drain events (untracked — won't re-trigger).
-        let events = model.drain_events();
-        for event in events {
-            // Only forward events from the browser (not echoes from agents).
-            if event.by == ClientId::browser() {
-                ws_send(
-                    &ws_for_events,
-                    &protocol::Message {
-                        id: String::new(),
-                        kind: MessageKind::Event(event),
-                    },
-                );
-            }
-        }
-    });
+    // Model events reach this socket through the page-scoped bridge
+    // (`wire_event_bridge`), which reads it from `state.socket` below.
 
     // ── Heartbeat: keep the connection alive + let the server reap dead ones ─
     //
@@ -295,6 +266,51 @@ pub(crate) fn start_session(
     }));
 
     Ok(())
+}
+
+// ── Event bridge: model events → WebSocket ──────────────────────────────────
+
+/// Forward the model's browser-originated events to the session socket.
+///
+/// Wired ONCE per editor page, beside `SessionState::new`, so the bridge lives
+/// exactly as long as the model it drains. It used to be created inside
+/// [`start_session`], which runs in the session button's click handler, so
+/// the button owned it: entering Preview unmounts the button and disposed the
+/// bridge while the page-scoped socket stayed open. Queries still answered
+/// and the button still showed active, but no browser edit or execution
+/// event reached an agent again.
+pub(crate) fn wire_event_bridge(model: NotebookModel, state: SessionState) {
+    Effect::new(move || {
+        // Track the generation counter — this triggers the effect.
+        let _gen = model.event_generation().get();
+
+        state.socket.try_with_value(|socket| {
+            // No session: leave events buffered (capped in the model).
+            let Some(socket) = socket else {
+                return;
+            };
+            // Don't drain while the socket isn't OPEN — a send on a
+            // CONNECTING socket throws InvalidStateError and the drained
+            // event would be lost. on_open flushes the pre-open backlog, and
+            // later generation bumps re-run this effect once OPEN.
+            if socket.ws.ready_state() != web_sys::WebSocket::OPEN {
+                return;
+            }
+            // Drain events (untracked — won't re-trigger).
+            for event in model.drain_events() {
+                // Only forward events from the browser (not echoes from agents).
+                if event.by == ClientId::browser() {
+                    ws_send(
+                        &socket.ws,
+                        &protocol::Message {
+                            id: String::new(),
+                            kind: MessageKind::Event(event),
+                        },
+                    );
+                }
+            }
+        });
+    });
 }
 
 // ── End session ─────────────────────────────────────────────────────────────

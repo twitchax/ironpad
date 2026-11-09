@@ -687,6 +687,65 @@ test.describe.serial("Agent Session", () => {
     expect(jsErrors).toEqual([]);
   });
 
+  // The model-to-socket event bridge must outlive the session BUTTON: the
+  // button sits inside `<Show when=!is_view_mode>`, so a bridge created by
+  // its click handler was disposed by a Preview round trip while the socket
+  // stayed up. Queries still answered, so the session looked healthy, but no
+  // browser edit or execution event reached an agent again.
+  test("browser events still reach agents after a Preview round trip", async ({
+    page,
+  }) => {
+    // Compile-scale timeout: the run blocks on a real (possibly cold) build.
+    test.setTimeout(240_000);
+
+    const jsErrors = trackJsErrors(page);
+
+    await createNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await waitForPersistedCells(page, 1);
+
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+    const cellId = cliExec(["cells", "list"])[0].id;
+
+    // Same source as the run test above, so the compile cache is usually warm.
+    const update = cliExecRaw([
+      "cells",
+      "update",
+      cellId,
+      "--source",
+      'CellOutput::text(format!("{}", 42))',
+    ]);
+    expect(update.exitCode).toBe(0);
+
+    // Preview, then back to Edit. The session button leaves and returns.
+    const sessionBtn = page.locator(
+      ".ironpad-toolbar-right .ironpad-session-button"
+    );
+    await page.locator('button[aria-label="Preview"]').click();
+    await expect(sessionBtn).toHaveCount(0, { timeout: 10_000 });
+    await page.locator('button[aria-label="Edit"]').click();
+    await expect(sessionBtn).toBeVisible({ timeout: 10_000 });
+
+    // A browser edit still reaches the agent as CellUpdated.
+    const cell = page.locator(".ironpad-cell-card").first();
+    const labelInput = cell.locator(".ironpad-cell-label-input");
+    await labelInput.fill("After Preview");
+    await labelInput.blur();
+    await expect
+      .poll(() => cliExec(["cells", "get", cellId]).label, { timeout: 10_000 })
+      .toBe("After Preview");
+
+    // And so do execution events: the run reaches its terminal event
+    // instead of waiting out its timeout.
+    const result = cliExec(["cells", "run", cellId], 180_000);
+    expect(result.status).toBe("executed");
+    expect(result.display_text).toContain("42");
+
+    expect(jsErrors).toEqual([]);
+  });
+
   test("navigating away ends the session instead of poisoning the page", async ({
     page,
   }) => {

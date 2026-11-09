@@ -174,6 +174,8 @@ pub fn NotebookEditor(
     provide_context(state);
     provide_context(model);
     provide_context(session_state);
+    #[cfg(feature = "hydrate")]
+    crate::session::wire_event_bridge(model, session_state);
 
     // The session cannot outlive this page: the browser IS the model server,
     // and the socket's handlers capture this page's signals. Left open after

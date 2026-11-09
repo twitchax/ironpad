@@ -234,11 +234,16 @@ An agent's accepted mutation SHALL go through the same notebook model as the hos
 - **THEN** the change is stored in IndexedDB and shown in the editor's shared appendix
 
 ### Requirement: Host edits stream to agents
-Every edit the host makes through the editor SHALL be relayed to readable guests as an event with `by` set to `browser` and an empty id. Events produced while the host socket is still connecting SHALL be held (up to 64) rather than sent into the unopened socket, and flushed once it opens, after the `ClaimHost` and `CreateSession` frames. (PRD-0035, 25022ad agentic-collaboration/0006)
+Every edit the host makes through the editor SHALL be relayed to readable guests as an event with `by` set to `browser` and an empty id, for as long as the session lasts, including after the editor goes to Preview and back. Events produced while the host socket is still connecting SHALL be held (up to 64) rather than sent into the unopened socket, and flushed once it opens, after the `ClaimHost` and `CreateSession` frames. (PRD-0035, 25022ad agentic-collaboration/0006)
 
 #### Scenario: Host renames a cell
 - **WHEN** the host edits a cell's label while an agent is connected
 - **THEN** the agent's cached cell shows the new label without the agent sending anything
+
+#### Scenario: Preview round trip
+- **WHEN** the host switches to Preview and back to Edit during a session, then renames a cell
+- **THEN** the agent's cached cell shows the new label
+- **AND** a `cells run` from the agent still reaches its terminal event
 
 #### Scenario: Edits before the socket opens
 - **WHEN** the host edits the notebook between clicking the session button and the socket opening
