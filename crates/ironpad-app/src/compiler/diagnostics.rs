@@ -7,6 +7,8 @@
 //! so that diagnostics reference the user's original source lines rather than
 //! the generated `lib.rs` (or, for a Linux cell, the generated `main.rs`).
 
+use std::path::Path;
+
 use ironpad_common::{Diagnostic, Severity, Span};
 use serde::Deserialize;
 
@@ -95,6 +97,98 @@ pub fn parse_shared_range_diagnostics(
         .lines()
         .filter_map(|line| parse_single_line(line, &policy))
         .collect()
+}
+
+/// The diagnostics a FAILED build reports: the parsed compiler messages,
+/// plus whatever cargo wrote to stderr that they do not already say.
+///
+/// Measured rather than assumed: in `--message-format=json` mode a linker
+/// failure arrives as a JSON `compiler-message` on stdout like any other
+/// error, and stderr carries only cargo's status lines (`Compiling …`,
+/// `error: could not compile …`). Appending stderr whenever it was non-empty
+/// therefore added a span-less `Build stderr:` error to EVERY failed compile,
+/// so one type error read as two. What stderr does carry that stdout does
+/// not is a failure outside rustc, such as a dependency's build script, which
+/// can fail a build whose parsed output holds only warnings.
+///
+/// So: with no parsed messages, the whole raw stderr (else stdout) is the
+/// one `Compilation failed:` error, exactly as before. With parsed messages,
+/// stderr is appended as `Build stderr:` only if something survives
+/// stripping cargo's status lines. Both are redacted of server paths.
+pub fn failure_diagnostics(
+    parsed: Vec<Diagnostic>,
+    stdout: &str,
+    stderr: &str,
+    crate_dir: &Path,
+    cache_dir: &Path,
+) -> Vec<Diagnostic> {
+    let error = |message: String| Diagnostic {
+        message,
+        severity: Severity::Error,
+        spans: vec![],
+        code: None,
+    };
+
+    if parsed.is_empty() {
+        let raw = if stderr.is_empty() { stdout } else { stderr };
+        let redacted = redact_server_paths(raw, crate_dir, cache_dir);
+        return vec![error(format!("Compilation failed:\n{redacted}"))];
+    }
+
+    let mut diagnostics = parsed;
+    let remainder = strip_cargo_status(stderr);
+    if !remainder.trim().is_empty() {
+        let redacted = redact_server_paths(&remainder, crate_dir, cache_dir);
+        diagnostics.push(error(format!("Build stderr:\n{redacted}")));
+    }
+    diagnostics
+}
+
+/// Drop cargo's own status lines from its stderr, keeping anything else.
+fn strip_cargo_status(stderr: &str) -> String {
+    const STATUS_VERBS: [&str; 9] = [
+        "Compiling ",
+        "Checking ",
+        "Updating ",
+        "Locking ",
+        "Adding ",
+        "Downloading ",
+        "Downloaded ",
+        "Blocking ",
+        "Finished ",
+    ];
+    stderr
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(STATUS_VERBS.iter().any(|verb| trimmed.starts_with(verb))
+                || line.starts_with("error: could not compile")
+                || line.starts_with("warning: build failed"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Replace known server filesystem paths in raw compiler output with
+/// placeholders so user-facing diagnostics don't leak the crate/cache
+/// directories or the server's home path (raw rustc/linker output embeds them).
+fn redact_server_paths(raw: &str, crate_dir: &Path, cache_dir: &Path) -> String {
+    let mut out = raw.to_string();
+    // Most specific first: crate_dir lives under cache_dir.
+    let crate_s = crate_dir.to_string_lossy();
+    if !crate_s.is_empty() {
+        out = out.replace(crate_s.as_ref(), "<cell>");
+    }
+    let cache_s = cache_dir.to_string_lossy();
+    if !cache_s.is_empty() {
+        out = out.replace(cache_s.as_ref(), "<cache>");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            out = out.replace(&home, "~");
+        }
+    }
+    out
 }
 
 // ── Internal Helpers ────────────────────────────────────────────────────────
@@ -249,6 +343,95 @@ fn remap_shared_span(span: RustcSpan, start_line: u32, line_count: u32) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── failure_diagnostics (review soc-app-server-3) ───────────────────
+
+    #[test]
+    fn redact_server_paths_strips_crate_and_cache_dirs() {
+        let raw = "error in /cache/workspaces/default/cell-1/src/lib.rs; dep at /cache/registry/foo-1.0/lib.rs";
+        let out = redact_server_paths(
+            raw,
+            Path::new("/cache/workspaces/default/cell-1"),
+            Path::new("/cache"),
+        );
+        assert!(
+            !out.contains("/cache/workspaces/default/cell-1"),
+            "crate dir must be redacted: {out}"
+        );
+        assert!(out.contains("<cell>/src/lib.rs"), "crate replaced: {out}");
+        assert!(
+            out.contains("<cache>/registry/foo"),
+            "cache replaced: {out}"
+        );
+    }
+
+    fn diagnostic(message: &str, severity: Severity) -> Diagnostic {
+        Diagnostic {
+            message: message.into(),
+            severity,
+            spans: vec![],
+            code: None,
+        }
+    }
+
+    /// What a failed build reports, from what cargo actually writes
+    /// (measured: in JSON mode every rustc message, linker errors included,
+    /// is on stdout, and stderr carries cargo's status lines).
+    #[test]
+    fn failure_diagnostics_keep_only_what_the_parsed_messages_lack() {
+        let crate_dir = Path::new("/c/cell");
+        let cache_dir = Path::new("/c");
+        let status_only = "   Compiling cell-x v0.1.0 (/c/cell)\nerror: could not compile `cell-x` (lib) due to 1 previous error";
+
+        // Nothing parsed: the raw stderr is the one error, paths redacted.
+        let out = failure_diagnostics(
+            vec![],
+            "",
+            "error: linking with `rust-lld` failed: /c/cell/target/x.wasm",
+            crate_dir,
+            cache_dir,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(out[0].message.starts_with("Compilation failed:\n"));
+        assert!(
+            out[0].message.contains("<cell>/target/x.wasm"),
+            "{}",
+            out[0].message
+        );
+        assert!(out[0].spans.is_empty());
+
+        // Nothing parsed and an empty stderr: stdout is reported instead.
+        let out = failure_diagnostics(vec![], "cargo said this", "", crate_dir, cache_dir);
+        assert_eq!(out[0].message, "Compilation failed:\ncargo said this");
+
+        // A parsed type error plus cargo's status lines: nothing to append,
+        // so one error reads as one error.
+        let e0308 = diagnostic("mismatched types", Severity::Error);
+        let out = failure_diagnostics(vec![e0308], "", status_only, crate_dir, cache_dir);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].message, "mismatched types");
+
+        // Warnings only, and a build script that failed on stderr: that
+        // failure is the reason, so it is appended without the status lines.
+        let warning = diagnostic("unused variable: `x`", Severity::Warning);
+        let out = failure_diagnostics(
+            vec![warning],
+            "",
+            "   Compiling foo v1.0.0\nerror: failed to run custom build command for `foo v1.0.0`",
+            crate_dir,
+            cache_dir,
+        );
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0].message, "unused variable: `x`");
+        assert!(out[1].message.starts_with("Build stderr:\n"));
+        assert!(
+            out[1].message.contains("custom build"),
+            "{}",
+            out[1].message
+        );
+        assert!(!out[1].message.contains("Compiling"), "{}", out[1].message);
+        assert_eq!(out[1].severity, Severity::Error);
+    }
 
     // ── Sample rustc JSON payloads ──────────────────────────────────────
 

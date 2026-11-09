@@ -320,16 +320,20 @@ The system SHALL report, in an ordinary cell's compile or check, a diagnostic wh
 - **AND** the diagnostic carries no span, since no line of this cell is at fault
 
 ### Requirement: Unstructured build failures are reported with paths redacted
-The system SHALL, when a failed build yields no structured diagnostics, return one `Error` whose message is `Compilation failed:` followed by cargo's stderr (or stdout), and otherwise append the stderr as a `Build stderr:` error, replacing the crate directory with `<cell>`, the cache directory with `<cache>` and the server's home with `~`. (PRD-0036)
+The system SHALL, when a failed build yields no structured diagnostics, return one `Error` whose message is `Compilation failed:` followed by cargo's stderr (or stdout), and otherwise append the stderr, minus cargo's own status lines (`Compiling`, `Checking`, `Updating`, `Locking`, `Adding`, `Downloading`, `Downloaded`, `Blocking`, `Finished`, `error: could not compile`, `warning: build failed`), as a `Build stderr:` error only when something remains, replacing the crate directory with `<cell>`, the cache directory with `<cache>` and the server's home with `~`. In JSON mode every rustc message, linker errors included, arrives as a structured diagnostic, so what remains is a failure outside rustc such as a build script. (PRD-0036)
 
 #### Scenario: Cargo fails before rustc runs
 - **WHEN** a build fails with an error on stderr and no compiler message in cargo's JSON output, such as a manifest cargo cannot resolve
 - **THEN** the response carries one error beginning `Compilation failed:` that contains cargo's message
 - **AND** the message contains no server filesystem path
 
-#### Scenario: Compiler errors plus stderr
-- **WHEN** a build fails with structured compiler errors and cargo also wrote to stderr
-- **THEN** the structured errors are followed by an error beginning `Build stderr:`
+#### Scenario: One type error reads as one error
+- **WHEN** a build fails with one structured type error and cargo's stderr holds only its `Compiling` and `could not compile` lines
+- **THEN** the response carries exactly that one error
+
+#### Scenario: A build script fails beside warnings
+- **WHEN** a build fails with only structured warnings and stderr reports a failed custom build command
+- **THEN** the warnings are followed by an error beginning `Build stderr:` that carries that failure and not cargo's status lines
 
 ### Requirement: Host imports link
 The system SHALL link cells that call host-provided runtime functions, including `sim::read`, `host_message` and `blocking::*`, against the browser executor's `env` import module rather than failing with undefined symbols. (PRD-0031, PRD-0043)

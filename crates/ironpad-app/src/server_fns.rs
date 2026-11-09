@@ -46,33 +46,6 @@ use ironpad_common::cache_key::{CellFeatures, CellTarget};
 
 // ── Compilation ──────────────────────────────────────────────────────────────
 
-/// Replace known server filesystem paths in raw compiler output with
-/// placeholders so user-facing diagnostics don't leak the crate/cache
-/// directories or the server's home path (raw rustc/linker output embeds them).
-#[cfg(feature = "ssr")]
-fn redact_server_paths(
-    raw: &str,
-    crate_dir: &std::path::Path,
-    cache_dir: &std::path::Path,
-) -> String {
-    let mut out = raw.to_string();
-    // Most specific first: crate_dir lives under cache_dir.
-    let crate_s = crate_dir.to_string_lossy();
-    if !crate_s.is_empty() {
-        out = out.replace(crate_s.as_ref(), "<cell>");
-    }
-    let cache_s = cache_dir.to_string_lossy();
-    if !cache_s.is_empty() {
-        out = out.replace(cache_s.as_ref(), "<cache>");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            out = out.replace(&home, "~");
-        }
-    }
-    out
-}
-
 /// Refuse a cell type this build cannot compile, before anything derives a
 /// target from it.
 ///
@@ -306,7 +279,7 @@ async fn compile_cell_core(
     use crate::compiler::{
         build::{build_micro_crate, BuildResult},
         cache::{content_hash, store_blob},
-        diagnostics::parse_diagnostics,
+        diagnostics::{failure_diagnostics, parse_diagnostics},
         optimize::optimize_wasm,
         scaffold::Scaffolded,
         WORKSPACE_SESSION,
@@ -505,8 +478,8 @@ async fn compile_cell_core(
                 "compilation failed"
             );
 
-            // Log the full stderr — this is where linker errors
-            // (e.g. rust-lld failures) and other non-JSON diagnostics appear.
+            // Log the full stderr — this is where a failure outside rustc
+            // (a dependency's build script) shows up.
             if !stderr.is_empty() {
                 tracing::warn!(
                     cell_id = %request.cell_id,
@@ -515,45 +488,8 @@ async fn compile_cell_core(
                 );
             }
 
-            // On failure, if we parsed structured diagnostics, return them.
-            // Otherwise, synthesize a single error from the raw output.
-            //
-            // Linker errors (e.g. rust-lld failures) appear in stderr and are
-            // not captured by rustc's JSON diagnostic format, so we combine
-            // both streams when building the fallback message.
-            let diagnostics = if diagnostics.is_empty() {
-                let raw = if stderr.is_empty() { &stdout } else { &stderr };
-
-                // Include the full output so linker errors (undefined
-                // symbols, missing libraries, etc.) are visible to the user —
-                // but redact server filesystem paths first.
-                let redacted = redact_server_paths(raw, &crate_dir, &config.cache_dir);
-                let message = format!("Compilation failed:\n{redacted}");
-
-                vec![ironpad_common::Diagnostic {
-                    message,
-                    severity: ironpad_common::Severity::Error,
-                    spans: vec![],
-                    code: None,
-                }]
-            } else {
-                // If we have structured diagnostics but also a linker error in
-                // stderr, append the linker error as an additional diagnostic
-                // so it isn't silently lost.
-                let mut diagnostics = diagnostics;
-
-                if !stderr.is_empty() {
-                    let redacted = redact_server_paths(&stderr, &crate_dir, &config.cache_dir);
-                    diagnostics.push(ironpad_common::Diagnostic {
-                        message: format!("Build stderr:\n{redacted}"),
-                        severity: ironpad_common::Severity::Error,
-                        spans: vec![],
-                        code: None,
-                    });
-                }
-
-                diagnostics
-            };
+            let diagnostics =
+                failure_diagnostics(diagnostics, &stdout, &stderr, &crate_dir, &config.cache_dir);
 
             Ok(CompileResponse {
                 wasm_blob: vec![],
@@ -2665,25 +2601,6 @@ mod tests {
         assert!(
             !checked.is_empty(),
             "found no admin server fns; the scan pattern has drifted from the code"
-        );
-    }
-
-    #[test]
-    fn redact_server_paths_strips_crate_and_cache_dirs() {
-        let raw = "error in /cache/workspaces/default/cell-1/src/lib.rs; dep at /cache/registry/foo-1.0/lib.rs";
-        let out = redact_server_paths(
-            raw,
-            std::path::Path::new("/cache/workspaces/default/cell-1"),
-            std::path::Path::new("/cache"),
-        );
-        assert!(
-            !out.contains("/cache/workspaces/default/cell-1"),
-            "crate dir must be redacted: {out}"
-        );
-        assert!(out.contains("<cell>/src/lib.rs"), "crate replaced: {out}");
-        assert!(
-            out.contains("<cache>/registry/foo"),
-            "cache replaced: {out}"
         );
     }
 

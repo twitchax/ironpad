@@ -350,6 +350,9 @@ test.describe("Notebook", () => {
     await expect(errorPanel).toContainText(/mismatched types/i, {
       timeout: 5_000,
     });
+    // ...and only that: cargo's own status lines on stderr are not a second
+    // error (review soc-app-server-3).
+    await expect(errorPanel).not.toContainText("Build stderr");
 
     // Verify no JS errors occurred.
     expect(jsErrors).toEqual([]);
