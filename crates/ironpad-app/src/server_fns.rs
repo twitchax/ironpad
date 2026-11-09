@@ -111,6 +111,28 @@ fn reject_uncompilable_cell_type(
     )))
 }
 
+/// Largest compile or check request accepted, summed over every field the
+/// server writes to disk or splices into generated source (review
+/// bug-security-9). Without it the only bound was the framework's body cap,
+/// and a live check writes its crate to disk before cargo looks at it. The
+/// largest request any public notebook produces is about 22 KB.
+#[cfg(feature = "ssr")]
+const MAX_CELL_REQUEST_BYTES: usize = 1024 * 1024;
+
+/// The bytes of `request` that [`MAX_CELL_REQUEST_BYTES`] bounds.
+#[cfg(feature = "ssr")]
+fn request_bytes(request: &CompileRequest) -> usize {
+    request.source.len()
+        + request.cargo_toml.len()
+        + request.shared_source.as_ref().map_or(0, String::len)
+        + request.shared_cargo_toml.as_ref().map_or(0, String::len)
+        + request
+            .previous_cell_types
+            .iter()
+            .map(String::len)
+            .sum::<usize>()
+}
+
 /// Validate a compile request and derive what it builds: the prologue shared
 /// by [`compile_cell_core`] and [`check_cell_core`], so a new validation lands
 /// in both or neither.
@@ -124,6 +146,12 @@ fn reject_uncompilable_cell_type(
 /// type it does not understand from an ordinary one.
 #[cfg(feature = "ssr")]
 fn prepare_cell(request: &CompileRequest) -> Result<(CellTarget, CellFeatures), ServerFnError> {
+    let bytes = request_bytes(request);
+    if bytes > MAX_CELL_REQUEST_BYTES {
+        return Err(ServerFnError::new(format!(
+            "cell request too large: {bytes} bytes of source, manifests and type tags (max {MAX_CELL_REQUEST_BYTES})"
+        )));
+    }
     reject_uncompilable_cell_type(request.cell_type)?;
     let target = CellTarget::from(request.cell_type);
 
@@ -509,7 +537,13 @@ pub async fn check_cell(request: CompileRequest) -> Result<CheckResponse, Server
     let config = expect_context::<AppConfig>();
     let compile_locks = expect_context::<crate::compiler::CompileLocks>();
     let admission = expect_context::<crate::compiler::admission::BuildAdmission>();
-    check_cell_core(&config, &compile_locks, &admission, request).await
+    // Same client identity as `compile_cell`: a check that scaffolds a new
+    // workspace spends a build token (review bug-security-9).
+    let client_ip = leptos_axum::extract::<http::HeaderMap>().await.map_or_else(
+        |_| "local".to_string(),
+        |headers| crate::compiler::admission::client_ip(&headers),
+    );
+    check_cell_core(&config, &compile_locks, &admission, &client_ip, request).await
 }
 
 /// Time budget for a single live check (default 10s, override with
@@ -539,6 +573,7 @@ async fn check_cell_core(
     config: &ironpad_common::AppConfig,
     compile_locks: &crate::compiler::CompileLocks,
     admission: &crate::compiler::admission::BuildAdmission,
+    client_ip: &str,
     request: CompileRequest,
 ) -> Result<CheckResponse, ServerFnError> {
     use crate::compiler::{
@@ -572,6 +607,26 @@ async fn check_cell_core(
             diagnostics: vec![],
         });
     };
+
+    // A check scaffolds to disk before cargo reads anything, and a NEW cell
+    // id is a new directory nothing removes until the next boot. So the
+    // first check of an id costs a build token like a build start does
+    // (review bug-security-9); re-checking an existing cell stays free, so
+    // typing never pays. Refusal is `Skipped`, which the client retries.
+    let workspace = config
+        .cache_dir
+        .join("workspaces")
+        .join(WORKSPACE_SESSION)
+        .join(&request.cell_id);
+    if !tokio::fs::try_exists(&workspace).await.unwrap_or(false)
+        && !admission.try_charge_new_workspace(client_ip)
+    {
+        tracing::Span::current().record("status", "skipped");
+        return Ok(CheckResponse {
+            status: CheckStatus::Skipped,
+            diagnostics: vec![],
+        });
+    }
 
     let Scaffolded {
         crate_dir,
@@ -2695,9 +2750,15 @@ mod tests {
 
         // Live check runs the same pipeline with the same target derivation,
         // so it needs the same gate — not a mention of it in the compile path.
-        let error = check_cell_core(&config, &locks, &admission, request_for(future_type))
-            .await
-            .expect_err("check_cell must refuse it too");
+        let error = check_cell_core(
+            &config,
+            &locks,
+            &admission,
+            "test",
+            request_for(future_type),
+        )
+        .await
+        .expect_err("check_cell must refuse it too");
         assert!(error.to_string().contains("Wasi"), "{error}");
 
         for markdown in [
@@ -2710,9 +2771,15 @@ mod tests {
             )
             .await
             .err(),
-            check_cell_core(&config, &locks, &admission, request_for(CellType::Markdown))
-                .await
-                .err(),
+            check_cell_core(
+                &config,
+                &locks,
+                &admission,
+                "test",
+                request_for(CellType::Markdown),
+            )
+            .await
+            .err(),
         ] {
             let error = markdown.expect("Markdown has no Rust to build either");
             assert!(error.to_string().contains("Markdown"), "{error}");
@@ -2747,7 +2814,7 @@ mod tests {
             .expect_err("compile must refuse a traversing id");
         assert!(compile.to_string().contains("invalid cell_id"), "{compile}");
 
-        let check = check_cell_core(&config, &locks, &admission, request())
+        let check = check_cell_core(&config, &locks, &admission, "test", request())
             .await
             .expect_err("check must refuse a traversing id");
         assert!(check.to_string().contains("invalid cell_id"), "{check}");
@@ -2796,6 +2863,138 @@ mod tests {
             ..admission_test_request("bound")
         };
         assert!(prepare_cell(&bound).is_err());
+    }
+
+    /// A request is bounded before anything is scaffolded, for compile and
+    /// check alike (review bug-security-9).
+    #[tokio::test]
+    async fn an_oversized_request_is_refused_before_scaffolding() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let cache = tempfile::tempdir().unwrap();
+        let config = AppConfig::for_tests(cache.path());
+        let request = || CompileRequest {
+            source: "x".repeat(MAX_CELL_REQUEST_BYTES),
+            ..admission_test_request("oversized")
+        };
+        let locks = CompileLocks::default();
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            4,
+            100.0,
+            100.0,
+            std::time::Duration::from_millis(50),
+        );
+
+        let compile = compile_cell_core(&config, &locks, &admission, "test", request())
+            .await
+            .expect_err("compile must refuse an oversized request");
+        assert!(compile.to_string().contains("too large"), "{compile}");
+        let check = check_cell_core(&config, &locks, &admission, "test", request())
+            .await
+            .expect_err("check must refuse it too");
+        assert!(check.to_string().contains("too large"), "{check}");
+        assert!(
+            !cache.path().join("workspaces").exists(),
+            "nothing may be scaffolded for a refused request"
+        );
+    }
+
+    /// The cap must never refuse a cell the gallery ships: every cell of
+    /// every public notebook, with its notebook's shared inputs, fits.
+    #[test]
+    fn every_public_notebook_cell_fits_the_request_cap() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../public/notebooks");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("ironpad") {
+                continue;
+            }
+            let nb: IronpadNotebook =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let shared_source = nb.effective_shared_source();
+            for cell in nb.cells.iter().filter(|c| c.cell_type.compiles()) {
+                let request = CompileRequest {
+                    source: cell.source.clone(),
+                    cargo_toml: cell.cargo_toml.clone().unwrap_or_default(),
+                    shared_cargo_toml: nb.shared_cargo_toml.clone(),
+                    shared_source: shared_source.clone(),
+                    ..admission_test_request("gallery")
+                };
+                assert!(
+                    request_bytes(&request) < MAX_CELL_REQUEST_BYTES,
+                    "{} cell {} is {} bytes",
+                    path.display(),
+                    cell.id,
+                    request_bytes(&request)
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "found no public notebook cells");
+    }
+
+    /// A live check that would scaffold a NEW workspace costs a build token,
+    /// so a stream of fresh cell ids cannot write unmetered crates to disk;
+    /// re-checking an existing cell stays free, so typing never pays
+    /// (review bug-security-9).
+    #[tokio::test]
+    async fn a_check_charges_only_for_a_new_workspace() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::{AppConfig, CheckStatus};
+
+        let cache = tempfile::tempdir().unwrap();
+        let config = AppConfig::for_tests(cache.path());
+        let locks = CompileLocks::default();
+        // One token, refilling at one per 1,000 minutes: effectively one.
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            4,
+            1.0,
+            0.001,
+            std::time::Duration::from_millis(50),
+        );
+        // A manifest cargo cannot parse, so the check fails fast with no
+        // registry access.
+        let request = |cell_id: &str| CompileRequest {
+            cargo_toml: "[dependencies]\nbroken = ".to_string(),
+            ..admission_test_request(cell_id)
+        };
+        let workspace = |cell_id: &str| {
+            cache
+                .path()
+                .join("workspaces")
+                .join(crate::compiler::WORKSPACE_SESSION)
+                .join(cell_id)
+        };
+
+        let first = check_cell_core(&config, &locks, &admission, "9.9.9.9", request("first"))
+            .await
+            .unwrap();
+        assert_ne!(
+            first.status,
+            CheckStatus::Skipped,
+            "the first id is admitted"
+        );
+        assert!(workspace("first").exists());
+
+        let second = check_cell_core(&config, &locks, &admission, "9.9.9.9", request("second"))
+            .await
+            .unwrap();
+        assert_eq!(second.status, CheckStatus::Skipped, "the bucket is empty");
+        assert!(
+            !workspace("second").exists(),
+            "a refused check scaffolds nothing"
+        );
+
+        let again = check_cell_core(&config, &locks, &admission, "9.9.9.9", request("first"))
+            .await
+            .unwrap();
+        assert_ne!(
+            again.status,
+            CheckStatus::Skipped,
+            "re-checking an existing cell is free"
+        );
     }
 
     // ── compile_cell_core (cache-hit path) ───────────────────────────────
@@ -3029,6 +3228,7 @@ mod tests {
             &config,
             &CompileLocks::default(),
             &admission,
+            "test",
             admission_test_request("busy-check-cell"),
         )
         .await

@@ -32,6 +32,17 @@ The system SHALL refuse, with an error naming the cell type's wire tag, any comp
 - **WHEN** a request carries `cell_type` `Markdown`
 - **THEN** the call fails with an error saying a Markdown cell has no Rust source to build
 
+### Requirement: Request size cap
+The system SHALL refuse a compile or check request whose source, cell manifest, shared source, shared manifest and upstream type tags together exceed 1 MiB (1,048,576 bytes), with an error beginning `cell request too large`, before any cache lookup, scaffold or build.
+
+#### Scenario: Oversized source
+- **WHEN** a compile or check request carries 1 MiB of source
+- **THEN** the call fails with `cell request too large` and no workspace directory is created
+
+#### Scenario: The gallery fits
+- **WHEN** any cell of any public notebook is compiled with its notebook's shared inputs
+- **THEN** the request is under the cap
+
 ### Requirement: Cell id validation
 The system MUST reject a compile or check request whose `cell_id` is not 1 to 64 characters of `[A-Za-z0-9_-]`, before the id touches the filesystem or the generated manifest. (PRD-0036)
 

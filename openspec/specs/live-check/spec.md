@@ -50,7 +50,7 @@ The system SHALL return `Skipped` immediately, without running cargo, when a com
 - **THEN** the check for that cell returns `Skipped`
 
 ### Requirement: Checks shed load instead of queueing
-The system SHALL run live checks in their own pool of `--max-concurrent-builds` slots (default 3), separate from compiles, and SHALL return `Skipped` when every check slot is busy. Live checks MUST NOT be charged against the per-client build rate limit. (PRD-0052)
+The system SHALL run live checks in their own pool of `--max-concurrent-builds` slots (default 3), separate from compiles, and SHALL return `Skipped` when every check slot is busy. A check of a cell whose workspace already exists MUST NOT be charged against the per-client build rate limit; the first check of a cell id with no workspace SHALL cost one build token, and SHALL return `Skipped` without scaffolding anything when the client's bucket is empty. (PRD-0052)
 
 #### Scenario: Pool exhausted
 - **WHEN** every check slot is held and another check arrives
@@ -59,6 +59,11 @@ The system SHALL run live checks in their own pool of `--max-concurrent-builds` 
 #### Scenario: Builds do not starve checks
 - **WHEN** every compile slot is busy
 - **THEN** a live check can still take a check slot and run
+
+#### Scenario: A stream of fresh cell ids
+- **WHEN** a client whose build bucket is empty sends a check for a cell id that has never been scaffolded
+- **THEN** it returns `Skipped` and no workspace directory is created
+- **AND** a re-check of a cell it already scaffolded still runs
 
 ### Requirement: Checks dispatch after the save debounce
 The editor SHALL dispatch a live check for a cell one second after its source stops changing, at the moment the edit is saved, and as soon as an agent's source edit reaches the host's editor, and MUST NOT dispatch one for a Markdown or unrecognized cell, a cell that is compiling or running, or an edit to the cell's Cargo.toml alone. View-only and embedded pages SHALL NOT run live checks. (PRD-0045 T-003)

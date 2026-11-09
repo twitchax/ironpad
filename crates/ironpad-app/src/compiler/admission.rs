@@ -312,11 +312,28 @@ impl BuildAdmission {
     }
 
     /// Admit a live check, or `None` when every check slot is busy — the
-    /// caller degrades to `CheckStatus::Skipped`. Checks are not rate
-    /// limited: they are cheap, self-bounded by the live-check timeout, and
-    /// fire on-type.
+    /// caller degrades to `CheckStatus::Skipped`. Checks of a cell that has
+    /// already been scaffolded are not rate limited, since they fire on-type
+    /// and cargo's own run is bounded by the live-check timeout. The first
+    /// check of a NEW cell is, through
+    /// [`try_charge_new_workspace`](Self::try_charge_new_workspace): it writes
+    /// a crate to disk before cargo reads anything, and nothing removes that
+    /// directory until the next boot.
     pub fn try_admit_check(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         Arc::clone(&self.check_slots).try_acquire_owned().ok()
+    }
+
+    /// Charge one build token for a live check about to scaffold a NEW cell
+    /// workspace (review bug-security-9). `true` = admitted. Shares the build
+    /// bucket, because the cost is the same kind: a fresh crate on disk and
+    /// a cargo run over it, which a stream of fresh cell ids could otherwise
+    /// buy for free.
+    pub fn try_charge_new_workspace(&self, client_ip: &str) -> bool {
+        let admitted = self.try_take_token(client_ip);
+        if !admitted {
+            tracing::warn!(client_ip, "new check workspace refused — build rate limit");
+        }
+        admitted
     }
 
     /// Admit one `get_browserpod_key` request. `true` = admitted.
