@@ -34,26 +34,32 @@ test.describe("Build sandbox (docker-uat only)", () => {
     return cell;
   }
 
-  test("a cell cannot embed the accounts database", async ({ page }) => {
-    test.setTimeout(300_000);
-    const cell = await firstCell(page);
-    await setCellSource(
-      page,
-      cell,
-      'let wal: &[u8] = include_bytes!("/ironpad/data/ironpad.db/wal/00000000000000000000.wal");\n' +
-        'CellOutput::text(format!("{}", wal.len()))'
-    );
-    await page.locator('button[title="Run cell"]').first().click();
+  // Each file exists in the container (docker-uat checks the database as
+  // root first, and pid 1 is the server), so a failure here is the build
+  // user's denial, not a missing file.
+  for (const [what, path] of [
+    ["the accounts database", "/ironpad/data/ironpad.db/wal/00000000000000000000.wal"],
+    ["the server's environment", "/proc/1/environ"],
+  ]) {
+    test(`a cell cannot embed ${what}`, async ({ page }) => {
+      test.setTimeout(300_000);
+      const cell = await firstCell(page);
+      await setCellSource(
+        page,
+        cell,
+        `let bytes: &[u8] = include_bytes!("${path}");\n` +
+          'CellOutput::text(format!("{}", bytes.len()))'
+      );
+      await page.locator('button[title="Run cell"]').first().click();
 
-    await expect(cell.locator(".ironpad-cell-status--error")).toBeVisible({
-      timeout: 240_000,
+      await expect(cell.locator(".ironpad-cell-status--error")).toBeVisible({
+        timeout: 240_000,
+      });
+      await expect(cell.locator(".ironpad-error-panel")).toContainText(
+        /permission denied/i
+      );
     });
-    // Refused by the filesystem, not missing: the file exists in the image
-    // (docker-uat checks it as root), so this is the build user's denial.
-    await expect(cell.locator(".ironpad-error-panel")).toContainText(
-      /permission denied/i
-    );
-  });
+  }
 
   test("a cell can still embed a world-readable file", async ({ page }) => {
     // Positive control for the test above: include_bytes! itself works, so
