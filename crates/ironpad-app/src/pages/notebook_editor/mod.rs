@@ -251,8 +251,17 @@ pub fn NotebookEditor(
                     layout.save_generation.update(|g| *g += 1);
                 }
 
+                // The two shortcuts below act on the editor, which Preview
+                // unmounts: a run queued there has nothing to drain it until
+                // it fires as a surprise on the way back to Edit, and a cell
+                // added there never shows in the frozen preview.
+                let previewing = state.is_view_mode.get_untracked();
+
                 // Ctrl+Shift+Enter — run all cells from top.
                 if (e.ctrl_key() || e.meta_key()) && e.shift_key() && e.key() == "Enter" {
+                    if previewing {
+                        return;
+                    }
                     e.prevent_default();
                     state.enqueue_runnable_from(None);
                 }
@@ -262,6 +271,9 @@ pub fn NotebookEditor(
                     && e.shift_key()
                     && (e.key() == "N" || e.key() == "n")
                 {
+                    if previewing {
+                        return;
+                    }
                     e.prevent_default();
                     let after_cell_id = state.active_cell.get_untracked();
                     if let Ok((result, _event)) = model.apply(
@@ -396,6 +408,8 @@ pub fn NotebookEditor(
 fn NotebookContent() -> impl IntoView {
     let state = expect_context::<NotebookState>();
     let model = expect_context::<NotebookModel>();
+    // For the Preview toggle's queue cancel, which reports to agents.
+    let session = use_context::<SessionState>();
 
     // ── Add cell callback ───────────────────────────────────────────────
 
@@ -1105,16 +1119,26 @@ fn NotebookContent() -> impl IntoView {
                     // round is unspecified, so the cell flush may read the
                     // pre-commit source; the second round re-reads it
                     // post-commit.
+                    //
+                    // Preview unmounts every editor cell, so nothing would
+                    // drain a run queue in flight: its in-flight result is
+                    // dropped at disposal and the rest would fire as a
+                    // surprise on the way back to Edit. Cancel it here, front
+                    // included, and report it to any waiting agent.
                     #[cfg(feature = "hydrate")]
                     leptos::task::spawn_local(async move {
                         if state.flush_cells().await.is_some()
                             && state.flush_cells().await.is_some()
                         {
+                            pipeline::cancel_run_queue(&state, model, session, None);
                             let _ = state.is_view_mode.try_set(true);
                         }
                     });
                     #[cfg(not(feature = "hydrate"))]
-                    state.is_view_mode.set(true);
+                    {
+                        pipeline::cancel_run_queue(&state, model, session, None);
+                        state.is_view_mode.set(true);
+                    }
                 }
             >
                 <Icon icon=icons::VIEW/>

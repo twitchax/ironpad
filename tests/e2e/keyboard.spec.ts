@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { trackJsErrors } from "./helpers/errors";
 import { setCellSource } from "./helpers/monaco";
-import { ADD_CODE } from "./helpers/session";
+import { ADD_CODE, createNotebook, waitForPersistedCells } from "./helpers/session";
+import { gateCompiles } from "./helpers/compile-gate";
 
 test.describe("Keyboard shortcuts", () => {
   test("Ctrl+Enter in cell editor starts compilation", async ({ page }) => {
@@ -178,5 +179,80 @@ test.describe("Keyboard shortcuts", () => {
     await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible();
 
     expect(jsErrors).toEqual([]);
+  });
+
+  // ── Preview (review bug-editor-18) ──────────────────────────────────
+  //
+  // Preview unmounts every editor cell, so nothing drains the editor's run
+  // queue there. The shortcuts used to keep firing anyway: Ctrl+Shift+N added
+  // a cell the frozen preview never showed, and Ctrl+Shift+Enter queued a run
+  // that fired as a surprise on the way back to Edit.
+
+  test("editor shortcuts do nothing in Preview", async ({ page }) => {
+    test.setTimeout(180_000);
+    await createNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await waitForPersistedCells(page, 1);
+    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+    const gate = await gateCompiles(page);
+
+    await page.locator('button[aria-label="Preview"]').click();
+    await expect(page.locator(".view-only-notebook")).toBeVisible({ timeout: 15_000 });
+
+    await page.locator(".view-only-notebook").click({ position: { x: 5, y: 5 } });
+    await page.keyboard.press("Control+Shift+N");
+    await page.keyboard.press("Control+Shift+Enter");
+    await page.waitForTimeout(2_000);
+    const stored = await page.evaluate(async (id) => {
+      const nb = await (window as any).IronpadStorage.getNotebook(id);
+      return nb?.cells?.length ?? 0;
+    }, notebookId);
+    expect(stored).toBe(1);
+
+    // Back in Edit, nothing that was asked for in Preview starts running.
+    // Preview's own autorun is still compiling; the gate keeps it, and any
+    // editor run, from finishing, so a run started here shows as compiling.
+    await page.locator('button[aria-label="Edit"]').click();
+    const card = page.locator(".ironpad-cell-card").first();
+    await expect(card).toBeVisible();
+    await page.waitForTimeout(5_000);
+    await expect(card.locator(".ironpad-cell-status--idle")).toBeVisible();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    gate.releaseAll();
+  });
+
+  test("a queue in flight when Preview opens does not restart on Edit", async ({ page }) => {
+    test.setTimeout(180_000);
+    await createNotebook(page);
+    await page.locator(ADD_CODE).first().click();
+    await page.locator(ADD_CODE).last().click();
+    const cells = page.locator(".ironpad-cell-card");
+    await expect(cells).toHaveCount(2);
+    await expect(cells.nth(1).locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cells.nth(0), "9101u32 + 0");
+    await setCellSource(page, cells.nth(1), "9102u32 + 0");
+
+    const gate = await gateCompiles(page);
+    await page.locator(".ironpad-run-all-button").click();
+    await gate.waitForHeld(1);
+
+    await page.locator('button[aria-label="Preview"]').click();
+    await expect(page.locator(".view-only-notebook")).toBeVisible({ timeout: 15_000 });
+    // Preview autoruns on its own: wait for its compile to arrive too, so it
+    // is not counted against the editor below.
+    await gate.waitForHeld(2);
+    const beforeEdit = gate.held();
+
+    await page.locator('button[aria-label="Edit"]').click();
+    await expect(cells.first()).toBeVisible();
+    await page.waitForTimeout(5_000);
+    expect(gate.held()).toBe(beforeEdit);
+    await expect(
+      page.locator(".ironpad-cell-status--compiling, .ironpad-cell-status--queued"),
+    ).toHaveCount(0);
+    gate.releaseAll();
   });
 });

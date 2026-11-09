@@ -278,7 +278,7 @@ Changing a Code cell's source SHALL mark that cell and every later runnable cell
 - **THEN** `cell0 + 1` shows the stale indicator and `1u32` and `42` do not
 
 ### Requirement: Reactive mode
-The editor's gear-menu "Reactive Mode" toggle SHALL persist as the notebook's `reactive_mode` flag and, while on, SHALL queue every stale runnable cell in notebook order 500 ms after the most recent change that staled a cell, unless a run is already queued; stale cells then show "Pending re-execution (reactive mode)". (PRD-0025)
+The editor's gear-menu "Reactive Mode" toggle SHALL persist as the notebook's `reactive_mode` flag and, while on, SHALL queue every stale runnable cell in notebook order 500 ms after the most recent change that staled a cell; while a run is already queued it SHALL try again every 500 ms until the queue drains rather than drop the change, and it SHALL queue nothing while the editor shows Preview. Stale cells then show "Pending re-execution (reactive mode)". (PRD-0025)
 
 #### Scenario: Edits coalesce
 - **WHEN** two edits stale cells 300 ms apart with Reactive Mode on

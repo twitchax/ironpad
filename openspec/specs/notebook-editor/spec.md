@@ -176,7 +176,7 @@ The system SHALL offer on every non-markdown cell in edit mode a code toggle and
 - **THEN** the output panel collapses and the stored cell gets `output_collapsed: true`
 
 ### Requirement: Keyboard shortcuts
-The system SHALL bind, inside a cell's code editor, Ctrl/Cmd+Enter to run the cell and Shift+Enter to run it and move focus to the next cell's code editor, and on the editor page Ctrl/Cmd+Shift+Enter to run all code cells and Ctrl/Cmd+Shift+N to add a code cell after the active cell. (PRD-0001)
+The system SHALL bind, inside a cell's code editor, Ctrl/Cmd+Enter to run the cell and Shift+Enter to run it and move focus to the next cell's code editor, and on the editor page Ctrl/Cmd+Shift+Enter to run all code cells and Ctrl/Cmd+Shift+N to add a code cell after the active cell. Those two page shortcuts SHALL do nothing in Preview. (PRD-0001)
 
 #### Scenario: Run the focused cell
 - **WHEN** the author clicks into a code cell's editor and presses Ctrl+Enter
@@ -189,6 +189,10 @@ The system SHALL bind, inside a cell's code editor, Ctrl/Cmd+Enter to run the ce
 #### Scenario: Add a cell with no active cell
 - **WHEN** no cell has been clicked yet and the author presses Ctrl+Shift+N
 - **THEN** a code cell with source `42` is inserted at the top of the notebook and focused
+
+#### Scenario: Page shortcuts in Preview
+- **WHEN** the author presses Ctrl+Shift+N and Ctrl+Shift+Enter in Preview, then returns to Edit
+- **THEN** the stored notebook has the same cells and no cell starts running
 
 ### Requirement: Explicit save
 The system SHALL treat Ctrl/Cmd+S on the editor page as an explicit save that suppresses the browser's save dialog, commits every cell's unsaved edits, persists the notebook, records the save time for the status bar, and toasts "Notebook saved"; there is no save button. (PRD-0001, PRD-0006)
@@ -252,12 +256,16 @@ The system SHALL list in the notebook menu, for a local notebook, Share Immutabl
 - **THEN** it offers neither View Published, Discard Draft, Unpublish nor History
 
 ### Requirement: Edit and Preview toggle
-The system SHALL show a fixed bottom-left toggle with "Edit" and "Preview" segments marking the active mode; Preview commits pending edits, then renders a snapshot of the notebook with the read-only renderer the public pages use, without a Fork button, and runs every runnable cell. (PRD-0005, PRD-0006, PRD-0032)
+The system SHALL show a fixed bottom-left toggle with "Edit" and "Preview" segments marking the active mode; Preview commits pending edits, cancels the editor's run queue (reporting it to agents as cancelled, the running cell included), then renders a snapshot of the notebook with the read-only renderer the public pages use, without a Fork button, and runs every runnable cell. (PRD-0005, PRD-0006, PRD-0032)
 
 #### Scenario: Entering Preview
 - **WHEN** the author clicks Preview
 - **THEN** the add-cell rows, cell rails, collapse toggles and appendix editors disappear and every code editor shown is read-only
 - **AND** every runnable cell runs
+
+#### Scenario: A run in flight when Preview opens
+- **WHEN** the author clicks Preview while Run All is compiling the first of two cells, then returns to Edit
+- **THEN** neither cell starts again and no cell shows "queued"
 
 #### Scenario: Preview is a snapshot
 - **WHEN** an agent edits a cell while the author is in Preview

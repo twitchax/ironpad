@@ -747,6 +747,9 @@ test.describe("Agent run queue", () => {
     await createNotebook(page);
     const token = await startSession(page);
     cliHandle = await connectCli(token);
+    // Dismiss the session panel: it floats over the cells' side buttons.
+    await page.locator(".ironpad-editor").click({ position: { x: 5, y: 5 } });
+    await expect(page.locator(".ironpad-session-panel")).toHaveCount(0);
     for (const [i, source] of sources.entries()) {
       const added = cliExecRaw(["cells", "add", "--source", source, "--label", `Q${i}`]);
       expect(added.exitCode).toBe(0);
@@ -821,6 +824,31 @@ test.describe("Agent run queue", () => {
     gate.releaseAll();
     await page.waitForTimeout(5_000);
     await expect(card.locator(".ironpad-cell-status--idle")).toBeVisible();
+    expect(jsErrors).toEqual([]);
+  });
+
+  test("switching to Preview mid-run reports the run cancelled", async ({ page }) => {
+    // Review bug-editor-18: Preview unmounts every cell, so an in-flight
+    // queue had nothing left to drain or report it, and the agent waited out
+    // its timeout.
+    test.setTimeout(180_000);
+    const jsErrors = trackJsErrors(page);
+
+    const [id] = await agentNotebook(page, ["6u32 + 0"]);
+    const gate = await gateCompiles(page);
+
+    const run = cliExecRawAsync(["cells", "run", id, "--timeout-secs", "60"], 80_000);
+    await gate.waitForHeld(1);
+
+    const clicked = Date.now();
+    await page.locator('button[aria-label="Preview"]').click();
+    const result = parseRun(await run);
+    expect(result.status).toBe("cancelled");
+    expect(result.cell_id).toBe(id);
+    expect(Date.now() - clicked).toBeLessThan(30_000);
+
+    gate.releaseAll();
+    await page.locator('button[aria-label="Edit"]').click();
     expect(jsErrors).toEqual([]);
   });
 });

@@ -301,6 +301,7 @@ impl NotebookState {
             return;
         }
 
+        let state = *self;
         let cells = self.cells;
         let cell_stale = self.cell_stale;
         let run_all_queue = self.run_all_queue;
@@ -309,8 +310,19 @@ impl NotebookState {
         let closure = wasm_bindgen::closure::Closure::<dyn Fn()>::new(move || {
             reactive_timer.set(None);
 
-            // Don't enqueue if there's already a run in progress.
+            // Preview unmounts the cells, so nothing would drain a queue
+            // started there. Off is off: a timer armed before the toggle
+            // must not run anything after it.
+            if state.is_view_mode.get_untracked() || !state.reactive_mode.get_untracked() {
+                return;
+            }
+
+            // A run is in progress: try again once it can have drained,
+            // rather than dropping the edit. Nothing else would: the stale
+            // map does not change when the queue empties, so the effect that
+            // schedules this timer never fires again for these cells.
             if !run_all_queue.is_empty_untracked() {
+                state.schedule_reactive_execution();
                 return;
             }
 
