@@ -421,11 +421,9 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
 
     Effect::new(move || {
         let cid = cell_id.get_value();
-        // Borrowed, and released before the match: the `Some(0)` arm writes
-        // the queue (`advance_queue`), which a live borrow would forbid.
-        let my_pos = state
-            .run_all_queue
-            .with(|queue| queue.iter().position(|id| *id == cid));
+        // Tracked, and released before the match: the `Some(0)` arm writes
+        // the queue (`advance`).
+        let my_pos = state.run_all_queue.position(&cid);
 
         match my_pos {
             Some(0) => {
@@ -433,7 +431,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // queue immediately (shared cells compile as part of every
                 // OTHER cell's shared.rs, never on their own).
                 if !runs_in_editor || is_shared.get_untracked() {
-                    crate::components::run_flow::advance_queue(state.run_all_queue, &cid);
+                    state.run_all_queue.advance(&cid);
                     return;
                 }
 

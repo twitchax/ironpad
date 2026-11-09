@@ -215,8 +215,8 @@ pub(crate) mod sim_bus_js {
 pub(crate) struct WidgetSink {
     /// Cell outputs map, updated with the new bytes on a value change.
     pub(crate) cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
-    /// Run-all queue; the button widget pushes downstream cell IDs here.
-    pub(crate) run_all_queue: RwSignal<Vec<String>>,
+    /// Run-all queue; the button widget enqueues downstream cell IDs here.
+    pub(crate) run_all_queue: crate::components::run_flow::RunQueue,
     /// Ordered `(id, runnable)` for every cell, used to find strictly-
     /// downstream runnable cells (button widget) and to mark them stale.
     /// Carrying runnability — not the raw `CellType` — is deliberate: a
@@ -902,11 +902,12 @@ fn render_button(
             let Some(cid) = &cell_id else { return };
             let Some(sink) = sink else { return };
 
-            let all_cells = sink.cells.get_untracked();
-            let downstream = downstream_runnable(&all_cells, cid);
-            if !downstream.is_empty() {
-                sink.run_all_queue.set(downstream);
-            }
+            // Merged into a run already in flight, never replacing it.
+            sink.cells.with_untracked(|all_cells| {
+                let downstream = downstream_runnable(all_cells, cid);
+                let order: Vec<&str> = all_cells.iter().map(|(id, _)| id.as_str()).collect();
+                sink.run_all_queue.enqueue_many(&order, &downstream);
+            });
         }
     };
 

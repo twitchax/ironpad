@@ -134,7 +134,7 @@ pub fn NotebookEditor(
         cell_outputs,
         type_tags: Memo::new(move |_| cell_outputs.with(state::type_tags_of)),
         save_generation: RwSignal::new(0),
-        run_all_queue: RwSignal::new(Vec::new()),
+        run_all_queue: crate::components::run_flow::RunQueue::new(),
         shared_cargo_toml: RwSignal::new(None),
         shared_source: RwSignal::new(None),
         cell_stale: RwSignal::new(HashMap::new()),

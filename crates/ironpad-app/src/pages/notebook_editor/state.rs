@@ -4,6 +4,7 @@ use ironpad_common::{CellManifest, IronpadNotebook};
 use leptos::prelude::*;
 
 use crate::components::monaco_editor::MonacoEditorHandle;
+use crate::components::run_flow::RunQueue;
 #[cfg(feature = "hydrate")]
 use crate::components::toaster::ToastIntent;
 use crate::components::toaster::Toaster;
@@ -154,9 +155,10 @@ pub(crate) struct NotebookState {
     // Used in cell_item.rs under #[cfg(feature = "hydrate")]; appears dead during SSR.
     #[allow(dead_code)]
     pub(super) save_generation: RwSignal<u64>,
-    /// Ordered queue of cell IDs for "Run All Below" sequential execution.
-    /// The cell at position [0] is the one currently being executed.
-    pub(super) run_all_queue: RwSignal<Vec<String>>,
+    /// Ordered queue of cell IDs for sequential execution (Run All, Run All
+    /// Below, cascades, agent runs). The front is the cell currently being
+    /// executed; [`RunQueue`] owns the merge-never-replace policy.
+    pub(super) run_all_queue: RunQueue,
     /// Notebook-level shared Cargo.toml content.
     pub(super) shared_cargo_toml: RwSignal<Option<String>>,
     /// Notebook-level shared Rust source included as `src/shared.rs` in every cell.
@@ -308,7 +310,7 @@ impl NotebookState {
             reactive_timer.set(None);
 
             // Don't enqueue if there's already a run in progress.
-            if !run_all_queue.get_untracked().is_empty() {
+            if !run_all_queue.is_empty_untracked() {
                 return;
             }
 
@@ -321,9 +323,7 @@ impl NotebookState {
                 .map(|c| c.id.clone())
                 .collect();
 
-            if !stale_ids.is_empty() {
-                run_all_queue.set(stale_ids);
-            }
+            run_all_queue.set_if_idle(stale_ids);
         });
         let func: js_sys::Function = closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
         // Hold the closure in the reactive arena (dropped on disposal) instead
@@ -339,16 +339,19 @@ impl NotebookState {
     /// Run All from `from_id` down (the whole notebook for `None`, or when
     /// the cell is gone): queue every runnable cell in notebook order, and
     /// leave the queue alone when there is none.
+    ///
+    /// Merges into a queue already in flight (`RunQueue::enqueue_many`): the
+    /// running front stays in front and nothing queued is dropped, so an
+    /// agent waiting on a queued cell is never stranded by a click.
     pub(super) fn enqueue_runnable_from(&self, from_id: Option<&str>) {
-        let ids = self.cells.with_untracked(|cells| {
+        self.cells.with_untracked(|cells| {
             let start = from_id
                 .and_then(|id| cells.iter().position(|c| c.id == id))
                 .unwrap_or(0);
-            crate::components::executor::runnable_ids(&cells[start..])
+            let ids = crate::components::executor::runnable_ids(&cells[start..]);
+            let order: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
+            self.run_all_queue.enqueue_many(&order, &ids);
         });
-        if !ids.is_empty() {
-            self.run_all_queue.set(ids);
-        }
     }
 
     /// Queue a cell for execution on behalf of a session agent (PRD-0052).
@@ -394,11 +397,7 @@ impl NotebookState {
             ));
         }
 
-        self.run_all_queue.update(|q| {
-            if !q.iter().any(|id| id == cell_id) {
-                q.push(cell_id.to_string());
-            }
-        });
+        self.run_all_queue.push_unique(cell_id);
         Ok(())
     }
 
@@ -470,7 +469,7 @@ impl NotebookState {
         self.cell_display_texts.update(|map| {
             map.remove(cell_id);
         });
-        self.run_all_queue.update(|q| q.retain(|id| id != cell_id));
+        self.run_all_queue.remove(cell_id);
         self.cell_blocked_by.update(|b| {
             b.remove(cell_id);
             b.retain(|_, blocker| blocker != cell_id);
@@ -488,7 +487,7 @@ impl NotebookState {
     /// dependents so the caller can report them (`Event::CellBlocked`).
     pub(super) fn fail_in_run_queue(&self, failed_cell_id: &str) -> Vec<String> {
         let cells = self.cells.get_untracked();
-        let queue = self.run_all_queue.get_untracked();
+        let queue = self.run_all_queue.snapshot_untracked();
         let sources = self.current_cell_sources();
         let dependents = crate::components::executor::dependents_in_queue(
             &cells,
@@ -496,12 +495,8 @@ impl NotebookState {
             failed_cell_id,
             |id| sources.get(id).cloned(),
         );
-        crate::components::run_flow::fail_in_queue(
-            self.run_all_queue,
-            self.cell_blocked_by,
-            failed_cell_id,
-            &dependents,
-        );
+        self.run_all_queue
+            .fail(self.cell_blocked_by, failed_cell_id, &dependents);
         dependents
     }
 }

@@ -24,6 +24,7 @@ use crate::components::output_render::{
     parse_panels, render_display_panel, CellOutputData, MainThreadBadge, PanelMode, WidgetSink,
     VIEW_ONLY_PANEL_CLASSES,
 };
+use crate::components::run_flow::RunQueue;
 
 // ── ViewOnlyNotebook ────────────────────────────────────────────────────────
 
@@ -190,7 +191,7 @@ pub(crate) fn ViewOnlyNotebook(
     let rail_run = RailRunState::new();
 
     // Run-all sequential execution queue (cell IDs in order).
-    let run_all_queue: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
+    let run_all_queue = RunQueue::new();
     // Cells skipped because a cell they transitively depend on failed
     // (PRD-0060 continue-past-failures): id -> failed cell's id. Rendered
     // as an inline notice; cleared when the blocker succeeds or the cell
@@ -201,8 +202,7 @@ pub(crate) fn ViewOnlyNotebook(
 
     // Keep running_all in sync with the queue.
     Effect::new(move || {
-        let empty = run_all_queue.get().is_empty();
-        running_all.set(!empty);
+        running_all.set(!run_all_queue.is_idle());
     });
 
     // Auto-execute all code cells on page load (hydrate-only, fires once), and
@@ -222,9 +222,7 @@ pub(crate) fn ViewOnlyNotebook(
 
                 let cell_ids =
                     notebook.with_value(|nb| crate::components::executor::runnable_ids(&nb.cells));
-                if !cell_ids.is_empty() {
-                    run_all_queue.set(cell_ids);
-                }
+                run_all_queue.set_if_idle(cell_ids);
             });
         }
     }
@@ -236,9 +234,7 @@ pub(crate) fn ViewOnlyNotebook(
         }
         let cell_ids =
             notebook.with_value(|nb| crate::components::executor::runnable_ids(&nb.cells));
-        if !cell_ids.is_empty() {
-            run_all_queue.set(cell_ids);
-        }
+        run_all_queue.set_if_idle(cell_ids);
     };
 
     // Fork handler — clones the notebook with a new ID and navigates to it.
@@ -656,7 +652,7 @@ fn ViewOnlyCell(
     shared_source: StoredValue<Option<String>>,
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
-    run_all_queue: RwSignal<Vec<String>>,
+    run_all_queue: RunQueue,
     blocked_by: RwSignal<HashMap<String, String>>,
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
@@ -745,7 +741,7 @@ fn ViewOnlyCodeCell(
     shared_source: StoredValue<Option<String>>,
     notebook_id: String,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
-    run_all_queue: RwSignal<Vec<String>>,
+    run_all_queue: RunQueue,
     blocked_by: RwSignal<HashMap<String, String>>,
     force_recompile: RwSignal<bool>,
     share_blob: Option<ironpad_common::ShareBlobEntry>,
@@ -799,7 +795,7 @@ fn ViewOnlyCodeCell(
     // — the same cascade agents get (PRD-0052). With no cold dependencies
     // it degrades to the direct trigger.
     let run_cell = move |_| {
-        if !run_all_queue.get_untracked().is_empty() {
+        if !run_all_queue.is_empty_untracked() {
             return; // a run is already in flight; the queue owns execution
         }
         let cid = cell.with_value(|c| c.id.clone());
@@ -814,7 +810,7 @@ fn ViewOnlyCodeCell(
             run_trigger.update(|g| *g += 1);
         } else {
             prereqs.push(cid);
-            run_all_queue.set(prereqs);
+            run_all_queue.set_if_idle(prereqs);
         }
     };
 
@@ -826,19 +822,14 @@ fn ViewOnlyCodeCell(
     let cell_id_for_queue = StoredValue::new(cell.with_value(|c| c.id.clone()));
 
     let queued = Signal::derive(move || {
-        let queue = run_all_queue.get();
-        let cid = cell_id_for_queue.get_value();
-        queue
-            .iter()
-            .position(|id| id == &cid)
+        cell_id_for_queue
+            .with_value(|cid| run_all_queue.position(cid))
             .is_some_and(|pos| pos > 0)
     });
 
     Effect::new(move || {
-        let queue = run_all_queue.get();
-        let cid = cell_id_for_queue.get_value();
-
-        if queue.first().is_some_and(|id| id == &cid) && !compiling.get_untracked() {
+        let at_front = cell_id_for_queue.with_value(|cid| run_all_queue.position(cid) == Some(0));
+        if at_front && !compiling.get_untracked() {
             run_trigger.update(|g| *g += 1);
         }
     });
@@ -972,7 +963,7 @@ fn ViewOnlyCodeCell(
                 // cells fail on purpose; the rest of the notebook is still
                 // the story). Success clears any blame this cell held.
                 if error_message.try_get_untracked().flatten().is_some() {
-                    let queue = run_all_queue.try_get_untracked().unwrap_or_default();
+                    let queue = run_all_queue.snapshot_untracked();
                     let dependents = all_cells.with_value(|cells| {
                         crate::components::executor::dependents_in_queue(
                             cells,
@@ -984,16 +975,11 @@ fn ViewOnlyCodeCell(
                     // Shared bookkeeping (run_flow): blame + drop, one
                     // policy with the editor. Also drops this cell itself,
                     // making the advance below a no-op on failure.
-                    crate::components::run_flow::fail_in_queue(
-                        run_all_queue,
-                        blocked_by,
-                        &cell_id,
-                        &dependents,
-                    );
+                    run_all_queue.fail(blocked_by, &cell_id, &dependents);
                 } else {
                     crate::components::run_flow::clear_blame_held_by(blocked_by, &cell_id);
                 }
-                crate::components::run_flow::advance_queue(run_all_queue, &cell_id);
+                run_all_queue.advance(&cell_id);
 
                 compiling.set(false);
             });
@@ -1338,7 +1324,7 @@ fn ViewOnlyOutput(
     #[prop(into)] cell_id: String,
     /// `(id, runnable)` per cell, owned once by [`ViewOnlyNotebook`].
     sink_cells: StoredValue<Vec<(String, bool)>>,
-    run_all_queue: RwSignal<Vec<String>>,
+    run_all_queue: RunQueue,
     cell_outputs: RwSignal<HashMap<String, CellOutputData>>,
 ) -> impl IntoView {
     let panels = result

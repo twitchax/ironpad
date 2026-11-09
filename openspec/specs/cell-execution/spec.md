@@ -192,7 +192,7 @@ The system SHALL treat a cell as consuming slot N when its source contains `cell
 - **THEN** exactly the first and third cells run before it
 
 ### Requirement: Run All
-The editor's "Run All" button, each cell's "Run All Below" menu item, and a read-only page's "Run All" button SHALL queue every runnable cell (Code and not shared) from the starting cell in notebook order and run them one at a time, each waiting cell showing "queued". (PRD-0007, PRD-0060)
+The editor's "Run All" button, each cell's "Run All Below" menu item, and a read-only page's "Run All" button SHALL queue every runnable cell (Code and not shared) from the starting cell in notebook order and run them one at a time, each waiting cell showing "queued". Pressed while a queue is already running, the editor's Run All, Run All Below, and an output's button widget SHALL merge into it rather than replace it: the running cell stays in front, no queued cell is dropped, and the new cells join in notebook order. (PRD-0007, PRD-0060)
 
 #### Scenario: What Run All includes
 - **WHEN** Run All is pressed on Code `a`, a Markdown cell, a shared Code cell, a Linux cell, and Code `b`
@@ -206,6 +206,10 @@ The editor's "Run All" button, each cell's "Run All Below" menu item, and a read
 #### Scenario: Running a cell while a queue is in flight
 - **WHEN** an author runs independent cell `x` while a queue of `a`, `b` is running with `a` in front, in a notebook ordered `a`, `x`, `b`
 - **THEN** `x` joins the queue as `a`, `x`, `b`, with `a` still in front
+
+#### Scenario: Run All Below during a run
+- **WHEN** an agent's `cells run z` has queued `x`, `y`, `z` with `x` compiling, and the author presses Run All Below on a later cell `w`
+- **THEN** the queue runs `x`, `y`, `z`, `w` in that order, and the agent receives `z`'s result
 
 ### Requirement: Continue past failures
 When a queued cell fails to compile, load, or execute, the system SHALL drop it and every queued cell that transitively depends on it, mark each dropped dependent blocked by the failed cell, and keep running every remaining queued cell. (PRD-0060)

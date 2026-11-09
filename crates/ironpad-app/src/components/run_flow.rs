@@ -169,17 +169,215 @@ pub async fn load_and_execute(
     Ok((result, js_sys::Date::now() - exec_start))
 }
 
-// ── Queue bookkeeping ───────────────────────────────────────────────────────
+// ── The run queue ───────────────────────────────────────────────────────────
 
-/// Advance a run queue past `cell_id` if it is at the front — the
-/// pop-front-if-me every surface used to hand-roll. A no-op when another
-/// cell holds the front slot (a stale completion must not eat its turn).
-pub fn advance_queue(queue: RwSignal<Vec<String>>, cell_id: &str) {
-    queue.update(|q| {
-        if q.first().is_some_and(|id| id == cell_id) {
-            q.remove(0);
+/// The ordered queue of cells waiting to run, front first: the front is the
+/// cell running now, and it stays PINNED until it finishes (one cell runs at a
+/// time). Every cell that leaves the queue other than by finishing is reported
+/// by the caller (`CellBlocked` for a dependency failure, `RunCancelled` for a
+/// cancel).
+///
+/// A newtype with a private field so that policy has ONE owner. The queue was
+/// a raw signal that a dozen sites wrote under four policies (merge, replace,
+/// set-if-empty, append, clear), and the replacing ones broke both rules at
+/// once: Run All Below or a button widget during a run dropped the queued
+/// cells unreported (an agent waiting on one waited out its timeout) and
+/// unpinned the mid-compile front, so the next cell compiled concurrently. An
+/// enqueue now always MERGES, so nothing is dropped and nothing needs
+/// reporting; the only ways out are [`Self::advance`], [`Self::remove`],
+/// [`Self::fail`] and [`Self::cancel`], and the last two hand back what they
+/// dropped.
+///
+/// Every read is a `try_` read: detached completion tasks outlive their page,
+/// and reading a disposed signal panics where a write only no-ops.
+#[derive(Clone, Copy)]
+pub(crate) struct RunQueue(RwSignal<Vec<String>>);
+
+impl RunQueue {
+    pub(crate) fn new() -> Self {
+        Self(RwSignal::new(Vec::new()))
+    }
+
+    /// Tracked: `id`'s place in the queue (`Some(0)` is the running front),
+    /// `None` when it is not queued.
+    pub(crate) fn position(&self, id: &str) -> Option<usize> {
+        self.0
+            .try_with(|queue| queue.iter().position(|queued| queued == id))
+            .flatten()
+    }
+
+    /// Tracked: whether nothing is queued. A disposed queue reads idle.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.0.try_with(Vec::is_empty).unwrap_or(true)
+    }
+
+    /// Untracked [`Self::is_idle`].
+    pub(crate) fn is_empty_untracked(&self) -> bool {
+        self.0.try_with_untracked(Vec::is_empty).unwrap_or(true)
+    }
+
+    /// Untracked copy of the queue, for the failure policies that compute
+    /// dependents against it. Empty when disposed.
+    pub(crate) fn snapshot_untracked(&self) -> Vec<String> {
+        self.0.try_get_untracked().unwrap_or_default()
+    }
+
+    /// Route a single-cell run of `target` (with its unexecuted
+    /// `dependencies`) through the queue when it has to wait: when there are
+    /// dependencies to run first, or another cell holds the queue. Returns
+    /// `true` when the request was merged in and the queue will dispatch it,
+    /// `false` when the caller should run `target` directly (nothing to
+    /// cascade, and the queue is idle or already has `target` at the front).
+    pub(crate) fn request(&self, order: &[&str], dependencies: &[String], target: &str) -> bool {
+        let Some(next) = self.0.try_with_untracked(|queue| {
+            let front_is_target = queue.first().is_some_and(|id| id == target);
+            let must_wait = !dependencies.is_empty() || (!queue.is_empty() && !front_is_target);
+            must_wait.then(|| {
+                let mut additions = dependencies.to_vec();
+                additions.push(target.to_string());
+                merged(order, queue, &additions, Some(target))
+            })
+        }) else {
+            // Disposed: nothing is left to run it.
+            return true;
+        };
+        match next {
+            Some(queue) => {
+                self.0.set(queue);
+                true
+            }
+            None => false,
         }
-    });
+    }
+
+    /// Queue `ids` (Run All, Run All Below, a button widget). Merges into a
+    /// running queue rather than replacing it: the front stays pinned and
+    /// every queued cell keeps its place in notebook order.
+    pub(crate) fn enqueue_many(&self, order: &[&str], ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        if let Some(next) = self
+            .0
+            .try_with_untracked(|queue| merged(order, queue, ids, None))
+        {
+            self.0.set(next);
+        }
+    }
+
+    /// Start a queue of `ids` only when none is running (the viewer's Run and
+    /// Run All, autorun, the reactive timer). Returns whether it started.
+    pub(crate) fn set_if_idle(&self, ids: Vec<String>) -> bool {
+        if ids.is_empty() || !self.is_empty_untracked() {
+            return false;
+        }
+        self.0.set(ids);
+        true
+    }
+
+    /// Append `id` unless it is already queued (an agent's `cells run`). Its
+    /// dependencies cascade when it reaches the front.
+    pub(crate) fn push_unique(&self, id: &str) {
+        self.0.try_update(|queue| {
+            if !queue.iter().any(|queued| queued == id) {
+                queue.push(id.to_string());
+            }
+        });
+    }
+
+    /// `id` finished: pop it if it is the front. A no-op when another cell
+    /// holds the front (a stale completion must not eat its turn).
+    pub(crate) fn advance(&self, id: &str) {
+        self.0.try_update(|queue| {
+            if queue.first().is_some_and(|front| front == id) {
+                queue.remove(0);
+            }
+        });
+    }
+
+    /// Drop `id` wherever it is (a deleted cell).
+    pub(crate) fn remove(&self, id: &str) {
+        self.0
+            .try_update(|queue| queue.retain(|queued| queued != id));
+    }
+
+    /// Continue-past-failures (PRD-0060): drop `failed_id` and its
+    /// `dependents`, recording blame for each dependent. The two signals are
+    /// distinct arena slots, so the nested update is safe; blame lands before
+    /// the queue's subscribers run, so a watcher never sees a dropped cell
+    /// without its reason.
+    pub(crate) fn fail(
+        &self,
+        blocked_by: RwSignal<std::collections::HashMap<String, String>>,
+        failed_id: &str,
+        dependents: &[String],
+    ) {
+        self.0.try_update(|queue| {
+            blocked_by.try_update(|blocked| {
+                fail_in_queue_core(queue, blocked, failed_id, dependents);
+            });
+        });
+    }
+
+    /// Empty the queue (a Stop, or leaving the surface that drains it) and
+    /// return every dropped cell except `except`, for the caller to report.
+    pub(crate) fn cancel(&self, except: Option<&str>) -> Vec<String> {
+        let Some(dropped) = self
+            .0
+            .try_with_untracked(|queue| (!queue.is_empty()).then(|| without(queue, except)))
+        else {
+            return Vec::new();
+        };
+        match dropped {
+            Some(dropped) => {
+                self.0.set(Vec::new());
+                dropped
+            }
+            None => Vec::new(),
+        }
+    }
+}
+
+/// The one merge every enqueue goes through. The front is pinned unless it
+/// is `unpinned` or no longer in `order`: a request's own target at the front
+/// has not started yet (the dispatch guard returns before that) and its
+/// dependencies must run first, and a front deleted mid-run is a ghost no
+/// watcher can advance. Everything else wanted (the queue's other entries
+/// plus `additions`) follows in notebook order, which runs a dependency
+/// before its consumer because a dependency is always upstream. Ids not in
+/// `order` are dropped.
+fn merged(
+    order: &[&str],
+    queue: &[String],
+    additions: &[String],
+    unpinned: Option<&str>,
+) -> Vec<String> {
+    let mut wanted: std::collections::HashSet<&str> = queue.iter().map(String::as_str).collect();
+    wanted.extend(additions.iter().map(String::as_str));
+
+    let mut merged: Vec<String> = Vec::with_capacity(wanted.len());
+    if let Some(front) = queue.first() {
+        if Some(front.as_str()) != unpinned && order.contains(&front.as_str()) {
+            wanted.remove(front.as_str());
+            merged.push(front.clone());
+        }
+    }
+    merged.extend(
+        order
+            .iter()
+            .filter(|id| wanted.contains(*id))
+            .map(|id| (*id).to_string()),
+    );
+    merged
+}
+
+/// `queue` without `except`: what a cancel drops.
+fn without(queue: &[String], except: Option<&str>) -> Vec<String> {
+    queue
+        .iter()
+        .filter(|id| Some(id.as_str()) != except)
+        .cloned()
+        .collect()
 }
 
 /// Continue-past-failures core (PRD-0060): record blame for `dependents`
@@ -197,21 +395,6 @@ pub fn fail_in_queue_core(
         blocked.insert(dep.clone(), failed_id.to_string());
     }
     queue.retain(|id| id != failed_id && !dependents.iter().any(|d| d == id));
-}
-
-/// Signal-level wrapper for [`fail_in_queue_core`]. The two signals are
-/// distinct arena slots, so the nested update is safe; blame lands before
-/// the queue's subscribers run, so a watcher never sees a dropped cell
-/// without its reason.
-pub fn fail_in_queue(
-    queue: RwSignal<Vec<String>>,
-    blocked_by: RwSignal<std::collections::HashMap<String, String>>,
-    failed_id: &str,
-    dependents: &[String],
-) {
-    queue.update(|q| {
-        blocked_by.update(|b| fail_in_queue_core(q, b, failed_id, dependents));
-    });
 }
 
 /// A dispatched run of `cell_id` is a fresh attempt: any blocked notice it
@@ -256,11 +439,193 @@ pub fn clear_blame_held_by(
 
 #[cfg(test)]
 mod tests {
-    use super::fail_in_queue_core;
+    use super::{fail_in_queue_core, merged, RunQueue};
+    use leptos::prelude::*;
     use std::collections::HashMap;
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(ToString::to_string).collect()
+    }
+
+    /// The merge a single-cell request performs: its unexecuted
+    /// dependencies plus the target, with the target never pinned.
+    fn request_merge(
+        order: &[&str],
+        queue: &[&str],
+        unexecuted: &[&str],
+        target: &str,
+    ) -> Vec<String> {
+        let mut additions = ids(unexecuted);
+        additions.push(target.to_string());
+        merged(order, &ids(queue), &additions, Some(target))
+    }
+
+    // ── The merge ───────────────────────────────────────────────────────
+
+    #[test]
+    fn merged_run_queue_from_empty_is_deps_then_target() {
+        assert_eq!(
+            request_merge(&["a", "b", "c"], &[], &["a"], "c"),
+            ids(&["a", "c"])
+        );
+    }
+
+    #[test]
+    fn merged_run_queue_preserves_queued_independents() {
+        // Run All in flight ([a, b, c], a at front), user clicks Run on
+        // queued c (which depends on a): the old wholesale replacement
+        // produced [a, c] and silently dropped b.
+        assert_eq!(
+            request_merge(&["a", "b", "c"], &["a", "b", "c"], &["a"], "c"),
+            ids(&["a", "b", "c"])
+        );
+    }
+
+    #[test]
+    fn merged_run_queue_front_target_yields_to_deps_and_keeps_the_tail() {
+        // Agent path: queue [y, z], y reaches the front with a cold
+        // dependency d. The old replacement produced [d, y] and z's waiting
+        // agent timed out.
+        assert_eq!(
+            request_merge(&["d", "y", "z"], &["y", "z"], &["d"], "y"),
+            ids(&["d", "y", "z"])
+        );
+    }
+
+    #[test]
+    fn merged_run_queue_drops_a_ghost_front() {
+        // The queued front was deleted mid-run (agent CellDelete): it must
+        // not be pinned (nothing can ever advance a front that has no
+        // watcher) and it vanishes from the merge entirely.
+        assert_eq!(
+            request_merge(&["b", "c"], &["ghost", "b", "c"], &[], "c"),
+            ids(&["b", "c"])
+        );
+    }
+
+    #[test]
+    fn merged_run_queue_routes_a_direct_click_through_a_busy_queue() {
+        // Independent cell x clicked while [a, b] runs: x joins in notebook
+        // order behind the pinned (possibly mid-compile) front.
+        assert_eq!(
+            request_merge(&["a", "x", "b"], &["a", "b"], &[], "x"),
+            ids(&["a", "x", "b"])
+        );
+    }
+
+    #[test]
+    fn run_all_during_a_run_pins_the_front_and_keeps_queued_cells() {
+        // Review soc-app-client-5: an agent waits on z with [x, y, z] in
+        // flight and x mid-compile. Run All Below on w used to REPLACE the
+        // queue with [w]: y and z went Idle unreported and x's completion
+        // could no longer advance a queue it did not lead.
+        let order = ["a", "x", "y", "z", "w"];
+        let running = ids(&["x", "y", "z"]);
+        assert_eq!(
+            merged(&order, &running, &ids(&["w"]), None),
+            ids(&["x", "y", "z", "w"])
+        );
+        // Run All from the top keeps everything too, and x stays in front
+        // rather than re-sorting behind a.
+        assert_eq!(
+            merged(&order, &running, &ids(&order), None),
+            ids(&["x", "a", "y", "z", "w"])
+        );
+    }
+
+    #[test]
+    fn button_widget_during_a_run_drops_nothing() {
+        // A button widget in b enqueues the cells after it while [a, c]
+        // runs: the queue grows, it is never replaced.
+        Owner::new().with(|| {
+            let queue = RunQueue::new();
+            let order = ["a", "b", "c", "d"];
+            queue.enqueue_many(&order, &ids(&["a", "c"]));
+            queue.enqueue_many(&order, &ids(&["c", "d"]));
+            assert_eq!(queue.snapshot_untracked(), ids(&["a", "c", "d"]));
+            assert_eq!(queue.position("a"), Some(0));
+        });
+    }
+
+    #[test]
+    fn set_if_idle_ignores_a_busy_queue() {
+        Owner::new().with(|| {
+            let queue = RunQueue::new();
+            assert!(!queue.set_if_idle(Vec::new()), "nothing to start");
+            assert!(queue.set_if_idle(ids(&["a", "b"])));
+            assert!(!queue.set_if_idle(ids(&["c"])), "a run is in flight");
+            assert_eq!(queue.snapshot_untracked(), ids(&["a", "b"]));
+        });
+    }
+
+    #[test]
+    fn cancel_reports_everything_but_the_excepted_cell() {
+        Owner::new().with(|| {
+            let queue = RunQueue::new();
+            queue.enqueue_many(&["a", "b", "c"], &ids(&["a", "b", "c"]));
+            assert_eq!(queue.cancel(Some("a")), ids(&["b", "c"]));
+            assert!(queue.is_empty_untracked());
+
+            // No exception names the front too.
+            queue.enqueue_many(&["a", "b"], &ids(&["a", "b"]));
+            assert_eq!(queue.cancel(None), ids(&["a", "b"]));
+
+            // A queue holding only the excepted cell still empties.
+            queue.push_unique("a");
+            assert!(queue.cancel(Some("a")).is_empty());
+            assert!(queue.is_empty_untracked());
+            assert!(queue.cancel(None).is_empty(), "an idle queue drops nothing");
+        });
+    }
+
+    #[test]
+    fn request_runs_directly_only_when_nothing_must_wait() {
+        Owner::new().with(|| {
+            let queue = RunQueue::new();
+            let order = ["d", "t", "x"];
+            assert!(
+                !queue.request(&order, &[], "t"),
+                "idle and no deps: run now"
+            );
+            assert!(queue.is_empty_untracked());
+
+            assert!(
+                queue.request(&order, &ids(&["d"]), "t"),
+                "a cold dependency queues"
+            );
+            assert_eq!(queue.snapshot_untracked(), ids(&["d", "t"]));
+
+            assert!(
+                queue.request(&order, &[], "x"),
+                "another cell holds the queue"
+            );
+            assert_eq!(queue.snapshot_untracked(), ids(&["d", "t", "x"]));
+
+            queue.advance("d");
+            assert!(
+                !queue.request(&order, &[], "t"),
+                "the queue dispatching its front"
+            );
+        });
+    }
+
+    #[test]
+    fn push_unique_advance_and_remove_keep_the_front_rule() {
+        Owner::new().with(|| {
+            let queue = RunQueue::new();
+            queue.push_unique("a");
+            queue.push_unique("b");
+            queue.push_unique("a");
+            assert_eq!(queue.snapshot_untracked(), ids(&["a", "b"]));
+            queue.advance("b");
+            assert_eq!(
+                queue.snapshot_untracked(),
+                ids(&["a", "b"]),
+                "b is not the front"
+            );
+            queue.remove("a");
+            assert_eq!(queue.position("b"), Some(0));
+        });
     }
 
     #[test]

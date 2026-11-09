@@ -128,7 +128,7 @@ pub(super) fn CellOutputPanel(
     cells: Option<RwSignal<Vec<CellManifest>>>,
     /// Run-all queue (downstream cell IDs are pushed here for execution).
     #[prop(optional)]
-    run_all_queue: Option<RwSignal<Vec<String>>>,
+    run_all_queue: Option<crate::components::run_flow::RunQueue>,
     /// Live collapse state, owned by the cell so the header's default-collapse
     /// toggle can snap it. Falls back to a panel-local signal when absent
     /// (the read-only viewer's usage).

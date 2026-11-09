@@ -7,7 +7,15 @@ import {
   endSession,
   waitForPersistedCells,
 } from "./helpers/session";
-import { connectCli, cliExec, cliExecRaw, stopCli, CliHandle } from "./helpers/cli";
+import {
+  connectCli,
+  cliExec,
+  cliExecRaw,
+  cliExecRawAsync,
+  stopCli,
+  CliHandle,
+} from "./helpers/cli";
+import { gateCompiles } from "./helpers/compile-gate";
 import { trackJsErrors } from "./helpers/errors";
 
 /** The first cell's source as IndexedDB holds it. */
@@ -712,5 +720,79 @@ test.describe.serial("Agent Session", () => {
     // Verify CLI commands fail.
     const result = cliExecRaw(["status"]);
     expect(result.exitCode).not.toBe(0);
+  });
+});
+
+// ── Run-queue ownership: drops are reported, never silent ──────────────────
+//
+// Each test owns its daemon (a worker has its own temp HOME, see
+// helpers/cli.ts), so this block need not be serial; keeping it out of the
+// serial block above means one red test cannot skip the others.
+//
+// Every test here installs a compile gate, so every CLI call after it goes
+// through `cliExecRawAsync`: a blocking call would stall the very route
+// handler that forwards the page's compile requests.
+test.describe("Agent run queue", () => {
+  let cliHandle: CliHandle | null = null;
+
+  test.afterEach(async () => {
+    if (cliHandle) {
+      stopCli(cliHandle);
+      cliHandle = null;
+    }
+  });
+
+  /** A notebook with an agent connected and `sources` added as code cells. */
+  async function agentNotebook(page: Page, sources: string[]): Promise<string[]> {
+    await createNotebook(page);
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+    for (const [i, source] of sources.entries()) {
+      const added = cliExecRaw(["cells", "add", "--source", source, "--label", `Q${i}`]);
+      expect(added.exitCode).toBe(0);
+    }
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(sources.length, {
+      timeout: 15_000,
+    });
+    return cliExec(["cells", "list"]).map((c: any) => c.id);
+  }
+
+  function parseRun(result: { stdout: string; stderr: string; exitCode: number }) {
+    expect(result.exitCode, `cells run failed: ${result.stderr}`).toBe(0);
+    return JSON.parse(result.stdout);
+  }
+
+  test("Run All Below during an agent's cascade keeps the agent's target", async ({
+    page,
+  }) => {
+    // Review soc-app-client-5: the queue had no owner, and Run All Below
+    // REPLACED an in-flight queue, flipping the agent's target from Queued to
+    // Idle with no report, so `cells run` waited out its timeout. It must be
+    // Run All Below on a cell AFTER the target: Run All from the top
+    // re-includes the target and would pass either way.
+    test.setTimeout(360_000);
+    const jsErrors = trackJsErrors(page);
+
+    const ids = await agentNotebook(page, ["1000u32 + 0", "cell0 + 200", "cell1 + 34", "7u32"]);
+    const gate = await gateCompiles(page);
+
+    // A cold cascade: the target's two dependencies queue ahead of it, and
+    // the front's compile is held so the click lands mid-run.
+    const run = cliExecRawAsync(["cells", "run", ids[2], "--timeout-secs", "150"], 170_000);
+    await gate.waitForHeld(1);
+
+    const cards = page.locator(".ironpad-cell-card");
+    await page.locator(".ironpad-cell-row").nth(3).locator('button[title="Cell menu"]').click();
+    await page.locator(".ironpad-cell-menu-item", { hasText: "Run All Below" }).click();
+    gate.releaseAll();
+
+    const result = parseRun(await run);
+    expect(result.status).toBe("executed");
+    expect(result.display_text).toContain("1234");
+    // And the click was honoured too: the later cell ran.
+    await expect(cards.nth(3).locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 120_000,
+    });
+    expect(jsErrors).toEqual([]);
   });
 });

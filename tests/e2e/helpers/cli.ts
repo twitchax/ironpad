@@ -1,7 +1,7 @@
 /**
  * Helpers for spawning and interacting with the ironpad-cli daemon in tests.
  */
-import { spawn, ChildProcess, execFileSync } from "child_process";
+import { spawn, ChildProcess, execFile, execFileSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
@@ -100,6 +100,33 @@ export function cliExecRaw(
       exitCode: e.status || 1,
     };
   }
+}
+
+/**
+ * `cliExecRaw` without blocking the Node event loop, so a spec can drive the
+ * page while a command (a waiting `cells run`, say) is still in flight. Also
+ * the only safe form once a spec has installed a `page.route` handler, which
+ * needs the loop to forward requests at all.
+ */
+export function cliExecRawAsync(
+  command: string[],
+  timeoutMs: number = 15_000
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return new Promise((resolve) => {
+    execFile(
+      CLI_BIN,
+      command,
+      { encoding: "utf-8", timeout: timeoutMs, env: CLI_ENV },
+      (err, stdout, stderr) => {
+        const code = err ? (err as any).code : 0;
+        resolve({
+          stdout: (stdout || "").trim(),
+          stderr: (stderr || "").trim(),
+          exitCode: typeof code === "number" ? code : 1,
+        });
+      }
+    );
+  });
 }
 
 /** Stop the daemon gracefully. */
