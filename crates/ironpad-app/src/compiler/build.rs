@@ -1644,6 +1644,32 @@ mod tests {
         );
     }
 
+    /// warm-prod's plain lane sends no shared Cargo.toml, so the scaffold
+    /// emits no profile and dependencies build at release's opt-level 3: a
+    /// different cargo fingerprint from the one 43 of 48 public notebooks and
+    /// every new notebook build with. It must also warm that profile, sent as
+    /// [`ironpad_common::DEFAULT_SHARED_CARGO_TOML`]'s text, so a change to
+    /// the default fails here instead of leaving warm-prod warming nothing
+    /// anyone uses.
+    #[test]
+    fn warm_prod_warms_the_default_notebook_profile() {
+        let script = read_workspace_file("tools/warm-prod.sh");
+        let profile = ironpad_common::DEFAULT_SHARED_CARGO_TOML
+            .split_once("[profile.release]")
+            .expect("the default notebook manifest carries a release profile")
+            .1;
+        for line in profile.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            assert!(
+                script.lines().any(|l| l.trim() == line),
+                "tools/warm-prod.sh does not warm the default notebook profile's `{line}`"
+            );
+        }
+        assert!(
+            script.contains("request[shared_cargo_toml]="),
+            "tools/warm-prod.sh must send the default profile as the notebook's shared Cargo.toml"
+        );
+    }
+
     /// Read a file by its workspace-relative path.
     fn read_workspace_file(rel: &str) -> String {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

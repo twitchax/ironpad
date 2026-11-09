@@ -13,9 +13,13 @@
 # Usage: tools/warm-prod.sh [base-url]        (default: the Fly deployment)
 #   WARM_MAX_ROUNDS (default 20) and WARM_SLEEP_SECS (default 5) tune the loop.
 #
-# Scope: warms the default-deps (plain) and simd lanes. autodiff and rayon
-# cells rebuild for minutes on the 2-CPU box; warm those by loading their
-# public notebooks once and letting the loop below carry the retries.
+# Scope: warms the default-deps lanes under both profiles cells build with:
+# none at all (plain, release's opt-level 3; the few notebooks with no shared
+# Cargo.toml) and the default notebook profile (notebook; every new notebook
+# and most public ones), plus the simd and Linux lanes. Each profile is its
+# own cargo fingerprint, so warming one leaves the other cold. autodiff and
+# rayon cells rebuild for minutes on the 2-CPU box; warm those by loading
+# their public notebooks once and letting the loop below carry the retries.
 
 set -euo pipefail
 
@@ -44,6 +48,22 @@ echo "endpoints: $compile_ep, $check_ep (from $wasm_path)"
 
 # A trivial default-deps cell: exercises the shared build/check target dir.
 plain_body="request[notebook_id]=warmup&request[cell_id]=warm_plain&request[source]=let x = 41 %2B 1; format!(\"warm {x}\")&request[cargo_toml]=[dependencies]"
+
+# The same cell in a notebook carrying the shared Cargo.toml every new notebook
+# starts with (DEFAULT_SHARED_CARGO_TOML in ironpad-common's types.rs;
+# `warm_prod_warms_the_default_notebook_profile` fails the build if this copy
+# drifts). Its profile is a separate fingerprint from the plain lane's, and it
+# is the one most notebooks build their dependencies with.
+notebook_toml='[dependencies]
+ironpad-cell = "0.1"
+
+[profile.release]
+opt-level = 1
+lto = false
+codegen-units = 16
+'
+notebook_source='let x = 41 + 1; format!("warm {x}")'
+notebook_body="request[notebook_id]=warmup&request[cell_id]=warm_notebook&request[source]=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$notebook_source")&request[cargo_toml]=[dependencies]&request[shared_cargo_toml]=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$notebook_toml")"
 
 # A minimal simd cell: exercises the +simd128 codegen lane (no std rebuild).
 simd_source='use std::simd::f32x4; let v = f32x4::splat(2.0) * f32x4::splat(3.0); format!("warm {:?}", v.to_array())'
@@ -110,6 +130,10 @@ echo "warming compile (plain)..."
 warm_compile "compile/plain" "$plain_body" || status=1
 echo "warming check (plain)..."
 warm_check "check/plain" "$plain_body" || status=1
+echo "warming compile (notebook)..."
+warm_compile "compile/notebook" "$notebook_body" || status=1
+echo "warming check (notebook)..."
+warm_check "check/notebook" "$notebook_body" || status=1
 echo "warming compile (simd)..."
 warm_compile "compile/simd" "$simd_body" || status=1
 echo "warming check (simd)..."
