@@ -140,7 +140,7 @@ Commands that need the browser (`cells add`, `update`, `delete`, `reorder`, `run
 - **THEN** the command exits non-zero instead of hanging
 
 ### Requirement: Run a cell and wait for its outcome
-`cells run <id>` SHALL ask the hosting browser to run the cell and wait up to `--timeout-secs` (default 360) for its outcome, printing `{"status":"executed"` or `"execution_error","cell_id","display_text","type_tag","execution_time_ms"}`, or `{"status":"compile_error","cell_id","diagnostics"}`. `--no-wait` SHALL print the `CellRunStarted` acknowledgement and return. (PRD-0052)
+`cells run <id>` SHALL ask the hosting browser to run the cell and wait up to `--timeout-secs` (default 360) for its outcome, printing `{"status":"executed"` or `"execution_error","cell_id","display_text","type_tag","execution_time_ms"}`, or `{"status":"compile_error","cell_id","diagnostics"}`. An output over 256 KiB arrives as a `display_text` placeholder saying it is too large to send to agents; the full output stays in the browser. `--no-wait` SHALL print the `CellRunStarted` acknowledgement and return. (PRD-0052)
 
 #### Scenario: Agent runs a cell
 - **WHEN** an agent adds `CellOutput::text(format!("{}", 42))` and runs `cells run <id>`

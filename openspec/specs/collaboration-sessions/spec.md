@@ -266,11 +266,16 @@ The browser SHALL refuse a `CellRun` immediately with a `CellNotFound` error who
 - **AND** nothing runs when the host later returns to Edit mode
 
 ### Requirement: Execution events to agents
-While a session is active, the browser SHALL emit `CellCompiling`, `CellCompiled` (diagnostics and `success`), and `CellExecuted` (`display_text`, `type_tag`, `execution_time_ms`, `success`) for every compile and run in the editor, whoever started it; with no active session it SHALL emit none, so no stale backlog flushes at the next session start. (PRD-0052)
+While a session is active, the browser SHALL emit `CellCompiling`, `CellCompiled` (diagnostics and `success`), and `CellExecuted` (`display_text`, `type_tag`, `execution_time_ms`, `success`) for every compile and run in the editor, whoever started it; with no active session it SHALL emit none, so no stale backlog flushes at the next session start. A successful run's `display_text` larger than 256 KiB (the saved-output budget) SHALL be replaced by the panels JSON `[{"Text":"(output too large to send to agents; see the cell in the browser)"}]`, so one large output cannot exceed the relay's frame cap and end the session; the browser keeps and renders the full output. (PRD-0052)
 
 #### Scenario: Runtime failure is terminal
 - **WHEN** a cell compiles but panics while executing during a session
 - **THEN** guests receive `CellExecuted` with `success: false`
+
+#### Scenario: Output too large for the relay
+- **WHEN** an agent runs a cell whose output is a 1500x1500 `Canvas` (about 9 MB of base64, over the 8 MiB frame cap)
+- **THEN** `cells run` reports `executed` with a `display_text` saying the output is too large to send to agents
+- **AND** the session stays connected and the browser shows the canvas
 
 #### Scenario: Legacy event without success
 - **WHEN** a peer receives a `CellExecuted` frame that has no `success` field

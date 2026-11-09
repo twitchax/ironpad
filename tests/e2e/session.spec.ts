@@ -640,6 +640,53 @@ test.describe.serial("Agent Session", () => {
     expect(JSON.parse(run.stdout).status).toBe("executed");
   });
 
+  // A run's whole panels JSON rides `CellExecuted` to agents, and the relay
+  // closes a host socket over a frame past 8 MiB, which ends every agent
+  // session on the notebook. A 1500x1500 Canvas is ~9 MB of base64, so the
+  // event carries a placeholder while the browser still renders the image.
+  test("a large output reaches agents as a placeholder and keeps the session", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+
+    const jsErrors = trackJsErrors(page);
+
+    await createNotebook(page);
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+
+    const addResult = cliExecRaw([
+      "cells",
+      "add",
+      "--source",
+      "CellOutput::from(Canvas::from_fn(1500, 1500, |x, y| ((x % 256) as u8, (y % 256) as u8, 128)))",
+      "--label",
+      "Big Canvas",
+    ]);
+    expect(addResult.exitCode).toBe(0);
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1, {
+      timeout: 15_000,
+    });
+    const cellId = cliExec(["cells", "list"])[0].id;
+
+    const run = cliExecRaw(["cells", "run", cellId], 180_000);
+    expect(run.exitCode, run.stderr).toBe(0);
+    const result = JSON.parse(run.stdout.trim());
+    expect(result.status).toBe("executed");
+    expect(result.display_text).toContain("too large");
+
+    // The session survived the run.
+    expect(cliExec(["status"]).connected).toBe(true);
+
+    // The browser keeps the full output.
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".ironpad-output-visual img")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    expect(jsErrors).toEqual([]);
+  });
+
   test("navigating away ends the session instead of poisoning the page", async ({
     page,
   }) => {

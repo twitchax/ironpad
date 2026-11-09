@@ -597,7 +597,10 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
                                     emit_session_event(
                                         ironpad_common::protocol::Event::CellExecuted {
                                             cell_id: cell_id_for_exec.clone(),
-                                            display_text: display_text.clone(),
+                                            display_text:
+                                                ironpad_common::protocol::bounded_event_display(
+                                                    display_text.as_deref(),
+                                                ),
                                             type_tag: type_tag.clone(),
                                             execution_time_ms: exec_ms,
                                             success: true,

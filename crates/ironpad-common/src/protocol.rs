@@ -445,6 +445,34 @@ pub enum Event {
     Unknown,
 }
 
+/// Largest [`Event::CellExecuted`] `display_text` the browser sends to agents.
+///
+/// A run's panels JSON is unbounded (an Animation embeds every frame as
+/// base64), while the relay closes a host socket on any frame over its cap,
+/// ending every agent session on the notebook. The event therefore carries
+/// the same per-cell budget a saved output does; the browser keeps the full
+/// output for its own rendering.
+pub const EVENT_DISPLAY_BUDGET_BYTES: usize = crate::types::SAVED_OUTPUT_BUDGET_BYTES;
+
+/// The panels JSON an over-budget [`Event::CellExecuted`] carries instead of
+/// the output. Distinct from `SAVED_OUTPUT_TOO_LARGE`, whose advice to run the
+/// cell is wrong for an agent that just did.
+pub const EVENT_DISPLAY_TOO_LARGE: &str =
+    r#"[{"Text":"(output too large to send to agents; see the cell in the browser)"}]"#;
+
+/// The `display_text` for an [`Event::CellExecuted`]: the output itself when
+/// it fits [`EVENT_DISPLAY_BUDGET_BYTES`], else [`EVENT_DISPLAY_TOO_LARGE`].
+/// Borrows, so an over-budget output is never cloned only to be discarded.
+pub fn bounded_event_display(display: Option<&str>) -> Option<String> {
+    display.map(|text| {
+        if text.len() <= EVENT_DISPLAY_BUDGET_BYTES {
+            text.to_string()
+        } else {
+            EVENT_DISPLAY_TOO_LARGE.to_string()
+        }
+    })
+}
+
 // ── Responses (model → requesting client) ───────────────────────────────────
 
 /// Direct response to a [`Query`]. Sent only to the client that asked.
@@ -938,6 +966,51 @@ mod tests {
             }),
         };
         round_trip(&msg);
+    }
+
+    #[test]
+    fn bounded_event_display_passes_under_and_at_budget_and_replaces_over() {
+        assert_eq!(bounded_event_display(None), None);
+
+        let small = "[]";
+        assert_eq!(bounded_event_display(Some(small)).as_deref(), Some(small));
+
+        let at = "x".repeat(EVENT_DISPLAY_BUDGET_BYTES);
+        assert_eq!(
+            bounded_event_display(Some(&at)).as_deref(),
+            Some(at.as_str())
+        );
+
+        let over = "x".repeat(EVENT_DISPLAY_BUDGET_BYTES + 1);
+        let replaced = bounded_event_display(Some(&over)).expect("still Some");
+        assert_eq!(replaced, EVENT_DISPLAY_TOO_LARGE);
+        // The placeholder is real panels JSON, so a consumer that renders
+        // display_text as panels needs no special case.
+        let panels: serde_json::Value = serde_json::from_str(&replaced).unwrap();
+        assert!(panels.is_array());
+    }
+
+    /// The relay tears a host down on a frame over 8 MiB, which ends every
+    /// agent session on that notebook. A `CellExecuted` for a large output must
+    /// not be that frame.
+    #[test]
+    fn over_budget_cell_executed_frame_stays_small() {
+        let huge = "x".repeat(10 * 1024 * 1024);
+        let frame = serde_json::to_string(&Message {
+            id: String::new(),
+            kind: MessageKind::Event(EventEnvelope {
+                by: ClientId::browser(),
+                event: Event::CellExecuted {
+                    cell_id: "cell-1".into(),
+                    display_text: bounded_event_display(Some(&huge)),
+                    type_tag: None,
+                    execution_time_ms: 1.0,
+                    success: true,
+                },
+            }),
+        })
+        .unwrap();
+        assert!(frame.len() < 1024 * 1024, "frame is {} bytes", frame.len());
     }
 
     #[test]
