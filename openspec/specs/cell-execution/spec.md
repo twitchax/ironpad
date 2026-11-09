@@ -234,7 +234,7 @@ Starting a cell's run in the editor SHALL discard the live outputs of that cell 
 - **AND** `before` keeps its output
 
 ### Requirement: Staleness
-Changing a Code cell's source SHALL mark that cell and every later runnable cell stale, by position rather than by dependency, shown as an indicator titled "Cell output is stale", until each next runs successfully. Editing a markdown or Linux cell stales nothing, since neither feeds another cell. Markdown, shared, and Linux cells never go stale. (PRD-0025)
+Changing a Code cell's source SHALL mark that cell and every later runnable cell stale, by position rather than by dependency, shown as an indicator titled "Cell output is stale", until each next runs successfully. Editing a markdown or Linux cell stales nothing, since neither feeds another cell. Adding, deleting or moving a cell SHALL mark stale every runnable cell after the change that reads a piped input (`cellN` or `last`), since those bind by position; cells that read none stay fresh. Markdown, shared, and Linux cells never go stale. (PRD-0025)
 
 #### Scenario: Positional, not dependency-aware
 - **WHEN** an author edits the second of three Code cells that have all run, none of which references another
@@ -244,6 +244,10 @@ Changing a Code cell's source SHALL mark that cell and every later runnable cell
 #### Scenario: Prose edits stale nothing
 - **WHEN** an author edits a markdown cell above Code cells that have run
 - **THEN** none of them shows the stale indicator
+
+#### Scenario: Inserting a cell above a reader
+- **WHEN** Code cells `1u32`, `cell0 + 1` and `42` have run and a cell is added at the top
+- **THEN** `cell0 + 1` shows the stale indicator and `1u32` and `42` do not
 
 ### Requirement: Reactive mode
 The editor's gear-menu "Reactive Mode" toggle SHALL persist as the notebook's `reactive_mode` flag and, while on, SHALL queue every stale runnable cell in notebook order 500 ms after the most recent change that staled a cell, unless a run is already queued; stale cells then show "Pending re-execution (reactive mode)". (PRD-0025)

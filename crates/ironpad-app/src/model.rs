@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use ironpad_common::cell_deps;
 use ironpad_common::notebook_ops;
 use ironpad_common::protocol::*;
 use ironpad_common::{CellManifest, CellType, IronpadCell, IronpadNotebook};
@@ -279,6 +280,31 @@ impl NotebookModel {
         });
     }
 
+    /// Mark stale every runnable cell from `from_index` on that reads a piped
+    /// input. `cellN` is positional and `last` binds to the nearest typed
+    /// upstream slot, so adding, deleting or moving a cell changes what those
+    /// cells consume. A cell that pipes nothing in keeps its output, so
+    /// reactive mode does not re-run the notebook on every structural edit.
+    fn mark_positional_dependents_stale(&self, from_index: usize) {
+        self.notebook.with_untracked(|nb_opt| {
+            let Some(tail) = nb_opt.as_ref().and_then(|nb| nb.cells.get(from_index..)) else {
+                return;
+            };
+            let mut dependents = tail
+                .iter()
+                .filter(|c| c.is_runnable() && !cell_deps::referenced_slots(&c.source).is_empty())
+                .peekable();
+            if dependents.peek().is_none() {
+                return;
+            }
+            self.cell_stale.update(|stale| {
+                for cell in dependents {
+                    stale.insert(cell.id.clone(), true);
+                }
+            });
+        });
+    }
+
     /// Mark all Code cells as stale (e.g. shared deps changed).
     fn mark_all_code_cells_stale(&self) {
         self.cells.with_untracked(|cells| {
@@ -328,17 +354,23 @@ impl NotebookModel {
             saved_output: None,
         };
 
+        let mut inserted_at = None;
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
             // Shared insert semantics (after / append-on-missing / top for
             // None) — one definition with the daemon's event applier.
             notebook_ops::insert_cell(&mut nb.cells, cell.clone(), after_cell_id.as_deref());
+            inserted_at = nb.cells.iter().position(|c| c.id == new_id);
         });
 
         self.cell_versions.update(|v| {
             v.insert(new_id.clone(), 0);
         });
         self.sync_from_notebook();
+        // Every cell after the new one moved down a slot.
+        if let Some(idx) = inserted_at {
+            self.mark_positional_dependents_stale(idx + 1);
+        }
 
         Ok((
             MutationResult::CellAdded {
@@ -483,8 +515,10 @@ impl NotebookModel {
             });
         }
 
+        let mut removed_at = None;
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
+            removed_at = nb.cells.iter().position(|c| c.id == cell_id);
             notebook_ops::delete_cell(&mut nb.cells, &cell_id);
         });
 
@@ -495,6 +529,10 @@ impl NotebookModel {
             s.remove(&cell_id);
         });
         self.sync_from_notebook();
+        // Every cell after the deleted one moved up a slot.
+        if let Some(idx) = removed_at {
+            self.mark_positional_dependents_stale(idx);
+        }
 
         Ok((
             MutationResult::CellDeleted {
@@ -506,12 +544,19 @@ impl NotebookModel {
 
     #[allow(clippy::unnecessary_wraps)] // Consistent with other mutation methods.
     fn cell_reorder(&self, cell_ids: Vec<String>) -> Result<(MutationResult, Event), ModelError> {
+        let mut first_moved = None;
         self.notebook.update(|nb_opt| {
             let Some(nb) = nb_opt else { return };
+            let before: Vec<String> = nb.cells.iter().map(|c| c.id.clone()).collect();
             notebook_ops::reorder_cells(&mut nb.cells, &cell_ids);
+            first_moved = nb.cells.iter().zip(&before).position(|(c, id)| c.id != *id);
         });
 
         self.sync_from_notebook();
+        // Every cell from the first changed position on may hold a new slot.
+        if let Some(idx) = first_moved {
+            self.mark_positional_dependents_stale(idx);
+        }
 
         Ok((
             MutationResult::CellReordered,
@@ -995,6 +1040,119 @@ mod collapse_tests {
                 nb_signal.get_untracked().unwrap().cells[0],
                 "replaying the event must reproduce the model's cell"
             );
+        });
+    }
+
+    /// Three code cells: `a` produces, `dep` reads `cell0`, `free` pipes
+    /// nothing in. Manifests synced.
+    fn positional_model() -> (NotebookModel, RwSignal<HashMap<String, bool>>) {
+        let mut nb = notebook_with_one_cell();
+        nb.cells[0].id = "a".into();
+        nb.cells[0].source = "1u32".into();
+        for (id, source) in [("dep", "cell0 + 1"), ("free", "42")] {
+            let mut cell = nb.cells[0].clone();
+            cell.id = id.into();
+            cell.source = source.into();
+            nb.cells.push(cell);
+        }
+        notebook_ops::renumber(&mut nb.cells);
+        let stale = RwSignal::new(HashMap::new());
+        let model = NotebookModel::new(
+            RwSignal::new(Some(nb)),
+            RwSignal::new(Vec::new()),
+            stale,
+            RwSignal::new(0),
+        );
+        model.sync_from_notebook();
+        (model, stale)
+    }
+
+    fn add_after(after: Option<&str>) -> Mutation {
+        Mutation::CellAdd {
+            cell: NewCell {
+                source: "7".into(),
+                cell_type: CellType::Code,
+                label: "New".into(),
+                cargo_toml: None,
+                shared: false,
+            },
+            after_cell_id: after.map(Into::into),
+        }
+    }
+
+    fn stale_ids(stale: RwSignal<HashMap<String, bool>>) -> Vec<String> {
+        let mut ids: Vec<String> = stale
+            .get_untracked()
+            .into_iter()
+            .filter_map(|(id, s)| s.then_some(id))
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Regression (review bug-editor-23): `cellN` is positional and `last`
+    /// binds to the nearest typed upstream slot, so a structural change
+    /// moves what a piping cell consumes. Each one marks those cells stale,
+    /// and only those: a cell that pipes nothing in keeps its output.
+    #[test]
+    fn structural_changes_stale_positional_dependents() {
+        // Insert above: `dep`'s `cell0` is now the new cell.
+        Owner::new().with(|| {
+            let (model, stale) = positional_model();
+            model
+                .apply(add_after(None), ClientId::browser())
+                .expect("add applies");
+            assert_eq!(stale_ids(stale), ["dep"]);
+        });
+
+        // Delete above: `dep` is now slot 0 itself.
+        Owner::new().with(|| {
+            let (model, stale) = positional_model();
+            model
+                .apply(
+                    Mutation::CellDelete {
+                        cell_id: "a".into(),
+                        version: 0,
+                    },
+                    ClientId::browser(),
+                )
+                .expect("delete applies");
+            assert_eq!(stale_ids(stale), ["dep"]);
+        });
+
+        // Reorder: `free` moves above `dep`, which still reads slot 0.
+        Owner::new().with(|| {
+            let (model, stale) = positional_model();
+            model
+                .apply(
+                    Mutation::CellReorder {
+                        cell_ids: vec!["a".into(), "free".into(), "dep".into()],
+                    },
+                    ClientId::browser(),
+                )
+                .expect("reorder applies");
+            assert_eq!(stale_ids(stale), ["dep"]);
+        });
+    }
+
+    /// The other side of the test above: appending, or a reorder that moves
+    /// nothing, changes no cell's inputs.
+    #[test]
+    fn structural_changes_below_every_reader_stale_nothing() {
+        Owner::new().with(|| {
+            let (model, stale) = positional_model();
+            model
+                .apply(add_after(Some("free")), ClientId::browser())
+                .expect("append applies");
+            model
+                .apply(
+                    Mutation::CellReorder {
+                        cell_ids: vec!["a".into(), "dep".into(), "free".into()],
+                    },
+                    ClientId::browser(),
+                )
+                .expect("no-op reorder applies");
+            assert!(stale_ids(stale).is_empty(), "{:?}", stale_ids(stale));
         });
     }
 
