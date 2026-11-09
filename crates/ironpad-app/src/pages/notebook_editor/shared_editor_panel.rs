@@ -86,7 +86,11 @@ fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
             return;
         }
 
-        let dispatch_saved_toast = move || {
+        let dispatch_saved_toast = move |landed: bool| {
+            if !landed {
+                state.toast_not_saved();
+                return;
+            }
             toaster.toast(
                 ToastIntent::Success,
                 toast_title,

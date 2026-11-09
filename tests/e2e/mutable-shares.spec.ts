@@ -10,6 +10,7 @@ import {
   menuClick,
   shareMutable,
 } from "./helpers/mutable";
+import { openMetadataPanel } from "./helpers/metadata";
 import { createNotebook, renameNotebook } from "./helpers/session";
 
 /**
@@ -554,5 +555,46 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await expect(firstCellLines(page)).toContainText("typed_while_signed_out", {
       timeout: 30_000,
     });
+  });
+
+  test("explicit saves report a draft save that did not land", async ({
+    page,
+  }) => {
+    // Ctrl+S toasted "All changes have been saved." before any write ran,
+    // and a panel's Save toasted success whatever its write returned.
+    test.setTimeout(150_000);
+    await publishedNotebookWithCell(page, "nora", "Explicit Save");
+    const notSaved = page
+      .locator(".ironpad-toast-title")
+      .filter({ hasText: /^Not Saved$/ });
+    const saved = page.locator(".ironpad-toast-title", {
+      hasText: "Notebook saved",
+    });
+    const metaSaved = page.locator(".ironpad-toast-title", {
+      hasText: "Notebook metadata saved",
+    });
+    const header = page.locator(".ironpad-cell-card .ironpad-cell-header").first();
+
+    await page.route(
+      (url) => url.pathname.includes("save_mutable_draft"),
+      (route) => route.abort(),
+    );
+    await header.click();
+    await page.keyboard.press("Control+s");
+    await expect(notSaved).toHaveCount(1, { timeout: 15_000 });
+    await expect(saved).toHaveCount(0);
+    const panel = await openMetadataPanel(page);
+    const save = panel.locator("button.ironpad-btn--primary", { hasText: "Save" });
+    await save.click();
+    await expect(notSaved).toHaveCount(2, { timeout: 15_000 });
+    await expect(metaSaved).toHaveCount(0);
+
+    // Saves land again, and so do the success toasts.
+    await page.unrouteAll();
+    await header.click();
+    await page.keyboard.press("Control+s");
+    await expect(saved).toBeVisible({ timeout: 15_000 });
+    await save.click();
+    await expect(metaSaved).toBeVisible({ timeout: 15_000 });
   });
 });

@@ -5,9 +5,7 @@ use leptos::prelude::*;
 
 use crate::components::monaco_editor::MonacoEditorHandle;
 use crate::components::run_flow::RunQueue;
-#[cfg(feature = "hydrate")]
-use crate::components::toaster::ToastIntent;
-use crate::components::toaster::Toaster;
+use crate::components::toaster::{ToastIntent, Toaster};
 // Re-exported so the rest of `notebook_editor` keeps importing it as
 // `super::state::CellOutputData`; the single definition lives in `output_render`.
 pub(super) use crate::components::output_render::CellOutputData;
@@ -302,6 +300,9 @@ pub(crate) struct NotebookState {
     /// would resurrect a deleted notebook or overwrite the restored or
     /// discarded state. The ONE halt flag; every persist path checks it.
     pub(super) persist_halted: RwSignal<bool>,
+    /// A Local autosave failed and the user was told; the next write that
+    /// lands clears it, so a later failure speaks again.
+    pub(super) local_save_failed: RwSignal<bool>,
     /// App-level toast handle, resolved once at mount.
     ///
     /// Carried here rather than threaded through `persist_notebook`: the
@@ -397,6 +398,56 @@ impl NotebookState {
     #[cfg(feature = "hydrate")]
     pub(super) fn resume_persistence(&self) {
         let _ = self.persist_halted.try_update_untracked(|h| *h = false);
+    }
+
+    /// Whether this page's signals are gone (it navigated away).
+    #[cfg(feature = "hydrate")]
+    pub(super) fn is_disposed(&self) -> bool {
+        self.save_generation.try_get_untracked().is_none()
+    }
+
+    /// The error toast for a save that did not land, worded for the storage
+    /// class and, for a refused draft, the reason. The ONE copy of it, shared
+    /// by Ctrl+S, the panels' Save buttons and the local autosave.
+    pub(super) fn toast_not_saved(&self) {
+        let server_draft = self
+            .server_draft_share
+            .try_with_untracked(Option::is_some)
+            .unwrap_or(false);
+        let refused = match self.draft_save_state.try_get_untracked() {
+            Some(DraftSaveState::Refused(kind)) => Some(kind),
+            _ => None,
+        };
+        self.toaster.toast(
+            ToastIntent::Error,
+            NOT_SAVED_TITLE,
+            not_saved_body(server_draft, refused),
+            NOT_SAVED_TOAST_SECS,
+        );
+    }
+}
+
+/// Title of the toast for a save that did not land.
+const NOT_SAVED_TITLE: &str = "Not Saved";
+
+/// Lifetime (s) of that toast: long enough to read the remedy.
+const NOT_SAVED_TOAST_SECS: u32 = 8;
+
+/// Body of the toast for a save that did not land.
+fn not_saved_body(server_draft: bool, refused: Option<DraftRefusal>) -> String {
+    match (server_draft, refused) {
+        (true, Some(kind)) => format!(
+            "{}. Your edits are still on this page; Download .ironpad keeps a copy.",
+            kind.indicator()
+        ),
+        (true, None) => "Your draft did not reach the server. It keeps retrying in \
+                         the background; the indicator beside the publish button \
+                         clears once it lands."
+            .to_string(),
+        (false, _) => "This browser did not store the notebook (it may be out of \
+                       space, or in private mode), so your latest changes exist \
+                       only on this page. Download .ironpad to keep a copy."
+            .to_string(),
     }
 }
 
@@ -664,7 +715,21 @@ pub(crate) fn persist_notebook(state: &NotebookState) {
         }
         let state = *state;
         leptos::task::spawn_local(async move {
-            persist_notebook_durable(&state).await;
+            if persist_notebook_durable(&state, false).await {
+                return;
+            }
+            // This autosave runs on every change and has no caller to report
+            // to, so a browser that refuses the write (out of space, private
+            // mode) gets ONE toast per failure streak; a write that lands
+            // re-arms it. Not when the page is gone or a flow halted saving:
+            // those are not failures.
+            if state.persistence_halted()
+                || state.local_save_failed.try_get_untracked() != Some(false)
+            {
+                return;
+            }
+            let _ = state.local_save_failed.try_update_untracked(|f| *f = true);
+            state.toast_not_saved();
         });
     }
 }
@@ -674,8 +739,13 @@ pub(crate) fn persist_notebook(state: &NotebookState) {
 /// debounce): durable callers (the pre-Push flush) need the server to hold
 /// current content, and Push aborts when this returns `false` — promoting a
 /// draft the server never received would publish stale content.
+///
+/// `enrich_outputs` embeds the cells' last-run outputs into the draft
+/// (PRD-0056). Push alone passes `true`: output embedding is for editorial
+/// moments, and an explicit save that carried every output would also run
+/// into the upload cap sooner.
 #[cfg(feature = "hydrate")]
-pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
+pub(super) async fn persist_notebook_durable(state: &NotebookState, enrich_outputs: bool) -> bool {
     if state.persistence_halted() {
         return false;
     }
@@ -699,7 +769,7 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
         }
         // Supersede any pending debounce so it can't double-write after us.
         state.draft_save_epoch.update_untracked(|e| *e += 1);
-        save_draft_now(state, true).await
+        save_draft_now(state, enrich_outputs).await
     } else {
         // The one copy this path needs: the IndexedDB write awaits, so it
         // cannot borrow the signal across it.
@@ -712,6 +782,7 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState) -> bool {
             state.mark_persist_pending();
             false
         } else {
+            let _ = state.local_save_failed.try_update_untracked(|f| *f = false);
             true
         }
     }
@@ -772,17 +843,20 @@ pub(super) fn persist_on_teardown(state: &NotebookState) {
 const MIN_SAVING_MS: i32 = 500;
 
 /// A panel's explicit Save: persist durably with `saving` held for at least
-/// [`MIN_SAVING_MS`], then run `on_done` (the panel's saved toast).
+/// [`MIN_SAVING_MS`], then run `on_done` with whether the write landed (the
+/// panel's saved toast, or [`NotebookState::toast_not_saved`]).
 ///
-/// Awaits the actual write, so the toast means "durably saved" rather than
-/// "save dispatched". `saving` is cleared with `try_set`: the panel may have
-/// been disposed mid-save (navigation, a section collapse), and the save DID
-/// land, so `on_done` still runs and its toast stays truthful.
+/// Awaits the actual write and reports its result, so a success toast means
+/// "durably saved" rather than "save dispatched". `saving` is cleared with
+/// `try_set`: the panel may have been disposed mid-save (navigation, a
+/// section collapse). A write that landed still reports, and stays truthful;
+/// one that stopped because the page went away does not, since the editor's
+/// teardown write takes over and neither toast would be true.
 #[allow(unused_variables)] // `saving` is read only under `hydrate`.
 pub(super) fn persist_with_saving_floor(
     state: &NotebookState,
     saving: RwSignal<bool>,
-    on_done: impl FnOnce() + 'static,
+    on_done: impl FnOnce(bool) + 'static,
 ) {
     #[cfg(feature = "hydrate")]
     {
@@ -790,20 +864,22 @@ pub(super) fn persist_with_saving_floor(
         saving.set(true);
         leptos::task::spawn_local(async move {
             let started = js_sys::Date::now();
-            persist_notebook_durable(&state).await;
+            let landed = persist_notebook_durable(&state, false).await;
             #[allow(clippy::cast_possible_truncation)]
             let remaining = MIN_SAVING_MS - (js_sys::Date::now() - started) as i32;
             if remaining > 0 {
                 crate::components::run_flow::sleep_ms(remaining).await;
             }
             let _ = saving.try_set(false);
-            on_done();
+            if landed || !state.is_disposed() {
+                on_done(landed);
+            }
         });
     }
     #[cfg(not(feature = "hydrate"))]
     {
         persist_notebook(state);
-        on_done();
+        on_done(true);
     }
 }
 

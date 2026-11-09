@@ -195,12 +195,20 @@ The system SHALL bind, inside a cell's code editor, Ctrl/Cmd+Enter to run the ce
 - **THEN** the stored notebook has the same cells and no cell starts running
 
 ### Requirement: Explicit save
-The system SHALL treat Ctrl/Cmd+S on the editor page as an explicit save that suppresses the browser's save dialog, commits every cell's unsaved edits, persists the notebook, records the save time for the status bar, and toasts "Notebook saved"; there is no save button. (PRD-0001, PRD-0006)
+The system SHALL treat Ctrl/Cmd+S on the editor page as an explicit save that suppresses the browser's save dialog, commits every cell's unsaved edits, and persists the notebook (without embedding outputs); once the write lands it SHALL record the save time for the status bar and toast "Notebook saved", and when it does not land it SHALL toast "Not Saved" instead, except for a refused draft, whose own toast has already said why. A panel's Save button SHALL report the same way. There is no notebook-level save button. (PRD-0001, PRD-0006)
 
 #### Scenario: Saving after a run
 - **WHEN** a cell has run successfully and the author presses Ctrl+S
 - **THEN** the toast "Notebook saved" appears and the stored notebook's `updated_at` changes
 - **AND** the cell is not marked stale by the save
+
+#### Scenario: The write does not land
+- **WHEN** the browser store refuses writes, or an account notebook's draft saves fail, and the author presses Ctrl+S or a panel's Save
+- **THEN** a "Not Saved" toast appears and neither "Notebook saved" nor the panel's saved toast does
+
+#### Scenario: Autosaves the browser refuses
+- **WHEN** the browser store refuses a local notebook's autosaves
+- **THEN** one "Not Saved" toast appears for the first refusal, and the next appears only after a write has landed again
 
 ### Requirement: Flush before reading the notebook
 The system SHALL commit every cell's unsaved editor text into the notebook before Share, Save to Account, Push, Export HTML, Download .ironpad, Restore or Preview reads it, so each includes text typed inside the last one-second save window, and SHALL persist the notebook whenever that commit moved text. (PRD-0032)

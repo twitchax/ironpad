@@ -157,6 +157,7 @@ pub fn NotebookEditor(
         draft_save_inflight: RwSignal::new(0),
         persist_pending: RwSignal::new(false),
         persist_halted: RwSignal::new(false),
+        local_save_failed: RwSignal::new(false),
         // Resolved HERE, under the component's owner: the autosave chain that
         // needs it runs inside `spawn_local`, which does not carry the owner
         // (and therefore cannot look up context) across an await.
@@ -398,23 +399,38 @@ pub fn NotebookEditor(
             // navigation inside that window disposes the page and skips its
             // persist, which lost a rename committed by blurring the title
             // onto a link. Then flush every cell's pending content into the
-            // model and persist again: the flush effects run queued, so this
+            // model and save it durably: the flush effects run queued, so this
             // first write cannot carry the last debounce window of typing.
             persist_notebook(&state);
             leptos::task::spawn_local(async move {
-                if state.flush_cells().await.is_some() {
-                    persist_notebook(&state);
+                // `None`: the page went away mid-flush. Its teardown write
+                // takes over, and neither toast would be true.
+                if state.flush_cells().await.is_none() {
+                    return;
+                }
+                // The toast reports the write's result, not its dispatch.
+                // Lean: an explicit save is not an editorial moment, so it
+                // embeds no outputs (PRD-0056).
+                if state::persist_notebook_durable(&state, false).await {
+                    let _ = layout.last_save_time.try_set(Some(js_sys::Date::now()));
+                    toaster.toast(
+                        ToastIntent::Success,
+                        "Notebook saved",
+                        "All changes have been saved.",
+                        3,
+                    );
+                    return;
+                }
+                // A refused draft already said why, once; a halted page is
+                // leaving on purpose; a disposed one has nobody to tell.
+                let refused = matches!(
+                    state.draft_save_state.try_get_untracked(),
+                    Some(DraftSaveState::Refused(_))
+                );
+                if !refused && !state.persistence_halted() && !state.is_disposed() {
+                    state.toast_not_saved();
                 }
             });
-
-            layout.last_save_time.set(Some(js_sys::Date::now()));
-
-            toaster.toast(
-                ToastIntent::Success,
-                "Notebook saved",
-                "All changes have been saved.",
-                3,
-            );
         });
     }
 

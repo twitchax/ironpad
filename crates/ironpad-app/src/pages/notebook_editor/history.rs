@@ -191,7 +191,7 @@ fn restore_snapshot(state: &NotebookState, toaster: Toaster, saved_at: f64) {
             if state.flush_cells().await.is_none() {
                 return;
             }
-            let _ = super::state::persist_notebook_durable(&state).await;
+            let _ = super::state::persist_notebook_durable(&state, false).await;
             crate::storage::client::snapshot_now(&id).await;
             match serde_json::from_str::<ironpad_common::IronpadNotebook>(&json) {
                 Ok(nb) => {

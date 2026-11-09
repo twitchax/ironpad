@@ -306,7 +306,7 @@ pub(super) fn push_mutable_current_notebook(
         // was: a transient one is retrying in the background, a refusal is
         // not (PRD-0064).
         #[cfg(feature = "hydrate")]
-        if !super::state::persist_notebook_durable(&state).await {
+        if !super::state::persist_notebook_durable(&state, true).await {
             // A REFUSED draft (PRD-0064) is not a retry away from working, so
             // the advice differs: whatever blocks the autosave blocks the
             // push, and telling the owner to wait for an indicator that will

@@ -200,7 +200,11 @@ fn NotebookMetadataPanel(mutable_binding: RwSignal<Option<String>>) -> impl Into
             return;
         }
 
-        let dispatch_saved_toast = move || {
+        let dispatch_saved_toast = move |landed: bool| {
+            if !landed {
+                state.toast_not_saved();
+                return;
+            }
             toaster.toast(
                 ToastIntent::Success,
                 "Notebook metadata saved",
