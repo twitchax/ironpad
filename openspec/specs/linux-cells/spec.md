@@ -121,7 +121,7 @@ When a program has not reported an exit after 300 s, the cell SHALL show "still 
 - **AND** a later `more` line still appears, and Stop still ends the run
 
 ### Requirement: Stopping shuts the machine down
-While a Linux cell's run is in flight its Run button SHALL become a Stop button titled "Stop by shutting down the Linux machine" that tears the machine down, ending every in-flight Linux run as "machine stopped" with the notice "The Linux machine was shut down. Running any Linux cell starts a fresh one, and its filesystem starts empty." A Stop during the compile SHALL end the run as "stopped" without booting a machine. (PRD-0066)
+While a Linux cell's run is in flight its Run button SHALL become a Stop button. Once the run has left the compile, the button SHALL be titled "Stop by shutting down the Linux machine" and SHALL tear the machine down, ending every in-flight Linux run as "machine stopped" with the notice "The Linux machine was shut down. Running any Linux cell starts a fresh one, and its filesystem starts empty." During the compile the button SHALL be titled "Stop this compile", and a Stop there SHALL end the run as "stopped" without booting a machine and without touching a machine that is already running. (PRD-0066)
 
 #### Scenario: Stop while booting
 - **WHEN** Stop is clicked while the machine is still booting
@@ -131,6 +131,10 @@ While a Linux cell's run is in flight its Run button SHALL become a Stop button 
 - **WHEN** Stop is clicked while the cell is still compiling
 - **THEN** the run ends as "stopped" with the terminal reading "Stopped before the program ran."
 - **AND** the abandoned compile never boots a machine when it lands, even if Run was clicked again in the meantime
+
+#### Scenario: Stop during a compile leaves a live machine running
+- **WHEN** an earlier Linux cell has booted the machine and written files to it, and Stop is clicked while another cell is still compiling
+- **THEN** that cell ends as "stopped", and the machine, its files and any other cell's run are untouched
 
 ### Requirement: Never runs without a click
 Only a click on a Linux cell's own Run button SHALL run it: Run All, Run All Below, reactive mode, a read-only page's autorun and dependency cascades all skip Linux cells, and an agent's `cells run` on one SHALL fail with "cell <id> is a Linux cell, which an agent cannot run: every run boots a metered pod and a CLI run has nobody watching it. Run it from the notebook in a browser." (PRD-0066, PRD-0052)

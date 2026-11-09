@@ -269,4 +269,51 @@ test.describe("Linux cells: the CDN stays untouched (PRD-0066)", () => {
 
     expect(jsErrors).toEqual([]);
   });
+
+  test("Stop during a compile leaves the shared Linux machine alone", async ({
+    page,
+  }) => {
+    // Every Linux cell in a notebook shares ONE machine and its filesystem,
+    // which is how one program hands another its output. A cell that is only
+    // compiling has no process on it, so stopping that compile must not tear
+    // it down: that ended every other cell's run and emptied the filesystem.
+    // A stub runtime stands in for a live one (no pod is ever booted), and
+    // the compile is held so Stop lands inside it.
+    test.setTimeout(90_000);
+    await page.addInitScript(() => {
+      const w = window as unknown as Record<string, unknown> & { __td: number };
+      w.__td = 0;
+      w.IronpadPod = {
+        hasKey: () => true,
+        configure() {},
+        isolated: () => true,
+        retain() {},
+        release() {},
+        teardown() {
+          w.__td++;
+        },
+      };
+    });
+    await page.route("**/api/compile_cell*", () => {
+      /* held: the compile never lands */
+    });
+    await page.route("**/share-blobs/**", (route) => route.abort());
+
+    await page.goto("/public/linux-cells");
+    const cell = page.locator(".view-only-cell--linux").first();
+    await expect(cell).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(3_000); // hydration (suite convention)
+
+    await cell.locator(".view-only-run-button").click();
+    await expect(cell.locator(".view-only-pill--busy")).toHaveText("compiling");
+    const stop = cell.locator(".ironpad-linux-terminate");
+    const title = await stop.getAttribute("title");
+    await stop.click();
+
+    await expect(cell).toContainText("stopped");
+    await expect(cell.locator(".ironpad-linux-terminate")).toHaveCount(0);
+    expect(await page.evaluate(() => (window as unknown as { __td: number }).__td)).toBe(0);
+    // And the control said what it would do: no machine is shut down here.
+    expect(title).toBe("Stop this compile");
+  });
 });

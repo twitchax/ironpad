@@ -244,6 +244,28 @@ impl Stage {
     }
 }
 
+/// Whether Stop has to drop the machine to stop this run.
+///
+/// Not during the compile: there is no process on any machine yet, and the
+/// machine is notebook-wide. Once any Linux cell has run, a pod is up with
+/// every other cell's files on it (that filesystem is how one program hands
+/// another its output), so dropping it to abandon a compile ended other
+/// cells' runs and emptied the filesystem. The epoch bump alone stops a
+/// compile: the landed blob is dropped before it can boot anything.
+fn stop_needs_teardown(stage: Stage) -> bool {
+    stage != Stage::Compiling
+}
+
+/// The Stop control's title and accessible name, which must say what a click
+/// will actually do.
+fn stop_title(stage: Stage) -> &'static str {
+    if stop_needs_teardown(stage) {
+        "Stop by shutting down the Linux machine"
+    } else {
+        "Stop this compile"
+    }
+}
+
 /// How a run ended, as far as anything can tell from outside the pod.
 #[derive(Clone, Debug)]
 struct Outcome {
@@ -579,25 +601,29 @@ pub(crate) fn ViewOnlyLinuxCell(
     // a bare PID — so stopping a program means dropping the machine it runs
     // on, which is why the control says so rather than saying "stop".
     //
-    // The machine is only half of it. This button replaces Run the moment the
-    // compile starts, and for those 300 seconds there is no machine yet: the
-    // epoch bump is what a Stop clicked in that window actually does, and
-    // without it the click did nothing at all, silently, and then the compile
-    // landed and spent a token booting the pod the reader had just refused.
+    // Except during the compile. This button replaces Run the moment the
+    // compile starts, and for those up-to-300 seconds this cell has no process
+    // on any machine, but an EARLIER Linux run may well have booted the
+    // notebook's one shared machine, with other cells' files and runs on it.
+    // So a Stop in that window only bumps the epoch (without which the click
+    // did nothing, silently, and the landed compile then spent a token booting
+    // the pod the reader had just refused) and says what happened here.
     let terminate = move |_| {
         #[cfg(feature = "hydrate")]
         {
+            let was = stage.get_untracked();
             run_epoch.update(|e| *e = e.wrapping_add(1));
-            if runtime_loaded() {
-                js::teardown();
-            }
-            // A run that has reached the pod reports its own end (the runtime
-            // settles it as `terminated`), so only the pre-boot window needs
-            // to say what happened here — and it must say something, or the
-            // click reads as a dead button.
-            if stage.get_untracked() == Stage::Compiling {
+            if !stop_needs_teardown(was) {
+                // Nothing will report this run's end, so say it here, or the
+                // click reads as a dead button.
                 stage.set(Stage::Done);
                 outcome.set(Some(Outcome::cancelled()));
+                return;
+            }
+            // A run that has reached the pod reports its own end (the runtime
+            // settles it as `terminated`).
+            if runtime_loaded() {
+                js::teardown();
             }
         }
     };
@@ -662,8 +688,8 @@ pub(crate) fn ViewOnlyLinuxCell(
                         <button
                             class="view-only-run-button ironpad-linux-terminate"
                             on:click=terminate
-                            title="Stop by shutting down the Linux machine"
-                            aria-label="Stop by shutting down the Linux machine"
+                            title=move || stop_title(stage.get())
+                            aria-label=move || stop_title(stage.get())
                         >
                             <Icon icon=icons::STOP/>
                         </button>
@@ -1002,7 +1028,7 @@ fn pod_error_message(err: &wasm_bindgen::JsValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, RunGuard, Stage};
+    use super::{stop_needs_teardown, stop_title, Outcome, RunGuard, Stage};
     use ironpad_common::{CellType, IronpadCell};
 
     fn cell(cell_type: CellType) -> IronpadCell {
@@ -1026,6 +1052,22 @@ mod tests {
             status: status.to_string(),
             exit_code,
             inferred,
+        }
+    }
+
+    #[test]
+    fn stopping_a_compile_leaves_the_shared_machine_alone() {
+        // The machine is notebook-wide: other cells' files and runs live on
+        // it, and a compiling cell has no process there to stop.
+        assert!(!stop_needs_teardown(Stage::Compiling));
+        assert_eq!(stop_title(Stage::Compiling), "Stop this compile");
+        for stage in [Stage::Booting, Stage::Running, Stage::Unknown] {
+            assert!(stop_needs_teardown(stage), "{stage:?}");
+            assert_eq!(
+                stop_title(stage),
+                "Stop by shutting down the Linux machine",
+                "{stage:?}"
+            );
         }
     }
 
