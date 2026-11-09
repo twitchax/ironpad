@@ -12,7 +12,7 @@ The system SHALL compile a notebook's shared source into every code cell as the 
 - **THEN** running the later cell shows `doubled=42`
 
 ### Requirement: Shared appendix editors
-The system SHALL show below the cells in edit mode two collapsed sections, "Shared Source (shared.rs)" and "Shared Dependencies (Cargo.toml)", each expanding to an editor (Rust, TOML) with a Save button that reads "Saving…" for at least 500 ms, then toasts "Shared source saved" or "Shared dependencies saved" with "Changes will apply on next cell compile." (PRD-0007)
+The system SHALL show below the cells in edit mode two collapsed sections, "Shared Source (shared.rs)" and "Shared Dependencies (Cargo.toml)", each expanding to an editor (Rust, TOML) with a Save button that reads "Saving…" for at least 500 ms, then toasts "Shared source saved" or "Shared dependencies saved" with "Changes will apply on next cell compile." Text typed without Save SHALL be committed by the notebook's own saves and flushes (Ctrl+S, Share, Push, Preview) and by collapsing the section, and never when nothing was typed; while nothing is typed, the editor SHALL follow changes made elsewhere, such as an agent's. (PRD-0007)
 
 #### Scenario: Sections and the settings menu
 - **WHEN** a new notebook opens in edit mode
@@ -23,6 +23,18 @@ The system SHALL show below the cells in edit mode two collapsed sections, "Shar
 - **WHEN** the author expands Shared Source, enters `pub fn from_appendix() -> i32 { 7 }` and clicks Save
 - **THEN** the button reads "Saving…" before the toast "Shared source saved" appears
 - **AND** after a reload the expanded section shows `from_appendix`
+
+#### Scenario: Ctrl+S saves typed shared source
+- **WHEN** the author types in Shared Source and presses Ctrl+S without clicking Save
+- **THEN** the stored notebook's shared source contains the typed text
+
+#### Scenario: Preview or collapse keeps typed shared source
+- **WHEN** the author types in Shared Source, then switches to Preview and back, or collapses the section, and expands it again
+- **THEN** the editor still shows the typed text
+
+#### Scenario: Opening the section writes nothing
+- **WHEN** the author expands and collapses Shared Source without typing
+- **THEN** the stored notebook still has no shared source
 
 ### Requirement: Default shared dependencies
 The system SHALL create every new notebook with a shared Cargo.toml declaring `ironpad-cell = "0.1"` and a release profile of `opt-level = 1`, `lto = false` and `codegen-units = 16`, and SHALL prefill an empty shared editor with a commented template (for shared source, an example of a `shared::*` function). (PRD-0016)

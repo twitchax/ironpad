@@ -1,6 +1,31 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, Page } from "@playwright/test";
 import { setCellSource } from "./helpers/monaco";
 import { createNotebook as newNotebook } from "./helpers/session";
+
+/** The Shared Source section. */
+const sharedSource = (page: Page) =>
+  page.locator(".ironpad-editor-shared-appendix .view-only-shared-section").nth(0);
+
+/** Expand Shared Source and wait for its editor. */
+async function openSharedSource(page: Page) {
+  const section = sharedSource(page);
+  await section.locator(".view-only-shared-header").click();
+  await expect(section.locator(".monaco-editor").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  return section;
+}
+
+/** The open local notebook's stored shared source, or null. */
+function storedSharedSource(page: Page): Promise<string | null> {
+  const id = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+  return page.evaluate(
+    async (nid) =>
+      (await (window as any).IronpadStorage.getNotebook(nid))?.shared_source ??
+      null,
+    id,
+  );
+}
 
 /**
  * Shared source / dependencies appendix in the editor.
@@ -134,5 +159,69 @@ test.describe("Shared appendix (editor)", () => {
       return editor.getOption(monaco.editor.EditorOption.readOnly);
     });
     expect(readOnly).toBe(true);
+  });
+
+  // Text typed without the section's Save lived only in the panel: Ctrl+S
+  // claimed it saved, Preview rebuilt the panel from the model and a
+  // collapse unmounted it, and either way the text was gone.
+  test("Ctrl+S saves typed shared source", async ({ page }) => {
+    await newNotebook(page);
+    const section = await openSharedSource(page);
+    await setCellSource(page, section, "pub fn via_ctrl_s() -> i32 { 1 }");
+    await page.keyboard.press("Control+s");
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Notebook saved" }),
+    ).toBeVisible({ timeout: 10_000 });
+    await expect
+      .poll(() => storedSharedSource(page), { timeout: 10_000 })
+      .toContain("via_ctrl_s");
+  });
+
+  test("Preview keeps typed shared source", async ({ page }) => {
+    await newNotebook(page);
+    const section = await openSharedSource(page);
+    await setCellSource(page, section, "pub fn via_preview() -> i32 { 2 }");
+    await page.locator('button[aria-label="Preview"]').click();
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 10_000,
+    });
+    await page.locator('button[aria-label="Edit"]').click();
+    const again = await openSharedSource(page);
+    await expect(again.locator(".view-lines")).toContainText("via_preview", {
+      timeout: 15_000,
+    });
+  });
+
+  test("collapsing keeps typed shared source", async ({ page }) => {
+    await newNotebook(page);
+    const section = await openSharedSource(page);
+    await setCellSource(page, section, "pub fn via_collapse() -> i32 { 3 }");
+    await section.locator(".view-only-shared-header").click();
+    await expect(section.locator(".monaco-editor")).toHaveCount(0);
+    const again = await openSharedSource(page);
+    await expect(again.locator(".view-lines")).toContainText("via_collapse", {
+      timeout: 15_000,
+    });
+    await expect
+      .poll(() => storedSharedSource(page), { timeout: 10_000 })
+      .toContain("via_collapse");
+  });
+
+  test("opening and closing the section writes no template", async ({
+    page,
+  }) => {
+    // The negative half: only typed text commits, never the template the
+    // editor is prefilled with.
+    await newNotebook(page);
+    const section = await openSharedSource(page);
+    await page.keyboard.press("Control+s");
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Notebook saved" }),
+    ).toBeVisible({ timeout: 10_000 });
+    expect(await storedSharedSource(page)).toBeNull();
+    await section.locator(".view-only-shared-header").click();
+    await expect(section.locator(".monaco-editor")).toHaveCount(0);
+    await page.waitForTimeout(1_500);
+    expect(await storedSharedSource(page)).toBeNull();
   });
 });

@@ -1587,7 +1587,7 @@ fn completion_variables(
 /// fire the pane's `on_change`, so the pane stays clean and the caller does
 /// whatever typing would have triggered.
 #[cfg(feature = "hydrate")]
-fn refresh_pane(
+pub(super) fn refresh_pane(
     signal: RwSignal<String>,
     handle: Option<MonacoEditorHandle>,
     latest: String,
