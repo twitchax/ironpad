@@ -1039,8 +1039,10 @@ pub(super) fn refusal_toast_body(kind: DraftRefusal, server_message: &str) -> St
 /// refused it, which no retry can change.
 ///
 /// `enrich_outputs` embeds the author's last-run panels (PRD-0056) into the
-/// outgoing JSON. Only the pre-Push durable save sets it: the promote then
-/// publishes those outputs, while the 1.5s debounce autosaves stay lean.
+/// outgoing JSON, and on success into the model as well, so later lean
+/// saves keep what was published. Only the pre-Push durable save sets it:
+/// the promote then publishes those outputs, while the 1.5s debounce
+/// autosaves embed nothing new.
 #[cfg(feature = "hydrate")]
 pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) -> bool {
     // Checked here as well as by the callers: a debounce that wakes after a
@@ -1051,14 +1053,20 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
     let Some(share_id) = state.server_draft_share.try_get_untracked().flatten() else {
         return false;
     };
+    // The captures this save embeds, kept for writing back on success.
+    let texts = if enrich_outputs {
+        state.cell_display_texts.try_get_untracked()
+    } else {
+        None
+    };
     let serialized = if enrich_outputs {
-        // Enrichment edits the outgoing copy, never the model, so this path
-        // needs its own clone.
+        // Enrichment edits the outgoing copy, and reaches the model only
+        // once the server has it (below), so this path needs its own clone.
         let Some(mut nb) = state.notebook.try_get_untracked().flatten() else {
             return false;
         };
-        if let Some(texts) = state.cell_display_texts.try_get_untracked() {
-            nb.embed_saved_outputs(&texts, ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES);
+        if let Some(texts) = &texts {
+            nb.embed_saved_outputs(texts, ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES);
         }
         serde_json::to_string(&nb)
     } else {
@@ -1093,6 +1101,21 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
     match result {
         Ok(()) => {
             let _ = state.draft_save_state.try_set(DraftSaveState::Synced);
+            // The server's draft now carries these outputs, and the promote
+            // publishes them. The model must carry them too: the next lean
+            // autosave serializes the model, and without them it would put
+            // the older outputs (or none) back into the draft, which the
+            // next Push without a fresh run would then publish.
+            if let Some(texts) = &texts {
+                let _ = state.notebook.try_update_untracked(|nb| {
+                    if let Some(nb) = nb {
+                        nb.embed_saved_outputs(
+                            texts,
+                            ironpad_common::types::SAVED_OUTPUT_BUDGET_BYTES,
+                        );
+                    }
+                });
+            }
             true
         }
         Err(e) => {

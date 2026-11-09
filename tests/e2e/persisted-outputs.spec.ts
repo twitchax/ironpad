@@ -1,7 +1,12 @@
 import { test, expect, Page } from "@playwright/test";
 import { loginTestUser } from "./helpers/auth";
 import { setCellSource } from "./helpers/monaco";
-import { MENU, shareMutable } from "./helpers/mutable";
+import {
+  MENU,
+  expectOwnerEditor,
+  saveToAccount,
+  shareMutable,
+} from "./helpers/mutable";
 import { createNotebook } from "./helpers/session";
 import { fixtureCell, notebookFixture, shareFixture } from "./helpers/share";
 
@@ -140,6 +145,76 @@ test.describe("Persisted cell outputs (PRD-0056)", () => {
       page.locator(".ironpad-toast-title", { hasText: "Pushed" }),
     ).toBeVisible({ timeout: 30_000 });
 
+    await readerSeesSaved();
+  });
+
+  test("published outputs survive a lean autosave, a reload and another push", async ({
+    page,
+    browser,
+  }) => {
+    // Push embedded the fresh outputs into the outgoing draft only, so the
+    // next lean autosave overwrote the draft with the model's (none, here),
+    // and after a reload the next Push published a notebook with no outputs.
+    test.setTimeout(480_000);
+    await loginTestUser(page, "olive");
+    await createNotebook(page);
+    await page.locator(".ironpad-add-cell-btn").first().click();
+    await expect(
+      page.locator(".ironpad-cell-card .monaco-editor").first(),
+    ).toBeVisible({ timeout: 15_000 });
+    // Saved before the run, so the account copy starts with no outputs.
+    const shareId = await saveToAccount(page);
+    const cell = page.locator(".ironpad-cell-card").first();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await setCellSource(page, cell, 'CellOutput::text(format!("{}", 41 + 1))');
+    await expect(cell.locator(".ironpad-tab-dirty")).toHaveCount(0, {
+      timeout: 10_000,
+    });
+    await page.locator('button[title="Run cell"]').first().click();
+    await expect(cell.locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 300_000,
+    });
+    await expect(cell.locator(".ironpad-output-display-text")).toContainText(
+      "42",
+    );
+
+    const readerSeesSaved = async () => {
+      const anon = await browser.newContext();
+      try {
+        const reader = await anon.newPage();
+        await reader.goto(`/mutable/${shareId}`);
+        const saved = reader.locator(".view-only-output--saved").first();
+        await expect(saved).toBeVisible({ timeout: 30_000 });
+        await expect(saved).toContainText("42");
+      } finally {
+        await anon.close();
+      }
+    };
+    const push = page.locator(".ironpad-push-button");
+    await push.click();
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Published" }),
+    ).toBeVisible({ timeout: 60_000 });
+    await readerSeesSaved();
+
+    // A label rename: a lean autosave of the model, with no new run.
+    const label = cell.locator(".ironpad-cell-label-input");
+    await label.fill("Renamed Label");
+    await label.blur();
+    await expect(push).toBeEnabled({ timeout: 10_000 });
+    await page.waitForTimeout(3_000);
+
+    // A fresh session has no captures; Push re-embeds only what the draft
+    // carries.
+    await page.reload();
+    await expectOwnerEditor(page);
+    await expect(push).toBeEnabled({ timeout: 15_000 });
+    await push.click();
+    await expect(
+      page.locator(".ironpad-toast-title", { hasText: "Pushed" }),
+    ).toBeVisible({ timeout: 60_000 });
     await readerSeesSaved();
   });
 });

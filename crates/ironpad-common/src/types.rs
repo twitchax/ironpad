@@ -499,10 +499,13 @@ impl IronpadNotebook {
     /// Embed each cell's last-run output panels (PRD-0056), from the
     /// editor's `cell_display_texts` capture, honoring the per-cell budget.
     ///
-    /// Called at serialize time only (Share, Push's durable save, Download):
-    /// the editor's in-memory model and the debounced draft autosaves stay
-    /// lean. Cells with no recorded output keep `None`; a cell whose payload
-    /// exceeds `per_cell_budget` gets [`SAVED_OUTPUT_TOO_LARGE`] instead.
+    /// Called at the editorial moments only (Share, Push's durable save,
+    /// Download), on the outgoing copy. After a Push's save lands the editor
+    /// applies it to its model too, so its later debounced autosaves carry
+    /// what was published rather than reverting the draft to older outputs;
+    /// those autosaves never capture anything new themselves. Cells with no
+    /// recorded output keep `None`; a cell whose payload exceeds
+    /// `per_cell_budget` gets [`SAVED_OUTPUT_TOO_LARGE`] instead.
     pub fn embed_saved_outputs(
         &mut self,
         display_texts: &std::collections::HashMap<String, String>,

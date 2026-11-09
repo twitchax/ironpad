@@ -155,11 +155,15 @@ The owner's toolbar SHALL carry one editorial button: "Publish" (enabled) while 
 - **THEN** the promote reports nothing to do and an "Up to Date" toast says "The published copy already matches your draft."
 
 ### Requirement: Push never publishes stale content
-Before promoting, Publish and Push SHALL flush in-progress cell edits and durably save the current draft, embedding each cell's latest-run output panels (debounced autosaves never embed them). When that save does not land, the action SHALL publish nothing and show a "Push Failed" toast saying why. (PRD-0054, PRD-0056)
+Before promoting, Publish and Push SHALL flush in-progress cell edits and durably save the current draft, embedding each cell's latest-run output panels. Debounced autosaves capture no new outputs, but once that save lands they keep the outputs it embedded, so a later Push without a fresh run publishes them again. When that save does not land, the action SHALL publish nothing and show a "Push Failed" toast saying why. (PRD-0054, PRD-0056)
 
 #### Scenario: A keystroke inside the debounce window
 - **WHEN** the owner types into a cell and clicks Push immediately
 - **THEN** the published copy shown by View Published contains that keystroke
+
+#### Scenario: Outputs survive later autosaves
+- **WHEN** the owner runs a cell, pushes, renames a cell label, reloads after the autosave and pushes again without running anything
+- **THEN** readers still see that cell's saved output
 
 #### Scenario: Draft save fails
 - **WHEN** draft saves are failing and the owner clicks Push
