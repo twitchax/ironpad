@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { MENU, menuClick } from "./helpers/menu";
 import { setCellSource } from "./helpers/monaco";
 import { createNotebook as newNotebook, ADD_CODE, ADD_MARKDOWN } from "./helpers/session";
@@ -363,5 +363,105 @@ test.describe("Editor UX (PRD-0032)", () => {
   // placeholder so the coverage gap is explicit.
   test.skip("uat-004: cancel does not re-run on the main thread", async () => {
     // Intentionally skipped — see comment above.
+  });
+});
+
+// ── Markdown editor ─────────────────────────────────────────────────────────
+
+/** Every cell's source as IndexedDB holds it. */
+function storedSources(page: Page, id: string): Promise<string[]> {
+  return page.evaluate(async (id) => {
+    const nb = await (window as any).IronpadStorage.getNotebook(id);
+    return (nb?.cells ?? []).map((c: any) => c.source as string);
+  }, id);
+}
+
+/**
+ * Seed a local notebook with `cells` (Markdown unless a type is given) and
+ * open it in the editor. Returns its id.
+ */
+async function openSeeded(
+  page: Page,
+  cells: { type?: "Markdown" | "Code"; source: string }[],
+): Promise<string> {
+  await page.goto("/");
+  await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+  await page.waitForFunction(() => (window as any).IronpadStorage);
+  const fixture = {
+    version: 1,
+    id: "00000000-0000-0000-0000-000000000000",
+    title: "Markdown editor",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    shared_cargo_toml: "",
+    cells: cells.map((c, i) => ({
+      id: `c${i}`,
+      order: i,
+      label: `Cell ${i}`,
+      cell_type: c.type ?? "Markdown",
+      source: c.source,
+      cargo_toml: "",
+    })),
+  };
+  const imported = await page.evaluate(
+    (json) => (window as any).IronpadStorage.importNotebook(json),
+    JSON.stringify(fixture),
+  );
+  await page.goto(`/local/${imported.id}`);
+  await expect(page.locator(".ironpad-editor")).toBeVisible({ timeout: 15_000 });
+  await page.waitForTimeout(3_000); // hydration (suite convention)
+  return imported.id;
+}
+
+/** Double-click a markdown cell open and wait for Monaco to mount in it. */
+async function openMarkdown(cell: Locator): Promise<void> {
+  await cell.locator(".ironpad-markdown-cell-preview").dblclick();
+  await expect(
+    cell.locator(".ironpad-markdown-cell-editor .monaco-editor"),
+  ).toBeVisible({ timeout: 15_000 });
+}
+
+/** Type `text` at the end of an open markdown editor, through the keyboard. */
+async function typeAtEnd(page: Page, cell: Locator, text: string): Promise<void> {
+  await cell.locator(".ironpad-markdown-cell-editor .view-lines").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type(text);
+}
+
+test.describe("Markdown editor", () => {
+  // Regression (review bug-components-5): the editor's change callback only
+  // updated a local signal, so the notebook heard about the text on blur or
+  // Escape alone. A reload or a closed tab with the editor open lost all of
+  // it, however long ago it was typed. Code cells save on a 1s debounce.
+  test("typing in an open markdown editor saves without closing it", async ({
+    page,
+  }) => {
+    const id = await openSeeded(page, [
+      { source: "# original" },
+      { type: "Code", source: "42" },
+    ]);
+    const md = page.locator(".ironpad-cell-card").first();
+    await openMarkdown(md);
+    await typeAtEnd(page, md, " MD_SAVED_5");
+
+    await expect
+      .poll(async () => (await storedSources(page, id))[0], { timeout: 5_000 })
+      .toContain("MD_SAVED_5");
+    // Only the debounce can have saved it: the editor never closed.
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(1);
+
+    // Control: a code cell saves the same way.
+    const code = page.locator(".ironpad-cell-card").nth(1);
+    await code.locator(".view-lines").first().click();
+    await page.keyboard.press("Control+End");
+    await page.keyboard.type(" + 0 // CODE_SAVED_5");
+    await expect
+      .poll(async () => (await storedSources(page, id))[1], { timeout: 5_000 })
+      .toContain("CODE_SAVED_5");
+
+    await page.reload();
+    await expect(
+      page.locator(".ironpad-markdown-cell-preview").first(),
+    ).toContainText("MD_SAVED_5", { timeout: 15_000 });
   });
 });

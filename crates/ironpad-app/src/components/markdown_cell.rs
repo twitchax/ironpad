@@ -31,21 +31,23 @@ pub fn render_markdown(source: &str) -> String {
 ///
 /// - **Preview mode** (default): rendered markdown via `inner_html`.
 ///   Double-click switches to edit mode.
-/// - **Edit mode**: Monaco editor. Escape or clicking away (blur) saves
-///   changes and switches back to preview mode. Switching the notebook to
-///   view mode also forces a commit back to preview, even mid-edit.
+/// - **Edit mode**: Monaco editor. Every edit reaches the notebook through
+///   `on_change` as it is typed, exactly as a code cell's does. Escape or
+///   clicking away (blur) switches back to preview mode, and so does a
+///   flush (Ctrl+S, entering view mode), even mid-edit.
 #[component]
 #[allow(clippy::needless_pass_by_value)]
 pub fn MarkdownCell(
     /// The markdown source text.
     #[prop(into)]
     source: String,
-    /// Fires with the updated markdown source when the editor loses focus or
-    /// Escape is pressed.
+    /// Fires with the editor's full text on every edit. The parent debounces
+    /// it into the notebook (CellItem's `on_source_change`), so a markdown
+    /// cell has the same save window as a code cell.
     on_change: Callback<String>,
     /// Bumped when a save/flush is requested (Ctrl+S, entering view mode).
-    /// An in-progress edit commits on each bump, so flushes never read a
-    /// stale source.
+    /// An open editor closes on each bump; the parent's own flush writes the
+    /// text, which `on_change` has already handed it.
     #[prop(into)]
     flush_generation: Signal<u64>,
 ) -> impl IntoView {
@@ -63,19 +65,20 @@ pub fn MarkdownCell(
         editing.set(true);
     };
 
-    // Commit changes and return to preview mode.
+    // Return to preview mode. Closing writes nothing: `editor_on_change`
+    // already handed every edit to the notebook, and a value read back from a
+    // closing (or not yet loaded) editor is exactly what must never land on
+    // the cell.
     let commit = move || {
-        if let Some(handle) = editor_handle.get_untracked() {
-            let val = handle.get_value();
-            current_source.set(val.clone());
-            on_change.run(val);
-        }
-        editing.set(false);
+        let _ = editing.try_set(false);
     };
 
-    // Editor on_change keeps the signal in sync.
+    // The ONE writer: every edit updates the preview and goes to the
+    // notebook through the parent's debounced save, so typed text survives a
+    // reload or a closed tab without the editor ever closing.
     let editor_on_change = Callback::new(move |val: String| {
-        current_source.set(val);
+        current_source.set(val.clone());
+        on_change.run(val);
     });
 
     // Register Escape keybinding once the editor mounts.
@@ -107,10 +110,9 @@ pub fn MarkdownCell(
         });
     }
 
-    // Commit an in-progress edit whenever a flush is requested (Ctrl+S, the
-    // view-mode toggle) — flushes read the committed source signal, so an
-    // open editor must write through first. Uses `commit` (not
-    // `editing.set(false)`) so the in-progress edit is saved, not discarded.
+    // Close an open editor whenever a flush is requested (Ctrl+S, the
+    // view-mode toggle). Its text is already with the parent, whose own flush
+    // writes it into the notebook.
     #[cfg(feature = "hydrate")]
     {
         let commit_for_flush = commit;
