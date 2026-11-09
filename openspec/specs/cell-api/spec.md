@@ -278,6 +278,7 @@ The system SHALL provide `Plot::line` and `Plot::scatter` over `&[(f64, f64)]` a
 #### Scenario: Bar chart style
 - **WHEN** a cell ends with `Plot::bar(&[("A", 3.7), ("B", 9.1), ("C", 5.3), ("D", 1.2)])`
 - **THEN** every bar is labelled with its value at one decimal and the bars' opacities by rank are `0.62`, `1`, `0.78`, `0.46` in input order
+- **AND** every category name sits on the x axis under the centre of its own bar, however many bars there are
 
 #### Scenario: Axes and gridlines
 - **WHEN** any chart renders

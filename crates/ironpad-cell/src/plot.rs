@@ -263,13 +263,18 @@ impl Plot {
         builder.set_label_area_size(LabelAreaPosition::Bottom, 40);
         builder.set_label_area_size(LabelAreaPosition::Left, 60);
 
+        // Bar `i` is centred on x = i, so the axis runs half a slot past each
+        // end. That puts exactly `n` integers in range, one per bar centre:
+        // `0.0..n` held n + 1 of them, one over the `x_labels(n)` budget,
+        // and plotters halved the tick density to fit, dropping every other
+        // category label and leaving the rest at the bars' left edges.
         let mut chart = builder
-            .build_cartesian_2d(0.0..n, 0.0..y_top)
+            .build_cartesian_2d(-0.5..(n - 0.5), 0.0..y_top)
             .expect("building bar chart context cannot fail");
 
         let category = |x: &f64| {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let idx = *x as usize;
+            let idx = x.round() as usize;
             data.get(idx).map_or_else(String::new, |(l, _)| l.clone())
         };
 
@@ -288,8 +293,8 @@ impl Plot {
 
         chart
             .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
-                let x0 = i as f64 + 0.1;
-                let x1 = (i + 1) as f64 - 0.1;
+                let x0 = i as f64 - 0.4;
+                let x1 = i as f64 + 0.4;
                 let opacity = BAR_RANK_OPACITY[ranks[i].min(BAR_RANK_OPACITY.len() - 1)];
                 let mut bar = Rectangle::new(
                     [(x0, 0.0), (x1, *val)],
@@ -308,17 +313,13 @@ impl Plot {
             .pos(Pos::new(HPos::Center, VPos::Bottom));
         chart
             .draw_series(data.iter().enumerate().map(|(i, (_, val))| {
-                Text::new(
-                    format!("{val:.1}"),
-                    (i as f64 + 0.5, *val),
-                    end_label.clone(),
-                )
+                Text::new(format!("{val:.1}"), (i as f64, *val), end_label.clone())
             }))
             .expect("drawing bar value labels cannot fail");
 
         if self.tooltips {
             for (i, (label, val)) in data.iter().enumerate() {
-                let (px, py) = chart.backend_coord(&(i as f64 + 0.5, *val));
+                let (px, py) = chart.backend_coord(&(i as f64, *val));
                 tooltip_points.push((px, py, format!("{label}: {val}")));
             }
         }
@@ -959,6 +960,64 @@ mod tests {
             !above.contains("var(--ip-plot-zero,"),
             "a chart that never crosses zero already has the axis there"
         );
+    }
+
+    /// Every `<text>` element's content paired with its `x` attribute. The
+    /// SVG backend writes the content on the line after the opening tag.
+    fn text_xs(svg: &str) -> Vec<(String, f64)> {
+        let lines: Vec<&str> = svg.lines().collect();
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.starts_with("<text"))
+            .map(|(i, l)| {
+                let x: f64 = attr(l, "x").parse().expect("numeric x");
+                (lines[i + 1].trim().to_owned(), x)
+            })
+            .collect()
+    }
+
+    /// `(x, y, width, height)` of each bar rectangle, in data order.
+    fn bar_rects(svg: &str) -> Vec<(f64, f64, f64, f64)> {
+        svg.lines()
+            .filter(|l| l.starts_with("<rect") && l.contains("var(--ip-plot-series-1,"))
+            .map(|l| {
+                let n = |name| attr(l, name).parse::<f64>().expect("numeric rect attribute");
+                (n("x"), n("y"), n("width"), n("height"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bars_label_every_category_at_its_center() {
+        for n in [1, 2, 3, 5, 10, 12, 25] {
+            let labels: Vec<String> = (0..n).map(|i| format!("cat-{i}")).collect();
+            #[allow(clippy::cast_precision_loss)]
+            let data: Vec<(&str, f64)> = labels
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (l.as_str(), (i + 1) as f64))
+                .collect();
+            let svg = Plot::bar(&data).render_svg();
+            let texts = text_xs(&svg);
+            let rects = bar_rects(&svg);
+            assert_eq!(rects.len(), n, "one rect per bar at n={n}");
+
+            for (label, (x, _, w, _)) in labels.iter().zip(&rects) {
+                let center = x + w / 2.0;
+                let at: Vec<f64> = texts
+                    .iter()
+                    .filter(|(t, _)| t == label)
+                    .map(|&(_, tx)| tx)
+                    .collect();
+                assert_eq!(at.len(), 1, "{label} labelled exactly once at n={n}: {at:?}");
+                assert!(
+                    (at[0] - center).abs() <= 1.0,
+                    "{label} sits at x={} but its bar is centred at {center} (n={n})",
+                    at[0]
+                );
+            }
+        }
     }
 
     #[test]
