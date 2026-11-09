@@ -189,8 +189,10 @@ pub(super) fn save_to_account_current_notebook(state: &NotebookState, toaster: T
                 // would write the record straight back.
                 state.halt_persistence();
                 crate::storage::client::delete_notebook(&uuid).await;
+                // Only a clean "no such record" proves the delete: a read
+                // that fails says nothing, so it counts as a survivor.
                 let local_copy_survived =
-                    crate::storage::client::get_notebook(&uuid).await.is_some();
+                    !matches!(crate::storage::client::get_notebook(&uuid).await, Ok(None));
                 if local_copy_survived {
                     leptos::logging::warn!(
                         "local notebook {uuid} survived the delete after Save to Account"

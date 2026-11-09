@@ -20,6 +20,7 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 use leptos_router::NavigateOptions;
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::notice::ErrorNotice;
 use crate::components::toaster::Toaster;
 // The save-generation watcher (hydrate-only) is the one remaining direct
 // toast in this file; the workflow toasts live in `sharing`.
@@ -65,6 +66,18 @@ fn destroy_sortable(instance: StoredValue<Option<wasm_bindgen::JsValue>, LocalSt
             let _ = destroy.call0(&existing);
         }
     }
+}
+
+/// Why a Local notebook did not load. Without it the editor showed its
+/// loading skeleton forever: every other storage class renders a notice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// Constructed by the hydrate-only IndexedDB read; the SSR build only renders.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+enum LoadFailure {
+    /// This browser holds no notebook with that id.
+    NotFound,
+    /// The read failed, or the record does not parse as a notebook.
+    Unreadable(String),
 }
 
 /// What `ServerDraft` mode needs at mount (PRD-0054/PRD-0064): the share this
@@ -224,6 +237,8 @@ pub fn NotebookEditor(
     // Load the notebook: `ServerDraft` mode arrives preloaded (the mutable
     // page already fetched the draft); Local mode reads IndexedDB.
 
+    let load_failure: RwSignal<Option<LoadFailure>> = RwSignal::new(None);
+
     if let Some(mount) = server_draft {
         state.server_draft_share.set(Some(mount.share_id));
         state.draft_dirty.set(mount.dirty);
@@ -235,15 +250,24 @@ pub fn NotebookEditor(
         {
             let nb_id = notebook_id;
             leptos::task::spawn_local(async move {
-                if let Some(nb) = crate::storage::client::get_notebook(&nb_id).await {
-                    // The page may already be gone (navigated away while the
-                    // IndexedDB read was in flight); sync_from_notebook READS
-                    // the notebook signal, which panics once disposed.
-                    if state.notebook.try_get_untracked().is_none() {
-                        return;
+                match crate::storage::client::get_notebook(&nb_id).await {
+                    Ok(Some(nb)) => {
+                        // The page may already be gone (navigated away while
+                        // the IndexedDB read was in flight); sync_from_notebook
+                        // READS the notebook signal, which panics once
+                        // disposed.
+                        if state.notebook.try_get_untracked().is_none() {
+                            return;
+                        }
+                        state.notebook.set(Some(nb));
+                        model.sync_from_notebook();
                     }
-                    state.notebook.set(Some(nb));
-                    model.sync_from_notebook();
+                    Ok(None) => {
+                        let _ = load_failure.try_set(Some(LoadFailure::NotFound));
+                    }
+                    Err(e) => {
+                        let _ = load_failure.try_set(Some(LoadFailure::Unreadable(e)));
+                    }
                 }
             });
         }
@@ -445,11 +469,38 @@ pub fn NotebookEditor(
         <div class="ironpad-editor">
             <Show
                 when=move || notebook_loaded.get()
-                fallback=|| view! { <NotebookEditorSkeleton /> }
+                fallback=move || view! { <NotebookLoadFallback failure=load_failure /> }
             >
                 <NotebookContent />
             </Show>
         </div>
+    }
+}
+
+/// What the editor shows until its notebook loads: the skeleton while the
+/// read is in flight, then a notice if it failed.
+#[component]
+fn NotebookLoadFallback(failure: RwSignal<Option<LoadFailure>>) -> impl IntoView {
+    move || match failure.get() {
+        None => view! { <NotebookEditorSkeleton /> }.into_any(),
+        Some(LoadFailure::NotFound) => view! {
+            <ErrorNotice icon=icons::WARNING message="This notebook was not found.">
+                "This notebook is not in this browser. Local notebooks live only in \
+                 the browser that created them. "
+                <a href="/">"Back to your notebooks"</a>
+            </ErrorNotice>
+        }
+        .into_any(),
+        Some(LoadFailure::Unreadable(e)) => view! {
+            <ErrorNotice icon=icons::WARNING message="This notebook could not be read.">
+                {format!(
+                    "The copy in this browser is damaged or from an incompatible \
+                     version ({e}). "
+                )}
+                <a href="/">"Back to your notebooks"</a>
+            </ErrorNotice>
+        }
+        .into_any(),
     }
 }
 

@@ -471,3 +471,42 @@ test.describe("Save results", () => {
     ).toBeVisible({ timeout: 10_000 });
   });
 });
+
+test.describe("A notebook that does not load", () => {
+  // The Local load folded "not found", "read failed" and "not a notebook"
+  // into one None with no else, so the skeleton animated forever.
+  test("a notebook not in this browser says so", async ({ page }) => {
+    await page.goto("/local/00000000-0000-4000-8000-000000000000");
+    await expect(
+      page.locator(".ironpad-error-boundary-message", {
+        hasText: "This notebook was not found.",
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".ironpad-error-boundary-hint")).toContainText(
+      "Local notebooks live only in the browser that created them",
+    );
+    await expect(page.locator(".ironpad-cell-skeleton")).toHaveCount(0);
+  });
+
+  test("a record that is not a notebook says it could not be read", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForFunction(() => (window as any).IronpadStorage, null, {
+      timeout: 15_000,
+    });
+    const uuid = "11111111-1111-4111-8111-111111111111";
+    // No cells: the record exists but does not parse as a notebook.
+    await page.evaluate(
+      (id) => (window as any).IronpadStorage.saveNotebook({ id, title: "x" }),
+      uuid,
+    );
+    await page.goto(`/local/${uuid}`);
+    await expect(
+      page.locator(".ironpad-error-boundary-message", {
+        hasText: "This notebook could not be read.",
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".ironpad-cell-skeleton")).toHaveCount(0);
+  });
+});

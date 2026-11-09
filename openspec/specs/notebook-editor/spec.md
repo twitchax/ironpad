@@ -5,7 +5,7 @@ The editing surface for a notebook its author owns: the `/local/{id}` editor ove
 
 ## Requirements
 ### Requirement: Editor loads a local notebook
-The system SHALL serve the editor for a browser-local notebook at `/local/{id}`, showing a two-cell loading skeleton until the notebook is read from the browser's store, then its cells, its title in the header, and its cell count in the status bar; a notebook with no cells shows "This notebook is empty" and the hint "Add a Code or Markdown cell above to get started." (PRD-0048, PRD-0034)
+The system SHALL serve the editor for a browser-local notebook at `/local/{id}`, showing a two-cell loading skeleton until the notebook is read from the browser's store, then its cells, its title in the header, and its cell count in the status bar. When the store has no such notebook the page SHALL say "This notebook was not found." with the hint that local notebooks live only in the browser that created them, and when the read fails or the record is not a notebook it SHALL say "This notebook could not be read.", each with a link home; a notebook with no cells shows "This notebook is empty" and the hint "Add a Code or Markdown cell above to get started." (PRD-0048, PRD-0034)
 
 #### Scenario: A new notebook opens empty
 - **WHEN** a user clicks "New Notebook" on the home page
@@ -15,6 +15,10 @@ The system SHALL serve the editor for a browser-local notebook at `/local/{id}`,
 #### Scenario: Switching notebooks without a page load
 - **WHEN** the URL changes from `/local/a` to `/local/b` by client-side navigation
 - **THEN** the editor remounts and shows notebook `b`, never notebook `a` under `b`'s URL
+
+#### Scenario: A notebook from another browser
+- **WHEN** a `/local/{uuid}` link is opened in a browser that has no notebook with that id
+- **THEN** the page says "This notebook was not found." and shows no skeleton
 
 ### Requirement: Adding cells
 The system SHALL render an add-cell row with Code, Markdown and Linux buttons above the first cell and after every cell; a click inserts a cell of that kind at that position labelled "Cell N", where N is the cell count before the insert, scrolls it into view, focuses its code editor if it has one, and persists the notebook. (PRD-0001, PRD-0066)

@@ -75,25 +75,31 @@ pub async fn list_notebooks() -> Vec<IronpadNotebook> {
     }
 }
 
-/// Retrieves a single notebook by ID, or `None` if not found (or the read failed).
-pub async fn get_notebook(id: &str) -> Option<IronpadNotebook> {
+/// Retrieves a single notebook by ID: `Ok(None)` when this browser holds no
+/// record with that id, and `Err` when the read failed or the record does not
+/// parse as a notebook.
+///
+/// The three are kept apart because callers act differently on them: the
+/// editor tells "not in this browser" from "damaged", and a move to the
+/// account must not read a failed read as a successful delete.
+pub async fn get_notebook(id: &str) -> Result<Option<IronpadNotebook>, String> {
     let val = match js_get_notebook(id).await {
         Ok(val) => val,
         Err(e) => {
             leptos::logging::warn!("getNotebook failed: {e:?}");
-            return None;
+            return Err(format!("the browser store could not be read: {e:?}"));
         }
     };
     if val.is_null() || val.is_undefined() {
-        return None;
+        return Ok(None);
     }
     match serde_wasm_bindgen::from_value(val) {
-        Ok(nb) => Some(nb),
+        Ok(nb) => Ok(Some(nb)),
         Err(e) => {
             leptos::logging::warn!(
                 "skipping malformed notebook record from getNotebook({id}): {e}"
             );
-            None
+            Err(format!("the stored record is not a valid notebook: {e}"))
         }
     }
 }
