@@ -261,6 +261,29 @@ pub async fn compile_cell(request: CompileRequest) -> Result<CompileResponse, Se
     compile_cell_core(&config, &compile_locks, &admission, &client_ip, request).await
 }
 
+/// Answer a compile from the cache, or `None` on a miss. Recorded on the
+/// caller's `compile_cell` span as a hit.
+#[cfg(feature = "ssr")]
+async fn serve_cached(
+    config: &ironpad_common::AppConfig,
+    hash: &str,
+    cell_id: &str,
+) -> Option<CompileResponse> {
+    let cache_hit = crate::compiler::cache::try_cache_hit(&config.cache_dir, hash).await?;
+    tracing::Span::current().record("cache", "hit");
+    tracing::info!(cell_id = %cell_id, blob_size = cache_hit.wasm_bytes.len(), "cache hit");
+    Some(CompileResponse {
+        wasm_blob: cache_hit.wasm_bytes,
+        diagnostics: cache_hit.diagnostics,
+        cached: true,
+        // Cached diagnostics were span-adjusted before storage, so no
+        // preamble offset is needed on a hit; the client never reads this
+        // field for a cached response.
+        preamble_lines: 0,
+        js_glue: cache_hit.js_glue,
+    })
+}
+
 /// Server-side compilation pipeline behind [`compile_cell`].
 ///
 /// Split out from the `#[server]` wrapper so it takes an explicit [`AppConfig`]
@@ -282,7 +305,7 @@ async fn compile_cell_core(
 ) -> Result<CompileResponse, ServerFnError> {
     use crate::compiler::{
         build::{build_micro_crate, BuildResult},
-        cache::{content_hash, store_blob, try_cache_hit},
+        cache::{content_hash, store_blob},
         diagnostics::parse_diagnostics,
         optimize::optimize_wasm,
         scaffold::Scaffolded,
@@ -292,17 +315,6 @@ async fn compile_cell_core(
     // Validated before the lock: a request that can never compile must not
     // queue behind (or hold up) a real one.
     let (target, features) = prepare_cell(&request)?;
-
-    // Serialize concurrent compiles of the same cell so their shared scaffold
-    // dir can't be overwritten mid-build (which would cache one source's output
-    // under another's hash). Held for the whole compile. Distinct cells don't
-    // contend — they scaffold into distinct directories. The span makes queue
-    // time behind another compile of this cell visible in traces.
-    let _compile_guard = tracing::Instrument::instrument(
-        compile_locks.acquire(&request.cell_id),
-        tracing::info_span!("compile_lock_wait"),
-    )
-    .await;
 
     // The key is a pure function of the inputs (no I/O), so it can be derived
     // before scaffolding. Scaffolding writes Cargo.toml + lib.rs (+ shared.rs)
@@ -326,22 +338,44 @@ async fn compile_cell_core(
         "compile_cell started"
     );
 
-    // Cache check (skipped when force-recompile is requested).
-
+    // A hit is a content-addressed read and needs no lock (review
+    // bug-compiler-2). The lock is keyed by cell id alone, global across
+    // notebooks, and most public notebooks share ids like `cell_0`, so taking
+    // it first parked a cached cell behind anyone's 300-second build of an
+    // unrelated cell that happened to share its id.
     if !request.force {
-        if let Some(cache_hit) = try_cache_hit(&config.cache_dir, &hash).await {
-            tracing::Span::current().record("cache", "hit");
-            tracing::info!(cell_id = %request.cell_id, blob_size = cache_hit.wasm_bytes.len(), "cache hit");
-            return Ok(CompileResponse {
-                wasm_blob: cache_hit.wasm_bytes,
-                diagnostics: cache_hit.diagnostics,
-                cached: true,
-                // Cached diagnostics were span-adjusted before storage, so no
-                // preamble offset is needed on a hit; the client never reads this
-                // field for a cached response.
-                preamble_lines: 0,
-                js_glue: cache_hit.js_glue,
-            });
+        if let Some(response) = serve_cached(config, &hash, &request.cell_id).await {
+            return Ok(response);
+        }
+    }
+
+    // Serialize concurrent compiles of the same cell so their shared scaffold
+    // dir can't be overwritten mid-build (which would cache one source's output
+    // under another's hash). Held for the rest of the compile. Distinct cells
+    // don't contend — they scaffold into distinct directories. Bounded by the
+    // queue timeout, like the slot wait, so a client cannot hold a socket
+    // open behind a wedged holder. The span makes queue time behind another
+    // compile of this cell visible in traces.
+    let Ok(_compile_guard) = tokio::time::timeout(
+        admission.queue_timeout(),
+        tracing::Instrument::instrument(
+            compile_locks.acquire(&request.cell_id),
+            tracing::info_span!("compile_lock_wait"),
+        ),
+    )
+    .await
+    else {
+        tracing::warn!(cell_id = %request.cell_id, "cell lock wait timed out");
+        return Err(ServerFnError::new(
+            crate::compiler::admission::AdmissionDenied::AtCapacity.to_string(),
+        ));
+    };
+
+    // Re-probe under the lock: a waiter that arrived during an identical
+    // build returns that build's result rather than building it again.
+    if !request.force {
+        if let Some(response) = serve_cached(config, &hash, &request.cell_id).await {
+            return Ok(response);
         }
     }
 
@@ -3151,6 +3185,171 @@ mod tests {
         assert!(!cache.path().join("workspaces").exists());
     }
 
+    // ── compile_cell_core (lock-free cache hits, review bug-compiler-2) ──
+
+    /// Seed a cache entry (with glue) for `admission_test_request`'s inputs.
+    async fn seed_admission_test_blob(cache_dir: &std::path::Path) {
+        use crate::compiler::cache::{content_hash, store_blob};
+        let request = admission_test_request("unused");
+        let hash = content_hash(
+            &request.source,
+            &request.cargo_toml,
+            &[],
+            None,
+            None,
+            CellTarget::Executor,
+        );
+        store_blob(
+            cache_dir,
+            &hash,
+            b"\x00asm\x01\x00\x00\x00hit",
+            Some("export function init() {}"),
+            &[],
+        )
+        .await
+        .unwrap();
+    }
+
+    /// A cache hit is a content-addressed read, so it must not queue behind
+    /// whoever holds the cell's lock: public notebooks share ids like
+    /// `cell_0`, and a holder can be a 300-second build.
+    #[tokio::test]
+    async fn a_cache_hit_does_not_wait_for_the_cell_lock() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let cache = tempfile::tempdir().unwrap();
+        seed_admission_test_blob(cache.path()).await;
+        let config = AppConfig::for_tests(cache.path());
+        let locks = CompileLocks::default();
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            1,
+            0.0,
+            0.0,
+            std::time::Duration::from_mins(1),
+        );
+        let _held = locks.acquire("cell_0").await;
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            compile_cell_core(
+                &config,
+                &locks,
+                &admission,
+                "test",
+                admission_test_request("cell_0"),
+            ),
+        )
+        .await
+        .expect("a hit must not wait for the held cell lock")
+        .unwrap();
+        assert!(response.cached);
+    }
+
+    /// Negative control for the test above: with nothing cached the same
+    /// request DOES wait on the held lock, so a pass there is the lock-free
+    /// probe and not a lock that was never contended.
+    #[tokio::test]
+    async fn a_cache_miss_still_waits_for_the_cell_lock() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+
+        let cache = tempfile::tempdir().unwrap();
+        let config = AppConfig::for_tests(cache.path());
+        let locks = CompileLocks::default();
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            1,
+            0.0,
+            0.0,
+            std::time::Duration::from_mins(1),
+        );
+        let _held = locks.acquire("cell_0").await;
+
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            compile_cell_core(
+                &config,
+                &locks,
+                &admission,
+                "test",
+                admission_test_request("cell_0"),
+            ),
+        )
+        .await;
+        assert!(waited.is_err(), "a miss must serialize behind the holder");
+    }
+
+    /// A request that waited out an identical build re-probes under the lock
+    /// and serves that build's blob instead of building again. The bucket is
+    /// EMPTY, so a build attempt would fail as rate limited.
+    #[tokio::test]
+    async fn a_lock_waiter_serves_the_blob_the_holder_stored() {
+        use crate::compiler::CompileLocks;
+        use ironpad_common::AppConfig;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        /// Signals the first time the lock wait is entered, which is after
+        /// the lock-free probe has already missed.
+        struct LockWaitEntered(std::sync::Arc<tokio::sync::Notify>);
+
+        impl<S> tracing_subscriber::Layer<S> for LockWaitEntered
+        where
+            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        {
+            fn on_enter(
+                &self,
+                id: &tracing::span::Id,
+                ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if ctx
+                    .span(id)
+                    .is_some_and(|span| span.name() == "compile_lock_wait")
+                {
+                    self.0.notify_one();
+                }
+            }
+        }
+
+        let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+        // Thread-local, and #[tokio::test] runs every task on this thread.
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(LockWaitEntered(entered.clone())),
+        );
+
+        let cache = tempfile::tempdir().unwrap();
+        let config = AppConfig::for_tests(cache.path());
+        let locks = CompileLocks::default();
+        let admission = crate::compiler::admission::BuildAdmission::new(
+            1,
+            0.0,
+            0.0,
+            std::time::Duration::from_mins(1),
+        );
+        let held = locks.acquire("cell_0").await;
+
+        let waiter = compile_cell_core(
+            &config,
+            &locks,
+            &admission,
+            "test",
+            admission_test_request("cell_0"),
+        );
+        let holder = async {
+            entered.notified().await;
+            // The "holder's build" lands while the waiter is parked.
+            seed_admission_test_blob(cache.path()).await;
+            drop(held);
+        };
+        let (response, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(waiter, holder)
+        })
+        .await
+        .expect("the waiter must finish once the lock is released");
+
+        let response = response.expect("no build may be attempted");
+        assert!(response.cached, "the waiter serves the holder's blob");
+    }
+
     // ── compile_cell_core (cache-hit path) ───────────────────────────────
 
     #[tokio::test]
@@ -3229,10 +3428,11 @@ mod tests {
         );
     }
 
-    /// The compile pipeline emits the stage spans traces are built from
-    /// (`compile_cell` → `compile_lock_wait` → `cache_lookup`). Cache-hit
-    /// path only, so no cargo is involved; the deeper stages (`cargo_build`,
-    /// `wasm_opt`, …) hang off the same mechanism.
+    /// The compile pipeline emits the stage spans traces are built from:
+    /// `compile_cell` → `cache_lookup` on a hit, which takes no lock (review
+    /// bug-compiler-2), plus `compile_lock_wait` on a miss. No cargo is
+    /// involved (the miss is refused by an empty bucket); the deeper stages
+    /// (`cargo_build`, `wasm_opt`, …) hang off the same mechanism.
     #[tokio::test]
     async fn compile_pipeline_emits_stage_spans() {
         use crate::compiler::cache::{content_hash, store_blob};
@@ -3302,10 +3502,43 @@ mod tests {
             .unwrap();
 
         let seen = names.0.lock().unwrap().clone();
-        for expected in ["compile_cell", "compile_lock_wait", "cache_lookup"] {
+        for expected in ["compile_cell", "cache_lookup"] {
             assert!(
                 seen.iter().any(|n| n == expected),
                 "expected a {expected:?} span; saw {seen:?}"
+            );
+        }
+        assert!(
+            !seen.iter().any(|n| n == "compile_lock_wait"),
+            "a hit takes no lock: {seen:?}"
+        );
+
+        // A miss waits for the cell lock before admission; the empty bucket
+        // refuses it there, before any cargo.
+        names.0.lock().unwrap().clear();
+        let empty_bucket = crate::compiler::admission::BuildAdmission::new(
+            1,
+            0.0,
+            0.0,
+            std::time::Duration::from_secs(1),
+        );
+        let refused = compile_cell_core(
+            &config,
+            &locks,
+            &empty_bucket,
+            "test",
+            CompileRequest {
+                source: "    CellOutput::text(\"never cached\")".to_string(),
+                ..admission_test_request("span-miss")
+            },
+        )
+        .await;
+        assert!(refused.is_err(), "the empty bucket refuses the miss");
+        let seen = names.0.lock().unwrap().clone();
+        for expected in ["compile_cell", "cache_lookup", "compile_lock_wait"] {
+            assert!(
+                seen.iter().any(|n| n == expected),
+                "expected a {expected:?} span on a miss; saw {seen:?}"
             );
         }
     }

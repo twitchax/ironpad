@@ -399,7 +399,7 @@ The system SHALL fingerprint its toolchain as the pinned rustc's `--version` out
 - **THEN** every existing cache entry misses on its next compile
 
 ### Requirement: Same-cell compiles serialize
-The system SHALL run concurrent compiles or checks that share a cell id one at a time, treating ids that differ only by `-` versus `_` as the same cell. Distinct cells share no per-cell lock, but builds and checks that share a cargo target directory (every non-rayon cell, Linux cells included, in one; rayon cells in the shared atomics one) also run one at a time, because cargo locks the directory for a whole invocation; each waits for the directory in process, before its time budget starts. (PRD-0036)
+The system SHALL run concurrent compiles or checks that share a cell id one at a time, treating ids that differ only by `-` versus `_` as the same cell, except that a compile answered from the cache takes no lock and waits on no one; a compile that waited re-checks the cache once it holds the lock, so it serves an identical build that finished meanwhile instead of building again. Waiting for the lock is bounded by `IRONPAD_BUILD_QUEUE_TIMEOUT_SECS` and fails with the at-capacity error. Distinct cells share no per-cell lock, but builds and checks that share a cargo target directory (every non-rayon cell, Linux cells included, in one; rayon cells in the shared atomics one) also run one at a time, because cargo locks the directory for a whole invocation; each waits for the directory in process, before its time budget starts. (PRD-0036)
 
 #### Scenario: Two tabs, one cell
 - **WHEN** two compiles of `cell-1` arrive together
@@ -408,6 +408,10 @@ The system SHALL run concurrent compiles or checks that share a cell id one at a
 #### Scenario: Dash and underscore variants
 - **WHEN** a compile of `cell-a-b` is in flight and one of `cell-a_b` arrives
 - **THEN** the second waits
+
+#### Scenario: A cached cell sharing a busy id
+- **WHEN** one notebook's `cell_0` is building and a visitor runs another notebook's `cell_0`, whose blob is already cached
+- **THEN** the visitor's compile is answered from the cache at once
 
 #### Scenario: Two cells, one target directory
 - **WHEN** a 250-second cold build of one cell is running and a build of a different non-rayon cell starts
@@ -425,7 +429,7 @@ The system SHALL let only cache misses take a build slot, run at most `--max-con
 - **THEN** the compile fails with `the server is at build capacity right now. Cached runs are unaffected; retry shortly`
 
 #### Scenario: Hits are free
-- **WHEN** every slot is held and a cached cell is compiled
+- **WHEN** every slot is held, or the cell's lock is held, and a cached cell is compiled
 - **THEN** it is answered from the cache without waiting
 
 ### Requirement: Per-client build rate limit
