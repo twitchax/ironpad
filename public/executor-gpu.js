@@ -239,6 +239,40 @@
     return bmp;
   }
 
+  // ── Piped canvas value ─────────────────────────────────────────────────────
+
+  /// bincode's varint for an unsigned integer (standard config): below 251
+  /// one byte, else a 251/252/253 marker and the value as u16/u32/u64 LE.
+  function _bincodeVarint(n) {
+    if (n < 251) return [n];
+    if (n < 0x10000) return [251].concat(_littleEndian(n, 2));
+    if (n < 0x100000000) return [252].concat(_littleEndian(n, 4));
+    return [253].concat(_littleEndian(n, 8));
+  }
+
+  /// `n` as `width` little-endian bytes (exact up to 2^53).
+  function _littleEndian(n, width) {
+    var bytes = [];
+    for (var i = 0; i < width; i++) {
+      bytes.push(n % 256);
+      n = Math.floor(n / 256);
+    }
+    return bytes;
+  }
+
+  /// The bincode of ironpad-cell's `Canvas { width, height, pixels: Vec<u8> }`
+  /// over `rgb`: the value a cell returning a GpuCanvas pipes downstream,
+  /// which the cell itself could only encode as its gray placeholder. Pinned
+  /// to the crate's own encoding by tests/golden/canvas_300x1.bincode.
+  function _gpuEncodeCanvasBincode(width, height, rgb) {
+    var head = [].concat(
+      _bincodeVarint(width), _bincodeVarint(height), _bincodeVarint(rgb.length)
+    );
+    var out = new Uint8Array(head.length + rgb.length);
+    out.set(head, 0);
+    out.set(rgb, head.length);
+    return out;
+  }
 
   // ── Expose on the global scope ─────────────────────────────────────────────
 
@@ -251,6 +285,7 @@
     takeDispatchErrors: _gpuTakeDispatchErrors,
     readPixels: _gpuReadPixels,
     buildBmp: _gpuBuildBmp,
+    encodeCanvasBincode: _gpuEncodeCanvasBincode,
     cleanupAllHandles: function () {
       _gpuCleanupHandles(Array.from(_gpuHandles.keys()));
     },

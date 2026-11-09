@@ -154,6 +154,13 @@ impl GpuCanvas {
     /// If WebGPU is available, dispatches the compute shader and requests
     /// async readback via host message. If unavailable (or no GPU), falls
     /// back to the CPU closure.
+    ///
+    /// Under WebGPU the returned `Canvas` is a gray **placeholder**: the
+    /// pixels exist only after `cell_main` returns. The executor swaps the
+    /// real image into the displayed panel and, when a cell's whole output is
+    /// one `GpuCanvas`, into the value it pipes downstream too. A value that
+    /// embeds `render()`'s result elsewhere (in a tuple, or inspected inside
+    /// this cell) sees the placeholder.
     #[allow(clippy::cast_possible_truncation)]
     pub fn render(self) -> Canvas {
         if gpu_available() {

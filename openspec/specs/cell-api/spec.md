@@ -358,6 +358,11 @@ The system SHALL provide `GpuCanvas::new(w, h, wgsl, &uniforms)`, `.with_fallbac
 - **WHEN** WebGPU is unavailable, or creating buffers fails, or issuing the dispatch throws, and a fallback closure was given
 - **THEN** the image is computed by calling the closure for every pixel with the full uniforms slice
 
+#### Scenario: Piping a GPU canvas
+- **WHEN** a cell's whole output is one `GpuCanvas` rendered on WebGPU and a later cell reads `cell0.get_pixel(x, y)`
+- **THEN** it reads the shader's pixel, as it would the fallback's on a browser without WebGPU
+- **AND** a value that embeds `render()`'s result elsewhere, such as in a tuple, still carries the gray placeholder
+
 #### Scenario: A shader WebGPU rejects
 - **WHEN** a GpuCanvas shader fails WGSL validation with WebGPU available
 - **THEN** the cell fails with `GPU shader error:` and the validation message, and the fallback does not run

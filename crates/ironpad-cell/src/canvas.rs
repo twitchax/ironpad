@@ -313,6 +313,27 @@ pub(crate) fn base64_encode_into(out: &mut String, data: &[u8]) {
 mod tests {
     use super::*;
 
+    /// The golden canvas's pixel at column `x`, mirrored in
+    /// tests/js/executor-gpu.test.mjs.
+    fn golden_pixel(x: u32) -> (u8, u8, u8) {
+        let b = x.to_le_bytes()[0];
+        (b, b.wrapping_mul(7), b.wrapping_mul(13))
+    }
+
+    /// Byte-exact pin on the bincode a piped `Canvas` travels as. The
+    /// executor re-encodes a `GpuCanvas`'s real pixels in JS
+    /// (executor-gpu.js `encodeCanvasBincode`) and its test reads this same
+    /// file. Width 300 exercises bincode's 251 varint marker.
+    #[test]
+    fn canvas_bincode_matches_the_golden() {
+        let canvas = Canvas::from_fn(300, 1, |x, _| golden_pixel(x));
+        let bytes = bincode::serde::encode_to_vec(&canvas, bincode::config::standard()).unwrap();
+        assert!(
+            bytes.as_slice() == include_bytes!("../tests/golden/canvas_300x1.bincode"),
+            "Canvas encoding differs from tests/golden/canvas_300x1.bincode"
+        );
+    }
+
     #[test]
     fn new_is_black() {
         let c = Canvas::new(2, 2);

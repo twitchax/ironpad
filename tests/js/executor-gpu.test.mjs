@@ -11,6 +11,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 import { loadCore, makeMemory, rawEntry } from "./executor-harness.mjs";
 
@@ -80,30 +83,40 @@ function fakeGpu({ scopeError = null, pixel = [1, 0.5, 0, 1] } = {}) {
   return { globals, log };
 }
 
-const BLOB_PANEL = (w, h) =>
-  JSON.stringify([{ BlobImage: { mime_type: "image/bmp", base64_data: "", width: w, height: h } }]);
+const BLOB_PANEL = (w, h, count = 1) =>
+  JSON.stringify(
+    Array.from({ length: count }, () => ({
+      BlobImage: { mime_type: "image/bmp", base64_data: "", width: w, height: h },
+    })),
+  );
 
 /**
- * A raw cell whose cell_main renders one `width` x `height` GpuCanvas the way
- * the Rust side does, and returns `typeTag` with `outputBytes` as its value.
- * `trap` makes it throw after dispatching, as a cell that panics would.
+ * A raw cell whose cell_main renders `count` `width` x `height` GpuCanvases
+ * the way the Rust side does, and returns `typeTag` with `outputBytes` as its
+ * value. `trap` makes it throw after dispatching, as a cell that panics would.
  */
-function gpuCell(executor, cell, { width = 2, height = 1, typeTag = "Canvas", outputBytes = [9], trap = false } = {}) {
+function gpuCell(
+  executor,
+  cell,
+  { width = 2, height = 1, count = 1, typeTag = "Canvas", outputBytes = [9], trap = false } = {},
+) {
   return rawEntry(cell, {
     cell_main() {
-      const uniform = executor._gpuCreateBuffer(8, 3);
-      const output = executor._gpuCreateBuffer(width * height * 16, 1);
-      const staging = executor._gpuCreateBuffer(width * height * 16, 2);
-      const shader = cell.putText(1024, "@compute fn main() {}");
-      const status = executor._gpuDispatchComputeForCell("c", shader.ptr, shader.len, uniform, output, width, height);
-      assert.equal(status, 0, "a dispatch the device accepted reports success");
-      const msg = cell.putText(
-        2048,
-        JSON.stringify({ type: "gpu_read_pixels", output_handle: output, staging_handle: staging, width, height }),
-      );
-      executor._dispatchHostMessage("c", msg.ptr, msg.len);
+      for (let i = 0; i < count; i += 1) {
+        const uniform = executor._gpuCreateBuffer(8, 3);
+        const output = executor._gpuCreateBuffer(width * height * 16, 1);
+        const staging = executor._gpuCreateBuffer(width * height * 16, 2);
+        const shader = cell.putText(1024, "@compute fn main() {}");
+        const status = executor._gpuDispatchComputeForCell("c", shader.ptr, shader.len, uniform, output, width, height);
+        assert.equal(status, 0, "a dispatch the device accepted reports success");
+        const msg = cell.putText(
+          2048,
+          JSON.stringify({ type: "gpu_read_pixels", output_handle: output, staging_handle: staging, width, height }),
+        );
+        executor._dispatchHostMessage("c", msg.ptr, msg.len);
+      }
       if (trap) throw new Error("unreachable");
-      return writeCellResult(cell, outputBytes, BLOB_PANEL(width, height), typeTag);
+      return writeCellResult(cell, outputBytes, BLOB_PANEL(width, height, count), typeTag);
     },
   });
 }
@@ -194,3 +207,75 @@ test("a readback that comes back empty fails the cell instead of leaving the pla
 
   await assert.rejects(executor.execute("c", new Uint8Array(0)), /GPU readback failed/);
 });
+
+// ── The piped value of a GpuCanvas (review bug-cell-11) ─────────────────────
+
+const GOLDEN = readFileSync(
+  path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "crates",
+    "ironpad-cell",
+    "tests",
+    "golden",
+    "canvas_300x1.bincode",
+  ),
+);
+
+/** canvas.rs's `golden_pixel`, column by column. */
+function goldenRgb(width) {
+  const rgb = new Uint8Array(width * 3);
+  for (let x = 0; x < width; x += 1) {
+    const b = x & 0xff;
+    rgb.set([b, (b * 7) & 0xff, (b * 13) & 0xff], x * 3);
+  }
+  return rgb;
+}
+
+test("encodeCanvasBincode matches the crate's own encoding of a Canvas", () => {
+  // The golden is bincode::serde::encode_to_vec of a 300x1 Canvas, written
+  // by ironpad-cell's canvas_bincode_matches_the_golden.
+  const { g } = loadCore();
+  const bytes = g.__IronpadExecutorGpu.encodeCanvasBincode(300, 1, goldenRgb(300));
+
+  assert.deepEqual(Buffer.from(bytes), GOLDEN);
+});
+
+test("encodeCanvasBincode switches to the four-byte varint past u16", () => {
+  // bincode's varint: < 251 one byte, then 251 + u16, 252 + u32, 253 + u64.
+  const { g } = loadCore();
+  const bytes = g.__IronpadExecutorGpu.encodeCanvasBincode(70000, 1, new Uint8Array(210000));
+
+  assert.deepEqual(Array.from(bytes.subarray(0, 11)), [252, 0x70, 0x11, 0x01, 0x00, 1, 252, 0x50, 0x34, 0x03, 0x00]);
+  assert.equal(bytes.length, 11 + 210000);
+});
+
+test("a GpuCanvas pipes the rendered pixels, not its gray placeholder", async () => {
+  // The cell's value was the bincode of the placeholder render() returns on
+  // the GPU path, so the image showed right while downstream cells read gray.
+  const { globals } = fakeGpu({ pixel: [1, 0.5, 0, 1] });
+  const { executor } = loadCore({ globals });
+  const cell = makeMemory();
+  executor.modules.set("c", gpuCell(executor, cell, { width: 2, height: 1 }));
+
+  const result = await executor.execute("c", new Uint8Array(0));
+
+  assert.deepEqual(Array.from(result.outputBytes), [2, 1, 6, 255, 128, 0, 255, 128, 0]);
+});
+
+test("the piped value is left alone when it is not a lone Canvas", async () => {
+  // Another tag (a tuple holding the canvas, say) cannot be patched this way,
+  // and with two dispatches the returned canvas cannot be told apart.
+  for (const options of [{ typeTag: "(Table, Canvas)" }, { typeTag: "Canvas", count: 2 }]) {
+    const { globals } = fakeGpu();
+    const { executor } = loadCore({ globals });
+    const cell = makeMemory();
+    executor.modules.set("c", gpuCell(executor, cell, options));
+
+    const result = await executor.execute("c", new Uint8Array(0));
+
+    assert.deepEqual(Array.from(result.outputBytes), [9], JSON.stringify(options));
+  }
+});
+

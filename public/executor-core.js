@@ -406,6 +406,7 @@
     // size-matching panel and the second readback clobbered the first image
     // while its own placeholder stayed blank.
     var claimed = new Set();
+    var lastRgb = null;
     for (var rb of this._pendingGpuReadbacks) {
       var rgb = await Gpu.readPixels(
         rb.output_handle, rb.staging_handle, rb.width, rb.height
@@ -414,6 +415,7 @@
       if (!rgb) {
         throw new Error("GPU readback failed for a " + rb.width + "x" + rb.height + " canvas");
       }
+      lastRgb = rgb;
       var bmp = Gpu.buildBmp(rb.width, rb.height, rgb);
       // Extract raw base64 (no data URL prefix) for the BlobImage panel.
       var binary = "";
@@ -464,6 +466,17 @@
 
     if (panels) {
       cellResult.displayText = JSON.stringify(panels);
+    }
+
+    // The piped value too: a cell returning a GpuCanvas could only encode its
+    // gray placeholder, so downstream cells read gray where the panel shows
+    // the render. Only a lone Canvas from a single dispatch can be patched:
+    // with two, which one was returned is unknowable, and a tuple's bytes
+    // embed the canvas among other fields. (The tag stays, so cache keys
+    // and bindings do not differ by browser.)
+    if (cellResult.typeTag === "Canvas" && this._pendingGpuReadbacks.length === 1) {
+      var only = this._pendingGpuReadbacks[0];
+      cellResult.outputBytes = Gpu.encodeCanvasBincode(only.width, only.height, lastRgb);
     }
     this._pendingGpuReadbacks = [];
     return cellResult;
