@@ -721,7 +721,7 @@ fn NotebookContent() -> impl IntoView {
                             // refused this write and will refuse the next
                             // one identically. The toast carries the limit
                             // and the remedy; this says the state.
-                            DraftSaveState::Refused => "Draft not saved: storage full",
+                            DraftSaveState::Refused(kind) => kind.indicator(),
                             DraftSaveState::Synced => "",
                         }}
                     </span>

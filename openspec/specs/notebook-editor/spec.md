@@ -291,7 +291,7 @@ The system SHALL show, in the owner's editor of an account notebook in edit mode
 - **THEN** no Publish, Push or Published button is shown
 
 ### Requirement: Draft autosave indicator
-The system SHALL autosave an account notebook's draft 1.5 seconds after the last edit and label the indicator "Saving draft…" during a save, "Draft not saved; retrying" after a failure (retried after 5 seconds), "Draft not saved: storage full" when the server refuses for a storage cap, and nothing once synced. (PRD-0054, PRD-0064)
+The system SHALL autosave an account notebook's draft 1.5 seconds after the last edit and label the indicator "Saving draft…" during a save, "Draft not saved; retrying" after a failure (retried after 5 seconds), and nothing once synced. When the server refuses the save the indicator SHALL name why: "Draft not saved: storage full" for a storage cap, "Draft not saved: notebook too large" for the 4 MiB upload cap, "Draft not saved: not in your account" when the account no longer owns the notebook, and "Draft not saved: signed out" without a session. Only the signed-out refusal is retried. (PRD-0054, PRD-0064)
 
 #### Scenario: Network failure
 - **WHEN** draft saves are blocked at the network and the owner renames the notebook
@@ -301,6 +301,11 @@ The system SHALL autosave an account notebook's draft 1.5 seconds after the last
 - **WHEN** the server refuses a draft save because the account is full
 - **THEN** the indicator reads "Draft not saved: storage full", the save is not retried, and one "Draft Not Saved" toast (shown 15 seconds) repeats the server's limit and suggests deleting a notebook after downloading it
 - **AND** later edits that are refused again keep the indicator on "Draft not saved: storage full" while they save, and show no further toast until a save succeeds
+
+#### Scenario: Signed out in another tab
+- **WHEN** the owner signs out in another tab and keeps typing
+- **THEN** the indicator reads "Draft not saved: signed out" and one "Draft Not Saved" toast says to sign in again from a new tab without closing this one
+- **AND** after signing back in, the next retry saves the draft and the indicator clears
 
 ### Requirement: Status bar
 The system SHALL show a status bar at the foot of every page except `/` and `/embed/*` reading "Ready", the cell toolchain (tooltip "Cell compiler toolchain") and "Cells: N", plus "Saved: <age>" after an explicit save, refreshed every 30 seconds. (PRD-0028, PRD-0065)

@@ -308,21 +308,16 @@ pub(super) fn push_mutable_current_notebook(
         #[cfg(feature = "hydrate")]
         if !super::state::persist_notebook_durable(&state).await {
             // A REFUSED draft (PRD-0064) is not a retry away from working, so
-            // the advice differs: the same cap that blocks the autosave blocks
-            // the push, and telling the owner to wait for an indicator that
-            // will never clear is how this failure became undiagnosable.
-            let refused = matches!(
-                state.draft_save_state.try_get_untracked(),
-                Some(super::state::DraftSaveState::Refused)
-            );
-            let body = if refused {
-                "Your account is out of storage, so the draft never reached the \
-                 server and nothing was published. Delete a notebook from your \
-                 account to free space, then push again."
-            } else {
-                "Your draft could not be saved to the server, so nothing was \
-                 published. It will keep retrying; push again once the draft \
-                 indicator clears."
+            // the advice differs: whatever blocks the autosave blocks the
+            // push, and telling the owner to wait for an indicator that will
+            // never clear is how this failure became undiagnosable.
+            let body = match state.draft_save_state.try_get_untracked() {
+                Some(super::state::DraftSaveState::Refused(kind)) => kind.push_failed_body(),
+                _ => {
+                    "Your draft could not be saved to the server, so nothing was \
+                     published. It will keep retrying; push again once the draft \
+                     indicator clears."
+                }
             };
             toaster.toast(ToastIntent::Error, "Push Failed", body, 6);
             return;

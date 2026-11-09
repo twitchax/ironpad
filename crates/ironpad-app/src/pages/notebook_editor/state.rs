@@ -66,17 +66,81 @@ pub(super) enum CellStatus {
 /// Autosave state of the server draft (PRD-0054), shown beside the Push
 /// button. `Failed` self-heals: the save is rescheduled on a retry delay.
 ///
-/// `Refused` does NOT self-heal, and that is the whole reason it exists
-/// (PRD-0064): a write the server declines for a storage cap will be declined
-/// identically forever, so retrying it is a loop that cannot terminate under
-/// an indicator promising that it will. The state stops the loop and says so.
+/// `Refused` is the server saying no, and that is the whole reason it exists
+/// (PRD-0064): a write declined for a storage cap, a size cap or ownership
+/// will be declined identically forever, so retrying it is a loop that cannot
+/// terminate under an indicator promising that it will. The state stops the
+/// loop (except for [`DraftRefusal::SignedOut`]) and says why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DraftSaveState {
     Synced,
     Saving,
     Failed,
-    /// The server refused the write for a reason no retry can change.
-    Refused,
+    /// The server refused the write, for the reason carried.
+    Refused(DraftRefusal),
+}
+
+/// Why the server refused a draft save. Decides the copy, and whether a
+/// retry can ever help.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DraftRefusal {
+    /// The instance's or the account's storage cap.
+    Quota,
+    /// The notebook is over the upload cap, by the server's own check or by
+    /// the request-body limit in front of it.
+    TooLarge,
+    /// The signed-in account does not own the notebook: it was deleted, or
+    /// moved, from somewhere else.
+    NotOwner,
+    /// No session: signed out in another tab, revoked, or lapsed.
+    SignedOut,
+}
+
+impl DraftRefusal {
+    /// Whether to keep retrying anyway. Only for a lost session: signing in
+    /// again from another tab fixes it without a reload, and the server
+    /// answers "sign in" too when it could not read the session at all.
+    pub(super) fn retries(self) -> bool {
+        matches!(self, Self::SignedOut)
+    }
+
+    /// The indicator beside the publish button. Short, and with no promise
+    /// of a retry that is not coming: the toast carries the remedy.
+    pub(super) fn indicator(self) -> &'static str {
+        match self {
+            Self::Quota => "Draft not saved: storage full",
+            Self::TooLarge => "Draft not saved: notebook too large",
+            Self::NotOwner => "Draft not saved: not in your account",
+            Self::SignedOut => "Draft not saved: signed out",
+        }
+    }
+
+    /// The "Push Failed" body when the pre-push save was refused. Push has
+    /// no server message to quote, so the kind carries the explanation.
+    pub(super) fn push_failed_body(self) -> &'static str {
+        match self {
+            Self::Quota => {
+                "Your account is out of storage, so the draft never reached the \
+                 server and nothing was published. Delete a notebook from your \
+                 account to free space, then push again."
+            }
+            Self::TooLarge => {
+                "This notebook is over the 4 MiB size limit, so the draft never \
+                 reached the server and nothing was published. Remove cells or \
+                 large outputs, then push again."
+            }
+            Self::NotOwner => {
+                "This notebook is no longer in your account (it was deleted or \
+                 moved), so nothing was published. Use Download .ironpad to keep \
+                 this text."
+            }
+            Self::SignedOut => {
+                "You are signed out, so the draft never reached the server and \
+                 nothing was published. Sign in again from a new tab without \
+                 closing this one, then push again."
+            }
+        }
+    }
 }
 
 /// What the toolbar's one editorial button offers (PRD-0064).
@@ -810,45 +874,76 @@ pub(super) fn schedule_draft_save(state: &NotebookState, after_ms: i32) {
 
 // ── Refused draft saves (PRD-0064) ──────────────────────────────────────────
 
-/// Substrings marking a server refusal that retrying cannot fix.
+/// Substrings marking a server refusal, lowercase, with the kind each one
+/// means.
 ///
 /// The autosave loop is retry-until-it-lands, which is right for a dropped
 /// connection and wrong for a full account: the same bytes are refused every
 /// time, forever, under an indicator that promises a retry. The wording is
-/// produced by `admit_mutable_write` in `server_fns.rs`, and
-/// `quota_refusals_are_classified_permanent` reads that function so the pair
-/// cannot drift apart in silence.
+/// produced in `server_fns.rs` (`admit_mutable_write`, `validate_notebook_upload`,
+/// `ensure_share_owner`, `require_login`), plus `length limit` from the
+/// request-body cap in front of every server fn, and
+/// `quota_refusals_are_classified_permanent` reads those functions so the
+/// pairs cannot drift apart in silence.
 #[cfg(any(feature = "hydrate", test))]
-const PERMANENT_REFUSAL_MARKERS: [&str; 3] = ["store full", "storage full", "quota"];
+const REFUSAL_MARKERS: [(&str, DraftRefusal); 7] = [
+    ("store full", DraftRefusal::Quota),
+    ("storage full", DraftRefusal::Quota),
+    ("quota", DraftRefusal::Quota),
+    ("too large", DraftRefusal::TooLarge),
+    ("length limit", DraftRefusal::TooLarge),
+    ("you do not own this share", DraftRefusal::NotOwner),
+    ("sign in with github", DraftRefusal::SignedOut),
+];
 
-/// Whether a failed draft save was REFUSED (permanent) rather than lost
-/// (transient).
+/// Whether a failed draft save was REFUSED, and why, rather than lost
+/// (`None`, transient).
 ///
 /// Substring matching over the server's own prose, because that is all the
 /// wire carries: a server-fn error reaches the client wrapped ("error running
 /// server function: …"), so the marker has to survive being embedded rather
 /// than being the whole message. Erring toward "transient" is the safe
-/// direction — that is today's behaviour, a retry loop.
+/// direction for anything unknown: that is a retry loop.
 #[cfg(any(feature = "hydrate", test))]
-pub(super) fn is_permanent_refusal(message: &str) -> bool {
+pub(super) fn classify_draft_failure(message: &str) -> Option<DraftRefusal> {
     let lowered = message.to_ascii_lowercase();
-    PERMANENT_REFUSAL_MARKERS
+    REFUSAL_MARKERS
         .iter()
-        .any(|marker| lowered.contains(marker))
+        .find(|(marker, _)| lowered.contains(marker))
+        .map(|&(_, kind)| kind)
 }
 
 /// Body of the one-time toast for a refused draft save: the server's message,
-/// which already names the limit, plus the only act that changes the answer.
+/// which names the limit where there is one, plus the act that changes the
+/// answer.
 ///
 /// Naming the remedy matters more here than usual — the same refusal also
-/// aborts Push, so an owner who is over the cap is locked out of both saving
-/// and publishing, and nothing else on the page says why or what to do.
+/// aborts Push, so an owner it hits is locked out of both saving and
+/// publishing, and nothing else on the page says why or what to do. Toasts
+/// are text only, so the remedy is said rather than linked.
 #[cfg(any(feature = "hydrate", test))]
-pub(super) fn refusal_toast_body(server_message: &str) -> String {
+pub(super) fn refusal_toast_body(kind: DraftRefusal, server_message: &str) -> String {
+    let remedy = match kind {
+        DraftRefusal::Quota => {
+            "Delete a notebook from your account to free space (Download \
+             .ironpad first if you want to keep it)."
+        }
+        DraftRefusal::TooLarge => {
+            "A notebook can be at most 4 MiB. Remove cells or large outputs to \
+             bring it under the limit; Download .ironpad keeps a copy meanwhile."
+        }
+        DraftRefusal::NotOwner => {
+            "This notebook is no longer in your account: it was deleted or \
+             moved. Use Download .ironpad to keep this text."
+        }
+        DraftRefusal::SignedOut => {
+            "Sign in again from a new tab without closing this one; the draft \
+             saves itself once you are signed in."
+        }
+    };
     format!(
-        "{server_message}. Delete a notebook from your account to free space \
-         (Download .ironpad first if you want to keep it). Nothing you have \
-         typed since the last successful save has reached the server."
+        "{server_message}. {remedy} Nothing you have typed since the last \
+         successful save has reached the server."
     )
 }
 
@@ -917,23 +1012,23 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
         Err(e) => {
             state.mark_persist_pending();
             let message = e.to_string();
-            let permanent = is_permanent_refusal(&message);
+            let refusal = classify_draft_failure(&message);
             // `None`: the page is gone, and nothing below applies to it.
             let Some(current) = state.draft_save_state.try_get_untracked() else {
                 return false;
             };
-            let step = after_save_failure(current, permanent);
-            if permanent {
-                leptos::logging::warn!("draft autosave refused, not retrying: {message}");
+            let step = after_save_failure(current, refusal);
+            if refusal.is_some() {
+                leptos::logging::warn!("draft autosave refused ({refusal:?}): {message}");
             } else {
                 leptos::logging::warn!("draft autosave failed (will retry): {message}");
             }
             let _ = state.draft_save_state.try_set(step.next);
-            if step.toast_refusal {
+            if let (true, Some(kind)) = (step.toast_refusal, refusal) {
                 state.toaster.toast(
                     ToastIntent::Error,
                     "Draft Not Saved",
-                    refusal_toast_body(&message),
+                    refusal_toast_body(kind, &message),
                     REFUSAL_TOAST_SECS,
                 );
             }
@@ -971,31 +1066,34 @@ pub(super) struct DraftSaveStep {
 #[cfg(any(feature = "hydrate", test))]
 pub(super) fn state_while_saving(prior: DraftSaveState) -> DraftSaveState {
     match prior {
-        DraftSaveState::Refused => DraftSaveState::Refused,
+        DraftSaveState::Refused(kind) => DraftSaveState::Refused(kind),
         _ => DraftSaveState::Saving,
     }
 }
 
 /// The transition for a failed save, from the indicator state `current` read
-/// after the request returned.
+/// after the request returned, and the refusal if it was one.
 ///
 /// A refusal is said ONCE: the debounce fires on every typing burst, so a
 /// toast per refusal would bury the message under copies of itself. Only a
-/// success (which sets `Synced`) re-arms it. A transient failure retries.
+/// success (which sets `Synced`) or a different refusal re-arms it. A
+/// transient failure retries, and so does a lost session.
 #[cfg(any(feature = "hydrate", test))]
-pub(super) fn after_save_failure(current: DraftSaveState, permanent: bool) -> DraftSaveStep {
-    if permanent {
-        DraftSaveStep {
-            next: DraftSaveState::Refused,
-            toast_refusal: current != DraftSaveState::Refused,
-            retry: false,
-        }
-    } else {
-        DraftSaveStep {
+pub(super) fn after_save_failure(
+    current: DraftSaveState,
+    refusal: Option<DraftRefusal>,
+) -> DraftSaveStep {
+    match refusal {
+        Some(kind) => DraftSaveStep {
+            next: DraftSaveState::Refused(kind),
+            toast_refusal: current != DraftSaveState::Refused(kind),
+            retry: kind.retries(),
+        },
+        None => DraftSaveStep {
             next: DraftSaveState::Failed,
             toast_refusal: false,
             retry: true,
-        }
+        },
     }
 }
 
@@ -1096,40 +1194,87 @@ mod tests {
 
     // ── Refused draft saves (PRD-0064) ──────────────────────────────────
 
+    /// The bodies of the functions in `server_fns.rs` that word refusals.
+    const SERVER_FNS: &str = include_str!("../../server_fns.rs");
+
+    /// The body of the function whose signature starts `signature`.
+    fn fn_body(signature: &str) -> &'static str {
+        let body = SERVER_FNS
+            .split_once(signature)
+            .unwrap_or_else(|| panic!("{signature} was renamed or moved out of server_fns.rs"))
+            .1;
+        &body[..body
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("could not find the end of {signature}"))]
+    }
+
+    /// The first string literal after each `call` in `body`: the wording of
+    /// each refusal it emits.
+    fn literals_after(body: &'static str, call: &str) -> Vec<&'static str> {
+        body.split(call)
+            .skip(1)
+            .map(|rest| {
+                let open = rest.find('"').expect("refusal has no message literal") + 1;
+                let len = rest[open..].find('"').expect("unterminated literal");
+                &rest[open..open + len]
+            })
+            .collect()
+    }
+
     #[test]
     fn quota_refusals_are_classified_permanent() {
         // The classifier keys on the SERVER's prose, so this pairing is only
-        // as good as a check that reads the server. `admit_mutable_write` is
-        // the source of truth; a reworded refusal there would otherwise put
-        // the autosave loop back on an infinite retry, silently, and the
-        // first person to find out would be a user who had already lost the
+        // as good as a check that reads the server. These functions are the
+        // source of truth; a reworded refusal there would otherwise put the
+        // autosave loop back on an infinite retry, silently, and the first
+        // person to find out would be a user who had already lost the
         // afternoon's typing.
-        const SERVER_FNS: &str = include_str!("../../server_fns.rs");
-        let body = SERVER_FNS
-            .split_once("async fn admit_mutable_write(")
-            .expect("admit_mutable_write was renamed or moved out of server_fns.rs")
-            .1;
-        let body = &body[..body
-            .find("\n}\n")
-            .expect("could not find the end of admit_mutable_write")];
-
-        let refusals: Vec<&str> = body
-            .split("anyhow::bail!(")
-            .skip(1)
-            .map(|rest| &rest[..rest.find(");").expect("unterminated bail!")])
-            .collect();
+        let quota = literals_after(fn_body("async fn admit_mutable_write("), "anyhow::bail!(");
         assert_eq!(
-            refusals.len(),
+            quota.len(),
             2,
             "expected the instance cap and the per-user cap to be the two \
-             refusals admit_mutable_write can emit; found {refusals:?}"
+             refusals admit_mutable_write can emit; found {quota:?}"
         );
-        for refusal in refusals {
-            assert!(
-                is_permanent_refusal(refusal),
-                "the autosave loop would retry this refusal forever: {refusal}"
-            );
+        let size = literals_after(fn_body("fn validate_notebook_upload("), "anyhow::bail!(");
+        let owner = literals_after(fn_body("async fn ensure_share_owner("), "anyhow::bail!(");
+        let login = literals_after(fn_body("async fn require_login("), "ServerFnError::new(");
+        assert_eq!(size.len(), 1, "validate_notebook_upload: {size:?}");
+        assert_eq!(owner.len(), 1, "ensure_share_owner: {owner:?}");
+        assert_eq!(login.len(), 1, "require_login: {login:?}");
+
+        for (refusals, kind) in [
+            (quota, DraftRefusal::Quota),
+            (size, DraftRefusal::TooLarge),
+            (owner, DraftRefusal::NotOwner),
+            (login, DraftRefusal::SignedOut),
+        ] {
+            for refusal in refusals {
+                assert_eq!(
+                    classify_draft_failure(refusal),
+                    Some(kind),
+                    "misclassified: {refusal}"
+                );
+                // The client never sees the bare message: server_fn's
+                // Display wraps it.
+                let wrapped = format!("error running server function: {refusal}");
+                assert_eq!(classify_draft_failure(&wrapped), Some(kind), "{wrapped}");
+            }
         }
+    }
+
+    #[test]
+    fn the_body_limit_refusal_is_too_large() {
+        // The request-body cap answers before the server fn runs, with text
+        // the client cannot even decode as a server-fn error.
+        assert_eq!(
+            classify_draft_failure(
+                "error deserializing server function results: Invalid format: \
+                 missing delimiter in \"Failed to buffer the request body: length \
+                 limit exceeded\""
+            ),
+            Some(DraftRefusal::TooLarge)
+        );
     }
 
     #[test]
@@ -1140,27 +1285,19 @@ mod tests {
             "error reaching server: NetworkError when attempting to fetch resource",
             "error running server function: mutable share not found or not yours",
         ] {
-            assert!(
-                !is_permanent_refusal(message),
+            assert_eq!(
+                classify_draft_failure(message),
+                None,
                 "{message} would stop the retry loop"
             );
         }
     }
 
     #[test]
-    fn refusal_is_classified_through_the_leptos_wrapper() {
-        // The client never sees the bare message: server_fn Display wraps it.
-        assert!(is_permanent_refusal(
-            "error running server function: account storage full: 33554432 \
-             bytes stored for this account, cap is 33554432 bytes"
-        ));
-    }
-
-    #[test]
     fn refusal_toast_repeats_the_server_message_and_names_the_remedy() {
         let server = "account storage full: 40000000 bytes stored for this \
                       account, cap is 33554432 bytes";
-        let body = refusal_toast_body(server);
+        let body = refusal_toast_body(DraftRefusal::Quota, server);
         assert!(
             body.contains(server),
             "the limit is only named in the server's own message"
@@ -1169,11 +1306,38 @@ mod tests {
     }
 
     #[test]
-    fn refused_stays_refused_while_the_next_save_is_in_flight() {
-        assert_eq!(
-            state_while_saving(DraftSaveState::Refused),
-            DraftSaveState::Refused
+    fn each_refusal_names_its_own_remedy() {
+        let message = "error running server function: refused";
+        let too_large = refusal_toast_body(DraftRefusal::TooLarge, message);
+        assert!(too_large.contains("4 MiB"), "{too_large}");
+        assert!(
+            !too_large.to_ascii_lowercase().contains("delete a notebook"),
+            "deleting another notebook does not shrink this one"
         );
+        let not_owner = refusal_toast_body(DraftRefusal::NotOwner, message);
+        assert!(not_owner.contains("Download .ironpad"), "{not_owner}");
+        let signed_out = refusal_toast_body(DraftRefusal::SignedOut, message);
+        assert!(signed_out.contains("new tab"), "{signed_out}");
+
+        let kinds = [
+            DraftRefusal::Quota,
+            DraftRefusal::TooLarge,
+            DraftRefusal::NotOwner,
+            DraftRefusal::SignedOut,
+        ];
+        for (i, a) in kinds.iter().enumerate() {
+            for b in &kinds[i + 1..] {
+                assert_ne!(a.indicator(), b.indicator());
+                assert_ne!(a.push_failed_body(), b.push_failed_body());
+            }
+            assert!(!a.indicator().contains("retrying"));
+        }
+    }
+
+    #[test]
+    fn refused_stays_refused_while_the_next_save_is_in_flight() {
+        let refused = DraftSaveState::Refused(DraftRefusal::Quota);
+        assert_eq!(state_while_saving(refused), refused);
         for prior in [
             DraftSaveState::Synced,
             DraftSaveState::Saving,
@@ -1187,24 +1351,31 @@ mod tests {
     fn a_second_refusal_does_not_toast() {
         // The first refusal toasts; the indicator then holds Refused through
         // the next save, so the second refusal reads it back and stays quiet.
-        let first = after_save_failure(state_while_saving(DraftSaveState::Synced), true);
+        let quota = Some(DraftRefusal::Quota);
+        let first = after_save_failure(state_while_saving(DraftSaveState::Synced), quota);
         assert!(first.toast_refusal);
-        assert_eq!(first.next, DraftSaveState::Refused);
-        let second = after_save_failure(state_while_saving(first.next), true);
+        assert_eq!(first.next, DraftSaveState::Refused(DraftRefusal::Quota));
+        let second = after_save_failure(state_while_saving(first.next), quota);
         assert!(!second.toast_refusal, "the refusal was already announced");
-        assert_eq!(second.next, DraftSaveState::Refused);
+        assert_eq!(second.next, first.next);
+        // A DIFFERENT refusal is news.
+        let other = after_save_failure(first.next, Some(DraftRefusal::TooLarge));
+        assert!(other.toast_refusal);
     }
 
     #[test]
     fn success_then_refusal_toasts_again() {
         // A save that lands sets Synced, which re-arms the toast.
-        let after = after_save_failure(state_while_saving(DraftSaveState::Synced), true);
+        let after = after_save_failure(
+            state_while_saving(DraftSaveState::Synced),
+            Some(DraftRefusal::Quota),
+        );
         assert!(after.toast_refusal);
     }
 
     #[test]
     fn a_transient_failure_retries_and_a_refusal_does_not() {
-        let transient = after_save_failure(DraftSaveState::Saving, false);
+        let transient = after_save_failure(DraftSaveState::Saving, None);
         assert_eq!(
             transient,
             DraftSaveStep {
@@ -1213,14 +1384,33 @@ mod tests {
                 retry: true,
             }
         );
-        let refused = after_save_failure(DraftSaveState::Saving, true);
-        assert!(!refused.retry, "a refusal is the same answer every time");
+        for kind in [
+            DraftRefusal::Quota,
+            DraftRefusal::TooLarge,
+            DraftRefusal::NotOwner,
+        ] {
+            let refused = after_save_failure(DraftSaveState::Saving, Some(kind));
+            assert!(!refused.retry, "{kind:?} is the same answer every time");
+        }
+    }
+
+    #[test]
+    fn a_lost_session_retries_but_toasts_once() {
+        // Signing in again in another tab fixes it, so the retry stays; the
+        // toast still says it once.
+        let signed_out = Some(DraftRefusal::SignedOut);
+        let first = after_save_failure(DraftSaveState::Saving, signed_out);
+        assert!(first.retry && first.toast_refusal);
+        let again = after_save_failure(state_while_saving(first.next), signed_out);
+        assert!(again.retry && !again.toast_refusal);
     }
 
     #[test]
     fn draft_save_states_are_distinct() {
-        assert_ne!(DraftSaveState::Refused, DraftSaveState::Failed);
-        assert_ne!(DraftSaveState::Refused, DraftSaveState::Synced);
+        let refused = DraftSaveState::Refused(DraftRefusal::Quota);
+        assert_ne!(refused, DraftSaveState::Failed);
+        assert_ne!(refused, DraftSaveState::Synced);
+        assert_ne!(refused, DraftSaveState::Refused(DraftRefusal::SignedOut));
     }
 
     #[test]

@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 
 import { test, expect, APIRequestContext, Page } from "@playwright/test";
-import { loginTestUser } from "./helpers/auth";
+import { loginTestUser, logout } from "./helpers/auth";
 import { setCellSource } from "./helpers/monaco";
 import {
   expectLiveCard,
@@ -521,5 +521,38 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
       await expect(push).toHaveText(/Published/);
       await expect(push).toBeDisabled();
     }
+  });
+
+  test("a signed-out autosave says so, and lands after signing back in", async ({
+    page,
+    context,
+  }) => {
+    // "sign in with GitHub" used to count as transient: the indicator read
+    // "Draft not saved; retrying" forever and nothing said to sign in.
+    test.setTimeout(150_000);
+    await publishedNotebookWithCell(page, "sam", "Lapsed Session");
+    const other = await context.newPage();
+    await logout(other);
+    await setCellSource(
+      page,
+      page.locator(".ironpad-cell-card").first(),
+      "let typed_while_signed_out = 1;",
+    );
+    const indicator = page.locator(".ironpad-draft-indicator");
+    await expect(indicator).toHaveText("Draft not saved: signed out", {
+      timeout: 15_000,
+    });
+    await expect(
+      page.locator(".ironpad-toast-body", { hasText: "new tab" }),
+    ).toHaveCount(1);
+
+    // Still retried: signing in again in another tab is the remedy.
+    await loginTestUser(other, "sam");
+    await expect(indicator).toHaveText("", { timeout: 20_000 });
+    await page.reload();
+    await expectOwnerEditor(page);
+    await expect(firstCellLines(page)).toContainText("typed_while_signed_out", {
+      timeout: 30_000,
+    });
   });
 });
