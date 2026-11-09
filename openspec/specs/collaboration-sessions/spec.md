@@ -198,12 +198,17 @@ The browser SHALL answer a mutation or query it cannot apply with a `Response::E
 - **THEN** it replies with `InvalidMessage` "unrecognized mutation from a newer peer" and changes nothing
 
 ### Requirement: Agent edits behave like host edits
-An agent's accepted mutation SHALL go through the same notebook model as the host's own edits: it SHALL be persisted the same way, stale the same cells, and refresh the host's visible Monaco editors (source and Cargo.toml). The acknowledging event SHALL echo the mutation's id and name its origin `agent:remote`. (PRD-0035, 9c27c48 agentic-collaboration/0002, 25022ad agentic-collaboration/0006)
+An agent's accepted mutation SHALL go through the same notebook model as the host's own edits: it SHALL be persisted the same way, stale the same cells, and refresh the host's visible Monaco editors (source and Cargo.toml) and rendered markdown cells. The acknowledging event SHALL echo the mutation's id and name its origin `agent:remote`. (PRD-0035, 9c27c48 agentic-collaboration/0002, 25022ad agentic-collaboration/0006)
 
 #### Scenario: Agent Cargo.toml edit survives a host save
 - **WHEN** an agent updates a cell's Cargo.toml to contain a marker comment
 - **THEN** the host's Cargo.toml tab shows the marker
 - **AND** after the host presses Ctrl+S and renames the cell, the cell's Cargo.toml in the daemon and in IndexedDB still contains the marker
+
+#### Scenario: Agent markdown edit survives an untouched open
+- **WHEN** an agent updates a markdown cell's source
+- **THEN** the host's rendered cell shows the new text
+- **AND** after the host opens that cell's editor and clicks away without typing, the daemon and IndexedDB still hold the agent's text
 
 #### Scenario: Agent sets shared source
 - **WHEN** an agent sets the notebook's shared source

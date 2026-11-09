@@ -1,6 +1,7 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import {
   ADD_CODE,
+  ADD_MARKDOWN,
   createNotebook,
   startSession,
   endSession,
@@ -8,6 +9,20 @@ import {
 } from "./helpers/session";
 import { connectCli, cliExec, cliExecRaw, stopCli, CliHandle } from "./helpers/cli";
 import { trackJsErrors } from "./helpers/errors";
+
+/** The first cell's source as IndexedDB holds it. */
+function storedSource(page: Page, notebookId: string): Promise<string> {
+  return page.evaluate(async (id) => {
+    const nb = await (window as any).IronpadStorage.getNotebook(id);
+    return nb?.cells?.[0]?.source ?? "";
+  }, notebookId);
+}
+
+/** Close the session panel so it cannot sit over the cells. */
+async function dismissSessionPanel(page: Page): Promise<void> {
+  await page.locator(".ironpad-editor").click({ position: { x: 5, y: 5 } });
+  await expect(page.locator(".ironpad-session-panel")).toHaveCount(0);
+}
 
 // Session tests share a single daemon socket (under a per-run temp HOME; see
 // helpers/cli.ts) and must run serially to avoid conflicts.
@@ -282,6 +297,61 @@ test.describe.serial("Agent Session", () => {
       .toContain(marker);
 
     expect(jsErrors).toEqual([]);
+  });
+
+  // Regression (review bug-components-4): the markdown cell took its source
+  // once, at mount, so an agent's edit never reached the preview, and the
+  // next open-and-close wrote the stale editor text back over it.
+  test("agent markdown edits reach the preview and survive an untouched open", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+
+    await createNotebook(page);
+    const notebookId = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+    await page.locator(ADD_MARKDOWN).first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await waitForPersistedCells(page, 1);
+
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+    await dismissSessionPanel(page);
+    const cellId = cliExec(["cells", "list"])[0].id;
+    const md = page.locator(".ironpad-cell-card").first();
+    const preview = md.locator(".ironpad-markdown-cell-preview");
+    const editor = md.locator(".ironpad-markdown-cell-editor");
+
+    expect(
+      cliExecRaw(["cells", "update", cellId, "--source", "# AGENT TEXT"]).exitCode,
+    ).toBe(0);
+    await expect(preview).toContainText("AGENT TEXT", { timeout: 10_000 });
+
+    // Open, click in, click away: nothing typed, so nothing may be written.
+    await preview.dblclick();
+    await expect(editor.locator(".monaco-editor")).toBeVisible({ timeout: 15_000 });
+    await editor.locator(".view-lines").click();
+    await page.locator(".ironpad-status-bar").click();
+    await expect(editor).toHaveCount(0);
+    await page.waitForTimeout(2_000); // past the 1s save debounce
+    expect(await storedSource(page, notebookId)).toBe("# AGENT TEXT");
+    expect(cliExec(["cells", "get", cellId]).source).toBe("# AGENT TEXT");
+
+    // An edit landing while the editor is open and untouched shows on close.
+    await preview.dblclick();
+    await expect(editor.locator(".monaco-editor")).toBeVisible({ timeout: 15_000 });
+    expect(
+      cliExecRaw(["cells", "update", cellId, "--source", "# SECOND AGENT TEXT"])
+        .exitCode,
+    ).toBe(0);
+    await expect
+      .poll(() => storedSource(page, notebookId), { timeout: 10_000 })
+      .toBe("# SECOND AGENT TEXT");
+    await editor.locator(".view-lines").click();
+    await page.locator(".ironpad-status-bar").click();
+    await expect(editor).toHaveCount(0);
+    await expect(preview).toContainText("SECOND AGENT TEXT");
+    await page.waitForTimeout(2_000);
+    expect(await storedSource(page, notebookId)).toBe("# SECOND AGENT TEXT");
   });
 
   test("agent updates notebook shared source and cargo", async ({ page }) => {

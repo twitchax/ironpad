@@ -38,9 +38,10 @@ pub fn render_markdown(source: &str) -> String {
 #[component]
 #[allow(clippy::needless_pass_by_value)]
 pub fn MarkdownCell(
-    /// The markdown source text.
+    /// The cell's markdown source, live: an edit from elsewhere (an agent)
+    /// reaches the preview, and the next editor, once no editor is open.
     #[prop(into)]
-    source: String,
+    source: Signal<String>,
     /// Fires with the editor's full text on every edit. The parent debounces
     /// it into the notebook (CellItem's `on_source_change`), so a markdown
     /// cell has the same save window as a code cell.
@@ -52,7 +53,7 @@ pub fn MarkdownCell(
     flush_generation: Signal<u64>,
 ) -> impl IntoView {
     let editing = RwSignal::new(false);
-    let current_source = RwSignal::new(source.clone());
+    let current_source = RwSignal::new(source.get_untracked());
 
     // Preview HTML derived from current source.
     let preview_html = Memo::new(move |_| render_markdown(&current_source.get()));
@@ -64,6 +65,16 @@ pub fn MarkdownCell(
     // (F1) and context menu all take focus inside it, so focus moving within
     // it is not a click away.
     let wrapper = NodeRef::<leptos::html::Div>::new();
+
+    // Pull an outside edit into the preview. Never under an open editor, and
+    // `editing` is tracked so an edit that landed meanwhile shows on close.
+    // The editor's own typing comes back through here too, already equal.
+    Effect::new(move || {
+        let latest = source.get();
+        if !editing.get() && latest != current_source.get_untracked() {
+            current_source.set(latest);
+        }
+    });
 
     // Switch to edit mode on double-click.
     let on_dblclick = move |_| {

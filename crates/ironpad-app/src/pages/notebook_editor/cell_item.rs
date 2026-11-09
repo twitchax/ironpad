@@ -1199,7 +1199,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 view! {
                     <div class=body_class>
                         <MarkdownCell
-                            source=source.get_untracked()
+                            source=source
                             on_change=on_source_change
                             flush_generation=state.save_generation
                         />
