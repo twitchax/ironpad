@@ -1494,15 +1494,8 @@ pub struct AlsoUnusedHere {
             <Vec<BTreeMap<String, i32>>>::type_tag(),
             <Vec<&str>>::type_tag(),
         ];
-        assert_eq!(
-            previous_cell_types,
-            [
-                "Vec<std::collections::HashMap<String, i32>>",
-                "Vec<std::collections::BTreeMap<String, i32>>",
-                "Vec<String>",
-            ],
-        );
-        let source = "    CellOutput::text(format!(\"{} {} {}\", cell0.len(), cell1.len(), cell2.len()))";
+        let source =
+            "    CellOutput::text(format!(\"{} {} {}\", cell0.len(), cell1.len(), cell2.len()))";
 
         let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
             &cache_dir,
@@ -1538,6 +1531,15 @@ pub struct AlsoUnusedHere {
                 tail(&stderr, 1500),
             );
         }
+        // And they are the public spellings, not merely something that compiles.
+        assert_eq!(
+            previous_cell_types,
+            [
+                "Vec<std::collections::HashMap<String, i32>>",
+                "Vec<std::collections::BTreeMap<String, i32>>",
+                "Vec<String>",
+            ],
+        );
     }
 
     // ── Full pipeline: compile → cache → cache hit ─────────────────────
