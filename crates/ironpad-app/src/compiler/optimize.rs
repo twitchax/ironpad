@@ -5,7 +5,7 @@
 //! binary size, since cells execute repeatedly (simulations tick every
 //! frame) while the blob is fetched once and cached.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -54,19 +54,33 @@ async fn try_optimize(wasm_bytes: &[u8], work_dir: &Path, needs_atomics: bool) -
     // names (`pre_opt.wasm`/`post_opt.wasm`) let concurrent compiles of
     // different cells clobber each other's temp files mid-optimization.
     let stem = uuid::Uuid::new_v4();
-    let input_path = work_dir.join(format!("opt-{stem}.pre.wasm"));
-    let output_path = work_dir.join(format!("opt-{stem}.post.wasm"));
-
-    let result = run_wasm_opt(wasm_bytes, &input_path, &output_path, needs_atomics).await;
-
-    // Clean up on EVERY path (best-effort): the work dir is persistent and
+    // Cleaned up on EVERY path (best-effort): the work dir is persistent and
     // shared, and failure paths used to leak both temp blobs per failed
     // optimization — an unbounded disk drip on a box where wasm-opt is
-    // broken or the input is pathological.
-    let _ = tokio::fs::remove_file(&input_path).await;
-    let _ = tokio::fs::remove_file(&output_path).await;
+    // broken or the input is pathological. A guard rather than trailing
+    // calls, because the compile future can also be DROPPED mid-wasm-opt (a
+    // client disconnect), and only a destructor runs then.
+    let temp = TempFiles {
+        input: work_dir.join(format!("opt-{stem}.pre.wasm")),
+        output: work_dir.join(format!("opt-{stem}.post.wasm")),
+    };
 
-    result
+    run_wasm_opt(wasm_bytes, &temp.input, &temp.output, needs_atomics).await
+}
+
+/// wasm-opt's input and output files, removed when dropped.
+struct TempFiles {
+    input: PathBuf,
+    output: PathBuf,
+}
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        // Synchronous on purpose: a destructor cannot await, and two unlinks
+        // are cheap.
+        let _ = std::fs::remove_file(&self.input);
+        let _ = std::fs::remove_file(&self.output);
+    }
 }
 
 /// The fallible middle of [`try_optimize`], separated so its `?` returns all
@@ -134,6 +148,20 @@ mod tests {
         // paths used to leak both temp blobs.
         let dir = tempdir().unwrap();
         let _ = optimize_wasm(b"not-a-real-wasm-file", dir.path(), false).await;
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(leftovers.is_empty(), "temp files leaked: {leftovers:?}");
+    }
+
+    #[test]
+    fn temp_files_are_removed_when_the_guard_drops() {
+        let dir = tempdir().unwrap();
+        let temp = TempFiles {
+            input: dir.path().join("opt-x.pre.wasm"),
+            output: dir.path().join("opt-x.post.wasm"),
+        };
+        std::fs::write(&temp.input, b"pre").unwrap();
+        std::fs::write(&temp.output, b"post").unwrap();
+        drop(temp);
         let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert!(leftovers.is_empty(), "temp files leaked: {leftovers:?}");
     }

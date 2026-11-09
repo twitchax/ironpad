@@ -34,35 +34,60 @@ use crate::CELL_TOOLCHAIN;
 /// shared target dir after the caller's locks are released — racing the next
 /// build that enters it. Shared by the build and check paths (and any other
 /// subprocess with a fan-out risk).
+///
+/// The kill lives in a [`GroupKillGuard`] so it covers every way out of this
+/// future that is not a reaped exit: the timeout, a wait error, and the
+/// future being DROPPED. The drop is the ordinary one, because leptos awaits
+/// a server fn inline and a client that disconnects drops the compile.
 pub(crate) async fn run_group_with_timeout(
     mut cmd: Command,
     timeout: Duration,
 ) -> anyhow::Result<Option<std::process::Output>> {
-    // Backstop: if this future is dropped (not just timed out), kill at
-    // least the direct child.
+    // Kept so tokio reaps the leader; the guard below is what kills the
+    // rest of the group.
     cmd.kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);
 
     let child = cmd.spawn().context("failed to spawn subprocess")?;
-    let child_pid = child.id();
+    let mut group = GroupKillGuard::new(child.id());
 
     let Ok(wait_result) = tokio::time::timeout(timeout, child.wait_with_output()).await else {
-        // Timed out: kill the whole process group. The negated pgid equals
-        // the child's pid because we made it the group leader; SIGKILL can't
-        // be caught, so the tree dies.
-        #[cfg(unix)]
-        if let Some(pid) = child_pid.and_then(|p| i32::try_from(p).ok()) {
-            // SAFETY: kill(2) with a negative pid signals the process group.
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        }
-        #[cfg(not(unix))]
-        let _ = child_pid;
+        // Timed out: the guard kills the group as it drops.
         return Ok(None);
     };
-    wait_result.map(Some).context("subprocess failed to run")
+    let output = wait_result.context("subprocess failed to run")?;
+    // Reaped normally: anything the leader left in its group is not ours to
+    // kill (and the guard must not outlive the leader's pid).
+    group.disarm();
+    Ok(Some(output))
+}
+
+/// `SIGKILL`s a process group when dropped, unless disarmed. The pgid is the
+/// leader's pid because [`run_group_with_timeout`] makes the child its own
+/// group leader, and `SIGKILL` cannot be caught, so the whole tree dies.
+struct GroupKillGuard(Option<i32>);
+
+impl GroupKillGuard {
+    fn new(leader_pid: Option<u32>) -> Self {
+        Self(leader_pid.and_then(|pid| i32::try_from(pid).ok()))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for GroupKillGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.0 {
+            // SAFETY: kill(2) with a negative pid signals the process group.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
 }
 
 /// Cap on the `wasm-bindgen` post-processing subprocess. Normally sub-second
@@ -1374,6 +1399,44 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("grandchild {grandchild} survived the group kill");
+    }
+
+    /// A DROPPED wait must kill the group as surely as a timed-out one. The
+    /// drop is the ordinary path: leptos awaits a server fn inline, so a
+    /// client that disconnects drops the compile future, and the cell lock
+    /// and build permit are released while cargo's children run on.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_wait_kills_grandchildren_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("sleep 30 & echo $! > {}; wait", pid_file.display()));
+        // The inner budget is a minute, so only the outer timeout fires: the
+        // inner future is dropped mid-wait, never timed out.
+        let outer = tokio::time::timeout(
+            Duration::from_millis(500),
+            run_group_with_timeout(cmd, Duration::from_mins(1)),
+        )
+        .await;
+        assert!(outer.is_err(), "the outer timeout must be what fired");
+
+        let grandchild: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the shell ran long enough to record the grandchild pid")
+            .trim()
+            .parse()
+            .unwrap();
+        for _ in 0..40 {
+            // SAFETY: kill(pid, 0) only probes for existence.
+            let alive = unsafe { libc::kill(grandchild, 0) } == 0;
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("grandchild {grandchild} survived the dropped wait");
     }
 
     /// The subprocess's output is returned intact when it beats the timeout.

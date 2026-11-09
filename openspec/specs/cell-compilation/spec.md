@@ -233,6 +233,10 @@ The system SHALL build with `cargo build --target <triple> --release --message-f
 - **WHEN** a timed subprocess has spawned a grandchild that would outlive it
 - **THEN** the grandchild is killed with the group
 
+#### Scenario: Abandoned compile
+- **WHEN** the client disconnects mid-build, so the compile is dropped before cargo, wasm-bindgen or wasm-opt exits
+- **THEN** that subprocess's whole process group is killed, as on a timeout, before the cell lock and build slot are reused
+
 ### Requirement: wasm-bindgen post-processing
 The system SHALL run `wasm-bindgen --target web --no-typescript` over a successful Code cell build, returning the generated ES module as `js_glue` and the transformed module as the blob, bounded at 120 seconds; a wasm-bindgen failure, timeout or missing CLI fails the call with an error saying so. (PRD-0031, PRD-0067)
 
@@ -252,8 +256,8 @@ The system SHALL pass each successful Code cell blob through `wasm-opt -O3 --deb
 - **THEN** compiles still succeed with the unoptimized blob
 
 #### Scenario: Failure leaves no temp files
-- **WHEN** wasm-opt rejects its input
-- **THEN** the original bytes are returned and no temporary blob is left in the work directory
+- **WHEN** wasm-opt rejects its input, or the compile is abandoned while wasm-opt runs
+- **THEN** no temporary blob is left in the work directory (and on rejection the original bytes are returned)
 
 ### Requirement: Diagnostics mapped to the author's lines
 The system SHALL report rustc's `error`, `warning`, `note` and `help` messages (help and note as `Note`, internal compiler errors as `Error`) with their codes, shift primary spans in the cell body back to the author's line numbers, drop spans in generated lines or dependency files, and append rustc's help and note children to the message. (PRD-0001, PRD-0036)
