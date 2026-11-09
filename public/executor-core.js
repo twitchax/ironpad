@@ -380,6 +380,16 @@
   /// Replaces placeholder BlobImage panels in the structured JSON displayText
   /// with the actual GPU-rendered image data.
   CellExecutor.prototype._processGpuReadbacks = async function (cellResult) {
+    // A shader the GPU rejected fails the cell with the GPU's message. It
+    // cannot take the CPU fallback instead: the result arrives after
+    // cell_main returned, and the fallback closure went with it. Drained
+    // before the early return below, for a cell with no readback pending.
+    var scopeErrors = await Promise.all(Gpu.takeDispatchErrors());
+    var rejected = scopeErrors.find(function (err) {
+      return err;
+    });
+    if (rejected) throw new Error("GPU shader error: " + rejected.message);
+
     if (!this._pendingGpuReadbacks || this._pendingGpuReadbacks.length === 0) {
       return cellResult;
     }
@@ -400,53 +410,55 @@
       var rgb = await Gpu.readPixels(
         rb.output_handle, rb.staging_handle, rb.width, rb.height
       );
-      if (rgb) {
-        var bmp = Gpu.buildBmp(rb.width, rb.height, rgb);
-        // Extract raw base64 (no data URL prefix) for the BlobImage panel.
-        var binary = "";
-        for (var i = 0; i < bmp.length; i++) {
-          binary += String.fromCharCode(bmp[i]);
-        }
-        var base64 = btoa(binary);
+      // Leaving the gray placeholder would pass it off as the render.
+      if (!rgb) {
+        throw new Error("GPU readback failed for a " + rb.width + "x" + rb.height + " canvas");
+      }
+      var bmp = Gpu.buildBmp(rb.width, rb.height, rgb);
+      // Extract raw base64 (no data URL prefix) for the BlobImage panel.
+      var binary = "";
+      for (var i = 0; i < bmp.length; i++) {
+        binary += String.fromCharCode(bmp[i]);
+      }
+      var base64 = btoa(binary);
 
-        if (panels && Array.isArray(panels)) {
-          // Find the first UNCLAIMED BlobImage panel matching this
-          // readback's dimensions and fill in the real GPU output.
-          var found = false;
-          for (var j = 0; j < panels.length; j++) {
-            var p = panels[j];
-            if (!claimed.has(j) &&
-                p && p.BlobImage &&
-                p.BlobImage.width === rb.width &&
-                p.BlobImage.height === rb.height) {
-              p.BlobImage.base64_data = base64;
-              claimed.add(j);
-              found = true;
-              break;
-            }
+      if (panels && Array.isArray(panels)) {
+        // Find the first UNCLAIMED BlobImage panel matching this
+        // readback's dimensions and fill in the real GPU output.
+        var found = false;
+        for (var j = 0; j < panels.length; j++) {
+          var p = panels[j];
+          if (!claimed.has(j) &&
+              p && p.BlobImage &&
+              p.BlobImage.width === rb.width &&
+              p.BlobImage.height === rb.height) {
+            p.BlobImage.base64_data = base64;
+            claimed.add(j);
+            found = true;
+            break;
           }
-          if (!found) {
-            // No matching placeholder — append a new BlobImage panel.
-            panels.push({
-              BlobImage: {
-                mime_type: "image/bmp",
-                base64_data: base64,
-                width: rb.width,
-                height: rb.height
-              }
-            });
-          }
-        } else {
-          // No valid panels array — create one with the GPU result.
-          panels = [{
+        }
+        if (!found) {
+          // No matching placeholder — append a new BlobImage panel.
+          panels.push({
             BlobImage: {
               mime_type: "image/bmp",
               base64_data: base64,
               width: rb.width,
               height: rb.height
             }
-          }];
+          });
         }
+      } else {
+        // No valid panels array — create one with the GPU result.
+        panels = [{
+          BlobImage: {
+            mime_type: "image/bmp",
+            base64_data: base64,
+            width: rb.width,
+            height: rb.height
+          }
+        }];
       }
     }
 
@@ -754,6 +766,7 @@
       // then always tear down per-run GPU state.
       if (inputPtr !== 0) dealloc(inputPtr, inputLen);
       this._pendingGpuReadbacks = [];
+      Gpu.takeDispatchErrors(); // a trapped run's errors are not the next run's
       Gpu.cleanupAllHandles();
     }
   };
@@ -855,6 +868,7 @@
       // then always tear down per-run GPU state.
       if (inputPtr !== 0) dealloc(inputPtr, inputLen);
       this._pendingGpuReadbacks = [];
+      Gpu.takeDispatchErrors(); // a trapped run's errors are not the next run's
       Gpu.cleanupAllHandles();
     }
   };

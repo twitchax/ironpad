@@ -139,6 +139,11 @@ impl GpuCanvas {
     ///
     /// The closure receives `(x, y, &uniforms)` and returns `(r, g, b)`.
     /// The uniforms slice includes the prepended width and height.
+    ///
+    /// It does not cover a shader WebGPU rejects (invalid WGSL, no `main`
+    /// entry point, an invalid pipeline): WebGPU reports those after
+    /// `cell_main` has returned and this closure is gone, so the cell fails
+    /// with `GPU shader error: ...` instead.
     pub fn with_fallback(mut self, f: impl Fn(u32, u32, &[f32]) -> (u8, u8, u8) + 'static) -> Self {
         self.fallback = Some(Box::new(f));
         self

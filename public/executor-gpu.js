@@ -23,6 +23,11 @@
   var _gpuAvailable = null; // null = not yet probed, true/false = result
   var _gpuHandles = new Map();
   var _gpuNextHandle = 1;
+  // One popErrorScope() promise per dispatch since the last drain (resolving
+  // to null for a valid shader). WebGPU reports WGSL, entry-point and
+  // pipeline errors on an error scope, never by throwing, so without these a
+  // bad shader "succeeded" and the readback copied an untouched buffer.
+  var _gpuDispatchErrors = [];
 
   async function _initGpu() {
     if (_gpuAvailable !== null) return _gpuAvailable;
@@ -106,6 +111,13 @@
     shaderPtr, shaderLen, uniformHandle, outputHandle, width, height, memory
   ) {
     if (!_gpuDevice) return 1;
+    // Looked up BEFORE the scope opens, so this early return can't leave one
+    // open.
+    var uniformBuf = _gpuHandles.get(uniformHandle);
+    var outputBuf = _gpuHandles.get(outputHandle);
+    if (!uniformBuf || !outputBuf) return 1;
+
+    _gpuDevice.pushErrorScope("validation");
     try {
       // Copied before decoding: a rayon cell's memory is a SharedArrayBuffer,
       // and a browser TextDecoder rejects a view of one.
@@ -113,10 +125,6 @@
       var shaderCode = UTF8_DECODER.decode(shaderBytes);
 
       var shaderModule = _gpuDevice.createShaderModule({ code: shaderCode });
-
-      var uniformBuf = _gpuHandles.get(uniformHandle);
-      var outputBuf = _gpuHandles.get(outputHandle);
-      if (!uniformBuf || !outputBuf) return 1;
 
       var bindGroupLayout = _gpuDevice.createBindGroupLayout({
         entries: [
@@ -145,11 +153,25 @@
       pass.dispatchWorkgroups(Math.ceil(width / 16), Math.ceil(height / 16));
       pass.end();
       _gpuDevice.queue.submit([commandEncoder.finish()]);
+      _gpuDispatchErrors.push(_gpuDevice.popErrorScope());
       return 0;
     } catch (e) {
+      // A thrown failure takes the cell's CPU fallback (non-zero return);
+      // close the scope and drop what it caught.
+      _gpuDevice.popErrorScope().catch(function () {});
       console.error("ironpad: GPU dispatch failed:", e);
       return 1;
     }
+  }
+
+  /// The validation-scope results of every dispatch since the last call, as
+  /// promises, and forget them. A cell's run drains them before its readback,
+  /// and its teardown drops any it left, so a trapped cell's error can't land
+  /// on the next run.
+  function _gpuTakeDispatchErrors() {
+    var errors = _gpuDispatchErrors;
+    _gpuDispatchErrors = [];
+    return errors;
   }
 
   // ── GPU async readback (called after cell_main returns) ────────────────────
@@ -226,6 +248,7 @@
     createBuffer: _gpuCreateBuffer,
     writeBuffer: _gpuWriteBuffer,
     dispatchComputeSync: _gpuDispatchComputeSync,
+    takeDispatchErrors: _gpuTakeDispatchErrors,
     readPixels: _gpuReadPixels,
     buildBmp: _gpuBuildBmp,
     cleanupAllHandles: function () {

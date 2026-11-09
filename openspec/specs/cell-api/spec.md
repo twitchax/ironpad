@@ -347,7 +347,7 @@ The system SHALL provide `Stopwatch::new()` with `elapsed_ms()` and `elapsed_sec
 - **THEN** it receives the elapsed milliseconds as an `f64` without panicking
 
 ### Requirement: GPU compute canvases
-The system SHALL provide `GpuCanvas::new(w, h, wgsl, &uniforms)`, `.with_fallback(|x, y, uniforms| (r, g, b))`, and `.render()`, and SHALL display a GpuCanvas output as an image produced by the WGSL shader on WebGPU, else by the fallback per pixel, else all black; `gpu_available()` reports WebGPU availability. (PRD-0026)
+The system SHALL provide `GpuCanvas::new(w, h, wgsl, &uniforms)`, `.with_fallback(|x, y, uniforms| (r, g, b))`, and `.render()`, and SHALL display a GpuCanvas output as an image produced by the WGSL shader on WebGPU, else by the fallback per pixel, else all black; `gpu_available()` reports WebGPU availability. A shader WebGPU rejects (invalid WGSL, no `main` entry point, an invalid pipeline) SHALL fail the cell with `GPU shader error: <message>`, and a readback that returns no pixels SHALL fail it with `GPU readback failed for a <w>x<h> canvas`, rather than show the placeholder. (PRD-0026)
 
 #### Scenario: Shader contract
 - **WHEN** a shader declares `uniforms: array<f32>` at binding 0, `output: array<vec4<f32>>` at binding 1, and `@compute @workgroup_size(16, 16) fn main`
@@ -355,8 +355,12 @@ The system SHALL provide `GpuCanvas::new(w, h, wgsl, &uniforms)`, `.with_fallbac
 - **AND** each output pixel's RGB channels are scaled from 0.0..1.0 to 0..255, clamped, and alpha is dropped
 
 #### Scenario: CPU fallback
-- **WHEN** WebGPU is unavailable, or creating buffers or dispatching the shader fails, and a fallback closure was given
+- **WHEN** WebGPU is unavailable, or creating buffers fails, or issuing the dispatch throws, and a fallback closure was given
 - **THEN** the image is computed by calling the closure for every pixel with the full uniforms slice
+
+#### Scenario: A shader WebGPU rejects
+- **WHEN** a GpuCanvas shader fails WGSL validation with WebGPU available
+- **THEN** the cell fails with `GPU shader error:` and the validation message, and the fallback does not run
 
 #### Scenario: No GPU and no fallback
 - **WHEN** WebGPU is unavailable and no fallback was given

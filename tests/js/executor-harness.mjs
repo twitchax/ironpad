@@ -70,9 +70,10 @@ function source(name) {
 /**
  * Evaluate public scripts against one fake global. Each script sees `self`,
  * `importScripts`, the two UTF-8 codecs and `console` as that global's, which
- * is all the executor chain reaches for at load time.
+ * is all the executor chain reaches for at load time. `globals` adds more
+ * names the scripts resolve, such as a fake `navigator.gpu`.
  */
-function makeGlobal() {
+function makeGlobal({ globals = {} } = {}) {
   const stats = { decodes: 0, codecs: 0, warnings: [] };
   const posted = [];
   const g = {
@@ -102,15 +103,18 @@ function makeGlobal() {
   const Decoder = makeBrowserTextDecoder(stats);
   const Encoder = makeCountingTextEncoder(stats);
 
+  const extraNames = Object.keys(globals);
   function run(name) {
     // eslint-disable-next-line no-new-func
-    new Function("self", "importScripts", "TextDecoder", "TextEncoder", "console", source(name))(
-      g,
-      importScripts,
-      Decoder,
-      Encoder,
-      fakeConsole,
-    );
+    new Function(
+      "self",
+      "importScripts",
+      "TextDecoder",
+      "TextEncoder",
+      "console",
+      ...extraNames,
+      source(name),
+    )(g, importScripts, Decoder, Encoder, fakeConsole, ...extraNames.map((k) => globals[k]));
   }
   function importScripts(url) {
     run(url.replace(/^\//, "").replace(/\?.*$/, ""));
@@ -120,8 +124,8 @@ function makeGlobal() {
 }
 
 /** The core executor, loaded exactly as the main-thread fallback chain does. */
-export function loadCore() {
-  const env = makeGlobal();
+export function loadCore(options) {
+  const env = makeGlobal(options);
   env.run("executor-gpu.js");
   env.run("executor-glue.js");
   env.run("executor-core.js");
