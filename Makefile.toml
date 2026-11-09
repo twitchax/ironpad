@@ -474,8 +474,32 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
+echo "==> Checking the build user's isolation..."
+# Cell builds run as uid 2000 (docker/entrypoint.sh). Each probe must be
+# refused with a permission error: writing the blob cache every reader is
+# served from, reading the server's environment, reading the accounts
+# database. The database file is checked as root first, so its denial below
+# is a denial and not a missing file.
+in_container() { docker compose -f docker/docker-compose.yml exec -T "$@"; }
+in_container ironpad test -f /ironpad/data/ironpad.db/LOCK \
+    || { echo "    ERROR: /ironpad/data/ironpad.db/LOCK is missing"; cargo make docker-down; exit 1; }
+for probe in 'touch /ironpad/cache/blobs/x' 'cat /proc/1/environ' 'cat /ironpad/data/ironpad.db/LOCK'; do
+    if out=$(in_container -u 2000 ironpad sh -c "$probe" 2>&1); then
+        echo "    ERROR: the build user could: $probe"
+        cargo make docker-down
+        exit 1
+    fi
+    case "$out" in
+        *"Permission denied"*) echo "    refused: $probe" ;;
+        *) echo "    ERROR: '$probe' failed, but not with a permission error: $out"
+           cargo make docker-down
+           exit 1 ;;
+    esac
+done
+
 echo "==> Running Playwright tests against container..."
-cargo make playwright || { cargo make docker-down; exit 1; }
+# IRONPAD_DOCKER_UAT enables the container-only specs (build-sandbox.spec.ts).
+IRONPAD_DOCKER_UAT=1 cargo make playwright || { cargo make docker-down; exit 1; }
 
 echo "==> Tearing down container..."
 cargo make docker-down

@@ -157,6 +157,25 @@ RUN set -eu; \
 COPY --from=builder /usr/local/cargo/bin/wasm-bindgen /usr/local/cargo/bin/wasm-bindgen
 COPY --from=builder /usr/bin/wasm-opt /usr/bin/wasm-opt
 
+# Cell builds run as this unprivileged user while the server stays root
+# (PRD-0030's revised sandboxing decision). cargo, rustc, build scripts and
+# proc macros run code the cell's author chose, and as root they could read
+# the accounts database and every private notebook on the volume, read the
+# server's environment through /proc, and rewrite the blob cache every reader
+# is served from. The entrypoint hands this user the build cache and exports
+# IRONPAD_BUILD_UID, and the server runs every cargo process as it.
+#
+# The base image leaves RUSTUP_HOME and CARGO_HOME world-writable (the official
+# rust Dockerfile runs `chmod -R a+w` over both), which would let a build swap a
+# toolchain or the wasm-bindgen binary the server runs next. Only the entries
+# that are group/world-writable are changed: a blanket `chmod -R` would copy
+# every toolchain file into a new layer.
+RUN groupadd --system --gid 2000 cellbuild \
+    && useradd --system --uid 2000 --gid 2000 --no-create-home \
+       --home-dir /nonexistent --shell /usr/sbin/nologin cellbuild \
+    && find "$RUSTUP_HOME" "$CARGO_HOME" ! -type l -perm /022 -exec chmod go-w {} + \
+    && test -z "$(find "$RUSTUP_HOME" "$CARGO_HOME" ! -type l -perm /022 -print -quit)"
+
 # Pre-warm the cargo registry cache AND the default cell target dir with the
 # ironpad-cell dependency tree, on CELL_TOOLCHAIN (which since PRD-0067 is
 # every cell): `build` artifacts make the first cell compile fast, `check`

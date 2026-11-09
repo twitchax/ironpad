@@ -2,6 +2,7 @@
 
 pub mod admission;
 pub mod build;
+pub mod build_user;
 pub mod cache;
 pub mod diagnostics;
 pub mod optimize;

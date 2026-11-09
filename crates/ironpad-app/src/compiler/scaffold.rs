@@ -148,6 +148,7 @@ pub fn scaffold_micro_crate(
     if let Some(shared) = shared_source {
         std::fs::write(src_dir.join("shared.rs"), shared)?;
     }
+    super::build_user::hand_lockfile_to_build(&crate_dir, super::build_user::configured_uid()?)?;
 
     Ok(Scaffolded {
         crate_dir,
@@ -190,6 +191,7 @@ fn scaffold_linux_crate(
     if let Some(shared) = shared_source {
         std::fs::write(src_dir.join("shared.rs"), shared)?;
     }
+    super::build_user::hand_lockfile_to_build(crate_dir, super::build_user::configured_uid()?)?;
 
     Ok(Scaffolded {
         crate_dir: crate_dir.to_path_buf(),

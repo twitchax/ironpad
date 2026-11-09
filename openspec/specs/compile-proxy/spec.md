@@ -77,7 +77,7 @@ The proxy SHALL listen on `IRONPAD_PROXY_BIND` (default `127.0.0.1:3112`), exit 
 - **THEN** it accepts connections on `127.0.0.1:3112` only
 
 ### Requirement: Enabled in the deploy image
-The Docker image SHALL start `ironpad-proxy` in the background before the server and set `IRONPAD_COMPILATION_PROXY=http://127.0.0.1:3112` and `IRONPAD_PROXY_ALLOWLIST=crates.io,github.com,githubusercontent.com`, so containerized instances filter cell-build egress by default. (PRD-0023 T-003 T-004)
+The Docker image SHALL start `ironpad-proxy` in the background before the server and set `IRONPAD_COMPILATION_PROXY=http://127.0.0.1:3112` and `IRONPAD_PROXY_ALLOWLIST=crates.io,github.com,githubusercontent.com`, so containerized instances filter cell-build egress by default. The filter is advisory: no network rule enforces it, so a build process that ignores the proxy variables reaches the network directly (PRD-0030, revised 2026-11-07). (PRD-0023 T-003 T-004)
 
 #### Scenario: Container compile
 - **WHEN** a cell with a crates.io dependency is compiled in the container

@@ -14,7 +14,7 @@ depends_on:
 principles:
 - "Fix the confirmed correctness bugs first; each ships with a regression test that fails before the fix"
 - "Harden the adversarial dimension uniformly — the strengths already exist, apply them everywhere"
-- "Respect the recorded sandboxing decision (PRD-0030): Fly microVM + egress proxy is the isolation boundary; do not re-open full build sandboxing"
+- "Respect the recorded sandboxing decision (PRD-0030): Fly microVM + egress proxy is the isolation boundary; do not re-open full build sandboxing (revised 2026-11-07: builds now run as an unprivileged uid, see PRD-0030)"
 - "Close test-coverage holes exactly where risk is highest: sanitizer exclusions, FFI decode, IPC framing, relay auth/DoS"
 
 references:
@@ -141,8 +141,8 @@ tasks:
 - id: T-015
   title: "Non-root Docker runtime (defense-in-depth)"
   priority: 3
-  status: todo
-  notes: "Deferred from PRD-0036 T-008. docker/Dockerfile has no USER directive → the runtime compiles untrusted cell code as root. Per PRD-0030 the microVM is the real boundary, so this is defense-in-depth, but it was explicitly deferred because it needs a gosu/su-exec privilege-drop entrypoint that still works with Fly's persistent-volume mount ownership. Add a non-root USER + entrypoint privilege-drop, verified against a real deploy (or documented as verified-on-Fly)."
+  status: done
+  notes: "DONE 2026-11 (review bug-security-2), as a privilege drop for the BUILD rather than the server: the image creates cellbuild (uid 2000), the entrypoint hands it the build cache and exports IRONPAD_BUILD_UID, and the server runs every cargo process as that uid (compiler/build_user.rs), so untrusted cell code no longer runs as root while the server keeps root for the volume. Verified by cargo make docker-uat (permission probes + tests/e2e/build-sandbox.spec.ts); NOT yet verified on a Fly deploy, whose first boot hands the existing build cache over once (chown -R, guarded by /ironpad/cache/.build-owner). Original note: Deferred from PRD-0036 T-008. docker/Dockerfile has no USER directive → the runtime compiles untrusted cell code as root. Per PRD-0030 the microVM is the real boundary, so this is defense-in-depth, but it was explicitly deferred because it needs a gosu/su-exec privilege-drop entrypoint that still works with Fly's persistent-volume mount ownership. Add a non-root USER + entrypoint privilege-drop, verified against a real deploy (or documented as verified-on-Fly)."
 # ── P2: coordinated follow-up split out of T-012 during execution ────────────
 - id: T-016
   title: "Protocol runtime enforcement: version field + Unknown variants + call sites"

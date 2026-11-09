@@ -210,6 +210,17 @@ The system SHALL start every cell build's and live check's cargo process from an
 - **WHEN** a cell's source uses `env!("GITHUB_CLIENT_SECRET")` or `option_env!` of any variable outside the allowlist
 - **THEN** rustc sees the variable as unset
 
+### Requirement: Cell builds run as the configured build user
+When `IRONPAD_BUILD_UID` names a uid, the system SHALL run every cell build's and live check's cargo process as that uid and the gid of the same number, with `HOME` set to `<cache>/build-home`, after handing the top level of `CARGO_HOME`, the target directory and that home to it, and SHALL hand each scaffolded micro-crate's `Cargo.lock` (created empty when missing) to it while the micro-crate directory and its sources stay the server's. A value that is not a uid SHALL fail the compile rather than build as the server's user. Unset, builds run as the server's own user. The server SHALL read a build's artifact only after copying it out of the target directory without following a symlink, refusing anything that is not a regular file. The deploy image sets it to 2000. (PRD-0030, PRD-0038 T-015)
+
+#### Scenario: A cell embeds the accounts database
+- **WHEN** a cell in the deploy image uses `include_bytes!("/ironpad/data/ironpad.db/wal/00000000000000000000.wal")`
+- **THEN** the compile fails with a permission error
+
+#### Scenario: An artifact replaced by a link
+- **WHEN** the artifact path in the target directory is a symlink after cargo exits
+- **THEN** the compile fails instead of reading the link's target
+
 ### Requirement: Build invocation and timeout
 The system SHALL build with `cargo build --target <triple> --release --message-format=json`, bounded by `IRONPAD_BUILD_TIMEOUT_SECS` (default 300 seconds); on expiry it MUST kill the whole cargo process group and fail the call with `build invocation failed: compilation timed out after <N>s`. (PRD-0001, PRD-0036)
 

@@ -105,10 +105,12 @@ Compiler fixes in `compiler/{build,optimize,cache,diagnostics}.rs` and `server_f
 
 Full build sandboxing (gVisor / rootless nested containers / seccomp profiles) is **not** a task here. The residual risk — a malicious build can read that one Fly VM's env/volume and use its (proxy-filtered) network — is accepted for a single-author fun project. Revisit only if ironpad becomes a serious multi-tenant service.
 
+**Revisited 2026-11-07** (see PRD-0030, "Revised 2026-11-07"): the env/volume half of that residual is no longer accepted, because accounts and private notebooks now live on the volume and the server's environment holds real secrets. Builds start from an allowlisted environment and run as an unprivileged uid; full sandboxing stays out of scope, and egress remains advisory.
+
 # Assumptions
 
 - Deployment remains Fly.io (Firecracker microVM per instance) with the compilation proxy in front (`docker/entrypoint.sh` starts `ironpad-proxy`).
-- No real secrets that matter live in the server's runtime env/volume (worth confirming when doing T-008's non-root work).
+- ~~No real secrets that matter live in the server's runtime env/volume (worth confirming when doing T-008's non-root work).~~ False since PRD-0053 (OAuth secret, accounts DB, private notebooks); builds now run as an unprivileged uid with an allowlisted environment (PRD-0030, revised 2026-11-07).
 
 # Constraints
 

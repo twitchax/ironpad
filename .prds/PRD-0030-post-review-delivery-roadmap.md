@@ -107,6 +107,22 @@ Each epic PRD lists its findings as tasks with `file:line` and the fix in `notes
 
 Full build sandboxing (gVisor / rootless nested containers) is **explicitly out of scope**. Ironpad deploys to Fly.io, where each instance already runs in a Firecracker microVM, and the compilation proxy already filters network egress — so the blast radius of the `compile_cell` RCE is one ephemeral VM, not the host. The pragmatic hardening that *is* worth doing (cell_id validation, share-size cap, timeout process-group kill, output-HTML sanitization, non-root container user) lives in PRD-0036. Full multi-tenant isolation is a documented "only if this becomes a serious multi-tenant service" note, not a work item.
 
+### Revised 2026-11-07: builds run as an unprivileged user
+
+Three premises of the decision above stopped being true after it was made. "No real secrets on the volume": accounts (PRD-0053), private shares (PRD-0061) and account notebooks (PRD-0064) put other people's private notebooks, drafts and user rows in `/ironpad/data`, and the server's environment now holds an OAuth client secret and a telemetry token. "One ephemeral VM": Fly mounts a persistent volume at `/ironpad`, including the blob cache served to every reader, so a build that rewrites a cached blob injects script into later visitors' pages across restarts. "Proxy-filtered network": `HTTPS_PROXY` is honoured only by cooperating clients, and nothing below the server enforces it.
+
+Aaron's call (2026-11-07): keep the server as root, run every cargo process as a dedicated uid.
+
+- Cell builds start from an allowlisted environment (`cell_env` in `compiler/build.rs`), so `env!`/`option_env!`, build scripts and proc macros never see the server's secrets.
+- The image creates `cellbuild` (uid/gid 2000) and the entrypoint exports `IRONPAD_BUILD_UID=2000`; the server runs cargo as that uid with its own `HOME` (`compiler/build_user.rs`). The build user owns the target dirs, `CARGO_HOME`, its home, and each micro-crate's `Cargo.lock`, and nothing else: the micro-crate directory, its sources and `wasm-bindgen-out` stay root's, and the one artifact root reads out of the build user's tree is copied out with `O_NOFOLLOW` first. `/ironpad/data` and `/ironpad/cache/blobs` are `0700` root, and the base image's world-writable `RUSTUP_HOME`/`CARGO_HOME` are closed so a build cannot swap a toolchain or the `wasm-bindgen` the server runs next.
+- `cargo make docker-uat` checks that uid 2000 is refused writing the blob cache, reading `/proc/1/environ`, and reading the database, and `tests/e2e/build-sandbox.spec.ts` checks a cell that `include_bytes!`s the WAL fails with a permission error while a world-readable file and a crates.io dependency still build.
+
+Not done, and the residual risk that remains:
+
+- **Egress is still advisory.** No network rule enforces the proxy: `rust:slim` ships no iptables, and whether Fly's kernel allows owner-match rules is unverified. A build script that ignores `HTTPS_PROXY` reaches the network directly.
+- **Builds share state.** The target dirs and `CARGO_HOME` are shared by every build, so a build can read other cells' scaffolded sources and compiled artifacts (including private notebooks' cells) and poison a later build's dependencies, and through them a later cached blob.
+- **A process a build leaves running keeps the build user's rights** (setsid escapes the process-group kill). It cannot reach the database or the blob cache, but it can tamper with later builds as above.
+
 # Assumptions
 
 - The dev loop (`cargo make dev`), CI (`cargo make ci`), integration (`cargo make test-integration`), and Playwright (`cargo make playwright`) all work as documented.

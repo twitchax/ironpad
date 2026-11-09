@@ -116,11 +116,15 @@ The workflow SHALL also run a Security Audit job (`cargo audit` over `Cargo.lock
 - **THEN** it installs cargo-llvm-cov and produces `coverage.lcov`
 
 ### Requirement: Docker tasks
-`cargo make docker-build` SHALL fetch and checksum-verify the BrowserPod toolchain tarball into `docker/vendor/`, then build `docker/Dockerfile` as `ironpad`; `docker-up` and `docker-down` SHALL start and stop it through the compose file; `docker-uat` SHALL build, start, wait up to 30 seconds for `http://localhost:3111` to answer, run `playwright`, and tear down. (PRD-0001, PRD-0066)
+`cargo make docker-build` SHALL fetch and checksum-verify the BrowserPod toolchain tarball into `docker/vendor/`, then build `docker/Dockerfile` as `ironpad`; `docker-up` and `docker-down` SHALL start and stop it through the compose file; `docker-uat` SHALL build, start, wait up to 30 seconds for `http://localhost:3111` to answer, check that uid 2000 is refused with a permission error writing `/ironpad/cache/blobs`, reading `/proc/1/environ` and reading `/ironpad/data/ironpad.db/LOCK` (which it first confirms exists as root), run `playwright` with `IRONPAD_DOCKER_UAT=1` so the container-only `build-sandbox.spec.ts` runs, and tear down. (PRD-0001, PRD-0066, PRD-0030)
 
 #### Scenario: Container never answers
 - **WHEN** the container does not answer on port 3111 within 30 seconds during `cargo make docker-uat`
 - **THEN** it prints `ERROR: Server did not start within 30s.`, stops the container, and exits 1
+
+#### Scenario: The build user reaches the database
+- **WHEN** uid 2000 inside the container can read `/ironpad/data/ironpad.db/LOCK`, or a probe fails for any reason other than a permission error
+- **THEN** `docker-uat` stops the container and exits 1 before Playwright runs
 
 ### Requirement: Dev loop
 `cargo make dev` SHALL install Monaco into `public/monaco/` and start `cargo leptos watch`, serving on `http://localhost:3111` with live reload; `cargo make build` SHALL do the same release build once. `cargo make install-tools` SHALL install the tools both need, placing the pinned `wasm-bindgen-cli` in `./.tools`, which every task puts first on `PATH`. (PRD-0001)

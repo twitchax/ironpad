@@ -348,6 +348,11 @@ pub async fn build_micro_crate(
         "WASM blob not found at expected path: {}",
         wasm_path.display(),
     );
+    let wasm_path = take_artifact(
+        &wasm_path,
+        &crate_dir.join("artifact").join(target.triple()),
+    )
+    .await?;
 
     if target.is_linux() {
         // A Linux cell's artifact is already what the pod runs: a linked
@@ -431,6 +436,46 @@ pub async fn build_micro_crate(
     })
 }
 
+/// Copy a build artifact out of the build's target dir into `dest_dir`
+/// (inside the micro-crate, which the server owns), returning the copy.
+///
+/// The server reads the artifact after cargo exits, and with a build uid
+/// configured ([`super::build_user`]) the directory it sits in belongs to the
+/// build. A process the build left running could swap the artifact for a
+/// symlink (to the accounts database, say), and the server would read that
+/// into a blob served back to the cell's author, or for a FIFO that hangs the
+/// compile. `O_NOFOLLOW` refuses the link, `O_NONBLOCK` keeps a FIFO from
+/// blocking the open, and the type check after the open refuses anything
+/// else that is not a regular file. It runs whether or not a build uid is
+/// configured, so there is one path through here.
+async fn take_artifact(artifact: &Path, dest_dir: &Path) -> anyhow::Result<PathBuf> {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let mut file = options
+        .open(artifact)
+        .await
+        .with_context(|| format!("opening build artifact {}", artifact.display()))?;
+    anyhow::ensure!(
+        file.metadata().await?.is_file(),
+        "build artifact {} is not a regular file",
+        artifact.display(),
+    );
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await?;
+
+    let name = artifact
+        .file_name()
+        .context("build artifact path has no file name")?;
+    tokio::fs::create_dir_all(dest_dir).await?;
+    let copy = dest_dir.join(name);
+    tokio::fs::write(&copy, bytes).await?;
+    Ok(copy)
+}
+
 /// A cargo invocation configured for one cell build or check, with the
 /// directories and the feature set it was configured with, so the caller's
 /// log line and artifact path describe the same build the command runs.
@@ -447,8 +492,9 @@ struct PreparedCargo {
 /// which feature flags survive (once, before anything reads them), which picks
 /// the target dir (the shared atomics dir for rayon cells, the session's
 /// otherwise), both dirs are created and canonicalized (cargo runs in
-/// `crate_dir`, so relative paths would resolve against it), and the command
-/// is configured with piped stdout/stderr.
+/// `crate_dir`, so relative paths would resolve against it), the command is
+/// configured with piped stdout/stderr, and, when a build uid is configured,
+/// it runs as that user ([`super::build_user`]).
 async fn prepare_cargo(
     subcommand: &str,
     crate_dir: &Path,
@@ -459,6 +505,9 @@ async fn prepare_cargo(
     features: CellFeatures,
 ) -> anyhow::Result<PreparedCargo> {
     let features = features.for_target(target);
+    // Read first: a malformed uid must stop the build before anything is
+    // created, not after.
+    let build_uid = super::build_user::configured_uid()?;
 
     let cargo_home = cargo_home_dir(cache_dir);
     let target_dir = if features.atomics {
@@ -487,6 +536,9 @@ async fn prepare_cargo(
     );
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if let Some(uid) = build_uid {
+        super::build_user::run_as(&mut cmd, uid, cache_dir, &[&cargo_home, &target_dir]).await?;
+    }
 
     Ok(PreparedCargo {
         cmd,
@@ -1145,6 +1197,55 @@ mod tests {
             .as_std()
             .get_args()
             .any(|a| a.to_string_lossy().starts_with("-Zbuild-std")));
+    }
+
+    // ── take_artifact ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn take_artifact_copies_a_regular_file_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("cell_a.wasm");
+        std::fs::write(&artifact, b"\0asm-bytes").unwrap();
+        let copy = take_artifact(&artifact, &dir.path().join("out"))
+            .await
+            .unwrap();
+        assert_eq!(copy, dir.path().join("out/cell_a.wasm"));
+        assert_eq!(std::fs::read(&copy).unwrap(), b"\0asm-bytes");
+    }
+
+    /// A build that leaves a link where its artifact should be must not get
+    /// the server to read the link's target into a blob.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn take_artifact_refuses_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret");
+        std::fs::write(&secret, b"not for the cell").unwrap();
+        let artifact = dir.path().join("cell_a.wasm");
+        std::os::unix::fs::symlink(&secret, &artifact).unwrap();
+
+        let result = take_artifact(&artifact, &dir.path().join("out")).await;
+        assert!(result.is_err(), "followed the link: {result:?}");
+        assert!(!dir.path().join("out/cell_a.wasm").exists());
+    }
+
+    /// ...nor hang the compile on a FIFO.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn take_artifact_refuses_a_fifo_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("cell_a.wasm");
+        let path = std::ffi::CString::new(artifact.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo with a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o644) }, 0);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            take_artifact(&artifact, &dir.path().join("out")),
+        )
+        .await
+        .expect("opening the FIFO blocked");
+        assert!(result.is_err(), "read a FIFO as an artifact");
     }
 
     #[test]
