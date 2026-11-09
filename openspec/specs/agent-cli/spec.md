@@ -168,12 +168,16 @@ A `cells run` the browser refuses (unknown, non-runnable, or Linux cell, or a ho
 - **THEN** the command exits non-zero without waiting out its timeout
 
 ### Requirement: Daemon socket protocol
-The daemon's socket SHALL speak newline-delimited JSON: a request `{"command":..., "args":...}` (`args` optional) gets `{"ok":true,"data":...}` or `{"ok":false,"error":...,"code":...}` with absent fields omitted. Commands are `status`, `notebook.get`, `notebook.update`, and `cells.list|get|add|update|delete|reorder|run`; a frame over 1 MiB SHALL drop the connection. (PRD-0038, f305339 agentic-collaboration/0008)
+The daemon's socket SHALL speak newline-delimited JSON: a request `{"command":..., "args":...}` (`args` optional) gets `{"ok":true,"data":...}` or `{"ok":false,"error":...,"code":...}` with absent fields omitted. Commands are `status`, `notebook.get`, `notebook.update`, and `cells.list|get|add|update|delete|reorder|run`; a frame over 16 MiB (four times the 4 MiB notebook upload cap) SHALL drop the connection. Neither side SHALL send an over-cap frame: the daemon replaces an over-cap response with an uncoded error naming its size, and the CLI refuses an over-cap request before writing it, so both exit 1 rather than reporting `connection_error`. (PRD-0038, f305339 agentic-collaboration/0008)
 
 #### Scenario: Status over the socket
 - **WHEN** a client writes `{"command":"status"}` and a newline to `~/.ironpad/daemon.sock`
 - **THEN** it reads back one line `{"ok":true,"data":{"connected":true,"cached":true}}`
 
 #### Scenario: Oversized frame
-- **WHEN** a client streams more than 1 MiB without a newline
+- **WHEN** a client streams more than 16 MiB without a newline
 - **THEN** the daemon drops that connection instead of buffering it
+
+#### Scenario: Large run output
+- **WHEN** `cells run` executes a cell that renders an 800x400 Canvas
+- **THEN** the command exits 0 with status `executed`

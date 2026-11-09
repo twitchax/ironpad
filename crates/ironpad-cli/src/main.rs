@@ -695,9 +695,16 @@ fn exit_code_for(response: &IpcResponse) -> CliExitCode {
 
 /// Send a command to the daemon via Unix socket and return the response.
 async fn send_ipc(command: &str, args: serde_json::Value) -> IpcResponse {
-    let sock = daemon::socket_path();
+    send_ipc_at(&daemon::socket_path(), command, args).await
+}
 
-    let Ok(stream) = UnixStream::connect(&sock).await else {
+/// [`send_ipc`] against an explicit socket path (the seam tests drive).
+async fn send_ipc_at(
+    sock: &std::path::Path,
+    command: &str,
+    args: serde_json::Value,
+) -> IpcResponse {
+    let Ok(stream) = UnixStream::connect(sock).await else {
         return IpcResponse::error_with_code(
             "daemon is not running (cannot connect to socket)",
             IpcErrorCode::ConnectionError,
@@ -712,6 +719,11 @@ async fn send_ipc(command: &str, args: serde_json::Value) -> IpcResponse {
     };
 
     let mut json = serde_json::to_string(&req).expect("IPC request serialization");
+    // The daemon drops an over-cap frame unread, which would surface here as
+    // "no response"; refuse it before writing instead.
+    if json.len() > crate::ipc::MAX_IPC_FRAME {
+        return IpcResponse::error("request exceeds the IPC frame limit");
+    }
     json.push('\n');
 
     if writer.write_all(json.as_bytes()).await.is_err() {
@@ -729,6 +741,10 @@ async fn send_ipc(command: &str, args: serde_json::Value) -> IpcResponse {
                 IpcErrorCode::ConnectionError,
             )
         }),
+        // The daemon is alive and answered; the answer was just too big.
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            IpcResponse::error("daemon response exceeds the IPC frame limit")
+        }
         _ => IpcResponse::error_with_code("no response from daemon", IpcErrorCode::ConnectionError),
     }
 }
@@ -953,5 +969,75 @@ mod tests {
             ..empty
         };
         assert!(!with_flag.is_empty_update());
+    }
+
+    // ── IPC frame limit (client side) ────────────────────────────────────
+
+    /// A fake daemon at a fresh temp socket: reads one request frame (or
+    /// none, if the client refused to send), then writes `reply` and a
+    /// newline. Returns the socket path and the bytes it received.
+    fn fake_daemon(
+        reply: Vec<u8>,
+    ) -> (
+        std::path::PathBuf,
+        tokio::task::JoinHandle<std::io::Result<Option<String>>>,
+    ) {
+        let dir = std::env::temp_dir().join(format!("ironpad-cli-ipc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("daemon.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+            let request = crate::ipc::read_frame(&mut reader).await;
+            if matches!(request, Ok(Some(_))) {
+                writer.write_all(&reply).await?;
+                writer.write_all(b"\n").await?;
+            }
+            request
+        });
+        (sock, task)
+    }
+
+    /// An over-cap response used to fold into "no response from daemon"
+    /// with `connection_error` (exit 4): an agent was told a healthy daemon
+    /// was gone. It is an uncoded error now (exit 1).
+    #[tokio::test]
+    async fn an_over_cap_response_is_not_a_connection_error() {
+        let (sock, daemon) = fake_daemon(vec![b'x'; crate::ipc::MAX_IPC_FRAME + 1]);
+        let response = send_ipc_at(&sock, "notebook.get", serde_json::Value::Null).await;
+        let _ = daemon.await;
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+
+        assert_eq!(response.code, None, "{response:?}");
+        assert_eq!(exit_code_for(&response), CliExitCode::GenericError);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("daemon response exceeds the IPC frame limit")
+        );
+    }
+
+    /// A request the daemon would refuse to read is refused here, before a
+    /// byte is written, instead of surfacing as a dead daemon.
+    #[tokio::test]
+    async fn an_over_cap_request_is_refused_before_it_is_sent() {
+        let (sock, daemon) = fake_daemon(br#"{"ok":true,"data":null}"#.to_vec());
+        let source = "x".repeat(crate::ipc::MAX_IPC_FRAME + 1);
+        let response =
+            send_ipc_at(&sock, "cells.add", serde_json::json!({ "source": source })).await;
+        let received = daemon.await.unwrap();
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+
+        assert_eq!(response.code, None, "{response:?}");
+        assert_eq!(
+            response.error.as_deref(),
+            Some("request exceeds the IPC frame limit")
+        );
+        assert!(
+            matches!(received, Ok(None)),
+            "nothing may reach the daemon: {:?}",
+            received.map(|r| r.map(|l| l.len()))
+        );
     }
 }

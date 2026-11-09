@@ -11,9 +11,17 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 ///
 /// The wire is one JSON object per line. A client that opens the socket and
 /// streams bytes without ever sending a `\n` would otherwise make the reader
-/// buffer without bound (local OOM). 1 MiB dwarfs any legitimate request or
-/// response, so this only ever trips on a misbehaving/abusive peer.
-pub const MAX_IPC_FRAME: usize = 1024 * 1024;
+/// buffer without bound (local OOM), so the cap must exist, but it must also
+/// clear every legitimate frame. The largest are the `notebook.get` response
+/// (a `Response::Notebook` of up to [`MAX_SHARE_BYTES`] plus JSON escaping)
+/// and a `cells.run` result, which carries a `CellExecuted` event's whole
+/// panels payload (a Canvas is a base64 BMP: 800x400 is ~1.28 MB). Four share
+/// caps (16 MiB) is twice the relay's own 8 MiB message cap, so anything the
+/// relay delivered fits. Both sides check it before writing, so an over-cap
+/// frame becomes a readable error rather than a dropped connection.
+///
+/// [`MAX_SHARE_BYTES`]: ironpad_common::types::MAX_SHARE_BYTES
+pub const MAX_IPC_FRAME: usize = 4 * ironpad_common::types::MAX_SHARE_BYTES;
 
 /// Request from the CLI client to the daemon.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -314,6 +322,20 @@ mod tests {
         let mut r = tokio::io::BufReader::new(&big[..]);
         let err = read_frame(&mut r).await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// A notebook may be `MAX_SHARE_BYTES` and a `cells run` result carries
+    /// a whole panels payload (a Canvas is a base64 BMP: 800x400 is ~1.28
+    /// MB), so frames of several MiB are legitimate and must come through.
+    #[tokio::test]
+    async fn read_frame_accepts_a_frame_of_two_share_caps() {
+        let size = 2 * ironpad_common::types::MAX_SHARE_BYTES;
+        let mut data = vec![b'x'; size];
+        data.push(b'\n');
+        let mut r = tokio::io::BufReader::new(&data[..]);
+        let frame = read_frame(&mut r).await.unwrap().unwrap();
+        assert_eq!(frame.len(), size);
+        assert!(read_frame(&mut r).await.unwrap().is_none());
     }
 
     #[tokio::test]

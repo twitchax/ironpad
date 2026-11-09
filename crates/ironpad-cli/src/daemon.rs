@@ -392,6 +392,16 @@ async fn handle_ipc_connection(stream: tokio::net::UnixStream, state: Arc<Daemon
         let response = handle_ipc_request(&line, &state).await;
         let mut json = serde_json::to_string(&response)
             .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization error"}"#.to_string());
+        // The CLI refuses an over-cap frame, which it can only report as a
+        // dead daemon; say what actually happened in a frame it will read.
+        if json.len() > crate::ipc::MAX_IPC_FRAME {
+            let error = IpcResponse::error(format!(
+                "response of {} bytes exceeds the IPC frame limit",
+                json.len()
+            ));
+            json = serde_json::to_string(&error)
+                .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization error"}"#.to_string());
+        }
         json.push('\n');
         if writer.write_all(json.as_bytes()).await.is_err() {
             break;
@@ -1098,6 +1108,73 @@ mod tests {
         assert!(
             state.init_query_id.read().await.is_none(),
             "init id cleared after use"
+        );
+    }
+
+    // ── IPC framing over a real socket ───────────────────────────────────
+
+    /// A state whose cached notebook carries `source_bytes` of cell source.
+    async fn state_with_source(source_bytes: usize) -> Arc<DaemonState> {
+        let state = test_state();
+        let mut cell = make_cell("big", 0);
+        cell.source = "x".repeat(source_bytes);
+        let mut nb = IronpadNotebook::new("Big");
+        nb.cells = vec![cell];
+        *state.notebook.write().await = Some(nb);
+        Arc::new(state)
+    }
+
+    /// Send one request line through `handle_ipc_connection` over a socket
+    /// pair and read back the response frame exactly as the CLI does.
+    async fn ipc_round_trip(state: Arc<DaemonState>, line: &str) -> std::io::Result<IpcResponse> {
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let daemon = tokio::spawn(handle_ipc_connection(server, state));
+        let (reader, mut writer) = client.into_split();
+        writer.write_all(line.as_bytes()).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        let mut reader = BufReader::new(reader);
+        let frame = crate::ipc::read_frame(&mut reader).await;
+        drop(writer);
+        drop(reader);
+        let _ = daemon.await;
+        frame.map(|f| serde_json::from_str(&f.expect("a response frame")).unwrap())
+    }
+
+    /// `notebook get` on a notebook past the old 1 MiB frame used to reach
+    /// the CLI as a frame it refused, reported as a dead daemon.
+    #[tokio::test]
+    async fn notebook_get_over_one_mib_round_trips_the_socket() {
+        let source_bytes = 2 * 1024 * 1024;
+        let state = state_with_source(source_bytes).await;
+        let response = ipc_round_trip(state, r#"{"command":"notebook.get"}"#)
+            .await
+            .expect("a 2 MiB notebook must fit in one IPC frame");
+        assert!(response.ok, "{:?}", response.error);
+        let source = response.data.unwrap()["cells"][0]["source"]
+            .as_str()
+            .unwrap()
+            .len();
+        assert_eq!(source, source_bytes);
+    }
+
+    /// A response that cannot fit the frame is replaced by an error the CLI
+    /// can read, rather than a line the CLI drops as "no response".
+    #[tokio::test]
+    async fn an_over_cap_response_becomes_a_readable_error() {
+        let state = state_with_source(crate::ipc::MAX_IPC_FRAME + 1).await;
+        let response = ipc_round_trip(state, r#"{"command":"notebook.get"}"#)
+            .await
+            .expect("the daemon must send a frame the CLI can read");
+        assert!(!response.ok);
+        assert_eq!(response.code, None, "uncoded, so the CLI exits 1, not 4");
+        assert!(
+            response
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("exceeds the IPC frame limit"),
+            "{:?}",
+            response.error
         );
     }
 

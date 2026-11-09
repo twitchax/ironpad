@@ -743,11 +743,12 @@ pub async fn get_public_notebook(filename: String) -> Result<IronpadNotebook, Se
 
 // ── Shared notebooks ─────────────────────────────────────────────────────────
 
-/// Maximum accepted size of a single shared-notebook upload (before parsing).
-#[cfg(feature = "ssr")]
 /// Maximum accepted size for one shared-notebook upload. The server binary
-/// derives its framework-level body cap from this — keep them coupled.
-pub const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
+/// derives its framework-level body cap from this — keep them coupled. It
+/// lives in ironpad-common so the CLI daemon can size its IPC frame from it;
+/// the re-export keeps the server's `server_fns::MAX_SHARE_BYTES` paths.
+#[cfg(feature = "ssr")]
+pub use ironpad_common::types::MAX_SHARE_BYTES;
 
 /// The ONE notebook-upload gate: size cap, then parse. Every path that
 /// stores a caller's notebook JSON runs it first — the immutable share, the

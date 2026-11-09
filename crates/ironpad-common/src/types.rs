@@ -471,6 +471,12 @@ opt-level = 1\n\
 lto = false\n\
 codegen-units = 16\n";
 
+/// Maximum accepted size for one notebook upload (share, account save, draft
+/// autosave). Every transport that carries a whole notebook sizes its own
+/// frame cap from this one: the server's request body limit, the WebSocket
+/// relay's message cap, and the CLI daemon's IPC frame.
+pub const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
+
 /// Per-cell budget for a saved output payload (PRD-0056). Inside the 4 MiB
 /// notebook cap with headroom; an over-budget output degrades to
 /// [`SAVED_OUTPUT_TOO_LARGE`] rather than failing the share.

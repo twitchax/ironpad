@@ -409,6 +409,38 @@ test.describe.serial("Agent Session", () => {
     expect(jsErrors).toEqual([]);
   });
 
+  test("cells run returns a result larger than 1 MiB", async ({ page }) => {
+    // An 800x400 Canvas is a ~1.28 MB base64 BMP in the CellExecuted panels.
+    // That used to overflow the daemon's 1 MiB IPC frame, so a run that
+    // succeeded in the browser came back as "no response from daemon" (exit
+    // 4). Only status and exit code are asserted: the result's display text
+    // is allowed to change shape.
+    test.setTimeout(240_000);
+
+    await createNotebook(page);
+    const token = await startSession(page);
+    cliHandle = await connectCli(token);
+
+    const addResult = cliExecRaw([
+      "cells",
+      "add",
+      "--source",
+      "Canvas::from_fn(800, 400, |x, y| ((x % 256) as u8, (y % 256) as u8, 128))",
+      "--label",
+      "Big Canvas",
+    ]);
+    expect(addResult.exitCode).toBe(0);
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1, {
+      timeout: 15_000,
+    });
+
+    const cellId = cliExec(["cells", "list"])[0].id;
+    const run = cliExecRaw(["cells", "run", cellId], 180_000);
+    expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout).status).toBe("executed");
+  });
+
   test("navigating away ends the session instead of poisoning the page", async ({
     page,
   }) => {
