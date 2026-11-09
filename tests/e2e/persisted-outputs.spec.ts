@@ -3,6 +3,7 @@ import { loginTestUser } from "./helpers/auth";
 import { setCellSource } from "./helpers/monaco";
 import { MENU, shareMutable } from "./helpers/mutable";
 import { createNotebook } from "./helpers/session";
+import { fixtureCell, notebookFixture, shareFixture } from "./helpers/share";
 
 /**
  * PRD-0056: persisted cell outputs. Sharing embeds the author's last-run
@@ -141,4 +142,72 @@ test.describe("Persisted cell outputs (PRD-0056)", () => {
 
     await readerSeesSaved();
   });
+});
+
+/**
+ * A share whose FIRST cell carries `saved_output`, hard-loaded by a fresh
+ * reader. Returns the reader page (its context closes with `anon`) and every
+ * raw `pageerror`, unfiltered: `trackJsErrors` drops messages containing
+ * "unreachable", which is exactly the hydration panic these guard against.
+ */
+async function readSavedFirstCell(
+  page: Page,
+  browser: import("@playwright/test").Browser,
+  savedOutput: unknown,
+) {
+  const url = await shareFixture(
+    page,
+    notebookFixture("Saved panel", [
+      fixtureCell("saved", 0, "Code", "CellOutput::empty()", savedOutput),
+      fixtureCell("after", 1, "Code", 'CellOutput::text("after")'),
+    ]),
+  );
+  const anon = await browser.newContext();
+  const reader = await anon.newPage();
+  const errors: string[] = [];
+  reader.on("pageerror", (e) => errors.push(e.message));
+  await reader.goto(url);
+  await expect(reader.locator(".view-only-output--saved").first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await reader.waitForTimeout(3_000); // hydration (suite convention)
+  return { anon, reader, errors };
+}
+
+/**
+ * Hydration reached past the saved panel: the SECOND cell's chevron works.
+ * The first cell hydrates before a panic in its output, so its own chevron
+ * would prove nothing.
+ */
+async function expectSecondCellHydrated(reader: Page) {
+  const second = reader.locator(".view-only-cell--frame").nth(1);
+  const body = second.locator(".ironpad-cell-body").first();
+  await expect(body).not.toHaveClass(/ironpad-cell-body--collapsed/);
+  await second.locator(".ironpad-cell-collapse-btn").click();
+  await expect(body).toHaveClass(/ironpad-cell-body--collapsed/, { timeout: 5_000 });
+}
+
+test.describe("Saved panels hydrate on a hard load", () => {
+  for (const [name, panel] of [
+    ["Animation", { Animation: { width: 1, height: 1, fps: 1, frame_count: 1, data: "AAAA" } }],
+    [
+      "Simulation",
+      { Simulation: { width: 1, height: 1, fps: 1, first_frame_data: "AAAA", sliders: [] } },
+    ],
+  ] as const) {
+    test(`a saved ${name} panel renders the same DOM on both sides`, async ({
+      page,
+      browser,
+    }) => {
+      test.setTimeout(120_000);
+      const { anon, reader, errors } = await readSavedFirstCell(page, browser, [panel]);
+      try {
+        await expect(reader.locator(".view-only-output--saved canvas")).toHaveCount(1);
+        await expectSecondCellHydrated(reader);
+        expect(errors, "no hydration panic").toEqual([]);
+      } finally {
+        await anon.close();
+      }
+    });
+  }
 });

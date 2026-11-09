@@ -239,6 +239,10 @@ The system SHALL render saved outputs through the same panel renderers and sanit
 - **WHEN** a read-only page shows the saved output of a simulation cell
 - **THEN** it shows the simulation's first frame and no frames advance until the reader runs the cell
 
+#### Scenario: A hard load hydrates past a saved animation
+- **WHEN** a reader hard-loads a share whose first cell's saved output is an animation or a simulation
+- **THEN** the server renders the same canvas and controls the client hydrates, the page raises no error, and the later cells' controls work
+
 #### Scenario: Saved widgets
 - **WHEN** a reader drags a slider in a saved output
 - **THEN** no piped value changes and nothing runs

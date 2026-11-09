@@ -118,6 +118,13 @@ mod draw {
 /// Decodes base64-encoded concatenated RGB frames, then drives a
 /// `requestAnimationFrame` loop at the target `fps`.  Provides play/pause
 /// toggle and a frame counter.
+///
+/// ONE view for both builds, with only the logic build-gated: a saved
+/// Animation (and a saved Simulation's first frame) renders at SSR (PRD-0056
+/// `PanelMode::Snapshot`), and hydration walks the server's DOM expecting
+/// exactly the client's shape. A different SSR placeholder made it walk the
+/// wrong nodes until a cast failed, which panicked hydration for the whole
+/// page.
 #[allow(clippy::needless_pass_by_value)]
 #[component]
 pub fn AnimationCanvas(
@@ -127,18 +134,19 @@ pub fn AnimationCanvas(
     frame_count: u32,
     data: String,
 ) -> impl IntoView {
+    let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    // Both sides start playing at frame 0, so the icon and "Frame 1/N" agree.
+    let playing = RwSignal::new(true);
+    let current_frame = RwSignal::new(0u32);
+
     #[cfg(feature = "hydrate")]
-    {
+    let toggle_play = {
         use std::cell::RefCell;
         use std::rc::Rc;
 
         use wasm_bindgen::JsCast as _;
 
         use crate::components::raf_loop::RafLoop;
-
-        let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
-        let playing = RwSignal::new(true);
-        let current_frame = RwSignal::new(0u32);
 
         // Decode all frames to RGBA entirely in JS — never copies bulk pixel
         // data into WASM linear memory.
@@ -191,42 +199,60 @@ pub fn AnimationCanvas(
             raf.start();
         });
 
-        let toggle_play = move |_| raf.toggle(playing);
-
-        view! {
-            <div class="animation-canvas-container">
-                <canvas
-                    node_ref=canvas_ref
-                    width=width
-                    height=height
-                    style="image-rendering: pixelated;"
-                />
-                <div class="animation-controls">
-                    <button class="animation-control-btn" on:click=toggle_play>
-                        {move || if playing.get() {
-                    view! { <Icon icon=icons::PAUSE/> }
-                } else {
-                    view! { <Icon icon=icons::RUN/> }
-                }}
-                    </button>
-                    <span class="animation-frame-counter">
-                        {move || format!("Frame {}/{}", current_frame.get() + 1, frame_count)}
-                    </span>
-                </div>
-            </div>
-        }
-        .into_any()
-    }
+        move |_: leptos::ev::MouseEvent| raf.toggle(playing)
+    };
 
     #[cfg(not(feature = "hydrate"))]
-    {
-        let _ = (width, height, fps, frame_count, data);
-        view! {
-            <div class="animation-canvas-container">
-                <div>{format!("Animation: {frame_count} frames at {fps} fps ({width}×{height})")}</div>
+    let toggle_play = move |_: leptos::ev::MouseEvent| {};
+    #[cfg(not(feature = "hydrate"))]
+    let _ = (fps, &data);
+
+    animation_panel(
+        canvas_ref,
+        width,
+        height,
+        frame_count,
+        playing,
+        current_frame,
+        toggle_play,
+    )
+}
+
+/// The markup [`AnimationCanvas`] renders in BOTH builds; keeping it the one
+/// view is what keeps a hydrating client in step with the server's DOM. Its
+/// own function so a test can render it: the component's client logic calls
+/// into JS, which a host test build (where `hydrate` is on through feature
+/// unification) cannot run.
+fn animation_panel(
+    canvas_ref: NodeRef<leptos::html::Canvas>,
+    width: u32,
+    height: u32,
+    frame_count: u32,
+    playing: RwSignal<bool>,
+    current_frame: RwSignal<u32>,
+    toggle_play: impl FnMut(leptos::ev::MouseEvent) + 'static,
+) -> impl IntoView {
+    view! {
+        <div class="animation-canvas-container">
+            <canvas
+                node_ref=canvas_ref
+                width=width
+                height=height
+                style="image-rendering: pixelated;"
+            />
+            <div class="animation-controls">
+                <button class="animation-control-btn" on:click=toggle_play>
+                    {move || if playing.get() {
+                        view! { <Icon icon=icons::PAUSE/> }
+                    } else {
+                        view! { <Icon icon=icons::RUN/> }
+                    }}
+                </button>
+                <span class="animation-frame-counter">
+                    {move || format!("Frame {}/{}", current_frame.get() + 1, frame_count)}
+                </span>
             </div>
-        }
-        .into_any()
+        </div>
     }
 }
 
@@ -410,5 +436,36 @@ pub fn SimulationCanvas(
             </div>
         }
         .into_any()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use leptos::prelude::*;
+
+    use super::animation_panel;
+
+    /// A saved Animation (or a Simulation's first frame) renders at SSR, and
+    /// hydration walks that DOM expecting the client's shape. The one panel
+    /// view both builds render is a `<canvas>` with its controls; an SSR
+    /// placeholder in its place panicked hydration for the whole page.
+    #[test]
+    fn the_panel_both_builds_render_is_a_canvas_with_controls() {
+        let html = Owner::new().with(|| {
+            animation_panel(
+                NodeRef::new(),
+                2,
+                1,
+                3,
+                RwSignal::new(true),
+                RwSignal::new(0),
+                |_| {},
+            )
+            .to_html()
+        });
+        assert!(html.contains("<canvas"), "{html}");
+        assert!(html.contains("animation-controls"), "{html}");
+        assert!(html.contains("animation-control-btn"), "{html}");
+        assert!(html.contains("Frame 1/3"), "{html}");
     }
 }
