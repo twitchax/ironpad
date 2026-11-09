@@ -44,11 +44,16 @@ The system SHALL convert a final value of type `i8` through `i128`, `u8` through
 - **THEN** its text panel reads `hello` and a downstream cell sees it as `String`
 
 ### Requirement: Vec values display truncated
-The system SHALL convert a final `Vec<T>` (with `T: Serialize + Debug`) into a text panel of its `Debug` elements, showing at most the first 20 elements and at most 80 bytes of each element's `Debug` form, and SHALL pipe the whole vector tagged with its type such as `Vec<u64>` or `Vec<String>`. (ee994b2, 79f5dab)
+The system SHALL convert a final `Vec<T>` (with `T: Serialize + Debug`) into a text panel of its `Debug` elements, showing at most the first 20 elements and at most 80 bytes of each element's `Debug` form, and SHALL pipe the whole vector tagged with its type such as `Vec<u64>` or `Vec<String>`, spelled as a downstream cell can write it (`Vec<&str>` as `Vec<String>`, `HashMap`, `BTreeMap`, `VecDeque`, `Rc`, `Arc`, and `Range` by their public `std` paths, a notebook-shared type through `crate::shared`), and SHALL pipe it untagged when the element type cannot be named downstream, such as a borrow, `Cow`, or a type the cell declares itself. (ee994b2, 79f5dab)
 
 #### Scenario: A short vector
 - **WHEN** a cell ends with `vec![10, 20, 30]` of type `Vec<i32>`
 - **THEN** its text panel reads `[10, 20, 30]` and a downstream cell sees it as `Vec<i32>`
+
+#### Scenario: Element types a downstream cell can and cannot name
+- **WHEN** cell 0 ends with `vec!["apple", "banana"]` and cell 1 reads `cell0.len()`
+- **THEN** cell 1 sees `cell0` as a `Vec<String>` and compiles
+- **AND** a cell 0 ending with a `Vec` of a struct it declares carries no type tag, so a cell mentioning `last` still compiles and a cell naming `cell0` gets an error on its own line
 
 #### Scenario: A long vector
 - **WHEN** a cell ends with `(1..=100).collect::<Vec<u64>>()`
@@ -88,7 +93,7 @@ The system SHALL provide `Html(String)`, `Svg(String)`, `Md(String)`, `Table::ne
 - **THEN** it gets `Ok(Json)` without declaring `serde_json`, and invalid JSON gets `Err`
 
 ### Requirement: Tuples combine outputs
-The system SHALL convert a final tuple of 2 to 10 elements, each `Serialize + IntoPanels + TypeTag`, into an output whose panels are each element's panels in tuple order and whose piped value is the whole tuple tagged as a tuple type such as `(Vec<f64>, Svg)`. (ee994b2)
+The system SHALL convert a final tuple of 2 to 10 elements, each `Serialize + IntoPanels + TypeTag`, into an output whose panels are each element's panels in tuple order and whose piped value is the whole tuple tagged as a tuple type such as `(Vec<f64>, Svg)`, or untagged when any element's type cannot be named downstream. (ee994b2)
 
 #### Scenario: Data with a chart
 - **WHEN** a cell ends with `(data, Plot::line(&data))` where `data: Vec<(f64, f64)>`

@@ -1471,6 +1471,75 @@ pub struct AlsoUnusedHere {
         }
     }
 
+    /// The tags a `Vec` output advertises must be nameable where the scaffold
+    /// pastes them (`let cellN: {tag} = …`). Derived from the real cell
+    /// runtime rather than hard-coded, so this checks the rewrite the runtime
+    /// actually ships: `std::any::type_name` spells `HashMap` through the
+    /// private `hash::map` module and `BTreeMap` through the `alloc` crate,
+    /// and either one used to fail the DOWNSTREAM cell's compile.
+    #[tokio::test]
+    #[ignore = "slow: invokes cargo check --target wasm32-unknown-unknown"]
+    async fn vec_output_type_tags_are_nameable_downstream() {
+        use std::collections::{BTreeMap, HashMap};
+
+        use ironpad_cell::TypeTag;
+
+        let cache_dir = tempdir();
+        let cell_path = ironpad_cell_path();
+        let session_id = "e2e-session";
+        let cell_id = "vec-tags";
+
+        let previous_cell_types: Vec<String> = vec![
+            <Vec<HashMap<String, i32>>>::type_tag(),
+            <Vec<BTreeMap<String, i32>>>::type_tag(),
+            <Vec<&str>>::type_tag(),
+        ];
+        assert_eq!(
+            previous_cell_types,
+            [
+                "Vec<std::collections::HashMap<String, i32>>",
+                "Vec<std::collections::BTreeMap<String, i32>>",
+                "Vec<String>",
+            ],
+        );
+        let source = "    CellOutput::text(format!(\"{} {} {}\", cell0.len(), cell1.len(), cell2.len()))";
+
+        let Scaffolded { crate_dir, .. } = scaffold_micro_crate(
+            &cache_dir,
+            &cell_path,
+            session_id,
+            cell_id,
+            source,
+            "[dependencies]",
+            &previous_cell_types,
+            None,
+            None,
+            CellTarget::Executor,
+        )
+        .expect("scaffold should succeed");
+
+        let result = check_micro_crate(
+            &crate_dir,
+            &cache_dir,
+            session_id,
+            cell_id,
+            None,
+            CellTarget::Executor,
+            CellFeatures::default(),
+            super::build::build_timeout(),
+        )
+        .await
+        .expect("check_micro_crate should not return an infra error");
+
+        if let CheckResult::Failure { stdout, stderr } = result {
+            panic!(
+                "a downstream cell must compile against {previous_cell_types:?}.\nstdout(tail): {}\nstderr(tail): {}",
+                tail(&stdout, 2000),
+                tail(&stderr, 1500),
+            );
+        }
+    }
+
     // ── Full pipeline: compile → cache → cache hit ─────────────────────
 
     #[tokio::test]

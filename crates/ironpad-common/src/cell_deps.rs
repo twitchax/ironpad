@@ -61,7 +61,10 @@ const MAX_SLOT: usize = 10_000;
 /// `cell1x` do not count; `cell10` is slot 10, not slot 1). `last` matches
 /// with word boundaries and NOT preceded by `.` — `.last()` calls are the
 /// overwhelmingly common false positive worth excluding; a user-defined
-/// `last` variable still counts, which only over-cascades.
+/// `last` variable (or the word in a comment) still counts. That
+/// over-cascades, and it also binds EVERY typed upstream slot, so each of
+/// those tags must be nameable in this cell: the cell runtime advertises no
+/// tag it cannot vouch for (`pipeable_type_tag` in ironpad-cell).
 #[must_use]
 pub fn referenced_slots(source: &str) -> SlotRefs {
     let bytes = source.as_bytes();

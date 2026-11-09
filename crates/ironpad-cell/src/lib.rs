@@ -541,8 +541,9 @@ impl<T: serde::Serialize + std::fmt::Debug> From<Vec<T>> for CellOutput {
         // Deliberately not `typed_output_with`: the bare display names the
         // element type (`Vec<u64>, len = …`), while the tuple path's
         // `IntoPanels` prints the generic `Vec<_>`.
-        let type_tag = Some(clean_type_name(std::any::type_name::<Vec<T>>()));
-        let display = format_vec_truncated(&value, type_tag.as_deref());
+        let name = std::any::type_name::<Vec<T>>();
+        let display = format_vec_truncated(&value, Some(&clean_type_name(name)));
+        let type_tag = pipeable_type_tag(name);
         let bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
             .expect("serialization of Vec<T: Serialize> cannot fail");
         Self {
@@ -801,9 +802,11 @@ impl TypeTag for String {
     }
 }
 
+/// Empty when no downstream cell could name the type (see
+/// [`pipeable_type_tag`]), which leaves a tuple holding it untagged.
 impl<T: 'static> TypeTag for Vec<T> {
     fn type_tag() -> String {
-        clean_type_name(std::any::type_name::<Vec<T>>())
+        pipeable_type_tag(std::any::type_name::<Vec<T>>()).unwrap_or_default()
     }
 }
 
@@ -1015,12 +1018,16 @@ macro_rules! impl_from_tuple_for_cell_output {
                 let type_tag = {
                     let mut parts = vec![$first::type_tag()];
                     $(parts.push($rest::type_tag());)+
-                    format!("({})", parts.join(", "))
+                    // An empty part names a type no downstream cell can
+                    // write, so the whole tuple goes untagged rather than
+                    // advertising a binding that would not compile.
+                    (!parts.iter().any(String::is_empty))
+                        .then(|| format!("({})", parts.join(", ")))
                 };
                 let ($first, $($rest),+) = value;
                 let mut panels = $first.into_panels();
                 $(panels.extend($rest.into_panels());)+
-                Self { bytes, panels, type_tag: Some(type_tag) }
+                Self { bytes, panels, type_tag }
             }
         }
     };
@@ -1048,6 +1055,115 @@ fn clean_type_name(name: &str) -> String {
         .replace("alloc::boxed::Box", "Box")
         .replace("core::option::Option", "Option")
         .replace("core::result::Result", "Result")
+}
+
+/// `std::any::type_name` spellings no cell can write (private module paths,
+/// and the `alloc`/`core` crates a cell does not import) mapped to the public
+/// path of the same type. Matched against whole path tokens only.
+const PIPEABLE_PATHS: &[(&str, &str)] = &[
+    (
+        "std::collections::hash::map::HashMap",
+        "std::collections::HashMap",
+    ),
+    (
+        "std::collections::hash::set::HashSet",
+        "std::collections::HashSet",
+    ),
+    (
+        "alloc::collections::btree::map::BTreeMap",
+        "std::collections::BTreeMap",
+    ),
+    (
+        "alloc::collections::btree::set::BTreeSet",
+        "std::collections::BTreeSet",
+    ),
+    (
+        "alloc::collections::vec_deque::VecDeque",
+        "std::collections::VecDeque",
+    ),
+    (
+        "alloc::collections::binary_heap::BinaryHeap",
+        "std::collections::BinaryHeap",
+    ),
+    (
+        "alloc::collections::linked_list::LinkedList",
+        "std::collections::LinkedList",
+    ),
+    ("alloc::rc::Rc", "std::rc::Rc"),
+    ("alloc::sync::Arc", "std::sync::Arc"),
+    (
+        "core::ops::range::RangeInclusive",
+        "std::ops::RangeInclusive",
+    ),
+    ("core::ops::range::Range", "std::ops::Range"),
+];
+
+/// The type tag a `Vec` output advertises, or `None` when no downstream cell
+/// could name the type.
+///
+/// The scaffold pastes a tag verbatim as `let cellN: {tag} = …`, so a tag that
+/// does not resolve there fails the DOWNSTREAM cell's compile, on a generated
+/// line no diagnostic maps back to user source; and a cell mentioning `last`
+/// anywhere binds every typed slot, so it need not even read the slot. An
+/// untagged slot is simply not bound: a cell that does name it gets E0425 on
+/// its own line, and `__ironpad_inputs__` still reaches the bytes.
+///
+/// On top of [`clean_type_name`]: `&str` becomes `String` (identical bincode
+/// bytes, and an owned type is what `deserialize` needs), [`PIPEABLE_PATHS`]
+/// are rewritten, and a notebook-shared type (`cell_<id>::shared::T`) becomes
+/// `crate::shared::T`, since every cell of a notebook gets the same `shared`
+/// module. What is still unnameable after that returns `None`: a borrow or an
+/// erased lifetime, a closure, an `alloc::` path, and anything rooted in
+/// another cell's crate, which includes every type a cell declares itself.
+fn pipeable_type_tag(name: &str) -> Option<String> {
+    let cleaned = clean_type_name(name);
+    let mut tag = String::with_capacity(cleaned.len());
+    let mut rest = cleaned.as_str();
+    while let Some(c) = rest.chars().next() {
+        if !is_path_char(c) {
+            match rest.strip_prefix("&str") {
+                Some(after) if !after.starts_with(is_path_char) => {
+                    tag.push_str("String");
+                    rest = after;
+                }
+                _ => {
+                    tag.push(c);
+                    rest = &rest[c.len_utf8()..];
+                }
+            }
+            continue;
+        }
+        let end = rest.find(|c| !is_path_char(c)).unwrap_or(rest.len());
+        let (path, after) = rest.split_at(end);
+        tag.push_str(&pipeable_path(path)?);
+        rest = after;
+    }
+
+    let unnameable = ["&", "'_", "{{", "alloc::", "__ironpad_user__"]
+        .iter()
+        .any(|marker| tag.contains(marker));
+    (!unnameable).then_some(tag)
+}
+
+/// One path token of a type name rewritten for [`pipeable_type_tag`]; `None`
+/// when it is rooted in a cell crate (`cell_<id>::…`) other than through that
+/// cell's `shared` module.
+fn pipeable_path(path: &str) -> Option<std::borrow::Cow<'_, str>> {
+    if let Some(&(_, public)) = PIPEABLE_PATHS.iter().find(|(from, _)| *from == path) {
+        return Some(public.into());
+    }
+    if path.starts_with("cell_") {
+        if let Some((_, inner)) = path.split_once("::") {
+            let item = inner.strip_prefix("shared::")?;
+            return Some(format!("crate::shared::{item}").into());
+        }
+    }
+    Some(path.into())
+}
+
+/// A character that continues a path token (`std::collections::HashMap`).
+fn is_path_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == ':'
 }
 
 /// Maximum number of elements shown when displaying a collection.
@@ -1820,6 +1936,116 @@ mod tests {
         assert_eq!(clean_type_name("alloc::string::String"), "String");
         assert_eq!(clean_type_name("i32"), "i32");
         assert_eq!(clean_type_name("bool"), "bool");
+    }
+
+    /// The scaffold pastes a tag verbatim as `let cellN: {tag} = …`, so a tag
+    /// is only worth advertising if a downstream cell can name it. Inputs are
+    /// `std::any::type_name` output, as measured on the cell toolchain.
+    #[test]
+    fn pipeable_type_tag_rewrites_or_refuses() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("alloc::vec::Vec<i32>", Some("Vec<i32>")),
+            ("alloc::vec::Vec<&str>", Some("Vec<String>")),
+            ("alloc::vec::Vec<(&str, f64)>", Some("Vec<(String, f64)>")),
+            (
+                "alloc::vec::Vec<std::collections::hash::map::HashMap<alloc::string::String, i32>>",
+                Some("Vec<std::collections::HashMap<String, i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<std::collections::hash::set::HashSet<u8>>",
+                Some("Vec<std::collections::HashSet<u8>>"),
+            ),
+            (
+                "alloc::vec::Vec<alloc::collections::btree::map::BTreeMap<alloc::string::String, i32>>",
+                Some("Vec<std::collections::BTreeMap<String, i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<alloc::collections::btree::set::BTreeSet<i32>>",
+                Some("Vec<std::collections::BTreeSet<i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<alloc::collections::vec_deque::VecDeque<i32>>",
+                Some("Vec<std::collections::VecDeque<i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<alloc::collections::binary_heap::BinaryHeap<i32>>",
+                Some("Vec<std::collections::BinaryHeap<i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<alloc::collections::linked_list::LinkedList<i32>>",
+                Some("Vec<std::collections::LinkedList<i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<alloc::rc::Rc<i32>>",
+                Some("Vec<std::rc::Rc<i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<alloc::sync::Arc<i32>>",
+                Some("Vec<std::sync::Arc<i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<core::ops::range::Range<i32>>",
+                Some("Vec<std::ops::Range<i32>>"),
+            ),
+            (
+                "alloc::vec::Vec<core::ops::range::RangeInclusive<i32>>",
+                Some("Vec<std::ops::RangeInclusive<i32>>"),
+            ),
+            // Every cell in a notebook gets the same `shared` module.
+            (
+                "alloc::vec::Vec<cell_ab12::shared::Point>",
+                Some("Vec<crate::shared::Point>"),
+            ),
+            // Already nameable: left alone.
+            (
+                "alloc::vec::Vec<core::time::Duration>",
+                Some("Vec<core::time::Duration>"),
+            ),
+            ("alloc::vec::Vec<[f64; 3]>", Some("Vec<[f64; 3]>")),
+            // Not nameable downstream: no tag, so the slot is simply unbound.
+            ("alloc::vec::Vec<alloc::borrow::Cow<'_, str>>", None),
+            ("alloc::vec::Vec<&[u8]>", None),
+            ("alloc::vec::Vec<cell_ab12::__ironpad_user__::Point>", None),
+            ("alloc::vec::Vec<cell_ab12::Point>", None),
+            ("alloc::vec::Vec<cell_ab12::f::{{closure}}>", None),
+        ];
+        for &(name, want) in cases {
+            assert_eq!(pipeable_type_tag(name).as_deref(), want, "{name}");
+        }
+        // A path that merely starts like a rewritten one is not rewritten.
+        assert_eq!(
+            pipeable_type_tag("alloc::vec::Vec<&structs::Foo>"),
+            None,
+            "only a whole `&str` token becomes String"
+        );
+    }
+
+    #[test]
+    fn vec_of_str_pipes_as_vec_of_string() {
+        let output = CellOutput::from(vec!["apple", "banana"]);
+        assert_eq!(output.type_tag.as_deref(), Some("Vec<String>"));
+        // Same bytes as a Vec<String>, so the advertised tag decodes them.
+        let decoded: Vec<String> = CellInput::new(&output.bytes)
+            .deserialize()
+            .expect("Vec<&str> bytes decode as Vec<String>");
+        assert_eq!(decoded, ["apple", "banana"]);
+    }
+
+    /// Mirrors where a cell's own types live: inside the generated
+    /// `__ironpad_user__` fn, which no downstream crate can name.
+    mod __ironpad_user__ {
+        #[derive(serde::Serialize, Debug)]
+        pub struct Local;
+    }
+
+    #[test]
+    fn an_unnameable_element_type_leaves_the_output_untagged() {
+        let bare = CellOutput::from(vec![__ironpad_user__::Local]);
+        assert_eq!(bare.type_tag, None, "bare Vec of a cell-local type");
+        let tuple = CellOutput::from((vec![__ironpad_user__::Local], 1i32));
+        assert_eq!(tuple.type_tag, None, "a tuple with an unnameable part");
+        let fine = CellOutput::from((vec![1u8], 1i32));
+        assert_eq!(fine.type_tag.as_deref(), Some("(Vec<u8>, i32)"));
     }
 
     #[test]
