@@ -411,7 +411,7 @@ pub fn NotebookRail(
     #[cfg(feature = "hydrate")]
     {
         let ids: Vec<String> = cells.iter().map(|c| c.id.clone()).collect();
-        install_scroll_spy(ids, selected, suppress_until, scroll_root);
+        install_scroll_spy_when_anchored(ids, selected, suppress_until, scroll_root);
         crate::components::dismiss::dismiss_on_outside_click(".ip-rail", move || {
             crate::components::dismiss::clear_if_open(mobile_open);
         });
@@ -624,6 +624,66 @@ fn prefers_reduced_motion() -> bool {
                 .flatten()
         })
         .is_some_and(|m| m.matches())
+}
+
+/// Install the scroll-spy once every cell anchor is in the document.
+///
+/// Hydrating, they already are (the server wrote them), so the install is
+/// synchronous, exactly as before. A CLIENT-side mount (a card click on the
+/// home page, the editor's Preview) runs this component's body before the cell
+/// list is attached, so the anchors do not exist yet and an install that looked
+/// once found none: no observer, and the selection sat on the first row for
+/// the life of the page. So wait for them, for a bounded time, and install
+/// under this component's owner, so its `on_cleanup` still disconnects the
+/// observer when the rail unmounts.
+///
+/// Out of attempts, install with whatever exists: that is what makes
+/// [`install_scroll_spy`] warn about the missing anchors, which is the real
+/// integration bug, and only then rather than on every client navigation.
+#[cfg(feature = "hydrate")]
+fn install_scroll_spy_when_anchored(
+    cell_ids: Vec<String>,
+    selected: RwSignal<Option<String>>,
+    suppress_until: StoredValue<f64>,
+    scroll_root: &'static str,
+) {
+    /// Roughly 2s: a mounted cell list attaches within a frame or two, so
+    /// this only runs out when an anchor is genuinely missing.
+    const ATTEMPTS: u32 = 40;
+    const INTERVAL_MS: i32 = 50;
+
+    fn all_anchored(cell_ids: &[String]) -> bool {
+        let Some(document) = leptos::web_sys::window().and_then(|w| w.document()) else {
+            return false;
+        };
+        cell_ids
+            .iter()
+            .all(|id| document.get_element_by_id(&cell_anchor_id(id)).is_some())
+    }
+
+    if all_anchored(&cell_ids) {
+        install_scroll_spy(cell_ids, selected, suppress_until, scroll_root);
+        return;
+    }
+    let Some(owner) = Owner::current() else {
+        return;
+    };
+    leptos::task::spawn_local(async move {
+        for _ in 0..ATTEMPTS {
+            crate::components::run_flow::sleep_ms(INTERVAL_MS).await;
+            // Disposed (navigated away before the list ever attached): there
+            // is no rail left to drive, and its owner must not be re-entered.
+            if selected.try_get_untracked().is_none() {
+                return;
+            }
+            if all_anchored(&cell_ids) {
+                break;
+            }
+        }
+        if selected.try_get_untracked().is_some() {
+            owner.with(|| install_scroll_spy(cell_ids, selected, suppress_until, scroll_root));
+        }
+    });
 }
 
 /// Observe every cell anchor and keep `selected` on the cell owning the top of

@@ -17,8 +17,9 @@ import { trackJsErrors } from "./helpers/errors";
  *    resolves, `install_scroll_spy` returns early, and BOTH the spy and
  *    click-to-scroll die while looking exactly like a rail nobody scrolled.
  *
- * The component warns to the console for each at first render, but a warning
- * is not a gate. The anchor-count assertion below is what actually catches a
+ * The component warns to the console for each (for anchors, once it has
+ * waited ~2s for a client-mounted cell list to attach), but a warning is not
+ * a gate. The anchor-count assertion below is what actually catches a
  * rename, and it has to be separate from the behavioral checks because those
  * would both still pass against a viewport-root fallback.
  *
@@ -34,8 +35,57 @@ const rail = (page: Page) => page.getByRole("navigation", { name: "Notebook outl
 async function gotoNotebook(page: Page) {
   await page.goto(NOTEBOOK);
   await expect(page.locator(".view-only-cell").first()).toBeVisible({ timeout: 30_000 });
-  // Hydration: the spy is installed in an effect, not in the SSR markup.
+  // Hydration: the spy is installed when the rail hydrates, not in the SSR
+  // markup, so nothing tracks the scroll until the wasm has run.
   await page.waitForTimeout(3_000); // suite convention
+}
+
+/**
+ * Count the rail's LIVE IntersectionObservers: +1 when one is built with the
+ * cell list as its root, -1 when it disconnects. Anything else on the page
+ * (Monaco, lazy images) observes against other roots and is not counted.
+ */
+async function countRailObservers(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as {
+      __railObservers: number;
+      IntersectionObserver: typeof IntersectionObserver;
+    };
+    const Native = w.IntersectionObserver;
+    w.__railObservers = 0;
+    class Counting extends Native {
+      private counted = false;
+      constructor(cb: IntersectionObserverCallback, init?: IntersectionObserverInit) {
+        super(cb, init);
+        const root = init?.root;
+        if (root instanceof Element && root.classList.contains("view-only-cells")) {
+          this.counted = true;
+          w.__railObservers++;
+        }
+      }
+      disconnect() {
+        if (this.counted) {
+          this.counted = false;
+          w.__railObservers--;
+        }
+        super.disconnect();
+      }
+    }
+    w.IntersectionObserver = Counting;
+  });
+  return () =>
+    page.evaluate(() => (window as unknown as { __railObservers: number }).__railObservers);
+}
+
+/** Scroll the cell list and require the spy to move the selection. */
+async function expectSpyTracksScroll(page: Page) {
+  const rows = rail(page).locator(".ip-rail-row");
+  await expect(rows.first()).toHaveAttribute("aria-current", "true");
+  await page.locator(".view-only-cells").evaluate((el) => el.scrollTo(0, 1500));
+  await expect(rows.first()).not.toHaveAttribute("aria-current", "true", {
+    timeout: 10_000,
+  });
+  await expect(rail(page).locator('[aria-current="true"]')).toHaveCount(1);
 }
 
 test.describe("Studio rail", () => {
@@ -65,15 +115,8 @@ test.describe("Studio rail", () => {
 
   test("scroll-spy moves the selection off the first row", async ({ page }) => {
     await gotoNotebook(page);
-    const rows = rail(page).locator(".ip-rail-row");
-    await expect(rows.first()).toHaveAttribute("aria-current", "true");
-
-    await page.locator(".view-only-cells").evaluate((el) => el.scrollTo(0, 1500));
-    await expect(rows.first()).not.toHaveAttribute("aria-current", "true", {
-      timeout: 10_000,
-    });
     // Exactly one row owns the selection at a time.
-    await expect(rail(page).locator('[aria-current="true"]')).toHaveCount(1);
+    await expectSpyTracksScroll(page);
   });
 
   test("clicking a row selects it and scrolls its cell into view", async ({ page }) => {
@@ -123,17 +166,59 @@ test.describe("Studio rail", () => {
     await expect(rail(page).locator(".ip-rail-dot--prose")).toHaveCount(markdownCells);
   });
 
-  test("the rail installs exactly one observer across a navigation", async ({ page }) => {
-    // A leaked observer is invisible until it stacks. Navigating away and back
-    // must not double-report; a disposed-signal read would abort the wasm app
-    // outright, which shows up as the page going blank.
+  test("the rail installs exactly one observer across a client-side navigation", async ({
+    page,
+  }) => {
+    // Home -> card click is the common way in, and it is a CLIENT-side
+    // navigation: the rail's body runs before the cell list is attached, so
+    // an install that resolved anchors only once found none and the spy never
+    // existed. A leaked observer is the opposite failure, invisible until it
+    // stacks. `page.goto` both ways would destroy the JS context and see
+    // neither, so this navigates by clicking.
+    const live = await countRailObservers(page);
     await gotoNotebook(page);
-    await page.goto("/");
-    await expect(page.locator("body")).toBeVisible();
-    await gotoNotebook(page);
+    expect(await live(), "a hard load installs one").toBe(1);
 
-    await expect(rail(page).locator('[aria-current="true"]')).toHaveCount(1);
-    await expect(page.locator(".view-only-cell").first()).toBeVisible();
+    await page.locator("a.ironpad-brand").click();
+    await expect(page.locator(".ironpad-home")).toBeVisible({ timeout: 15_000 });
+    await expect.poll(live, { message: "leaving disconnects it" }).toBe(0);
+
+    await page.locator(`a[href="${NOTEBOOK}"]`).first().click();
+    await expect(page.locator(".view-only-cell").first()).toBeVisible({ timeout: 30_000 });
+    await expect.poll(live, { message: "arriving installs exactly one" }).toBe(1);
+    await expectSpyTracksScroll(page);
+  });
+
+  test("the rail installs one observer in the editor's Preview, and drops it", async ({
+    page,
+  }) => {
+    // Preview mounts the reader client-side over a live editor, the same
+    // shape as a card click: no SSR anchors to find at mount time, which used
+    // to log a false "no anchor" warning and install nothing.
+    //
+    // Install only, not the scroll: in Preview the page's content pane
+    // scrolls rather than `.view-only-cells`, so the observer's root never
+    // moves. That is a separate layout issue from the install.
+    const anchorWarnings: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().includes("anchor element")) anchorWarnings.push(m.text());
+    });
+    const live = await countRailObservers(page);
+    await gotoNotebook(page);
+    await page.locator(".fork-button").click();
+    await expect(page).toHaveURL(/\/local\/[a-f0-9-]+/, { timeout: 15_000 });
+    await expect(page.locator(".ironpad-editor")).toBeVisible({ timeout: 15_000 });
+    await expect.poll(live).toBe(0);
+
+    await page.locator('button[aria-label="Preview"]').click();
+    await expect(page.locator(".view-only-cell").first()).toBeVisible({ timeout: 30_000 });
+    await expect.poll(live, { message: "Preview installs exactly one" }).toBe(1);
+
+    await page.locator('button[aria-label="Edit"]').click();
+    await expect.poll(live, { message: "leaving Preview disconnects it" }).toBe(0);
+    // Past the deferred install's whole wait, so a late warning would show.
+    await page.waitForTimeout(2_500);
+    expect(anchorWarnings).toEqual([]);
   });
 });
 
