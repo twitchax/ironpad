@@ -593,4 +593,34 @@ test.describe("Markdown editor", () => {
       .poll(async () => (await storedSources(page, id))[0], { timeout: 5_000 })
       .toContain("ESC_KEEP");
   });
+
+  // Regression (review bug-components-2): the handle signal outlived the
+  // editor it pointed at, so reopening a cell read a disposed signal and
+  // panicked, and Escape stopped closing that cell. `trackJsErrors` cannot
+  // see it: the only pageerror the panic produces is "unreachable", which
+  // that helper deliberately drops, so the console is the witness.
+  test("a markdown cell reopens cleanly, again and again", async ({ page }) => {
+    const panics: string[] = [];
+    page.on("console", (m) => {
+      if (/panicked at/.test(m.text())) panics.push(m.text());
+    });
+    await openSeeded(page, [{ source: "# original" }]);
+    const md = page.locator(".ironpad-cell-card").first();
+
+    for (const word of [" ONE", " TWO", " THREE"]) {
+      await openMarkdown(md);
+      await typeAtEnd(page, md, word);
+      await page.locator(".ironpad-status-bar").click();
+      await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
+    }
+
+    await openMarkdown(md);
+    await typeAtEnd(page, md, " FOUR");
+    await page.keyboard.press("Escape");
+    await expect(md.locator(".ironpad-markdown-cell-editor")).toHaveCount(0);
+    await expect(md.locator(".ironpad-markdown-cell-preview")).toContainText(
+      "ONE TWO THREE FOUR",
+    );
+    expect(panics).toEqual([]);
+  });
 });

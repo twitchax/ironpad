@@ -95,12 +95,20 @@ pub struct MonacoEditorHandle {
 }
 
 impl MonacoEditorHandle {
+    /// The mounted editor's id: `None` before mount and once the editor is
+    /// gone. A handle that outlives its editor reads as not mounted rather
+    /// than panicking on the disposed `editor_id`.
+    #[cfg(feature = "hydrate")]
+    fn mounted_id(&self) -> Option<f64> {
+        self.editor_id.try_get_untracked().flatten()
+    }
+
     /// Read the current editor content.  Returns an empty string when
     /// the editor is not yet mounted or during SSR.
     pub fn get_value(&self) -> String {
         #[cfg(feature = "hydrate")]
         {
-            if let Some(id) = self.editor_id.get_untracked() {
+            if let Some(id) = self.mounted_id() {
                 return js::get_value(id);
             }
         }
@@ -111,7 +119,7 @@ impl MonacoEditorHandle {
     pub fn set_value(&self, value: &str) {
         #[cfg(feature = "hydrate")]
         {
-            if let Some(id) = self.editor_id.get_untracked() {
+            if let Some(id) = self.mounted_id() {
                 js::set_value(id, value);
             }
         }
@@ -125,7 +133,7 @@ impl MonacoEditorHandle {
     pub fn focus(&self) {
         #[cfg(feature = "hydrate")]
         {
-            if let Some(id) = self.editor_id.get_untracked() {
+            if let Some(id) = self.mounted_id() {
                 js::focus(id);
             }
         }
@@ -138,7 +146,7 @@ impl MonacoEditorHandle {
     /// Only available in the `hydrate` (client-side) build.
     #[cfg(feature = "hydrate")]
     pub fn add_action(&self, action_id: &str, keybindings: &[i32], callback: &js_sys::Function) {
-        if let Some(id) = self.editor_id.get_untracked() {
+        if let Some(id) = self.mounted_id() {
             js::add_action(id, action_id, &keybinding_array(keybindings), callback);
         }
     }
@@ -155,7 +163,7 @@ impl MonacoEditorHandle {
         precondition: &str,
         callback: &js_sys::Function,
     ) {
-        if let Some(id) = self.editor_id.get_untracked() {
+        if let Some(id) = self.mounted_id() {
             js::add_action_when(
                 id,
                 action_id,
@@ -174,7 +182,7 @@ impl MonacoEditorHandle {
     /// Only available in the `hydrate` (client-side) build.
     #[cfg(feature = "hydrate")]
     pub fn set_markers(&self, markers: &js_sys::Array) {
-        if let Some(id) = self.editor_id.get_untracked() {
+        if let Some(id) = self.mounted_id() {
             js::set_markers(id, markers);
         }
     }
@@ -184,7 +192,7 @@ impl MonacoEditorHandle {
     pub fn clear_markers(&self) {
         #[cfg(feature = "hydrate")]
         {
-            if let Some(id) = self.editor_id.get_untracked() {
+            if let Some(id) = self.mounted_id() {
                 js::clear_markers(id);
             }
         }
@@ -195,7 +203,7 @@ impl MonacoEditorHandle {
     pub fn set_read_only(&self, read_only: bool) {
         #[cfg(feature = "hydrate")]
         {
-            if let Some(id) = self.editor_id.get_untracked() {
+            if let Some(id) = self.mounted_id() {
                 js::set_read_only(id, read_only);
             }
         }
@@ -210,7 +218,7 @@ impl MonacoEditorHandle {
     /// No-op during SSR or before mount.
     #[cfg(feature = "hydrate")]
     pub fn set_cell_context(&self, context: &wasm_bindgen::JsValue) {
-        if let Some(id) = self.editor_id.get_untracked() {
+        if let Some(id) = self.mounted_id() {
             js::set_cell_context(id, context);
         }
     }
@@ -313,6 +321,13 @@ pub fn MonacoEditor(
         });
 
         on_cleanup(move || {
+            // Withdraw the handle BEFORE disposing. The parent's signal
+            // outlives this editor (a markdown cell mounts a new one on every
+            // open), so a consumer still holding the old handle would reach
+            // this component's disposed `editor_id`.
+            if let Some(h) = handle {
+                let _ = h.try_set(None);
+            }
             if let Some(id) = editor_id.get_untracked() {
                 js::dispose(id);
             }

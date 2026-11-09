@@ -143,6 +143,10 @@ The system SHALL render a markdown cell as formatted HTML (tables, strikethrough
 - **THEN** the find widget opens and the editor stays open
 - **AND** the first Escape closes the find widget, the second closes the editor, and the cell keeps its text
 
+#### Scenario: Reopening a markdown cell
+- **WHEN** the author opens and closes a markdown cell's editor several times
+- **THEN** each reopening behaves like the first, and Escape still closes it
+
 #### Scenario: Preview commits an open edit
 - **WHEN** a markdown cell is open in its editor and the author clicks Preview
 - **THEN** the edit is committed and Preview shows it rendered, with no markdown editor left on the page
