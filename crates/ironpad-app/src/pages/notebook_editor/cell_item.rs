@@ -646,17 +646,11 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 // The model already holds the agent's text, so check it now:
                 // typing gets its check from the save debounce, which a
                 // program write into Monaco does not arm.
-                pipeline::dispatch_live_check(
-                    &state,
-                    cell_id.get_value(),
-                    cell_type,
-                    is_shared,
-                    cell_status,
-                    source,
-                    cargo_toml,
+                pipeline::dispatch_live_check(&pipeline::LiveCheckCtx {
+                    run: run_ctx,
                     last_check,
                     check_generation,
-                );
+                });
             }
             if !cargo_toml_dirty.get_untracked() {
                 refresh_pane(
