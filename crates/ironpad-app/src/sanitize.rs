@@ -19,9 +19,15 @@ use ammonia::Builder;
 /// vetted for `Svg` panels — so no `script`/`foreignObject`/`a`/`use`/`image`)
 /// plus `class` and a CSS-filtered `style` (both carried by [`SVG_ATTRS`]).
 ///
-/// `class` preserves pulldown-cmark's `<span class="math …">` markers so the
-/// client-side `KaTeX` bridge can find and render them (`KaTeX` emits its own
-/// markup *after* sanitization, so its inline styles never pass through here).
+/// `class` exists for the markers the page's own renderers look for:
+/// pulldown-cmark's `<span class="math …">` (the `KaTeX` bridge), its
+/// `language-*` code classes (the Prism bridge), and Plot's
+/// `ironpad-tooltips` group. Its *value* is filtered down to exactly those
+/// tokens by [`is_allowed_class`]: a free class reaches every rule in the
+/// app's stylesheet, and some of those are `position:fixed` full-viewport
+/// overlays, which is precisely what the style allowlist below keeps out.
+/// (`KaTeX` and Prism emit their own markup *after* sanitization, so their
+/// classes and inline styles never pass through here.)
 ///
 /// The `style` attribute is CSS-filtered via [`filter_style_properties`] down to
 /// the presentation-only [`STYLE_PROPERTIES`] allowlist. Ammonia does **no** CSS
@@ -45,7 +51,20 @@ static HTML_BUILDER: LazyLock<Builder<'static>> = LazyLock::new(|| {
     builder
         .add_tags(SVG_TAGS.iter().copied())
         .add_generic_attributes(SVG_ATTRS.iter().copied())
-        .filter_style_properties(STYLE_PROPERTIES.iter().copied().collect());
+        .filter_style_properties(STYLE_PROPERTIES.iter().copied().collect())
+        // ammonia's own `allowed_classes` cannot express the `language-`
+        // prefix (and refuses `class` as a generic attribute), so the class
+        // value is filtered here. Settable once: every other attribute passes.
+        .attribute_filter(|_element, attribute, value| {
+            if attribute != "class" {
+                return Some(value.into());
+            }
+            let kept: Vec<&str> = value
+                .split_ascii_whitespace()
+                .filter(|token| is_allowed_class(token))
+                .collect();
+            (!kept.is_empty()).then(|| kept.join(" ").into())
+        });
     // Scope `id` to the SVG containers addressed by `url(#id)` (gradients, clip
     // paths, markers, masks, patterns) rather than allowing it on every element.
     for tag in ID_SCOPED_SVG_TAGS {
@@ -53,6 +72,17 @@ static HTML_BUILDER: LazyLock<Builder<'static>> = LazyLock::new(|| {
     }
     builder
 });
+
+/// Class tokens untrusted markup may carry: the math markers pulldown-cmark
+/// emits for `KaTeX`, its `language-*` fenced-code classes for Prism, and the
+/// tooltip group Plot emits (`crates/ironpad-cell/src/plot.rs`). Nothing else,
+/// because any other token can name a rule in the app's own stylesheet.
+fn is_allowed_class(token: &str) -> bool {
+    matches!(
+        token,
+        "math" | "math-inline" | "math-display" | "ironpad-tooltips"
+    ) || token.starts_with("language-")
+}
 
 /// Sanitize markup with the shared cell-output allowlist. See [`HTML_BUILDER`].
 fn clean_html(html: &str) -> String {
@@ -312,7 +342,11 @@ const STYLE_PROPERTIES: &[&str] = &[
     "list-style",
     "list-style-type",
     "list-style-position",
-    // ── Object & transform (cannot overlay without the excluded props) ───
+    // ── Object & transform ───────────────────────────────────────────────
+    // `transform` (like a negative `margin` on an oversized box) CAN paint
+    // over the page without the excluded props. The allowlist does not stop
+    // that; `contain: paint` on every container this markup is injected into
+    // does (`style/main.scss`), clipping it to the container.
     "object-fit",
     "object-position",
     "transform",
@@ -379,7 +413,9 @@ mod tests {
         assert!(clean.contains("<svg"), "kept svg: {clean}");
         assert!(clean.contains("<path"), "kept svg path: {clean}");
         assert!(clean.contains("<circle"), "kept svg circle: {clean}");
-        assert!(clean.contains("dash"), "kept class: {clean}");
+        // An arbitrary class is not presentation the output can rely on: it
+        // would reach into the app's own stylesheet (see `is_allowed_class`).
+        assert!(!clean.contains("dash"), "stripped arbitrary class: {clean}");
         // Active content is still stripped.
         assert!(!clean.contains("<script"), "stripped script: {clean}");
         assert!(!clean.contains("onclick"), "stripped handler: {clean}");
@@ -509,6 +545,57 @@ mod tests {
         assert!(clean.contains("font-weight"), "kept font-weight: {clean}");
         assert!(clean.contains("background"), "kept background: {clean}");
         assert!(clean.contains("opacity"), "kept opacity: {clean}");
+    }
+
+    // ── Class allowlist ──────────────────────────────────────────────────
+    // `class` reaches every rule in the app's stylesheet, so a free value can
+    // borrow a `position:fixed` overlay rule the style allowlist exists to
+    // keep out (`.ironpad-history-overlay` is fixed, inset 0, z-index 1000).
+
+    #[test]
+    fn class_strips_the_apps_own_stylesheet_classes() {
+        for class in ["ironpad-history-overlay", "view-only-x", "ip-rail"] {
+            let clean = sanitize_html(&format!(
+                r#"<a href="https://evil.example" class="{class}">x</a>"#
+            ));
+            assert!(!clean.contains("class="), "stripped {class}: {clean}");
+            assert!(clean.contains("<a"), "kept the anchor itself: {clean}");
+        }
+    }
+
+    #[test]
+    fn class_keeps_the_markers_the_renderers_need() {
+        // KaTeX finds `span.math`, Prism finds `language-*`, and Plot's hover
+        // targets sit in `g.ironpad-tooltips`.
+        for class in [
+            "math math-inline",
+            "math math-display",
+            "language-rust",
+            "ironpad-tooltips",
+        ] {
+            let clean = sanitize_html(&format!(r#"<span class="{class}">x</span>"#));
+            assert!(
+                clean.contains(&format!(r#"class="{class}""#)),
+                "kept {class}: {clean}"
+            );
+        }
+        let svg = sanitize_svg(r#"<svg><g class="ironpad-tooltips"><circle r="8"/></g></svg>"#);
+        assert!(
+            svg.contains(r#"class="ironpad-tooltips""#),
+            "kept the tooltip group class: {svg}"
+        );
+    }
+
+    #[test]
+    fn class_keeps_only_the_allowed_tokens_of_a_mixed_value() {
+        let clean = sanitize_html(
+            r#"<span class="math ironpad-history-overlay  math-inline view-only-x">x</span>"#,
+        );
+        assert!(
+            clean.contains(r#"class="math math-inline""#),
+            "kept exactly the allowed tokens: {clean}"
+        );
+        assert!(!clean.contains("overlay"), "dropped the overlay: {clean}");
     }
 
     #[test]

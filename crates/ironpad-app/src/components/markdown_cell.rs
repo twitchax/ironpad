@@ -224,6 +224,18 @@ mod tests {
     }
 
     #[test]
+    fn heading_attributes_cannot_borrow_an_app_class() {
+        // ENABLE_HEADING_ATTRIBUTES turns `{.cls}` into `class="cls"`, which
+        // the sanitizer's class allowlist must strip like a raw-HTML class.
+        let html = render_markdown("# T {.ironpad-history-overlay}");
+        assert!(html.contains("<h1"), "kept the heading: {html}");
+        assert!(
+            !html.contains("ironpad-history-overlay"),
+            "stripped the borrowed class: {html}"
+        );
+    }
+
+    #[test]
     fn strips_raw_html_in_markdown_source() {
         // pulldown_cmark passes raw HTML through; sanitization must strip the
         // active parts so a shared/public markdown cell can't XSS a viewer.

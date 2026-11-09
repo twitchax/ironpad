@@ -50,7 +50,7 @@ The system SHALL decode a cell's display output as a JSON array of panels and re
 - **THEN** it renders as a single text panel reading `hello, world`
 
 ### Requirement: Sanitized HTML and SVG output
-The system SHALL sanitize every HTML panel, SVG panel, rendered Markdown panel, and HTML or Markdown live-view update against an allowlist before inserting it, removing scripts, event-handler attributes, `javascript:` and `data:` URLs, `foreignObject`, `use`, `image`, `animate`, and `set` elements, `xmlns`, and `id` except on SVG gradient, `clipPath`, `marker`, `mask`, and `pattern` elements. (PRD-0036, PRD-0038)
+The system SHALL sanitize every HTML panel, SVG panel, rendered Markdown panel, and HTML or Markdown live-view update against an allowlist before inserting it, removing scripts, event-handler attributes, `javascript:` and `data:` URLs, `foreignObject`, `use`, `image`, `animate`, and `set` elements, `xmlns`, and `id` except on SVG gradient, `clipPath`, `marker`, `mask`, and `pattern` elements, and keeping of a `class` attribute only the tokens `math`, `math-inline`, `math-display`, `ironpad-tooltips`, and `language-*`, so output cannot borrow a rule from the app's own stylesheet. (PRD-0036, PRD-0038)
 
 #### Scenario: Script and handlers stripped
 - **WHEN** a cell outputs `Html(r#"<p onclick="steal()">hi</p><script>steal()</script><img src=x onerror="steal()">"#.into())`
@@ -68,13 +68,22 @@ The system SHALL sanitize every HTML panel, SVG panel, rendered Markdown panel, 
 - **WHEN** an HTML panel contains `<a href="data:text/html,<script>steal()</script>">` or an `<img>` with a `data:` source
 - **THEN** the `data:` URL is removed, so the image renders with no source
 
+#### Scenario: A class naming an app overlay
+- **WHEN** a Markdown cell on a shared notebook contains `<a href="https://evil.example" class="ironpad-history-overlay">` or `# T {.ironpad-history-overlay}`
+- **THEN** the class is removed, and a click at the header or any viewport corner does not land on the link
+- **AND** `class="math math-inline"` and a fenced block's `language-rust` survive
+
 ### Requirement: Inline style filtering
-The system SHALL keep only presentation properties in sanitized `style` attributes (color, background, fonts, text, borders, spacing, sizing, flex and grid layout, transforms), dropping `position`, `z-index`, `inset`, `top`, `right`, `bottom`, `left`, `content`, and any property not on the allowlist, so cell output cannot overlay the page. (PRD-0038)
+The system SHALL keep only presentation properties in sanitized `style` attributes (color, background, fonts, text, borders, spacing, sizing, flex and grid layout, transforms), dropping `position`, `z-index`, `inset`, `top`, `right`, `bottom`, `left`, `content`, and any property not on the allowlist, so cell output cannot overlay the page; and SHALL clip markdown, HTML, and live-view output to the container it is inserted into, scrolling wide content horizontally, so a `transform` or a negative margin cannot paint over the page either. (PRD-0038)
 
 #### Scenario: A click-jacking overlay
 - **WHEN** rendered output contains `<a class="hijack" style="position:fixed;inset:0;z-index:99999;background:rgb(255,0,0);color:rgb(0,0,255)">`
 - **THEN** the link's computed `position` is `static` and `z-index` is `auto`
 - **AND** its computed background color is still `rgb(255, 0, 0)`
+
+#### Scenario: A transformed or negative-margin overlay
+- **WHEN** a Markdown cell contains `<a style="display:block;width:40px;height:40px;transform:scale(80)">` or a 6000px block with `margin:-3000px`
+- **THEN** it is clipped to its cell, and a click at the header or any viewport corner does not land on it
 
 #### Scenario: Dashboard styling survives
 - **WHEN** an HTML panel uses `style="background:#111;color:#eee;padding:8px;border-radius:6px;display:flex;gap:8px;width:200px"`

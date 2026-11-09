@@ -3317,6 +3317,29 @@ code[class*="language-"] {
     overflow: auto;
 }
 
+// Untrusted markup (markdown cells and panels, Html panels, LiveView) is
+// injected into these containers via inner_html. The sanitizer strips
+// out-of-flow positioning and every class that could borrow an app rule, but
+// a `transform` or a negative margin on an oversized box still paints over
+// the rest of the page. `contain: paint` clips it to the container, and
+// `contain: layout` makes the container the containing block for anything
+// that does get positioned.
+.view-only-markdown,
+.ironpad-markdown-cell-preview,
+.view-only-output-html,
+.ironpad-output-html,
+.live-view-content {
+    contain: layout paint;
+}
+
+// Clipping would cut off a wide table or a long display equation, so the
+// containers that did not scroll yet scroll instead.
+.view-only-markdown,
+.ironpad-markdown-cell-preview,
+.ironpad-output-html {
+    overflow-x: auto;
+}
+
 // Visual outputs (SVG, Canvas/BlobImage, Animation, Simulation) are not
 // height-constrained — they size themselves based on their content.
 .view-only-output-visual {
