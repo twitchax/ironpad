@@ -893,9 +893,12 @@ fn ViewOnlyCodeCell(
                 // The shared acquisition engine (PRD-0059): share snapshot
                 // (PRD-0047) -> local blob probe -> server compile with
                 // transport retries.
+                // A disposed cell (the reader navigated away) is the one
+                // cancellation a viewer run has.
                 let acquisition = crate::components::run_flow::acquire_blob(
                     &request,
                     stored_share_blob.get_value().as_ref(),
+                    move || compiling.try_get_untracked().is_none(),
                 )
                 .await;
                 match acquisition.result {
@@ -916,6 +919,18 @@ fn ViewOnlyCodeCell(
                                 &response,
                             )
                             .await;
+                            // Stored first, as a Linux cell does: the compile
+                            // is paid for whether or not anyone still wants
+                            // its result. But a cell disposed by navigation
+                            // must not load or run: the executor is one
+                            // worker shared by the whole SPA and keys modules
+                            // by cell id alone (`cell_0` recurs across public
+                            // notebooks), so the stale module would block the
+                            // next page's first run, or replace a module that
+                            // page just loaded under the same id.
+                            if compiling.try_get_untracked().is_none() {
+                                return;
+                            }
                             match crate::components::run_flow::load_and_execute(
                                 &cell_data.id,
                                 &response,

@@ -365,7 +365,11 @@ pub(super) fn wire_run_effect(ctx: &CellRunCtx, run_trigger: RwSignal<u64>) {
             // editor has no share snapshot, so that layer is `None`.
             #[cfg(feature = "hydrate")]
             let (result, served_locally, request_hash) = {
-                let acquisition = crate::components::run_flow::acquire_blob(&request, None).await;
+                let acquisition =
+                    crate::components::run_flow::acquire_blob(&request, None, move || {
+                        !guard.is_current()
+                    })
+                    .await;
                 (
                     acquisition.result,
                     acquisition.served_without_server,

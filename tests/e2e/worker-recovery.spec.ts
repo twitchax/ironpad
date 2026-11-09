@@ -1,4 +1,8 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, Page } from "@playwright/test";
+import { gateCompiles } from "./helpers/compile-gate";
+import { menuClick } from "./helpers/menu";
+import { setCellSource } from "./helpers/monaco";
+import { ADD_CODE, createNotebook } from "./helpers/session";
 
 /**
  * Executor-bridge worker lifecycle (fanout-review wave 2). An uncaught
@@ -306,3 +310,73 @@ for (const { notebook, kind, panel, method } of [
     expect(await page.evaluate(() => (window as any).IronpadExecutor.__ticks)).toBe(settled);
   });
 }
+
+// ── Viewer runs and the shared worker ──────────────────────────────────────
+
+/** Author a one-cell notebook, share it immutably, and return its hash. */
+async function shareOneCell(page: Page, source: string): Promise<string> {
+  await createNotebook(page);
+  await page.locator(ADD_CODE).first().click();
+  const cell = page.locator(".ironpad-cell-card").first();
+  await expect(cell.locator(".monaco-editor").first()).toBeVisible({ timeout: 15_000 });
+  await setCellSource(page, cell, source);
+  await menuClick(page, "Share Immutable");
+  const toastBody = page.locator(".ironpad-toast-body", { hasText: "/shared/" });
+  await expect(toastBody).toContainText("/shared/", { timeout: 30_000 });
+  const match = (await toastBody.textContent())!.match(/\/shared\/([0-9a-f]{16})/);
+  expect(match).not.toBeNull();
+  return match![1];
+}
+
+async function openShare(page: Page, hash: string): Promise<void> {
+  await page.goto(`/shared/${hash}`);
+  await expect(page.locator(".view-only-notebook")).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(3_000); // hydration (suite convention)
+}
+
+/** Navigate in-app (no reload), proving the same wasm instance survived. */
+async function softNavigate(page: Page, hash: string): Promise<void> {
+  await page.evaluate((h) => {
+    (window as any).__soft = true;
+    const a = document.createElement("a");
+    a.href = `/shared/${h}`;
+    a.id = "e2e-soft-nav";
+    a.textContent = "next";
+    a.style.cssText = "position:fixed;top:0;left:0;z-index:99999;background:#fff";
+    document.body.appendChild(a);
+  }, hash);
+  await page.locator("#e2e-soft-nav").click();
+  await expect(page).toHaveURL(new RegExp(`/shared/${hash}`));
+  expect(await page.evaluate(() => (window as any).__soft)).toBe(true);
+}
+
+const loadedModules = (page: Page) =>
+  page.evaluate(() => [...(window as any).IronpadExecutor._loadedCache.keys()]);
+
+test.describe("Viewer runs and the shared worker", () => {
+  test("a run abandoned by navigation never loads its module (review bug-viewer-10)", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    // Unique, so nothing can serve it without a compile.
+    const stale = await shareOneCell(page, `${Date.now()}i32 + 0`);
+    const healthy = await shareOneCell(page, "41i32 + 1");
+
+    await openShare(page, stale);
+    const gate = await gateCompiles(page);
+    await page.locator(".run-all-button").click();
+    await gate.waitForHeld(1);
+
+    await softNavigate(page, healthy);
+    await expect(page.locator(".view-only-notebook")).toContainText("41i32");
+    expect(await loadedModules(page)).toEqual([]);
+
+    const compiled = page.waitForResponse((r) => r.url().includes("compile_cell"), {
+      timeout: 240_000,
+    });
+    gate.releaseAll();
+    await compiled;
+    await page.waitForTimeout(5_000);
+    expect(await loadedModules(page)).toEqual([]);
+  });
+});

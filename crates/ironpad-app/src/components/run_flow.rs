@@ -70,10 +70,16 @@ pub struct BlobAcquisition {
 /// not forced), local `IndexedDB` store, then the server — with transport
 /// retries. Fresh mode (`request.force`) bypasses snapshot and local store
 /// (the probe self-gates) so the server really recompiles.
+///
+/// `is_cancelled` says whether the caller still wants the result (a Stop, a
+/// newer run, or a disposed cell). A transport failure is not retried once it
+/// does: a reader who navigated away would otherwise keep paying for
+/// compiles of a page that is gone.
 #[cfg(feature = "hydrate")]
 pub async fn acquire_blob(
     request: &CompileRequest,
     share_blob: Option<&ironpad_common::ShareBlobEntry>,
+    is_cancelled: impl Fn() -> bool,
 ) -> BlobAcquisition {
     // Snapshotted share blob (PRD-0047): in cache mode, a manifest entry
     // replaces the compile round trip with an immutable static GET. Any
@@ -118,7 +124,7 @@ pub async fn acquire_blob(
         let mut attempt: i32 = 0;
         loop {
             match crate::server_fns::compile_cell(request.clone()).await {
-                Err(e) if attempt < COMPILE_TRANSPORT_RETRIES => {
+                Err(e) if attempt < COMPILE_TRANSPORT_RETRIES && !is_cancelled() => {
                     attempt += 1;
                     leptos::logging::warn!(
                         "compile transport error (attempt {attempt}): {e}; retrying"

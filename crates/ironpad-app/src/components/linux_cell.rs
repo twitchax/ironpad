@@ -498,6 +498,7 @@ pub(crate) fn ViewOnlyLinuxCell(
                 let acquisition = crate::components::run_flow::acquire_blob(
                     &request,
                     stored_share_blob.get_value().as_ref(),
+                    move || !guard.is_current(),
                 )
                 .await;
 

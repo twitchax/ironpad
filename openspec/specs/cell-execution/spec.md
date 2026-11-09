@@ -120,7 +120,7 @@ The system SHALL report a failed blob load as "WASM load error: ..." and a faile
 - **THEN** the error reads "Stack overflow — the cell likely has unbounded or very deep recursion."
 
 ### Requirement: Compile transport retries
-The system SHALL retry a compile request that fails in transport up to 2 more times, waiting 1.5 s and then 3 s, before reporting the failure. A compile that returns diagnostics is a result, and SHALL NOT be retried. (PRD-0059)
+The system SHALL retry a compile request that fails in transport up to 2 more times, waiting 1.5 s and then 3 s, before reporting the failure, unless the run that asked for it has since been stopped, replaced by a newer run, or left behind by navigation. A compile that returns diagnostics is a result, and SHALL NOT be retried. (PRD-0059)
 
 #### Scenario: A dropped request recovers
 - **WHEN** the first compile request for a cell fails in transport and the retry succeeds
@@ -129,6 +129,11 @@ The system SHALL retry a compile request that fails in transport up to 2 more ti
 #### Scenario: Every attempt fails
 - **WHEN** all three attempts fail in transport
 - **THEN** the editor shows the error diagnostic "Server error: ..." and a read-only page shows "Compile error: ..."
+
+#### Scenario: A read-only run left behind by navigation
+- **WHEN** a reader starts a run on one shared notebook and navigates in-app to another before its compile returns
+- **THEN** the compiled blob is still stored in the local blob cache
+- **AND** it is never loaded into the executor or run, so the next page's cells neither wait behind it nor find their module replaced
 - **AND** the run queue treats the cell as failed
 
 ### Requirement: Local blob cache
