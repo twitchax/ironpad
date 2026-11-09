@@ -129,21 +129,42 @@ window.IronpadStorage = (function () {
             return;
         }
         const store = historyTx(db, 'readwrite');
-        await reqToPromise(store.put({
+        const committed = txDone(store.transaction);
+        store.put({
             notebookId: nb.id,
             // Nudge past an existing key on a same-millisecond force write.
             savedAt: newestSavedAt !== null && newestSavedAt >= now ? newestSavedAt + 1 : now,
             json: JSON.stringify(nb),
-        }));
+        });
         // Keep the newest HISTORY_CAP - 1 old entries plus the one just
-        // written; `keys` is oldest first.
+        // written; `keys` is oldest first. Requests in one transaction run in
+        // order, so these land after the put.
         for (const key of keys.slice(0, Math.max(0, keys.length - (HISTORY_CAP - 1)))) {
-            await reqToPromise(store.delete(key));
+            store.delete(key);
         }
+        await committed;
     }
 
     function blobTx(db, mode) {
         return db.transaction(BLOB_STORE, mode).objectStore(BLOB_STORE);
+    }
+
+    /**
+     * Resolve when `transaction` COMMITS; reject when it aborts.
+     *
+     * A request's `success` is not a commit. Chromium decides storage quota
+     * at commit and reports a refusal as a transaction abort AFTER the
+     * request succeeded, so a write that resolved on `success` reported
+     * "saved" while the record kept its old content. Every write awaits this
+     * instead (reads keep reqToPromise). Create it BEFORE issuing the
+     * requests, so no event can fire unobserved.
+     */
+    function txDone(transaction) {
+        return new Promise((resolve, reject) => {
+            transaction.oncomplete = () => resolve();
+            transaction.onabort = () =>
+                reject(transaction.error || new DOMException('Transaction aborted', 'AbortError'));
+        });
     }
 
     function reqToPromise(request) {
@@ -204,7 +225,10 @@ window.IronpadStorage = (function () {
             const nb = { ...notebook, updated_at: new Date().toISOString() };
             const db = await openDb();
             try {
-                await reqToPromise(tx(db, 'readwrite').put(nb));
+                const store = tx(db, 'readwrite');
+                const committed = txDone(store.transaction);
+                store.put(nb);
+                await committed;
                 // History capture (PRD-0058) rides the save choke point;
                 // best-effort — a history failure must never fail the save.
                 try {
@@ -226,10 +250,15 @@ window.IronpadStorage = (function () {
             const db = await openDb();
             try {
                 const store = tx(db, 'readwrite');
-                await reqToPromise(store.delete(id));
+                const deleted = txDone(store.transaction);
+                store.delete(id);
+                await deleted;
                 // The notebook's history dies with it (PRD-0058): one ranged
                 // delete, never a load of every snapshot.
-                await reqToPromise(historyTx(db, 'readwrite').delete(historyRange(id)));
+                const history = historyTx(db, 'readwrite');
+                const historyDeleted = txDone(history.transaction);
+                history.delete(historyRange(id));
+                await historyDeleted;
             } finally {
                 db.close();
             }
