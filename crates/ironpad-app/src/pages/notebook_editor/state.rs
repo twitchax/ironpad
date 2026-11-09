@@ -799,7 +799,7 @@ pub(super) async fn persist_notebook_durable(state: &NotebookState, enrich_outpu
 }
 
 /// The editor's last write, as the page is torn down (navigation) or hidden
-/// (Local mode's `pagehide`): if the model holds edits no write has landed
+/// (Local mode's `pagehide`): if the model holds edits no write has taken
 /// ([`NotebookState::persist_pending`]) and no flow halted persistence,
 /// write them now.
 ///

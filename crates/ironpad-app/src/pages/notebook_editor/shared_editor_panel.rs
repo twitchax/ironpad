@@ -64,9 +64,9 @@ fn SharedEditorPanel(kind: SharedEditorKind) -> impl IntoView {
     );
     let saving = RwSignal::new(false);
     // Typed text the model does not have yet. The notebook's own flushes
-    // (Ctrl+S, Share, Push, Preview) and a collapse commit it, so it is not
-    // outside "save" any more; nothing commits while it is clear, so opening
-    // the panel never writes the default template into a notebook.
+    // (Ctrl+S, Share, Push, Preview) and a collapse commit it, as well as
+    // Save; nothing commits while it is clear, so opening the panel never
+    // writes the default template into a notebook.
     let dirty = RwSignal::new(false);
     let editor_handle: RwSignal<Option<MonacoEditorHandle>> = RwSignal::new(None);
 
