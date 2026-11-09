@@ -596,9 +596,9 @@ test.describe("Markdown editor", () => {
 
   // Regression (review bug-components-2): the handle signal outlived the
   // editor it pointed at, so reopening a cell read a disposed signal and
-  // panicked, and Escape stopped closing that cell. `trackJsErrors` cannot
-  // see it: the only pageerror the panic produces is "unreachable", which
-  // that helper deliberately drops, so the console is the witness.
+  // panicked, and Escape stopped closing that cell. The only pageerror the
+  // panic produces is "unreachable", which is dropped as a cell trap, so the
+  // console is the witness (`trackJsErrors` watches it too, for app crates).
   test("a markdown cell reopens cleanly, again and again", async ({ page }) => {
     const panics: string[] = [];
     page.on("console", (m) => {
