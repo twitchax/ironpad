@@ -164,13 +164,48 @@ test("a worker error reply falls back too, not only a parked worker", async () =
   bridge._mainExecutor = main;
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
 
-  const pending = bridge.tick("c1");
+  const pending = bridge.execute("c1", new Uint8Array([1]));
   const request = workers[0].posted.at(-1);
-  assert.equal(request.type, "tick");
+  assert.equal(request.type, "execute");
   bridge._onWorkerMessage({ type: "error", id: request.id, error: "unreachable" });
 
   assert.equal((await pending).fallback, true);
-  assert.deepEqual(main.calls.map((c) => c[0]), ["loadBlob", "tick"]);
+  assert.deepEqual(main.calls.map((c) => c[0]), ["loadBlob", "execute"]);
+});
+
+test("a tick the main thread never loaded rethrows the worker error", async () => {
+  // Review bug-components-7: a terminate() evicts every module from the
+  // worker, and a panel still on screen keeps ticking. Loading the cached blob
+  // on the main thread cannot rescue that tick: the cell's simulation state
+  // lives in a static that only `cell_main` sets, which never ran on that
+  // instance, so `cell_tick` traps on every frame. Only a cell whose execute
+  // already fell back has a main-thread instance worth ticking. The page
+  // grants the fallback, so the grant is not what stops it.
+  const { bridge, workers, warnings } = loadBridge({ trusted: true });
+  const main = fakeMainExecutor();
+  bridge._mainExecutor = main;
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+
+  for (const method of ["tick", "tickLive"]) {
+    const pending = bridge[method]("c1");
+    const request = workers[0].posted.at(-1);
+    bridge._onWorkerMessage({ type: "error", id: request.id, error: "Cell not loaded: c1" });
+    await assert.rejects(pending, /Cell not loaded/);
+  }
+  assert.deepEqual(main.calls, [], "nothing was loaded or ticked on the main thread");
+  assert.deepEqual(warnings, [], "and no fallback was announced");
+
+  // Before the main-thread executor even exists, the fallback scripts are not
+  // pulled in for a tick that cannot work.
+  const fresh = loadBridge({ trusted: true });
+  fresh.bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+  fresh.bridge._ensureMainExecutor = () => {
+    throw new Error("fallback scripts loaded for a doomed tick");
+  };
+  const pending = fresh.bridge.tick("c1");
+  const request = fresh.workers[0].posted.at(-1);
+  fresh.bridge._onWorkerMessage({ type: "error", id: request.id, error: "Cell not loaded: c1" });
+  await assert.rejects(pending, /Cell not loaded/);
 });
 
 test("a terminate() cancellation is rethrown, never re-run on the main thread", async () => {
@@ -229,6 +264,10 @@ async function failTwice(method, args, workerText, retryText) {
   };
   bridge._mainExecutor = main;
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+  if (method === "tick" || method === "tickLive") {
+    // A tick is retried only on an instance whose execute already fell back.
+    main.loaded.set("c1", "h1");
+  }
 
   const pending = bridge[method]("c1", ...args);
   const request = workers[0].posted.at(-1);
@@ -273,6 +312,8 @@ test("a parked worker never ran the call, so the retry's own error surfaces", as
   main.tick = async () => {
     throw new Error("panicked at sim.rs: real");
   };
+  // The cell's execute already fell back, the only state a tick is retried from.
+  main.loaded.set("c1", "h1");
   bridge._mainExecutor = main;
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
   park(bridge);
@@ -568,6 +609,9 @@ test("the main-thread fallback is off until a page grants it", async () => {
     /Worker unavailable/,
   );
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+  // As if an earlier run had fallen back, so the ticks below reach the grant
+  // rather than stopping at the never-ran-here tick guard.
+  main.loaded.set("c1", "h1");
   for (const call of [
     () => bridge.execute("c1", new Uint8Array([7])),
     () => bridge.tick("c1"),
@@ -609,10 +653,10 @@ test("the policy in force when a call was made decides its fallback", async () =
   bridge._mainExecutor = main;
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
 
-  const refused = bridge.tick("c1");
+  const refused = bridge.execute("c1", new Uint8Array([1]));
   const refusedId = workers[0].posted.at(-1).id;
   bridge.setMainThreadFallback(true);
-  const granted = bridge.tick("c1");
+  const granted = bridge.execute("c1", new Uint8Array([2]));
   const grantedId = workers[0].posted.at(-1).id;
   bridge.setMainThreadFallback(false);
 
@@ -621,5 +665,5 @@ test("the policy in force when a call was made decides its fallback", async () =
 
   await assert.rejects(refused, /needs the main thread/);
   assert.equal((await granted).fallback, true);
-  assert.deepEqual(main.calls.map((c) => c[0]), ["loadBlob", "tick"]);
+  assert.deepEqual(main.calls.map((c) => c[0]), ["loadBlob", "execute"]);
 });

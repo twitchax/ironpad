@@ -262,3 +262,47 @@ test.describe("Executor worker recovery", () => {
   });
 });
 
+// ── Ticking panels after a terminate (review bug-components-7) ─────────────
+//
+// Stopping any cell terminates the one shared worker, which evicts every
+// loaded module. A Simulation or LiveView panel still on screen then ticked a
+// module the fresh worker never loaded, fell back to a main-thread instance
+// whose `cell_main` never ran, trapped, and retried every frame with nothing
+// on screen saying so.
+
+for (const { notebook, kind, panel, method } of [
+  { notebook: "heat-equation", kind: "simulation", panel: ".animation-canvas-container", method: "tick" },
+  { notebook: "sine-phase-explorer", kind: "LiveView", panel: ".live-view-container", method: "tickLive" },
+]) {
+  test(`a ${kind} panel whose module was evicted stops and says so`, async ({ page }) => {
+    test.setTimeout(300_000);
+    await page.goto(`/public/${notebook}`);
+    const counter = page.locator(`${panel} .animation-frame-counter`).first();
+    const frame = async () => Number(((await counter.textContent()) ?? "").replace(/\D/g, ""));
+
+    // Positive control: the panel is live and advancing.
+    await expect(counter).toHaveText(/Frame [1-9]/, { timeout: 240_000 });
+    const before = await frame();
+    await expect.poll(frame, { timeout: 10_000 }).toBeGreaterThan(before);
+
+    await page.evaluate((m) => {
+      const exec = (window as any).IronpadExecutor;
+      exec.__ticks = 0;
+      const original = exec[m].bind(exec);
+      exec[m] = (...args: unknown[]) => {
+        exec.__ticks += 1;
+        return original(...args);
+      };
+      exec.terminate();
+    }, method);
+
+    await expect(page.locator(`${panel} .animation-tick-error`).first()).toBeVisible({
+      timeout: 10_000,
+    });
+    // Settled: the loop stopped asking.
+    await page.waitForTimeout(500);
+    const settled = await page.evaluate(() => (window as any).IronpadExecutor.__ticks);
+    await page.waitForTimeout(2_000);
+    expect(await page.evaluate(() => (window as any).IronpadExecutor.__ticks)).toBe(settled);
+  });
+}

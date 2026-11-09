@@ -96,11 +96,14 @@ pub fn LiveViewPanel(
         use std::cell::Cell;
         use std::rc::Rc;
 
+        use crate::components::animation_canvas::TickStopped;
         use crate::components::raf_loop::RafLoop;
 
         let content_ref = NodeRef::<leptos::html::Div>::new();
         let playing = RwSignal::new(true);
         let frame_number = RwSignal::new(0u32);
+        // Set when a tick fails; see `TickStopped`.
+        let tick_error = RwSignal::new(false);
 
         // One tick: fetch the next content from the executor and render it.
         // Shared by the loop and the Step button, and refused while a tick is
@@ -128,6 +131,12 @@ pub fn LiveViewPanel(
                             apply_live_content(el, kind_str, &live_result.content);
                         }
                         frame_number.update(|n| *n += 1);
+                        let _ = tick_error.try_set(false);
+                    } else {
+                        // Stop rather than retry every frame forever; `try_`
+                        // writes, since the panel may be gone by now.
+                        let _ = playing.try_set(false);
+                        let _ = tick_error.try_set(true);
                     }
                     in_flight.set(false);
                 });
@@ -179,6 +188,7 @@ pub fn LiveViewPanel(
                         {format!("{fps} fps")}
                     </span>
                 </div>
+                <TickStopped tick_error=tick_error />
             </div>
         }
         .into_any()

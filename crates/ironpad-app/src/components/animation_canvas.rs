@@ -286,6 +286,8 @@ pub fn SimulationCanvas(
         let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
         let playing = RwSignal::new(true);
         let frame_number = RwSignal::new(0u32);
+        // Set when a tick fails; see `TickStopped`.
+        let tick_error = RwSignal::new(false);
         // Filled once the canvas mounts; a tick before that draws nothing.
         let ctx_cell: Rc<RefCell<Option<web_sys::CanvasRenderingContext2d>>> =
             Rc::new(RefCell::new(None));
@@ -309,6 +311,12 @@ pub fn SimulationCanvas(
                             let _ = draw::draw_rgb(ctx, &tick.rgb_bytes, tick.width, tick.height);
                         }
                         frame_number.update(|n| *n += 1);
+                        let _ = tick_error.try_set(false);
+                    } else {
+                        // Stop rather than retry every frame forever; `try_`
+                        // writes, since the panel may be gone by now.
+                        let _ = playing.try_set(false);
+                        let _ = tick_error.try_set(true);
                     }
                     in_flight.set(false);
                 });
@@ -392,6 +400,7 @@ pub fn SimulationCanvas(
                         {format!("{fps} fps")}
                     </span>
                 </div>
+                <TickStopped tick_error=tick_error />
                 <div class="ironpad-sim-sliders">
                     {slider_signals.into_iter().map(|(slider, sig)| {
                         let key = slider.key.clone();
@@ -436,6 +445,29 @@ pub fn SimulationCanvas(
             </div>
         }
         .into_any()
+    }
+}
+
+/// The notice a ticking panel (`SimulationCanvas`, `LiveViewPanel`) shows
+/// once a tick fails and the panel stops.
+///
+/// The ordinary way here is a Stop on ANY cell: it terminates the one shared
+/// worker, which evicts every loaded module, so a sibling panel still on
+/// screen ticks a cell the fresh worker never loaded. Before this, the
+/// rejection was dropped and the loop kept its schedule, so the panel froze
+/// on its last frame while retrying every frame, with nothing on screen to
+/// say why or what to do.
+#[cfg(feature = "hydrate")]
+#[component]
+pub(crate) fn TickStopped(tick_error: RwSignal<bool>) -> impl IntoView {
+    move || {
+        tick_error.get().then(|| {
+            view! {
+                <div class="animation-tick-error" role="status">
+                    "This output stopped because its cell is no longer loaded. Run the cell again to restart it."
+                </div>
+            }
+        })
     }
 }
 

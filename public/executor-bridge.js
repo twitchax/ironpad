@@ -321,6 +321,19 @@
     if (workerError && (workerError.name === "AbortError" || workerError.noFallback)) {
       throw workerError;
     }
+    // A tick can only be rescued by a main-thread instance that already ran
+    // the cell: Simulation and LiveView state lives in a static that only
+    // `cell_main` sets, so ticking a blob loaded here fresh traps on every
+    // frame. That is the state a terminate() leaves sibling panels in (it
+    // evicts every worker module). Checked before the grant, the warning and
+    // the fallback scripts: no grant could rescue such a tick, so the refusal
+    // hint would point the reader at the wrong fix.
+    if (method === "tick" || method === "tickLive") {
+      var loaded = this._blobCache.get(cellId);
+      if (!loaded || !this._mainExecutor || !this._mainExecutor.isLoaded(cellId, loaded.hash)) {
+        throw workerError;
+      }
+    }
     if (!allowed) {
       throw new Error(
         (workerError && workerError.message) + "\n\n" + FALLBACK_REFUSED_HINT

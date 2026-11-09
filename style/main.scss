@@ -4053,6 +4053,17 @@ code[class*="language-"] {
     color: var(--ip-text-tertiary, #888);
 }
 
+// A ticking panel that stopped because its cell is no longer loaded (a Stop
+// anywhere terminates the shared worker). Same amber as `.view-only-blocked`.
+.animation-tick-error {
+    padding: 0.5rem 0.75rem;
+    background: rgba(var(--ip-warning-rgb), 0.08);
+    border: 1px dashed rgba(var(--ip-warning-rgb), 0.4);
+    border-radius: 4px;
+    font-size: 0.85rem;
+    color: var(--ip-warning);
+}
+
 .ironpad-sim-sliders {
     padding: 0.5rem 0;
     width: 100%;
