@@ -863,6 +863,31 @@ async fn host_can_reply_with_a_notebook_larger_than_four_mib() {
     ));
 }
 
+/// `/ws/host` needs no account and every session record clones the notebook
+/// id, so an unbounded id let one socket pin kilobytes per `CreateSession`.
+/// An oversized (or empty) id is refused before the upgrade; a real one,
+/// which is a UUID or a share id, still connects.
+#[tokio::test]
+async fn host_rejects_an_oversized_notebook_id() {
+    let base = start_server(test_state()).await;
+
+    let long = "a".repeat(1024);
+    let err = tokio_tungstenite::connect_async(format!("{base}/ws/host?notebook_id={long}"))
+        .await
+        .expect_err("a 1 KiB notebook id must be refused");
+    assert_eq!(http_status(&err), Some(400), "got {err:?}");
+
+    let err = tokio_tungstenite::connect_async(format!("{base}/ws/host?notebook_id="))
+        .await
+        .expect_err("an empty notebook id must be refused");
+    assert_eq!(http_status(&err), Some(400), "got {err:?}");
+
+    let uuid = "123e4567-e89b-12d3-a456-426614174000";
+    tokio_tungstenite::connect_async(format!("{base}/ws/host?notebook_id={uuid}"))
+        .await
+        .expect("a UUID notebook id must connect");
+}
+
 /// Extract the HTTP status code from a tungstenite handshake error, if any.
 fn http_status(err: &tungstenite::Error) -> Option<u16> {
     match err {

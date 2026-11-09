@@ -144,12 +144,17 @@ The browser host SHALL send a `Heartbeat` every 30 seconds. The server SHALL clo
 - **THEN** the next sweep sends that agent `SessionEnded` and disconnects it
 
 ### Requirement: Relay frame and queue limits
-The relay SHALL accept frames up to 8 MiB (twice the 4 MiB share cap), so the reply to `NotebookGet` for any shareable notebook fits in one frame, and SHALL bound each connection's outbound queue to 1024 frames, dropping frames for a peer that stops reading rather than buffering without limit. (PRD-0036, PRD-0038)
+The relay SHALL accept frames up to 8 MiB (twice the 4 MiB share cap), so the reply to `NotebookGet` for any shareable notebook fits in one frame, and SHALL bound each connection's outbound queue to 1024 frames, dropping frames for a peer that stops reading rather than buffering without limit. Because `/ws/host` needs no account, the relay SHALL also bound what one connection can make it store: a host `notebook_id` that is empty or longer than 256 bytes SHALL be refused with HTTP 400 before the upgrade; one host connection SHALL hold at most 8 sessions, a further `CreateSession` being answered with an `InvalidMessage` error carrying its id; a guest message id longer than 128 bytes SHALL be refused with an `InvalidMessage` error whose id is empty, before the permission check and without reaching the host; and one guest SHALL have at most 1024 requests awaiting a host reply, a further request being refused with `InvalidMessage` and not forwarded. (PRD-0036, PRD-0038)
 
 #### Scenario: A notebook over 4 MiB crosses the relay
 - **WHEN** a host answers a guest's `NotebookGet` with a notebook whose one cell holds 5 MiB of source
 - **THEN** the guest receives the whole notebook
 - **AND** the host connection survives and can still create sessions
+
+#### Scenario: One anonymous socket cannot grow the session store
+- **WHEN** a host connects with a 1 KiB `notebook_id`
+- **THEN** the handshake fails with HTTP 400, while a UUID-sized id connects
+- **AND** a host that sends nine `CreateSession` frames gets eight sessions and an `InvalidMessage` error for the ninth
 
 ### Requirement: Message envelope
 Every frame SHALL be a JSON text message `{"id", "type", "payload"}` where `type` is `Mutation`, `Query`, `Event`, `Response`, or `Control`, and the payload is tagged by `action`, `query`, `event` (inside `{by, event}`), `response`, or `control` respectively; mutation acknowledgements are tagged by `result`. (6962173 agentic-collaboration/0001)

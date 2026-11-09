@@ -80,27 +80,39 @@ impl SessionStore {
         browser_connection_id: String,
         permissions: Permissions,
     ) -> CreateSessionResult {
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let token = generate_token();
-        let token_hash = hash_token(&token);
-        let now = Utc::now();
-
-        let session = Session {
-            id: session_id.clone(),
-            notebook_id,
-            token_hash,
-            permissions,
-            created_at: now,
-            expires_at: now + Duration::hours(DEFAULT_TTL_HOURS),
-            browser_connection_id,
-        };
-
+        let (session, result) = new_session(notebook_id, browser_connection_id, permissions);
         self.sessions
             .write()
             .await
-            .insert(session_id.clone(), session);
+            .insert(session.id.clone(), session);
+        result
+    }
 
-        CreateSessionResult { session_id, token }
+    /// [`create_session`](Self::create_session), refused (`None`) when
+    /// `browser_connection_id` already holds `max` session records. The count
+    /// and the insert share one write lock, so concurrent frames on one
+    /// connection cannot both pass the check.
+    ///
+    /// Expired-but-unswept records count: the cap bounds the memory a host
+    /// connection pins, and those records still occupy it.
+    pub async fn create_session_capped(
+        &self,
+        notebook_id: String,
+        browser_connection_id: String,
+        permissions: Permissions,
+        max: usize,
+    ) -> Option<CreateSessionResult> {
+        let mut sessions = self.sessions.write().await;
+        let held = sessions
+            .values()
+            .filter(|s| s.browser_connection_id == browser_connection_id)
+            .count();
+        if held >= max {
+            return None;
+        }
+        let (session, result) = new_session(notebook_id, browser_connection_id, permissions);
+        sessions.insert(session.id.clone(), session);
+        Some(result)
     }
 
     /// Validate a plaintext token and return the session if valid.
@@ -217,6 +229,31 @@ impl SessionStore {
         });
         swept
     }
+}
+
+/// Mint a session record and the one-time plaintext token for it: the ONE
+/// place a session's id, token and lifetime are decided, shared by both
+/// constructors.
+fn new_session(
+    notebook_id: String,
+    browser_connection_id: String,
+    permissions: Permissions,
+) -> (Session, CreateSessionResult) {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let token = generate_token();
+    let token_hash = hash_token(&token);
+    let now = Utc::now();
+
+    let session = Session {
+        id: session_id.clone(),
+        notebook_id,
+        token_hash,
+        permissions,
+        created_at: now,
+        expires_at: now + Duration::hours(DEFAULT_TTL_HOURS),
+        browser_connection_id,
+    };
+    (session, CreateSessionResult { session_id, token })
 }
 
 // ── Permission checking ─────────────────────────────────────────────────────

@@ -51,6 +51,21 @@ const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 /// forever. (The guest-side equivalent is configurable on [`WsState`].)
 const HOST_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
 
+/// Longest `notebook_id` a host may connect with. `/ws/host` needs no
+/// account and every session record clones the id, so an unbounded one let a
+/// single socket pin kilobytes per `CreateSession`. Real ids are UUIDs or
+/// share ids, far below this.
+const MAX_NOTEBOOK_ID_BYTES: usize = 256;
+
+/// Sessions one host connection may hold at once. The browser creates exactly
+/// one per socket; the cap stops a host that mints its own tokens from growing
+/// the session store (and every O(n) scan over it) without limit.
+const MAX_SESSIONS_PER_HOST_CONNECTION: usize = 8;
+
+/// Longest message id a guest may send. The relay stores the id until the
+/// host answers and echoes it in error replies; CLI ids are UUIDs.
+const MAX_MESSAGE_ID_BYTES: usize = 128;
+
 /// WS close code sent when the first frame is not a valid `ClaimHost`.
 const WS_CLOSE_BAD_HANDSHAKE: u16 = 4400;
 
@@ -83,6 +98,13 @@ pub async fn ws_host_handler(
     // replaces, adding no entry). Small TOCTOU overshoot under a simultaneous
     // burst is acceptable — the cap bounds steady-state, and the handshake
     // timeout reaps sockets that never claim.
+    if params.notebook_id.is_empty() || params.notebook_id.len() > MAX_NOTEBOOK_ID_BYTES {
+        tracing::warn!(
+            len = params.notebook_id.len(),
+            "host notebook id empty or oversized — rejecting"
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if !state.ws.host_slot_available(&params.notebook_id).await {
         tracing::warn!(notebook_id = %params.notebook_id, "host connection cap reached — rejecting");
         return Err(StatusCode::SERVICE_UNAVAILABLE);
@@ -338,15 +360,34 @@ async fn handle_host_control(
 ) {
     match control {
         ControlMessage::CreateSession { permissions } => {
-            let result = state
+            let Some(result) = state
                 .ws
                 .sessions
-                .create_session(
+                .create_session_capped(
                     notebook_id.to_string(),
                     connection_id.to_string(),
                     permissions.clone(),
+                    MAX_SESSIONS_PER_HOST_CONNECTION,
                 )
-                .await;
+                .await
+            else {
+                tracing::warn!(
+                    notebook_id = %notebook_id,
+                    connection_id = %connection_id,
+                    "host connection session cap reached — refusing CreateSession"
+                );
+                let error = wire_msg(
+                    msg_id,
+                    MessageKind::Response(Response::Error {
+                        code: ErrorCode::InvalidMessage,
+                        message: format!(
+                            "at most {MAX_SESSIONS_PER_HOST_CONNECTION} sessions per host connection"
+                        ),
+                    }),
+                );
+                state.ws.send_to_host(notebook_id, error).await;
+                return;
+            };
 
             tracing::info!(
                 session_id = %result.session_id,
@@ -531,6 +572,22 @@ async fn handle_guest_message(
         return;
     };
 
+    // Id length first: the relay stores the id until the host answers, and
+    // every error reply below (the permission one included) echoes it. The
+    // refusal therefore carries an empty id.
+    if msg.id.len() > MAX_MESSAGE_ID_BYTES {
+        tracing::warn!(client_id = %client_id, len = msg.id.len(), "guest message id oversized — refusing");
+        let error = wire_msg(
+            "",
+            MessageKind::Response(Response::Error {
+                code: ErrorCode::InvalidMessage,
+                message: format!("message id longer than {MAX_MESSAGE_ID_BYTES} bytes"),
+            }),
+        );
+        state.ws.send_to_guest(client_id, error).await;
+        return;
+    }
+
     // Permission check.
     if !check_permission(permissions, &msg.kind) {
         let error = wire_msg(
@@ -551,7 +608,18 @@ async fn handle_guest_message(
         // cleared when the success Event is broadcast (see handle_host_message);
         // for a query it routes the Response.
         MessageKind::Mutation(_) | MessageKind::Query(_) => {
-            state.ws.track_query(&msg.id, client_id).await;
+            if !state.ws.track_query(&msg.id, client_id).await {
+                tracing::warn!(client_id = %client_id, "guest has too many requests in flight — refusing");
+                let error = wire_msg(
+                    &msg.id,
+                    MessageKind::Response(Response::Error {
+                        code: ErrorCode::InvalidMessage,
+                        message: "too many requests in flight".into(),
+                    }),
+                );
+                state.ws.send_to_guest(client_id, error).await;
+                return;
+            }
             match state.ws.send_to_host(notebook_id, text.clone()).await {
                 HostDelivery::Delivered => {}
                 // Host alive but its outbound queue is saturated; the frame was
@@ -604,7 +672,7 @@ mod tests {
 
     use crate::state::{AppState, WsState};
 
-    use super::WS_CHANNEL_BOUND;
+    use super::{MAX_SESSIONS_PER_HOST_CONNECTION, WS_CHANNEL_BOUND};
     use crate::state::wire_msg;
 
     /// The handlers take the inbound frame's `Utf8Bytes`; tests build frames
@@ -693,7 +761,7 @@ mod tests {
             hosted_session(&state, Permissions::default()).await;
 
         // Simulate a tracked query from guest-1 with message id "q-42".
-        state.ws.track_query("q-42", "guest-1").await;
+        assert!(state.ws.track_query("q-42", "guest-1").await);
 
         // Host sends a response with matching id.
         let response_json = wire_msg(
@@ -806,7 +874,7 @@ mod tests {
             hosted_session(&state, Permissions::default()).await;
 
         // A mutation is in flight (tracked).
-        state.ws.track_query("m-1", "guest-1").await;
+        assert!(state.ws.track_query("m-1", "guest-1").await);
 
         // The host broadcasts the mutation's success Event (carrying its id).
         let event_json = wire_msg(
@@ -838,7 +906,7 @@ mod tests {
         .await;
 
         // The guest's mutation "m-1" is in flight (tracked for routing).
-        state.ws.track_query("m-1", "guest-1").await;
+        assert!(state.ws.track_query("m-1", "guest-1").await);
 
         // The host echoes the mutation's success Event, carrying its id.
         let ack = wire_msg(
@@ -949,7 +1017,93 @@ mod tests {
         assert!(state.ws.sessions.get_session(&session_id).await.is_none());
     }
 
+    #[tokio::test]
+    async fn create_session_is_capped_per_connection() {
+        let state = test_state();
+        let (host_tx, mut host_rx) = mpsc::channel(WS_CHANNEL_BOUND);
+        state.ws.register_host(NB, CONN, host_tx).await;
+
+        let create = wire_msg(
+            "ctrl",
+            MessageKind::Control(ControlMessage::CreateSession {
+                permissions: Permissions::default(),
+            }),
+        );
+        for _ in 0..=MAX_SESSIONS_PER_HOST_CONNECTION {
+            handle_host_message(&create, NB, CONN, &state).await;
+        }
+
+        // The cap holds: one frame past it mints no session record...
+        assert_eq!(
+            state.ws.sessions.all_sessions().await.len(),
+            MAX_SESSIONS_PER_HOST_CONNECTION
+        );
+        // ...and the host is told why instead of waiting on a SessionCreated.
+        let mut last = None;
+        while let Ok(frame) = host_rx.try_recv() {
+            last = Some(frame);
+        }
+        let msg: protocol::Message =
+            serde_json::from_str(&last.expect("the host gets a reply")).unwrap();
+        assert_eq!(msg.id, "ctrl");
+        assert!(
+            matches!(
+                msg.kind,
+                MessageKind::Response(Response::Error {
+                    code: ErrorCode::InvalidMessage,
+                    ..
+                })
+            ),
+            "expected an InvalidMessage error, got {:?}",
+            msg.kind
+        );
+    }
+
     // ── Guest message tests ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn oversized_guest_message_id_is_refused_without_echo() {
+        let state = test_state();
+        let (mut host_rx, _session_id, mut guest_rx) =
+            hosted_session(&state, Permissions::default()).await;
+
+        // A read-denied query: the permission-denied reply would echo the id,
+        // so the length check has to run before it.
+        let perms = Permissions {
+            read: false,
+            write: true,
+        };
+        let id = "q".repeat(1024);
+        let query_json = wire_msg(&id, MessageKind::Query(Query::NotebookGet));
+        handle_guest_message(&query_json, NB, "guest-1", &perms, &state).await;
+
+        let reply = guest_rx.try_recv().expect("the guest gets a reply");
+        let msg: protocol::Message = serde_json::from_str(&reply).unwrap();
+        assert!(msg.id.is_empty(), "the oversized id must not be echoed");
+        assert!(matches!(
+            msg.kind,
+            MessageKind::Response(Response::Error {
+                code: ErrorCode::InvalidMessage,
+                ..
+            })
+        ));
+        assert!(host_rx.try_recv().is_err(), "nothing reaches the host");
+        assert_eq!(
+            state.ws.resolve_query(&id).await,
+            None,
+            "nothing is tracked"
+        );
+
+        // Same for a guest that IS allowed to read: never forwarded or tracked.
+        let reader = Permissions::default();
+        handle_guest_message(&query_json, NB, "guest-1", &reader, &state).await;
+        assert!(host_rx.try_recv().is_err(), "nothing reaches the host");
+        assert_eq!(
+            state.ws.resolve_query(&id).await,
+            None,
+            "nothing is tracked"
+        );
+    }
 
     #[tokio::test]
     async fn guest_mutation_forwarded_to_host() {

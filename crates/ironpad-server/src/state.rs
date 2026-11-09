@@ -85,6 +85,13 @@ pub const DEFAULT_GUEST_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 /// [`DEFAULT_GUEST_IDLE_TIMEOUT_SECS`] as a `Duration` for in-crate use.
 const DEFAULT_GUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(DEFAULT_GUEST_IDLE_TIMEOUT_SECS);
 
+/// Requests one guest may have in flight at once. Each pending entry holds a
+/// guest-chosen message id until the host answers, so without a cap a guest
+/// that never reads its replies grows the map for as long as it stays
+/// connected. Matches the outbound queue depth: a guest cannot usefully await
+/// more replies than its queue holds.
+const MAX_PENDING_PER_GUEST: usize = 1024;
+
 /// Manages WebSocket connections between browser hosts and CLI guests.
 #[derive(Clone)]
 pub struct WsState {
@@ -99,8 +106,8 @@ pub struct WsState {
     notebook_secrets: Arc<RwLock<HashMap<String, blake3::Hash>>>,
     /// `session_id` → guest channel senders.
     guests: Arc<RwLock<HashMap<String, Vec<GuestHandle>>>>,
-    /// Pending query `message_id` → guest `client_id` (for routing responses).
-    pending_queries: Arc<RwLock<HashMap<String, String>>>,
+    /// Pending guest requests, for routing the host's replies back.
+    pending_queries: Arc<RwLock<PendingQueries>>,
     /// Idle timeout applied to guest read loops (see [`DEFAULT_GUEST_IDLE_TIMEOUT`]).
     guest_idle_timeout: Duration,
     /// Global cap on concurrent guest connections (see [`DEFAULT_MAX_GUESTS`]).
@@ -136,6 +143,59 @@ struct HostHandle {
 struct GuestHandle {
     client_id: String,
     sender: mpsc::Sender<Utf8Bytes>,
+}
+
+/// Pending guest requests: message id → the guest awaiting the reply, plus a
+/// per-guest count so [`MAX_PENDING_PER_GUEST`] can be enforced without a scan.
+/// Private so the two maps can only change together.
+#[derive(Default)]
+struct PendingQueries {
+    by_id: HashMap<String, String>,
+    per_client: HashMap<String, usize>,
+}
+
+impl PendingQueries {
+    /// Record that `client_id` awaits `message_id`; false when that guest is
+    /// already at `max`. An id re-tracked under a different guest moves the
+    /// count to the new owner instead of leaking the old one's slot.
+    fn track(&mut self, message_id: &str, client_id: &str, max: usize) -> bool {
+        if self.by_id.get(message_id).is_some_and(|c| c == client_id) {
+            return true;
+        }
+        if self.per_client.get(client_id).copied().unwrap_or(0) >= max {
+            return false;
+        }
+        if let Some(previous) = self
+            .by_id
+            .insert(message_id.to_string(), client_id.to_string())
+        {
+            self.release(&previous);
+        }
+        *self.per_client.entry(client_id.to_string()).or_default() += 1;
+        true
+    }
+
+    fn resolve(&mut self, message_id: &str) -> Option<String> {
+        let client_id = self.by_id.remove(message_id)?;
+        self.release(&client_id);
+        Some(client_id)
+    }
+
+    /// Forget everything `client_id` was awaiting.
+    fn drop_client(&mut self, client_id: &str) {
+        if self.per_client.remove(client_id).is_some() {
+            self.by_id.retain(|_, cid| cid != client_id);
+        }
+    }
+
+    fn release(&mut self, client_id: &str) {
+        if let Some(count) = self.per_client.get_mut(client_id) {
+            *count -= 1;
+            if *count == 0 {
+                self.per_client.remove(client_id);
+            }
+        }
+    }
 }
 
 /// Outcome of a host claim against a notebook's bound secret (PRD-0038 T-014).
@@ -371,10 +431,7 @@ impl WsState {
         // Drop any queries/mutations this guest was still awaiting — with the
         // guest gone, nobody will deliver those responses, so don't leak the
         // pending_queries entries.
-        self.pending_queries
-            .write()
-            .await
-            .retain(|_, cid| cid != client_id);
+        self.pending_queries.write().await.drop_client(client_id);
     }
 
     /// Send a JSON message to all guests on a session.
@@ -470,17 +527,20 @@ impl WsState {
 
     // ── Query tracking ──────────────────────────────────────────────────
 
-    /// Track a pending query so the response can be routed back.
-    pub async fn track_query(&self, message_id: &str, client_id: &str) {
+    /// Track a pending query so the response can be routed back. False when
+    /// the guest already has [`MAX_PENDING_PER_GUEST`] requests in flight; the
+    /// caller must then refuse the frame rather than forward it untracked.
+    #[must_use]
+    pub async fn track_query(&self, message_id: &str, client_id: &str) -> bool {
         self.pending_queries
             .write()
             .await
-            .insert(message_id.to_string(), client_id.to_string());
+            .track(message_id, client_id, MAX_PENDING_PER_GUEST)
     }
 
     /// Resolve a pending query, returning the `client_id` that sent it.
     pub async fn resolve_query(&self, message_id: &str) -> Option<String> {
-        self.pending_queries.write().await.remove(message_id)
+        self.pending_queries.write().await.resolve(message_id)
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
@@ -726,9 +786,9 @@ mod tests {
         ws.register_guest("sess-1", "client-1", tx).await;
 
         // Two in-flight queries/mutations from this guest, one from another.
-        ws.track_query("m-1", "client-1").await;
-        ws.track_query("m-2", "client-1").await;
-        ws.track_query("q-9", "client-2").await;
+        assert!(ws.track_query("m-1", "client-1").await);
+        assert!(ws.track_query("m-2", "client-1").await);
+        assert!(ws.track_query("q-9", "client-2").await);
 
         ws.unregister_guest("sess-1", "client-1").await;
 
@@ -1054,12 +1114,48 @@ mod tests {
     async fn track_and_resolve_query() {
         let ws = WsState::default();
 
-        ws.track_query("msg-42", "client-7").await;
+        assert!(ws.track_query("msg-42", "client-7").await);
         let resolved = ws.resolve_query("msg-42").await;
         assert_eq!(resolved.as_deref(), Some("client-7"));
 
         // Second resolve returns None (consumed).
         assert_eq!(ws.resolve_query("msg-42").await, None);
+    }
+
+    #[tokio::test]
+    async fn pending_queries_are_capped_per_guest() {
+        let ws = WsState::default();
+        let (tx, _rx) = mpsc::channel(64);
+        ws.register_guest("sess-1", "client-1", tx).await;
+
+        // A guest can hold up to the cap in flight, and no more.
+        for i in 0..MAX_PENDING_PER_GUEST {
+            assert!(ws.track_query(&format!("q-{i}"), "client-1").await);
+        }
+        assert!(!ws.track_query("one-too-many", "client-1").await);
+        assert_eq!(ws.resolve_query("one-too-many").await, None);
+        // The cap is per guest: another client is unaffected.
+        assert!(ws.track_query("other", "client-2").await);
+
+        // Resolving an entry frees its slot.
+        assert_eq!(ws.resolve_query("q-0").await.as_deref(), Some("client-1"));
+        assert!(ws.track_query("q-0", "client-1").await);
+
+        // Disconnecting frees the whole budget.
+        ws.unregister_guest("sess-1", "client-1").await;
+        for i in 0..MAX_PENDING_PER_GUEST {
+            assert!(ws.track_query(&format!("again-{i}"), "client-1").await);
+        }
+
+        // Re-tracking an id under a second client MOVES its count: client-1
+        // is back under the cap and client-2's count grew by one.
+        assert!(!ws.track_query("full", "client-1").await);
+        assert!(ws.track_query("again-0", "client-2").await);
+        assert!(ws.track_query("fits-again", "client-1").await);
+        assert_eq!(
+            ws.resolve_query("again-0").await.as_deref(),
+            Some("client-2")
+        );
     }
 
     #[tokio::test]
