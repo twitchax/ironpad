@@ -24,9 +24,30 @@ use leptos::prelude::*;
 /// connection mid-build, a network change on a mobile client — are safe to
 /// retry; the server's incremental target dir makes retried builds much
 /// cheaper than the first attempt. Compile diagnostics are Ok responses and
-/// never retried.
+/// never retried, and neither is anything [`is_transport_error`] does not
+/// name.
 #[cfg(feature = "hydrate")]
 const COMPILE_TRANSPORT_RETRIES: i32 = 2;
+
+/// Is `e` a failure of the TRANSPORT rather than a verdict from the server?
+///
+/// An allowlist, not "anything but `ServerError`" (review bug-compiler-6):
+/// every refusal `compile_cell` issues (at capacity, rate limited, timed out,
+/// an invalid cell id) arrives as `ServerError`, and re-asking ran each one
+/// up to three times, charging a build token and queueing up to 180s per
+/// attempt. `Args` and `MissingArg` are verdicts too. A gateway 502 with an
+/// HTML body decodes as `Deserialization`, so it still retries.
+///
+/// A build that exceeds its budget is NOT retried either: its artifacts
+/// persist, so the author's next Run converges, and they hear about it after
+/// one budget rather than three.
+#[cfg(any(test, feature = "hydrate"))]
+fn is_transport_error(e: &ServerFnError) -> bool {
+    matches!(
+        e,
+        ServerFnError::Request(_) | ServerFnError::Response(_) | ServerFnError::Deserialization(_)
+    )
+}
 
 /// Base backoff (ms) between transport retries, scaled by attempt number.
 #[cfg(feature = "hydrate")]
@@ -124,7 +145,11 @@ pub async fn acquire_blob(
         let mut attempt: i32 = 0;
         loop {
             match crate::server_fns::compile_cell(request.clone()).await {
-                Err(e) if attempt < COMPILE_TRANSPORT_RETRIES && !is_cancelled() => {
+                Err(e)
+                    if attempt < COMPILE_TRANSPORT_RETRIES
+                        && is_transport_error(&e)
+                        && !is_cancelled() =>
+                {
                     attempt += 1;
                     leptos::logging::warn!(
                         "compile transport error (attempt {attempt}): {e}; retrying"
@@ -501,9 +526,31 @@ pub fn clear_blame_held_by(
 
 #[cfg(test)]
 mod tests {
-    use super::{fail_in_queue_core, merged, RunGuard, RunQueue};
+    use super::{fail_in_queue_core, is_transport_error, merged, RunGuard, RunQueue};
     use leptos::prelude::*;
     use std::collections::HashMap;
+
+    /// Only transport failures are retried (review bug-compiler-6); every
+    /// server verdict, including the admission refusals, is final.
+    #[test]
+    fn only_transport_failures_are_retried() {
+        for verdict in [
+            ServerFnError::new("the server is at build capacity right now"),
+            ServerFnError::new("rate limited: too many builds started from this client"),
+            ServerFnError::new("build invocation failed: compilation timed out after 300s"),
+            ServerFnError::Args("bad args".into()),
+            ServerFnError::MissingArg("request".into()),
+        ] {
+            assert!(!is_transport_error(&verdict), "{verdict:?} is a verdict");
+        }
+        for transport in [
+            ServerFnError::Request("connection reset".into()),
+            ServerFnError::Response("body cut short".into()),
+            ServerFnError::Deserialization("<html>502 Bad Gateway</html>".into()),
+        ] {
+            assert!(is_transport_error(&transport), "{transport:?} is transport");
+        }
+    }
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(ToString::to_string).collect()

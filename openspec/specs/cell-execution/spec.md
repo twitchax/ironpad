@@ -130,11 +130,15 @@ The system SHALL report a failed blob load as "WASM load error: ..." and a faile
 - **THEN** the error reads "Stack overflow — the cell likely has unbounded or very deep recursion."
 
 ### Requirement: Compile transport retries
-The system SHALL retry a compile request that fails in transport up to 2 more times, waiting 1.5 s and then 3 s, before reporting the failure, unless the run that asked for it has since been stopped, replaced by a newer run, or left behind by navigation. A compile that returns diagnostics is a result, and SHALL NOT be retried. (PRD-0059)
+The system SHALL retry a compile request that fails in transport (the request or response failed, or the response could not be decoded, such as a gateway's HTML error page) up to 2 more times, waiting 1.5 s and then 3 s, before reporting the failure, unless the run that asked for it has since been stopped, replaced by a newer run, or left behind by navigation. A compile that returns diagnostics is a result, and an error the server returns (at capacity, rate limited, timed out, an invalid request) is a verdict; neither SHALL be retried. (PRD-0059)
 
 #### Scenario: A dropped request recovers
 - **WHEN** the first compile request for a cell fails in transport and the retry succeeds
 - **THEN** the cell runs normally and shows no error
+
+#### Scenario: A server refusal is final
+- **WHEN** the compile request returns a server error, such as the at-capacity refusal
+- **THEN** exactly one request is made and the error is shown at once
 
 #### Scenario: Every attempt fails
 - **WHEN** all three attempts fail in transport
