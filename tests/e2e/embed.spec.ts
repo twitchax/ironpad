@@ -1,4 +1,7 @@
-import { test, expect } from "@playwright/test";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { test, expect, type Page } from "@playwright/test";
 import { loginTestUser } from "./helpers/auth";
 import { trackJsErrors } from "./helpers/errors";
 import { shareMutable } from "./helpers/mutable";
@@ -10,6 +13,89 @@ import { createNotebook } from "./helpers/session";
  */
 
 const BASE = "http://localhost:3111";
+
+/**
+ * Open `body` as a REAL third-party host page on its own origin (127.0.0.1 vs
+ * the app's localhost). `page.route` cannot stand in for one: a fulfilled
+ * https host fails on mixed content and a fulfilled http host on the
+ * local-network-access check. A frame in it is never cross-origin isolated.
+ * The caller closes the server in a `finally`.
+ */
+async function openHostPage(
+  page: Page,
+  body: string,
+): Promise<{ close: () => Promise<void> }> {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html><html><body>${body}</body></html>`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  const close = () =>
+    new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      server.close(() => resolve());
+    });
+  try {
+    await page.goto(`http://127.0.0.1:${port}/`);
+  } catch (e) {
+    await close();
+    throw e;
+  }
+  return { close };
+}
+
+/** A host page framing `/embed/public/{name}` directly. */
+function openCrossOriginEmbed(page: Page, name: string) {
+  return openHostPage(
+    page,
+    `<h1>Host page</h1>` +
+      `<iframe src="${BASE}/embed/public/${name}" style="width:100%;height:900px;border:0"></iframe>`,
+  );
+}
+
+/**
+ * Drive the framed notebook: report isolation, whether the threaded-cells
+ * notice rendered, and whether the first frame's chevron still toggles its
+ * body (a panicked hydration leaves every handler dead).
+ */
+async function probeEmbedFrame(page: Page) {
+  const inner = page.frameLocator("iframe");
+  await expect(inner.locator(".view-only-notebook")).toBeVisible({
+    timeout: 30_000,
+  });
+  await page.waitForTimeout(3_000); // hydration (suite convention)
+
+  const frame = page.frames().find((f) => f.url().includes("/embed/public/"));
+  const isolated = await frame!.evaluate(() => self.crossOriginIsolated);
+
+  const cell = inner.locator(".view-only-cell--frame").first();
+  const body = cell.locator(".ironpad-cell-body");
+  const wasCollapsed = /ironpad-cell-body--collapsed/.test(
+    (await body.getAttribute("class")) ?? "",
+  );
+  await cell.locator(".ironpad-cell-collapse-btn").click();
+  if (wasCollapsed) {
+    await expect(body).not.toHaveClass(/ironpad-cell-body--collapsed/);
+  } else {
+    await expect(body).toHaveClass(/ironpad-cell-body--collapsed/);
+  }
+  return { isolated, notice: inner.locator(".view-only-embed-notice") };
+}
+
+/**
+ * Every uncaught error and panic message from the page AND its frames, raw:
+ * `trackJsErrors` drops "unreachable", which is exactly what a hydration
+ * panic throws.
+ */
+function rawErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => {
+    if (m.type() === "error" && m.text().includes("panicked")) errors.push(m.text());
+  });
+  return errors;
+}
 
 test.describe("Notebook embedding", () => {
   test("embed route renders chrome-less with the ironpad badge", async ({
@@ -117,6 +203,41 @@ test.describe("Notebook embedding", () => {
     // Distinct ids → distinct resize channels.
     const ids = await frames.evaluateAll((els) => els.map((e) => e.id));
     expect(new Set(ids).size).toBe(2);
+  });
+
+  test("a cross-origin embed of a rayon notebook explains itself and stays live", async ({
+    page,
+  }) => {
+    // The notice is computed from `crossOriginIsolated`, which SSR cannot see.
+    // Rendering it straight from that value put a `<div>` where the server
+    // wrote nothing, and hydration panicked on the mismatch, killing every
+    // handler on the page. Same-origin tests are isolated, so this only shows
+    // under a real third-party host.
+    const errors = rawErrors(page);
+    const host = await openCrossOriginEmbed(page, "mandelbrot");
+    try {
+      const { isolated, notice } = await probeEmbedFrame(page);
+      expect(isolated).toBe(false);
+      await expect(notice).toBeVisible();
+      expect(errors).toEqual([]);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test("a cross-origin embed with no threaded cells shows no notice", async ({
+    page,
+  }) => {
+    const errors = rawErrors(page);
+    const host = await openCrossOriginEmbed(page, "welcome");
+    try {
+      const { isolated, notice } = await probeEmbedFrame(page);
+      expect(isolated).toBe(false);
+      await expect(notice).toHaveCount(0);
+      expect(errors).toEqual([]);
+    } finally {
+      await host.close();
+    }
   });
 
   test("toolbar action buttons share one shape", async ({ page }) => {

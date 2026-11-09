@@ -123,11 +123,13 @@ pub(crate) fn ViewOnlyNotebook(
     let embed_spec = embed_spec.filter(|s| !s.is_empty());
     // Threaded (rayon) cells need SharedArrayBuffer, which requires a
     // crossOriginIsolated context — impossible inside a cross-origin iframe.
-    // Detect the combination up front and explain it instead of letting cells
-    // fail cryptically (PRD-0039 T-007). Hydrate-only: SSR can't know the
-    // isolation state, and the banner only matters in a live embed.
-    #[allow(unused_mut)]
-    let mut threaded_cells_blocked = false;
+    // Detect the combination and explain it instead of letting cells fail
+    // cryptically (PRD-0039 T-007). SSR can't know the isolation state, so the
+    // signal starts `false` on BOTH sides and flips in an effect, after
+    // hydration. Rendering straight from the probe put a `<div>` where the
+    // server wrote nothing, and hydration panicked on the mismatch, killing
+    // every handler in a cross-origin embed of a rayon notebook.
+    let threaded_cells_blocked = RwSignal::new(false);
     #[cfg(feature = "hydrate")]
     if embed {
         let isolated = leptos::web_sys::window()
@@ -137,7 +139,9 @@ pub(crate) fn ViewOnlyNotebook(
                     .and_then(|v| v.as_bool())
             })
             .unwrap_or(false);
-        threaded_cells_blocked = !isolated && notebook_needs_atomics(&notebook);
+        if !isolated && notebook_needs_atomics(&notebook) {
+            Effect::new(move || threaded_cells_blocked.set(true));
+        }
     }
 
     let notebook = StoredValue::new(notebook);
@@ -447,7 +451,7 @@ pub(crate) fn ViewOnlyNotebook(
                 {controls}
                 </div>
             </div>
-            {threaded_cells_blocked.then(|| view! {
+            {move || threaded_cells_blocked.get().then(|| view! {
                 <div class="view-only-embed-notice">
                     "This notebook uses threaded (rayon) cells, which need a cross-origin-isolated page and can't run inside an embed. Plain and async cells run fine; use the badge below to open the full notebook."
                 </div>
