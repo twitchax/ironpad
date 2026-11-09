@@ -701,4 +701,45 @@ test.describe("Account notebooks (PRD-0064)", () => {
     await expect(push).toHaveText("Published", { timeout: 15_000 });
     await expect(push).toBeDisabled();
   });
+
+  test("a newer draft autosave waits for an older one still on the wire", async ({
+    page,
+  }) => {
+    // The server keeps whichever save arrives last. With the first save
+    // held past the next debounce, the newer save used to overtake it, and
+    // the server ended on the OLDER text under a clean indicator.
+    test.setTimeout(150_000);
+    await accountNotebookWithCell(page, "erin-orders", "Draft Order", {
+      publish: false,
+    });
+    const sent: number[] = [];
+    const answered: number[] = [];
+    page.on("request", (r) => {
+      if (r.url().includes("save_mutable_draft")) sent.push(Date.now());
+    });
+    page.on("requestfinished", (r) => {
+      if (r.url().includes("save_mutable_draft")) answered.push(Date.now());
+    });
+    let held = 0;
+    await page.route(
+      (url) => url.pathname.includes("save_mutable_draft"),
+      async (route) => {
+        // Hold only the first save, well past the next one's debounce.
+        if (++held === 1) await new Promise((r) => setTimeout(r, 4_000));
+        await route.continue();
+      },
+    );
+    const cell = page.locator(".ironpad-cell-card").first();
+    await setCellSource(page, cell, "let v = 1; /*OLD*/");
+    await expect.poll(() => sent.length, { timeout: 10_000 }).toBe(1);
+    await setCellSource(page, cell, "let v = 2; /*NEW*/");
+    await expect.poll(() => answered.length, { timeout: 20_000 }).toBe(2);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBeGreaterThanOrEqual(answered[0]);
+
+    await page.unrouteAll();
+    await page.reload();
+    await expectOwnerEditor(page);
+    await expect(firstCellLines(page)).toContainText("NEW", { timeout: 30_000 });
+  });
 });

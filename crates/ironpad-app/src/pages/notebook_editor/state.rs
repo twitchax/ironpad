@@ -778,6 +778,8 @@ pub(super) async fn drain_inflight_drafts(
 /// Schedule a coalesced draft save `after_ms` from now. Every call bumps the
 /// epoch; only the task holding the newest epoch actually writes, so a typing
 /// burst produces one server round trip.
+/// Single-flight: the task waits for any save already on the wire before
+/// sending its own, so this page's saves reach the server in order.
 #[cfg(feature = "hydrate")]
 pub(super) fn schedule_draft_save(state: &NotebookState, after_ms: i32) {
     let state = *state;
@@ -791,6 +793,14 @@ pub(super) fn schedule_draft_save(state: &NotebookState, after_ms: i32) {
         crate::components::run_flow::sleep_ms(after_ms).await;
         if state.draft_save_epoch.try_get_untracked() != Some(epoch) {
             return; // superseded by a newer edit or an immediate save
+        }
+        // Single-flight: an earlier save still on the wire (a slow
+        // connection, a large notebook) would otherwise land after this
+        // newer one and leave the server holding older content under a
+        // clean indicator. Wait for it, unless a newer save supersedes
+        // this one meanwhile; `save_draft_now` reads the model afresh.
+        if !drain_inflight_drafts(&state, Some(epoch)).await {
+            return;
         }
         // Lean: the debounce path never embeds outputs (PRD-0056) — only
         // the pre-Push durable save pays that weight.

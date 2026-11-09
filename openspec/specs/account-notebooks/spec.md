@@ -111,7 +111,7 @@ A notebook with no published copy SHALL answer `/mutable/{id}` with HTTP 404 for
 - **THEN** the not-found copy shows immediately
 
 ### Requirement: Draft autosave
-In the owner's editor, edits SHALL autosave to the server draft after a 1.5 s debounce, coalescing a burst into one write, or at once when the owner leaves the editor before it fires, and SHALL not change what readers see until Publish or Push. Leaving without unsaved edits SHALL save nothing. The indicator after the publish button SHALL read "Saving draft…" during a save and "Draft not saved; retrying" after a failed one, which retries after 5 s. Concurrent drafts are last-write-wins. (PRD-0054)
+In the owner's editor, edits SHALL autosave to the server draft after a 1.5 s debounce, coalescing a burst into one write, or at once when the owner leaves the editor before it fires, and SHALL not change what readers see until Publish or Push. Leaving without unsaved edits SHALL save nothing. The indicator after the publish button SHALL read "Saving draft…" during a save and "Draft not saved; retrying" after a failed one, which retries after 5 s. One editor's saves reach the server in order; concurrent drafts from different editors are last-write-wins. (PRD-0054)
 
 #### Scenario: Same draft on every device
 - **WHEN** the owner renames a published notebook to "Device One WIP" on one device and opens its URL on a second device signed in to the same account
@@ -129,6 +129,10 @@ In the owner's editor, edits SHALL autosave to the server draft after a 1.5 s de
 #### Scenario: Network failure
 - **WHEN** draft saves fail at the network layer
 - **THEN** the indicator reads "Draft not saved; retrying" and the save is retried
+
+#### Scenario: A slow save
+- **WHEN** a draft save is still on the wire when the next one comes due
+- **THEN** the next one is sent only after the first is answered, so the draft ends on the newer content
 
 #### Scenario: Two writers
 - **WHEN** two devices edit the same draft
