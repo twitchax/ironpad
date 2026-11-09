@@ -204,6 +204,21 @@
     return ptr;
   }
 
+  // ── Rayon pools ───────────────────────────────────────────────────────────
+
+  /// Terminate the rayon thread pool a cell's glue started (executor-glue.js
+  /// keeps one per cell on `self.__ironpadRayonWorkers`), so an unloaded or
+  /// replaced cell does not hold `hardwareConcurrency` idle workers. No-op
+  /// for a cell without one.
+  function _terminateRayonPool(cellId) {
+    var pools = self.__ironpadRayonWorkers;
+    if (!pools || !pools[cellId]) return;
+    pools[cellId].forEach(function (w) {
+      w.terminate();
+    });
+    delete pools[cellId];
+  }
+
   // ── CellExecutor ───────────────────────────────────────────────────────────
 
   function CellExecutor(globalRef) {
@@ -528,6 +543,9 @@
     if (existing && existing.hash === hash) {
       return; // Already loaded, same version.
     }
+    // The glue only replaces a pool when the new build is a rayon build too;
+    // a cell edited from rayon to plain code would keep its old threads.
+    if (existing) _terminateRayonPool(cellId);
 
     // The entry is replaced only once the new module is fully up, so the old
     // instance keeps serving (a running Simulation's ticks, say) during the
@@ -1044,9 +1062,11 @@
   CellExecutor.prototype.unload = function (cellId) {
     this.modules.delete(cellId);
     this._blockingPayloads.delete(cellId);
-    // Release this cell's stashed rayon glue (set in loadBlob) so it isn't
-    // retained for the life of the worker. No-op for non-rayon cells.
+    // Release this cell's stashed rayon glue (set in loadBlob) and its thread
+    // pool, so neither is retained for the life of the worker. No-op for
+    // non-rayon cells.
     if (self.__ironpadRayonGlue) delete self.__ironpadRayonGlue[cellId];
+    _terminateRayonPool(cellId);
   };
 
   /// Check whether a cell has a module loaded with the given hash.

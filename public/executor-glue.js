@@ -146,11 +146,15 @@
         "  // Read this cell's glue by id (not a single shared global) so two\n" +
         "  // concurrent rayon-cell loads can't clobber each other's code.\n" +
         "  var glueCode = (self.__ironpadRayonGlue || {})[__ironpad_cell_id];\n" +
-        "  // Terminate any previously-spawned pool so repeated loads of a rayon\n" +
-        "  // cell don't leak a fresh set of sub-workers each time.\n" +
-        "  if (self.__ironpadRayonWorkers) {\n" +
-        "    self.__ironpadRayonWorkers.forEach(function(w) { w.terminate(); });\n" +
-        "    self.__ironpadRayonWorkers = null;\n" +
+        "  // One pool per cell, keyed like the glue: each rayon cell is its own\n" +
+        "  // module with its own registry, so a single shared slot let loading\n" +
+        "  // cell B kill cell A's threads while A stayed loaded. Replace only\n" +
+        "  // THIS cell's previous pool, so repeated loads don't leak sub-workers.\n" +
+        "  // executor-core.js releases a pool on unload and on replacement.\n" +
+        "  var _pools = self.__ironpadRayonWorkers || (self.__ironpadRayonWorkers = {});\n" +
+        "  if (_pools[__ironpad_cell_id]) {\n" +
+        "    _pools[__ironpad_cell_id].forEach(function(w) { w.terminate(); });\n" +
+        "    delete _pools[__ironpad_cell_id];\n" +
         "  }\n" +
         "  var workerInit = {\n" +
         "    type: 'wasm_bindgen_worker_init',\n" +
@@ -219,7 +223,7 @@
         "    _spawned.forEach(function(w) { w.terminate(); });\n" +
         "    throw err;\n" +
         "  }\n" +
-        "  self.__ironpadRayonWorkers = _rayonWorkers;\n" +
+        "  _pools[__ironpad_cell_id] = _rayonWorkers;\n" +
         "  builder.build();\n" +
         "}\n"
       );

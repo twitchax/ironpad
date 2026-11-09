@@ -66,6 +66,61 @@ test.describe("Notebook smoke tests", () => {
     expect(jsErrors).toEqual([]);
   });
 
+  test("mandelbrot re-runs after both rayon cells have loaded", async ({
+    page,
+  }) => {
+    // Regression (review bug-viewer-1): every rayon cell shared ONE pool slot
+    // in the worker, so loading the second rayon cell terminated the first
+    // cell's threads while its module stayed loaded. Re-running the first
+    // cell then blocked the worker on a latch no thread would set, and the
+    // whole notebook hung.
+    test.setTimeout(NOTEBOOK_TIMEOUT);
+    const jsErrors = trackJsErrors(page);
+
+    await page.goto("/public/mandelbrot");
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // Autorun (PRD-0040) loads and runs both rayon cells.
+    const images = page.locator(".view-only-output-display img");
+    await expect(images.nth(1)).toBeVisible({ timeout: CELL_OUTPUT_TIMEOUT });
+    const runAll = page.locator(".run-all-button");
+    await expect(runAll).toBeEnabled({ timeout: CELL_OUTPUT_TIMEOUT });
+    const codeCells = await page.locator(".view-only-timing-badge").count();
+
+    // Required: clicking within milliseconds of the load can pass, because
+    // the first cell's pool threads are still dying.
+    await page.waitForTimeout(5_000);
+
+    await page.evaluate(() => {
+      const w = window as any;
+      const exec = w.IronpadExecutor;
+      const execute = exec.execute.bind(exec);
+      w.__e2eExecuted = 0;
+      exec.execute = (...args: unknown[]) =>
+        execute(...args).finally(() => {
+          w.__e2eExecuted += 1;
+        });
+    });
+    await runAll.click();
+
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__e2eExecuted), {
+        timeout: 60_000,
+      })
+      .toBe(codeCells);
+    await expect
+      .poll(() => page.evaluate(() => (window as any).IronpadExecutor._pending.size), {
+        timeout: 60_000,
+      })
+      .toBe(0);
+    await expect(runAll).toBeEnabled();
+    expect(await page.locator(".view-only-error").count()).toBe(0);
+
+    expect(jsErrors).toEqual([]);
+  });
+
   // In CI, run only one smoke test to stay within time limits. The mandelbrot
   // test above exercises the full pipeline; these add coverage for different
   // output types but triple the CI time due to crate downloads.

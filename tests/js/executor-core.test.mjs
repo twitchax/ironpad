@@ -499,3 +499,57 @@ test("reloading the same hash keeps the loaded instance", async () => {
 
   assert.equal(executor.modules.get("c"), entry);
 });
+
+// ── Releasing a cell's rayon pool (review bug-viewer-1) ─────────────────────
+
+/** A stand-in pool thread that records its termination. */
+function poolThread() {
+  return {
+    terminated: false,
+    terminate() {
+      this.terminated = true;
+    },
+  };
+}
+
+// The smallest valid module: the raw path instantiates it with no exports.
+const EMPTY_WASM = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+test("unloading a rayon cell terminates its pool and no other cell's", () => {
+  const { executor, g } = loadCore();
+  const [a, b] = [poolThread(), poolThread()];
+  g.__ironpadRayonWorkers = { "cell-a": [a], "cell-b": [b] };
+
+  executor.unload("cell-a");
+
+  assert.equal(a.terminated, true);
+  assert.equal(b.terminated, false);
+  assert.deepEqual(Object.keys(g.__ironpadRayonWorkers), ["cell-b"]);
+});
+
+test("replacing a rayon cell with a build that has no pool releases the old pool", async () => {
+  // startWorkers replaces a cell's pool only when the new build is a rayon
+  // build too; edited to plain code, the old threads would idle forever.
+  const { executor, g } = loadCore();
+  const cell = makeMemory();
+  const old = poolThread();
+  executor.modules.set("cell-a", { ...rawEntry(cell), hash: "h1" });
+  g.__ironpadRayonWorkers = { "cell-a": [old] };
+
+  await executor.loadBlob("cell-a", "h2", EMPTY_WASM, null);
+
+  assert.equal(old.terminated, true);
+  assert.equal(executor.modules.get("cell-a").hash, "h2");
+});
+
+test("a same-hash load keeps the cell's pool", async () => {
+  const { executor, g } = loadCore();
+  const cell = makeMemory();
+  const live = poolThread();
+  executor.modules.set("cell-a", { ...rawEntry(cell), hash: "h1" });
+  g.__ironpadRayonWorkers = { "cell-a": [live] };
+
+  await executor.loadBlob("cell-a", "h1", EMPTY_WASM, null);
+
+  assert.equal(live.terminated, false);
+});

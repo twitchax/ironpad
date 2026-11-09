@@ -191,3 +191,35 @@ test("a pool thread with no captured panic reports the trap itself", async () =>
   assert.equal(posts.length, 1);
   assert.match(posts[0].msg.message, /RuntimeError: unreachable/);
 });
+
+// ── One pool per rayon cell (review bug-viewer-1) ───────────────────────────
+
+test("loading a second rayon cell leaves the first cell's pool running", async () => {
+  // Each rayon cell is its own module with its own registry. One shared pool
+  // slot let cell B's load terminate cell A's threads while A stayed loaded,
+  // so A's next run blocked on a latch no thread would ever set.
+  const workerGlobal = {};
+  const a = startWorkersFor("cell-a", workerGlobal);
+  const b = startWorkersFor("cell-b", workerGlobal);
+
+  await within(a.startWorkers({}, {}, builder(2)));
+  await within(b.startWorkers({}, {}, builder(2)));
+
+  assert.deepEqual(a.workers.map((w) => w.terminated), [false, false]);
+  assert.deepEqual(Object.keys(workerGlobal.__ironpadRayonWorkers).sort(), ["cell-a", "cell-b"]);
+});
+
+test("reloading one rayon cell replaces only that cell's pool", async () => {
+  const workerGlobal = {};
+  const a1 = startWorkersFor("cell-a", workerGlobal);
+  const b = startWorkersFor("cell-b", workerGlobal);
+  const a2 = startWorkersFor("cell-a", workerGlobal);
+
+  await within(a1.startWorkers({}, {}, builder(1)));
+  await within(b.startWorkers({}, {}, builder(1)));
+  await within(a2.startWorkers({}, {}, builder(1)));
+
+  assert.equal(a1.workers[0].terminated, true, "the reloaded cell's old pool is released");
+  assert.equal(b.workers[0].terminated, false);
+  assert.equal(workerGlobal.__ironpadRayonWorkers["cell-a"][0], a2.workers[0]);
+});

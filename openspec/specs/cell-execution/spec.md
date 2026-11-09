@@ -232,12 +232,16 @@ The editor's gear-menu "Reactive Mode" toggle SHALL persist as the notebook's `r
 - **THEN** the gear menu shows Reactive Mode checked
 
 ### Requirement: Threaded cells
-A cell built with rayon SHALL start a thread pool of `navigator.hardwareConcurrency` threads (4 when unknown) inside the execution worker, sharing the cell's memory; that needs `SharedArrayBuffer`, which the cross-origin isolation headers in `server-operations` provide. A panic on a pool thread SHALL fail the running cell with the panic's message and replace the execution worker, whose loaded cells reload on their next run, and SHALL NOT be retried on the main thread. The pool thread reports on a channel named per page, so a panic in one tab never touches another tab's worker. (PRD-0024)
+A cell built with rayon SHALL start a thread pool of `navigator.hardwareConcurrency` threads (4 when unknown) inside the execution worker, sharing the cell's memory; that needs `SharedArrayBuffer`, which the cross-origin isolation headers in `server-operations` provide. Each rayon cell SHALL own its pool, which is released when that cell is unloaded or its blob is replaced, so loading one rayon cell never stops another's threads. A panic on a pool thread SHALL fail the running cell with the panic's message and replace the execution worker, whose loaded cells reload on their next run, and SHALL NOT be retried on the main thread. The pool thread reports on a channel named per page, so a panic in one tab never touches another tab's worker. (PRD-0024)
 
 #### Scenario: A parallel sum runs in the worker
 - **WHEN** a cell with `rayon = "1"` in its Cargo.toml computes `(1..=1000u64).into_par_iter().sum()`, calls `sim::emit("e2e-rayon-sum", &total)`, and returns `CellOutput::text(format!("sum={total}"))`
 - **THEN** the output shows `sum=500500` with no "main thread" badge
 - **AND** `window.IronpadExecutor.simBusRead("e2e-rayon-sum")` on the page returns `500500`
+
+#### Scenario: Two rayon cells in one notebook
+- **WHEN** `/public/mandelbrot` has autorun both of its rayon cells and a reader presses "Run All" five seconds later
+- **THEN** every Code cell runs again and the button is enabled again within a minute
 
 #### Scenario: A panic inside a parallel closure
 - **WHEN** a rayon cell computes `(0..100).into_par_iter().map(|i| { assert!(i != 50, "bad row"); i }).sum::<i32>()`
