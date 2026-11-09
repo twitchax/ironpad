@@ -85,6 +85,11 @@ pub const DEFAULT_GUEST_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 /// [`DEFAULT_GUEST_IDLE_TIMEOUT_SECS`] as a `Duration` for in-crate use.
 const DEFAULT_GUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(DEFAULT_GUEST_IDLE_TIMEOUT_SECS);
 
+/// Default bound on one WebSocket write. A peer that stops reading parks its
+/// forwarder in `send` once the socket buffers fill; without a bound that
+/// task (and, for a guest, the connection) lives until the peer goes away.
+const DEFAULT_WS_WRITE_TIMEOUT: Duration = Duration::from_mins(2);
+
 /// Requests one guest may have in flight at once. Each pending entry holds a
 /// guest-chosen message id until the host answers, so without a cap a guest
 /// that never reads its replies grows the map for as long as it stays
@@ -110,6 +115,8 @@ pub struct WsState {
     pending_queries: Arc<RwLock<PendingQueries>>,
     /// Idle timeout applied to guest read loops (see [`DEFAULT_GUEST_IDLE_TIMEOUT`]).
     guest_idle_timeout: Duration,
+    /// Bound on one outbound socket write (see [`DEFAULT_WS_WRITE_TIMEOUT`]).
+    ws_write_timeout: Duration,
     /// Global cap on concurrent guest connections (see [`DEFAULT_MAX_GUESTS`]).
     max_guests: usize,
     /// Global cap on concurrent registered hosts (see [`DEFAULT_MAX_HOSTS`]).
@@ -125,6 +132,7 @@ impl Default for WsState {
             guests: Arc::default(),
             pending_queries: Arc::default(),
             guest_idle_timeout: DEFAULT_GUEST_IDLE_TIMEOUT,
+            ws_write_timeout: DEFAULT_WS_WRITE_TIMEOUT,
             max_guests: DEFAULT_MAX_GUESTS,
             max_hosts: DEFAULT_MAX_HOSTS,
         }
@@ -232,6 +240,20 @@ impl WsState {
     pub fn with_guest_idle_timeout(mut self, timeout: Duration) -> Self {
         self.guest_idle_timeout = timeout;
         self
+    }
+
+    /// Override the bound on one outbound socket write. Lets tests exercise
+    /// the reaping of a peer that stopped reading without a two-minute wait.
+    #[must_use]
+    pub fn with_ws_write_timeout(mut self, timeout: Duration) -> Self {
+        self.ws_write_timeout = timeout;
+        self
+    }
+
+    /// Bound on one outbound socket write, for both hosts and guests.
+    #[must_use]
+    pub fn ws_write_timeout(&self) -> Duration {
+        self.ws_write_timeout
     }
 
     /// Override the global cap on concurrent guest connections.
@@ -417,6 +439,31 @@ impl WsState {
             });
     }
 
+    /// Register a guest only if its session is still live, returning whether
+    /// it was admitted.
+    ///
+    /// The token was validated before the WebSocket upgrade, and the session
+    /// can end in between. Registering FIRST and checking after closes that
+    /// gap: every path that ends a session (`EndSession`, the host
+    /// disconnecting, the expiry sweep) removes the record before it drops
+    /// the session's guests, so a handle registered before the record went is
+    /// dropped by that end, and one registered after sees `is_live` false here
+    /// and removes itself. Without this, a handle could land under a dead
+    /// session id that no later end ever visits.
+    pub async fn admit_guest(
+        &self,
+        session_id: &str,
+        client_id: &str,
+        sender: mpsc::Sender<Utf8Bytes>,
+    ) -> bool {
+        self.register_guest(session_id, client_id, sender).await;
+        if self.sessions.is_live(session_id).await {
+            return true;
+        }
+        self.unregister_guest(session_id, client_id).await;
+        false
+    }
+
     /// Remove a specific guest from a session.
     pub async fn unregister_guest(&self, session_id: &str, client_id: &str) {
         {
@@ -511,12 +558,12 @@ impl WsState {
 
     /// Sweep expired sessions AND disconnect their guests.
     ///
-    /// The disconnect half is the enforcement: a guest's permissions are
-    /// checked against the value captured at connect time and never
-    /// re-validated, and its idle timer resets on every inbound frame — so
-    /// an active agent on an expired session would keep mutating forever if
-    /// the sweep only dropped the session record. Returns how many sessions
-    /// were swept.
+    /// A guest's permissions are captured at connect time. Its read loop
+    /// refuses frames once the session is no longer live (see
+    /// `ws::handle_guest`), but that only runs when the guest speaks: the
+    /// disconnect half here is what closes a quiet guest and tells it why,
+    /// instead of leaving it connected until its idle timeout. Returns how
+    /// many sessions were swept.
     pub async fn sweep_expired_sessions(&self) -> usize {
         let removed = self.sessions.sweep_expired().await;
         for session_id in &removed {
@@ -760,6 +807,45 @@ mod tests {
         ws.unregister_guest("sess-1", "client-1").await;
         // Session entry removed when last guest leaves.
         assert!(!ws.guests.read().await.contains_key("sess-1"));
+    }
+
+    #[tokio::test]
+    async fn admit_guest_refuses_a_session_that_already_ended() {
+        let ws = WsState::default();
+        let live = ws
+            .sessions
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+        let ended = ws
+            .sessions
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+        // The session ends after its token was validated, before the guest
+        // registers: the window the upgrade leaves open.
+        assert!(ws.sessions.invalidate_session(&ended.session_id).await);
+
+        let (tx, mut rx) = mpsc::channel(8);
+        assert!(!ws.admit_guest(&ended.session_id, "late", tx).await);
+        assert_eq!(ws.guest_count().await, 0);
+        assert!(
+            rx.recv().await.is_none(),
+            "the refused guest's sender is dropped"
+        );
+
+        // An expired-but-unswept session is refused the same way.
+        let expired = ws
+            .sessions
+            .create_session("nb-1".into(), "conn-1".into(), Permissions::default())
+            .await;
+        assert!(ws.sessions.expire_session(&expired.session_id).await);
+        let (tx, _rx) = mpsc::channel(8);
+        assert!(!ws.admit_guest(&expired.session_id, "stale", tx).await);
+        assert_eq!(ws.guest_count().await, 0);
+
+        // A live session admits.
+        let (tx, _rx) = mpsc::channel(8);
+        assert!(ws.admit_guest(&live.session_id, "on-time", tx).await);
+        assert_eq!(ws.guest_count().await, 1);
     }
 
     #[tokio::test]

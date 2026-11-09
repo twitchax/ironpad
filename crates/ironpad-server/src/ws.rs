@@ -170,7 +170,7 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
         .register_host(&notebook_id, &connection_id, tx)
         .await;
 
-    let mut send_task = spawn_forwarder(ws_sender, rx);
+    let mut send_task = spawn_forwarder(ws_sender, rx, state.ws.ws_write_timeout());
 
     // Read WebSocket → process.
     let nb_id = notebook_id.clone();
@@ -220,15 +220,27 @@ async fn handle_host(socket: WebSocket, notebook_id: String, state: AppState) {
 // ── Socket pumps (shared by host and guest) ─────────────────────────────────
 
 /// Forward a connection's outbound channel onto its socket until either side
-/// closes.
+/// closes, or until one write takes longer than `write_timeout`.
+///
+/// The timeout is what ends a peer that stopped reading: once its socket
+/// buffers fill, `send` parks forever, the closed channel is never observed,
+/// and the connection's read loop keeps running beside it.
 fn spawn_forwarder(
     mut sink: SplitSink<WebSocket, Message>,
     mut rx: mpsc::Receiver<Utf8Bytes>,
+    write_timeout: Duration,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if sink.send(Message::Text(msg)).await.is_err() {
-                break;
+            match tokio::time::timeout(write_timeout, sink.send(Message::Text(msg))).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    tracing::warn!(
+                        "websocket write timed out — closing a peer that stopped reading"
+                    );
+                    break;
+                }
             }
         }
     })
@@ -501,7 +513,14 @@ async fn handle_guest(
         "guest connected"
     );
 
-    state.ws.register_guest(&session_id, &client_id, tx).await;
+    if !state.ws.admit_guest(&session_id, &client_id, tx).await {
+        tracing::info!(
+            session_id = %session_id,
+            client_id = %client_id,
+            "session ended before the guest registered — closing"
+        );
+        return;
+    }
 
     // Notify host that a guest connected.
     let connected_msg = wire_msg(
@@ -512,10 +531,11 @@ async fn handle_guest(
     );
     state.ws.send_to_host(&notebook_id, connected_msg).await;
 
-    let mut send_task = spawn_forwarder(ws_sender, rx);
+    let mut send_task = spawn_forwarder(ws_sender, rx, state.ws.ws_write_timeout());
 
     // Read WebSocket → process.
     let cid = client_id.clone();
+    let sid = session_id.clone();
     let nid = notebook_id.clone();
     let st = state.clone();
     let idle_timeout = state.ws.guest_idle_timeout();
@@ -526,7 +546,19 @@ async fn handle_guest(
         // `WsState`).
         loop {
             match next_text(&mut ws_receiver, idle_timeout).await {
-                Ok(text) => handle_guest_message(&text, &nid, &cid, &permissions, &st).await,
+                Ok(text) => {
+                    // `permissions` were captured at connect, so the session
+                    // itself is the gate. Ending one drops this guest's
+                    // sender, but a forwarder parked in a write never sees
+                    // that; breaking here aborts it through the `select!`
+                    // below, and also covers the gap between an expiry and
+                    // the next sweep.
+                    if !st.ws.sessions.is_live(&sid).await {
+                        tracing::info!(client_id = %cid, "guest session ended — closing");
+                        break;
+                    }
+                    handle_guest_message(&text, &nid, &cid, &permissions, &st).await;
+                }
                 Err(ReadEnd::Idle) => {
                     tracing::warn!(
                         client_id = %cid,

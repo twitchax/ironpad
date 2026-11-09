@@ -143,6 +143,17 @@ impl SessionStore {
         Some(session.clone())
     }
 
+    /// Whether `session_id` names a session that exists and has not expired.
+    /// The relay asks this on every guest frame, so it reads under the lock
+    /// without cloning the record (see [`get_session`](Self::get_session)).
+    pub async fn is_live(&self, session_id: &str) -> bool {
+        self.sessions
+            .read()
+            .await
+            .get(session_id)
+            .is_some_and(|s| s.expires_at >= Utc::now())
+    }
+
     /// Remove a specific session.
     pub async fn invalidate_session(&self, session_id: &str) -> bool {
         self.sessions.write().await.remove(session_id).is_some()

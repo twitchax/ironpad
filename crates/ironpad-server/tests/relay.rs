@@ -166,6 +166,28 @@ async fn connect_host_with_session(
     }
 }
 
+/// Fill a guest's socket past what loopback buffers hold, so the relay's
+/// forwarder for that guest parks in a write that never completes. The caller
+/// must never poll the guest's read half. 64 MiB of valid, readable events is
+/// far past any loopback send plus receive buffer.
+async fn stall_guest_forwarder(host_sink: &mut WsSink) {
+    let event = to_json(
+        "",
+        MessageKind::Event(EventEnvelope {
+            by: ClientId::browser(),
+            event: Event::CellDeleted {
+                cell_id: "x".repeat(1024 * 1024),
+            },
+        }),
+    );
+    for _ in 0..64 {
+        host_sink
+            .send(tungstenite::Message::Text(event.clone().into()))
+            .await
+            .expect("host sends filler event");
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 /// Full relay round-trip: host creates session → guest connects → guest
@@ -886,6 +908,106 @@ async fn host_rejects_an_oversized_notebook_id() {
     tokio_tungstenite::connect_async(format!("{base}/ws/host?notebook_id={uuid}"))
         .await
         .expect("a UUID notebook id must connect");
+}
+
+/// Ending a session drops its guests' senders, and that used to be the only
+/// thing that stopped a guest: the forwarder notices the closed channel and
+/// the read loop is aborted with it. A guest that stops reading parks its
+/// forwarder in a write, so it never notices, while the read loop keeps
+/// relaying frames authorized by the permissions captured at connect.
+#[tokio::test(flavor = "multi_thread")]
+async fn revoked_guest_that_stops_reading_cannot_keep_mutating() {
+    let state = test_state();
+    let store = state.ws.sessions.clone();
+    let base = start_server(state).await;
+
+    let (mut host_sink, mut host_stream, session_id, token) =
+        connect_host_with_session(&base, "test-nb", "host-secret", Permissions::default()).await;
+    let (guest_ws, _) =
+        tokio_tungstenite::connect_async(&format!("{base}/ws/connect?token={token}"))
+            .await
+            .expect("guest ws connect");
+    // The read half is held (so the socket stays open) and never polled.
+    let (mut guest_sink, _guest_stream) = guest_ws.split();
+    let _ = recv_text(&mut host_stream).await; // GuestConnected
+
+    stall_guest_forwarder(&mut host_sink).await;
+
+    // Revoke the session with the host still connected.
+    let end_session = to_json(
+        "ctrl-2",
+        MessageKind::Control(ControlMessage::EndSession {
+            session_id: session_id.clone(),
+        }),
+    );
+    host_sink
+        .send(tungstenite::Message::Text(end_session.into()))
+        .await
+        .unwrap();
+    timeout(TIMEOUT, async {
+        while store.get_session(&session_id).await.is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the host's EndSession removes the session");
+
+    // The revoked guest tries to mutate.
+    let mutation = to_json(
+        "m-1",
+        MessageKind::Mutation(Mutation::CellReorder {
+            cell_ids: vec!["a".into()],
+        }),
+    );
+    let _ = guest_sink
+        .send(tungstenite::Message::Text(mutation.into()))
+        .await;
+
+    // The host may hear GuestDisconnected, but never the mutation.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match tokio::time::timeout_at(deadline, host_stream.next()).await {
+            Err(_) => break,
+            Ok(Some(Ok(tungstenite::Message::Text(text)))) => {
+                let msg = parse_msg(&text);
+                assert!(
+                    !matches!(msg.kind, MessageKind::Mutation(_)),
+                    "a revoked guest's mutation reached the host: {msg:?}"
+                );
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(None | Some(Err(_))) => panic!("the host socket must survive"),
+        }
+    }
+}
+
+/// A peer that stops reading must not hold its connection (and its forwarder
+/// task) open forever: the write timeout reaps it.
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_guest_is_reaped_by_the_write_timeout() {
+    let ws = WsState::default().with_ws_write_timeout(Duration::from_millis(200));
+    let probe = ws.clone();
+    let base = start_server(state_with_ws(ws)).await;
+
+    let (mut host_sink, mut host_stream, _session_id, token) =
+        connect_host_with_session(&base, "test-nb", "host-secret", Permissions::default()).await;
+    let (guest_ws, _) =
+        tokio_tungstenite::connect_async(&format!("{base}/ws/connect?token={token}"))
+            .await
+            .expect("guest ws connect");
+    let (_guest_sink, _guest_stream) = guest_ws.split();
+    let _ = recv_text(&mut host_stream).await; // GuestConnected: now registered
+    assert_eq!(probe.guest_count().await, 1);
+
+    stall_guest_forwarder(&mut host_sink).await;
+
+    timeout(TIMEOUT, async {
+        while probe.guest_count().await > 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the write timeout reaps a guest that stopped reading");
 }
 
 /// Extract the HTTP status code from a tungstenite handshake error, if any.

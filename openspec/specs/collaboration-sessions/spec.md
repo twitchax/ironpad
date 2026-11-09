@@ -133,7 +133,7 @@ The relay SHALL tell the host `GuestConnected` and `GuestDisconnected` for each 
 - **AND** either one disconnecting leaves the other connected and receiving its own responses
 
 ### Requirement: Connection liveness
-The browser host SHALL send a `Heartbeat` every 30 seconds. The server SHALL close a host connection after 120 seconds without any inbound frame, close a guest connection after its configurable idle timeout (30 minutes by default), and every 5 minutes end expired sessions, sending their guests `SessionEnded` before disconnecting them. (PRD-0035, PRD-0038)
+The browser host SHALL send a `Heartbeat` every 30 seconds. The server SHALL close a host connection after 120 seconds without any inbound frame, close a guest connection after its configurable idle timeout (30 minutes by default), and every 5 minutes end expired sessions, sending their guests `SessionEnded` before disconnecting them. A guest frame arriving after its session ended or expired SHALL close that guest's connection without being relayed, a guest whose session ends between token validation and registration SHALL be closed rather than registered, and any connection whose outbound socket write does not complete within 120 seconds (a peer that stopped reading) SHALL be closed. (PRD-0035, PRD-0038)
 
 #### Scenario: Silent guest is reaped
 - **WHEN** a guest connects and sends nothing for longer than the guest idle timeout (200 ms in the test)
@@ -142,6 +142,11 @@ The browser host SHALL send a `Heartbeat` every 30 seconds. The server SHALL clo
 #### Scenario: Expired session with an active agent
 - **WHEN** a session passes its 24-hour expiry while its agent keeps sending frames
 - **THEN** the next sweep sends that agent `SessionEnded` and disconnects it
+
+#### Scenario: Revoked agent that stopped reading
+- **WHEN** a guest stops reading until its socket buffers fill and the host then ends its session while staying connected
+- **THEN** a mutation the guest sends afterwards never reaches the host
+- **AND** with the write timeout at 200 ms, a guest that stops reading is disconnected within seconds
 
 ### Requirement: Relay frame and queue limits
 The relay SHALL accept frames up to 8 MiB (twice the 4 MiB share cap), so the reply to `NotebookGet` for any shareable notebook fits in one frame, and SHALL bound each connection's outbound queue to 1024 frames, dropping frames for a peer that stops reading rather than buffering without limit. Because `/ws/host` needs no account, the relay SHALL also bound what one connection can make it store: a host `notebook_id` that is empty or longer than 256 bytes SHALL be refused with HTTP 400 before the upgrade; one host connection SHALL hold at most 8 sessions, a further `CreateSession` being answered with an `InvalidMessage` error carrying its id; a guest message id longer than 128 bytes SHALL be refused with an `InvalidMessage` error whose id is empty, before the permission check and without reaching the host; and one guest SHALL have at most 1024 requests awaiting a host reply, a further request being refused with `InvalidMessage` and not forwarded. (PRD-0036, PRD-0038)
