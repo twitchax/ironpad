@@ -81,12 +81,15 @@ pub fn MarkdownCell(
         editing.set(true);
     };
 
-    // Return to preview mode. Closing writes nothing: `editor_on_change`
-    // already handed every edit to the notebook, and a value read back from a
-    // closing (or not yet loaded) editor is exactly what must never land on
-    // the cell.
+    // Return to preview mode, once (disposing the editor fires a late
+    // focusout after it has closed). Closing writes nothing:
+    // `editor_on_change` already handed every edit to the notebook, and a
+    // value read back from a closing (or not yet loaded) editor is exactly
+    // what must never land on the cell.
     let commit = move || {
-        let _ = editing.try_set(false);
+        if editing.try_get_untracked() == Some(true) {
+            editing.set(false);
+        }
     };
 
     // The ONE writer: every edit updates the preview and goes to the
@@ -147,20 +150,45 @@ pub fn MarkdownCell(
         });
     }
 
-    // Commit on blur (clicking away from the editor), but only when focus
-    // left the wrapper. Treating focus moving into a Monaco widget as a click
-    // away closed the editor under the widget the author had just opened.
+    // Commit on blur (clicking away from the editor), but only once focus has
+    // really left the wrapper. Treating focus moving into a Monaco widget as a
+    // click away closed the editor under the widget the author had just
+    // opened. A widget closing on Escape hides its focused input before Monaco
+    // refocuses the editor, so that focusout names no related target although
+    // focus never leaves: with none, decide on the next tick from where focus
+    // actually landed.
     let on_focusout = move |ev: leptos::ev::FocusEvent| {
         #[cfg(feature = "hydrate")]
         {
             use wasm_bindgen::JsCast;
-            let related = ev
-                .related_target()
-                .and_then(|t| t.dyn_into::<web_sys::Node>().ok());
-            if let (Some(el), Some(related)) = (wrapper.get_untracked(), related) {
-                if el.contains(Some(&related)) {
-                    return;
+            let inside = move |node: Option<web_sys::Node>| {
+                node.is_some_and(|node| {
+                    wrapper
+                        .try_get_untracked()
+                        .flatten()
+                        .is_some_and(|el| el.contains(Some(&node)))
+                })
+            };
+            let Some(related) = ev.related_target() else {
+                let settle = wasm_bindgen::closure::Closure::once_into_js(move || {
+                    let active = web_sys::window()
+                        .and_then(|w| w.document())
+                        .and_then(|d| d.active_element())
+                        .map(Into::into);
+                    if !inside(active) {
+                        commit();
+                    }
+                });
+                if let Some(win) = web_sys::window() {
+                    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        settle.unchecked_ref(),
+                        0,
+                    );
                 }
+                return;
+            };
+            if inside(related.dyn_into::<web_sys::Node>().ok()) {
+                return;
             }
         }
         #[cfg(not(feature = "hydrate"))]
