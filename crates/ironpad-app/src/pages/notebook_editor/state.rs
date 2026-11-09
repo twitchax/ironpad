@@ -899,7 +899,11 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
         }
     };
     state.take_persist_pending();
-    let _ = state.draft_save_state.try_set(DraftSaveState::Saving);
+    let prior = state
+        .draft_save_state
+        .try_get_untracked()
+        .unwrap_or(DraftSaveState::Synced);
+    let _ = state.draft_save_state.try_set(state_while_saving(prior));
     let _ = state.draft_save_inflight.try_update(|n| *n += 1);
     let result = crate::server_fns::save_mutable_draft(share_id, json).await;
     let _ = state
@@ -913,40 +917,84 @@ pub(super) async fn save_draft_now(state: &NotebookState, enrich_outputs: bool) 
         Err(e) => {
             state.mark_persist_pending();
             let message = e.to_string();
-            if is_permanent_refusal(&message) {
-                leptos::logging::warn!("draft autosave refused, not retrying: {message}");
-                // Say it ONCE. The debounce fires on every typing burst, so a
-                // toast per refusal would bury the message under copies of
-                // itself; a later success resets the state, so a fresh
-                // refusal speaks again.
-                let already_refused = matches!(
-                    state.draft_save_state.try_get_untracked(),
-                    Some(DraftSaveState::Refused)
-                );
-                if state
-                    .draft_save_state
-                    .try_set(DraftSaveState::Refused)
-                    .is_none()
-                    && !already_refused
-                {
-                    state.toaster.toast(
-                        ToastIntent::Error,
-                        "Draft Not Saved",
-                        refusal_toast_body(&message),
-                        REFUSAL_TOAST_SECS,
-                    );
-                }
+            let permanent = is_permanent_refusal(&message);
+            // `None`: the page is gone, and nothing below applies to it.
+            let Some(current) = state.draft_save_state.try_get_untracked() else {
                 return false;
+            };
+            let step = after_save_failure(current, permanent);
+            if permanent {
+                leptos::logging::warn!("draft autosave refused, not retrying: {message}");
+            } else {
+                leptos::logging::warn!("draft autosave failed (will retry): {message}");
             }
-            leptos::logging::warn!("draft autosave failed (will retry): {e}");
-            if state
-                .draft_save_state
-                .try_set(DraftSaveState::Failed)
-                .is_none()
-            {
+            let _ = state.draft_save_state.try_set(step.next);
+            if step.toast_refusal {
+                state.toaster.toast(
+                    ToastIntent::Error,
+                    "Draft Not Saved",
+                    refusal_toast_body(&message),
+                    REFUSAL_TOAST_SECS,
+                );
+            }
+            if step.retry {
                 schedule_draft_save(state, DRAFT_SAVE_RETRY_MS);
             }
             false
+        }
+    }
+}
+
+// ── Draft-save state machine ────────────────────────────────────────────────
+//
+// Pure, so the transitions are unit-tested: `save_draft_now` is hydrate-only
+// and `cargo make test` cannot reach it.
+
+/// What a failed draft save leads to.
+#[cfg(any(feature = "hydrate", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DraftSaveStep {
+    /// The indicator state to show.
+    pub(super) next: DraftSaveState,
+    /// Whether this refusal gets its one toast.
+    pub(super) toast_refusal: bool,
+    /// Whether to schedule a retry.
+    pub(super) retry: bool,
+}
+
+/// The indicator while a save is on the wire.
+///
+/// A refusal stays on screen rather than flickering to "Saving draft…": it
+/// is still the truth until a save lands, and it is what the post-await read
+/// in `save_draft_now` relies on to see that this refusal was already
+/// announced, across any number of overlapping saves.
+#[cfg(any(feature = "hydrate", test))]
+pub(super) fn state_while_saving(prior: DraftSaveState) -> DraftSaveState {
+    match prior {
+        DraftSaveState::Refused => DraftSaveState::Refused,
+        _ => DraftSaveState::Saving,
+    }
+}
+
+/// The transition for a failed save, from the indicator state `current` read
+/// after the request returned.
+///
+/// A refusal is said ONCE: the debounce fires on every typing burst, so a
+/// toast per refusal would bury the message under copies of itself. Only a
+/// success (which sets `Synced`) re-arms it. A transient failure retries.
+#[cfg(any(feature = "hydrate", test))]
+pub(super) fn after_save_failure(current: DraftSaveState, permanent: bool) -> DraftSaveStep {
+    if permanent {
+        DraftSaveStep {
+            next: DraftSaveState::Refused,
+            toast_refusal: current != DraftSaveState::Refused,
+            retry: false,
+        }
+    } else {
+        DraftSaveStep {
+            next: DraftSaveState::Failed,
+            toast_refusal: false,
+            retry: true,
         }
     }
 }
@@ -1118,6 +1166,55 @@ mod tests {
             "the limit is only named in the server's own message"
         );
         assert!(body.to_ascii_lowercase().contains("delete a notebook"));
+    }
+
+    #[test]
+    fn refused_stays_refused_while_the_next_save_is_in_flight() {
+        assert_eq!(
+            state_while_saving(DraftSaveState::Refused),
+            DraftSaveState::Refused
+        );
+        for prior in [
+            DraftSaveState::Synced,
+            DraftSaveState::Saving,
+            DraftSaveState::Failed,
+        ] {
+            assert_eq!(state_while_saving(prior), DraftSaveState::Saving);
+        }
+    }
+
+    #[test]
+    fn a_second_refusal_does_not_toast() {
+        // The first refusal toasts; the indicator then holds Refused through
+        // the next save, so the second refusal reads it back and stays quiet.
+        let first = after_save_failure(state_while_saving(DraftSaveState::Synced), true);
+        assert!(first.toast_refusal);
+        assert_eq!(first.next, DraftSaveState::Refused);
+        let second = after_save_failure(state_while_saving(first.next), true);
+        assert!(!second.toast_refusal, "the refusal was already announced");
+        assert_eq!(second.next, DraftSaveState::Refused);
+    }
+
+    #[test]
+    fn success_then_refusal_toasts_again() {
+        // A save that lands sets Synced, which re-arms the toast.
+        let after = after_save_failure(state_while_saving(DraftSaveState::Synced), true);
+        assert!(after.toast_refusal);
+    }
+
+    #[test]
+    fn a_transient_failure_retries_and_a_refusal_does_not() {
+        let transient = after_save_failure(DraftSaveState::Saving, false);
+        assert_eq!(
+            transient,
+            DraftSaveStep {
+                next: DraftSaveState::Failed,
+                toast_refusal: false,
+                retry: true,
+            }
+        );
+        let refused = after_save_failure(DraftSaveState::Saving, true);
+        assert!(!refused.retry, "a refusal is the same answer every time");
     }
 
     #[test]

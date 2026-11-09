@@ -742,4 +742,67 @@ test.describe("Account notebooks (PRD-0064)", () => {
     await expectOwnerEditor(page);
     await expect(firstCellLines(page)).toContainText("NEW", { timeout: 30_000 });
   });
+
+  test("a refused draft save toasts once and never flickers to Saving", async ({
+    page,
+  }) => {
+    // The "toast once" guard read the indicator AFTER the request, by which
+    // point it always held "Saving draft…", so every typing burst over quota
+    // stacked another 15s toast and the indicator flickered between saving
+    // and refused.
+    test.setTimeout(150_000);
+    await accountNotebookWithCell(page, "erin-refused", "Refused Draft", {
+      publish: false,
+    });
+    let posts = 0;
+    await page.route(
+      (url) => url.pathname.includes("save_mutable_draft"),
+      (route) => {
+        posts++;
+        // A refusal in the server-fn error encoding, worded the way
+        // `admit_mutable_write` words the per-account cap.
+        return route.fulfill({
+          status: 500,
+          contentType: "text/plain",
+          headers: { serverfnerror: "/api/save_mutable_draft" },
+          body:
+            "ServerError|account storage full: 40000000 bytes stored for " +
+            "this account, cap is 33554432 bytes",
+        });
+      },
+    );
+    const cell = page.locator(".ironpad-cell-card").first();
+    const indicator = page.locator(".ironpad-draft-indicator");
+    await setCellSource(page, cell, "let a = 1;");
+    // Proves the fixture is classified as a refusal: a mis-encoded one would
+    // read "retrying" and pass the rest of this test for the wrong reason.
+    await expect(indicator).toHaveText("Draft not saved: storage full", {
+      timeout: 15_000,
+    });
+
+    await indicator.evaluate((el) => {
+      const w = window as any;
+      w.__indicatorTexts = [];
+      new MutationObserver(() => w.__indicatorTexts.push(el.textContent)).observe(
+        el,
+        { childList: true, subtree: true, characterData: true },
+      );
+    });
+    for (const source of ["let a = 2;", "let a = 3;"]) {
+      const before = posts;
+      await setCellSource(page, cell, source);
+      await expect.poll(() => posts, { timeout: 10_000 }).toBeGreaterThan(before);
+      await page.waitForTimeout(500);
+    }
+    expect(
+      await page
+        .locator(".ironpad-toast-title", { hasText: "Draft Not Saved" })
+        .count(),
+    ).toBe(1);
+    const texts: string[] = await page.evaluate(
+      () => (window as any).__indicatorTexts,
+    );
+    expect(texts.filter((t) => t.includes("Saving"))).toEqual([]);
+    await expect(indicator).toHaveText("Draft not saved: storage full");
+  });
 });

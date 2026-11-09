@@ -300,6 +300,7 @@ The system SHALL autosave an account notebook's draft 1.5 seconds after the last
 #### Scenario: Storage cap refusal
 - **WHEN** the server refuses a draft save because the account is full
 - **THEN** the indicator reads "Draft not saved: storage full", the save is not retried, and one "Draft Not Saved" toast (shown 15 seconds) repeats the server's limit and suggests deleting a notebook after downloading it
+- **AND** later edits that are refused again keep the indicator on "Draft not saved: storage full" while they save, and show no further toast until a save succeeds
 
 ### Requirement: Status bar
 The system SHALL show a status bar at the foot of every page except `/` and `/embed/*` reading "Ready", the cell toolchain (tooltip "Cell compiler toolchain") and "Cells: N", plus "Saved: <age>" after an explicit save, refreshed every 30 seconds. (PRD-0028, PRD-0065)
