@@ -64,8 +64,11 @@ test("sanitizer strips a position:fixed overlay from cell output (clickjacking)"
   await expect(page.locator(".ironpad-editor")).toBeVisible({ timeout: 15_000 });
 
   // The anchor survives (it's allowed markup), but rendered inside the sanitized
-  // markdown preview.
-  const anchor = page.locator(".ironpad-markdown-cell-preview a.hijack");
+  // markdown preview. It is found by its href because the sanitizer drops class
+  // tokens no renderer uses (review bug-db-auth-2), `hijack` among them.
+  const anchor = page.locator(
+    '.ironpad-markdown-cell-preview a[href="https://evil.example/"]',
+  );
   await expect(anchor).toBeVisible({ timeout: 15_000 });
 
   const styles = await anchor.evaluate((el) => {
