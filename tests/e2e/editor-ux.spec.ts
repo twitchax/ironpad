@@ -734,3 +734,32 @@ test.describe("Monaco theme", () => {
     await expectEditorTheme(page, "vs");
   });
 });
+
+// Regression (review bug-server-fns-9): Preview flushed typing into the model
+// and then unmounted the cell list, cancelling the debounced save that would
+// have persisted it. Nothing else wrote it, so leaving from Preview lost it.
+test("Preview persists typing made inside the save debounce", async ({
+  page,
+}) => {
+  await newNotebook(page);
+  const id = page.url().match(/\/local\/([a-f0-9-]+)/)![1];
+  await page.locator(ADD_CODE).first().click();
+  const cell = page.locator(".ironpad-cell-card").first();
+  await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await cell.locator(".view-lines").first().click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type(" // PREVIEW_SAVED_9");
+  await page.locator('button[aria-label="Preview"]').click();
+  await expect(page.locator(".view-only-notebook")).toBeVisible({
+    timeout: 10_000,
+  });
+
+  await page.waitForTimeout(500);
+  await expect
+    .poll(async () => (await storedSources(page, id))[0] ?? "", {
+      timeout: 3_000,
+    })
+    .toContain("PREVIEW_SAVED_9");
+});

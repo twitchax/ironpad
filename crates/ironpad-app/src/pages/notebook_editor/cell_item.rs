@@ -874,7 +874,7 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
     //
     // When the user triggers a notebook save (Ctrl+S or save button),
     // immediately flush this cell's UNSAVED source and cargo_toml into the
-    // notebook signal (the page-level handler persists to IndexedDB). Only
+    // notebook signal, and persist it (see below). Only
     // the dirty panes are sent: every save, share, Push and Preview toggle
     // fires this in every cell, and re-sending clean content bumped every
     // cell's version, buffered a full-source event per cell for agents, and
@@ -921,6 +921,10 @@ pub(super) fn CellItem(cell: CellManifest) -> impl IntoView {
                 if toml_dirty {
                     cargo_toml_dirty.set(false);
                 }
+                // Persist here rather than trust the pending debounce: Preview
+                // unmounts this cell right after the flush, which cancels that
+                // timer, and nothing else would write this text.
+                persist_notebook(&state);
             }
         });
     }

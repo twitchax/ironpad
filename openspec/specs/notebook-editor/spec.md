@@ -198,11 +198,19 @@ The system SHALL treat Ctrl/Cmd+S on the editor page as an explicit save that su
 - **AND** the cell is not marked stale by the save
 
 ### Requirement: Flush before reading the notebook
-The system SHALL commit every cell's unsaved editor text into the notebook before Share, Save to Account, Push, Export HTML, Download .ironpad, Restore or Preview reads it, so each includes text typed inside the last one-second save window. (PRD-0032)
+The system SHALL commit every cell's unsaved editor text into the notebook before Share, Save to Account, Push, Export HTML, Download .ironpad, Restore or Preview reads it, so each includes text typed inside the last one-second save window, and SHALL persist the notebook whenever that commit moved text. (PRD-0032)
 
 #### Scenario: Restore captures the last second of typing
 - **WHEN** the author types `let typed_inside_the_debounce = 2;` and immediately restores a history snapshot
 - **THEN** the pre-restore snapshot in history contains `typed_inside_the_debounce`
+
+#### Scenario: Preview saves the last second of typing
+- **WHEN** the author types into a code cell and clicks Preview within a second
+- **THEN** the stored notebook holds the typed text half a second later
+
+#### Scenario: Previewing a clean notebook writes nothing
+- **WHEN** the owner of a clean published notebook switches to Preview and back
+- **THEN** the Push button stays disabled
 
 ### Requirement: Notebook title editing
 The system SHALL show the open notebook's title in the header and, when clicked, an input with the title selected, where Enter or blur saves a changed title and Escape restores the previous one; at widths of 480 pixels or less the title stays in the header, truncated. (PRD-0001, PRD-0032, PRD-0034)

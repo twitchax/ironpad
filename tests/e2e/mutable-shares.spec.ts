@@ -261,6 +261,37 @@ test.describe("Mutable shares (PRD-0054, draft/published)", () => {
     await expectOwnerEditor(page);
   });
 
+  // The other side of review bug-server-fns-9: Preview now persists a cell
+  // flush, but only one that moved text, so previewing a clean published
+  // notebook must not create a draft and arm Push.
+  test("previewing a clean published notebook leaves Push disabled", async ({
+    page,
+  }) => {
+    test.setTimeout(150_000);
+    await loginTestUser(page, "alice");
+    await createNotebook(page);
+    await renameNotebook(page, "Preview Clean");
+    await page.locator(".ironpad-add-cell-btn").first().click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1);
+    await shareMutable(page);
+    await expect(
+      page.locator(".ironpad-cell-card .monaco-editor").first(),
+    ).toBeVisible({ timeout: 15_000 });
+    const push = page.locator(".ironpad-push-button");
+    await expect(push).toBeDisabled();
+
+    await page.locator('button[aria-label="Preview"]').click();
+    await expect(page.locator(".view-only-notebook")).toBeVisible({
+      timeout: 10_000,
+    });
+    await page.locator('button[aria-label="Edit"]').click();
+    await expect(page.locator(".ironpad-cell-card")).toHaveCount(1, {
+      timeout: 10_000,
+    });
+    await page.waitForTimeout(DRAFT_SETTLE_MS);
+    await expect(push).toBeDisabled();
+  });
+
   test("a mutable share unfurls from the raw body with unlisted robots", async ({
     page,
     request,
