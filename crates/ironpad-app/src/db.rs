@@ -53,6 +53,17 @@ pub struct AuthUser {
     pub avatar_url: String,
 }
 
+/// A grant names its grantee by the same identity a session resolves to.
+impl From<AuthUser> for ironpad_common::ShareGrant {
+    fn from(user: AuthUser) -> Self {
+        Self {
+            github_id: user.github_id,
+            login: user.login,
+            avatar_url: user.avatar_url,
+        }
+    }
+}
+
 /// One user as the admin panel shows them (PRD-0063 T-005).
 #[derive(Debug, Clone)]
 pub struct AdminUserRow {

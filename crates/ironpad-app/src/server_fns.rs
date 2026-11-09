@@ -1813,6 +1813,117 @@ pub(crate) async fn list_mutable_core(
         .collect())
 }
 
+/// The owner's editing payload behind [`get_mutable_for_edit`]: the draft
+/// (else published) plus whether they differ. `None` for an id with no row
+/// once the OWNER gate has passed.
+#[cfg(feature = "ssr")]
+pub(crate) async fn get_mutable_for_edit_core(
+    db: &crate::db::Db,
+    github_id: &str,
+    id: &str,
+) -> anyhow::Result<Option<ironpad_common::MutableEditResponse>> {
+    ensure_share_owner(db, github_id, id).await?;
+    let Some(edit) = db.get_share_for_edit(id).await? else {
+        return Ok(None);
+    };
+    let notebook: IronpadNotebook = serde_json::from_str(&edit.notebook_json)
+        .map_err(|e| anyhow::anyhow!("invalid stored draft: {e}"))?;
+    Ok(Some(ironpad_common::MutableEditResponse {
+        notebook,
+        dirty: edit.dirty,
+        published: edit.published,
+        private: edit.private,
+    }))
+}
+
+/// Discard the draft behind [`discard_mutable_draft`]. `Ok(false)` means
+/// nothing was discarded.
+#[cfg(feature = "ssr")]
+pub(crate) async fn discard_mutable_draft_core(
+    db: &crate::db::Db,
+    github_id: &str,
+    id: &str,
+) -> anyhow::Result<bool> {
+    ensure_share_owner(db, github_id, id).await?;
+    db.discard_draft(id).await
+}
+
+/// Flip a share's privacy flag, behind [`set_mutable_private`].
+#[cfg(feature = "ssr")]
+pub(crate) async fn set_mutable_private_core(
+    db: &crate::db::Db,
+    github_id: &str,
+    id: &str,
+    private: bool,
+) -> anyhow::Result<()> {
+    ensure_share_owner(db, github_id, id).await?;
+    db.set_share_private(id, private).await
+}
+
+/// Grant READ to a GitHub login, behind [`grant_mutable_read`]. The login is
+/// normalized (whitespace and a leading `@` dropped) and must belong to a
+/// user who has signed in once; the owner cannot grant themselves.
+#[cfg(feature = "ssr")]
+pub(crate) async fn grant_mutable_read_core(
+    db: &crate::db::Db,
+    owner_github_id: &str,
+    id: &str,
+    login: &str,
+) -> anyhow::Result<ironpad_common::ShareGrant> {
+    ensure_share_owner(db, owner_github_id, id).await?;
+    let login = login.trim().trim_start_matches('@');
+    if login.is_empty() {
+        anyhow::bail!("enter a GitHub username");
+    }
+    let Some(target) = db.find_user_by_login(login).await? else {
+        anyhow::bail!(
+            "no ironpad user named \"{login}\": they need to sign in once before you can grant them access"
+        );
+    };
+    if target.github_id == owner_github_id {
+        anyhow::bail!("you already own this share");
+    }
+    db.grant_read(id, &target.github_id).await?;
+    Ok(target.into())
+}
+
+/// Revoke a READ grant, behind [`revoke_mutable_read`].
+#[cfg(feature = "ssr")]
+pub(crate) async fn revoke_mutable_read_core(
+    db: &crate::db::Db,
+    github_id: &str,
+    id: &str,
+    target_github_id: &str,
+) -> anyhow::Result<()> {
+    ensure_share_owner(db, github_id, id).await?;
+    db.revoke_read(id, target_github_id).await
+}
+
+/// The owner's access view behind [`get_mutable_access`]: the privacy flag
+/// plus every READ grant.
+#[cfg(feature = "ssr")]
+pub(crate) async fn get_mutable_access_core(
+    db: &crate::db::Db,
+    github_id: &str,
+    id: &str,
+) -> anyhow::Result<ironpad_common::ShareAccess> {
+    ensure_share_owner(db, github_id, id).await?;
+    let row = db
+        .get_mutable_share(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("share not found"))?;
+    let grants = db
+        .list_read_grants(id)
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    Ok(ironpad_common::ShareAccess {
+        private: row.private,
+        grants,
+    })
+}
+
 /// Resolve the signed-in user or fail the (write) server fn with a clear,
 /// toast-ready message. Shared by the save and the publish paths, so the
 /// wording names both (PRD-0064).
@@ -1910,22 +2021,10 @@ pub async fn get_mutable_for_edit(
     id: String,
 ) -> Result<Option<ironpad_common::MutableEditResponse>, ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    require_share_owner(&db, &id).await?;
-    let Some(edit) = db
-        .get_share_for_edit(&id)
+    let user = require_login(&db).await?;
+    get_mutable_for_edit_core(&db, &user.github_id, &id)
         .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
-    else {
-        return Ok(None);
-    };
-    let notebook: IronpadNotebook = serde_json::from_str(&edit.notebook_json)
-        .map_err(|e| ServerFnError::new(format!("invalid stored draft: {e}")))?;
-    Ok(Some(ironpad_common::MutableEditResponse {
-        notebook,
-        dirty: edit.dirty,
-        published: edit.published,
-        private: edit.private,
-    }))
+        .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 /// Discard the draft: revert the editor to the published copy (PRD-0054).
@@ -1938,8 +2037,8 @@ pub async fn get_mutable_for_edit(
 #[server]
 pub async fn discard_mutable_draft(id: String) -> Result<bool, ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    require_share_owner(&db, &id).await?;
-    db.discard_draft(&id)
+    let user = require_login(&db).await?;
+    discard_mutable_draft_core(&db, &user.github_id, &id)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
@@ -2076,7 +2175,8 @@ pub async fn get_mutable_manifest(
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
-/// Unpublish a mutable share. Requires the OWNER grant.
+/// Delete a notebook from the account: the share row and every grant on it,
+/// published or not (PRD-0064). Requires the OWNER grant.
 #[server]
 pub async fn delete_mutable_share(id: String) -> Result<(), ServerFnError> {
     let db = expect_context::<crate::db::Db>();
@@ -2098,8 +2198,9 @@ pub async fn unpublish_mutable_share(id: String) -> Result<(), ServerFnError> {
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
-/// The OWNER gate: every owner-only action on a share runs it, whether it
-/// is checked in a `*_core` or in the `#[server]` wrapper.
+/// The OWNER gate: every owner-only action on a share runs it, first thing
+/// in its `*_core`, so the gate is unit-testable without a request (the
+/// `#[server]` wrappers only resolve the session and delegate).
 ///
 /// A share you do not own reads exactly like one that does not exist,
 /// deliberately: both produce this one message, so an owner-only call is
@@ -2112,25 +2213,12 @@ async fn ensure_share_owner(db: &crate::db::Db, github_id: &str, id: &str) -> an
     Ok(())
 }
 
-/// Require the caller to hold the OWNER grant on `id`, resolving them first.
-#[cfg(feature = "ssr")]
-async fn require_share_owner(
-    db: &crate::db::Db,
-    id: &str,
-) -> Result<crate::db::AuthUser, ServerFnError> {
-    let user = require_login(db).await?;
-    ensure_share_owner(db, &user.github_id, id)
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?;
-    Ok(user)
-}
-
 /// Flip a share's privacy flag (PRD-0061). Owner only.
 #[server]
 pub async fn set_mutable_private(id: String, private: bool) -> Result<(), ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    require_share_owner(&db, &id).await?;
-    db.set_share_private(&id, private)
+    let user = require_login(&db).await?;
+    set_mutable_private_core(&db, &user.github_id, &id, private)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
@@ -2145,39 +2233,18 @@ pub async fn grant_mutable_read(
     login: String,
 ) -> Result<ironpad_common::ShareGrant, ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    let owner = require_share_owner(&db, &id).await?;
-    let login = login.trim().trim_start_matches('@').to_string();
-    if login.is_empty() {
-        return Err(ServerFnError::new("enter a GitHub username"));
-    }
-    let Some(target) = db
-        .find_user_by_login(&login)
+    let user = require_login(&db).await?;
+    grant_mutable_read_core(&db, &user.github_id, &id, &login)
         .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
-    else {
-        return Err(ServerFnError::new(format!(
-            "no ironpad user named \"{login}\": they need to sign in once before you can grant them access"
-        )));
-    };
-    if target.github_id == owner.github_id {
-        return Err(ServerFnError::new("you already own this share"));
-    }
-    db.grant_read(&id, &target.github_id)
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?;
-    Ok(ironpad_common::ShareGrant {
-        github_id: target.github_id,
-        login: target.login,
-        avatar_url: target.avatar_url,
-    })
+        .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 /// Revoke a READ grant (PRD-0061). Owner only.
 #[server]
 pub async fn revoke_mutable_read(id: String, github_id: String) -> Result<(), ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    require_share_owner(&db, &id).await?;
-    db.revoke_read(&id, &github_id)
+    let user = require_login(&db).await?;
+    revoke_mutable_read_core(&db, &user.github_id, &id, &github_id)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
@@ -2187,27 +2254,10 @@ pub async fn revoke_mutable_read(id: String, github_id: String) -> Result<(), Se
 #[server]
 pub async fn get_mutable_access(id: String) -> Result<ironpad_common::ShareAccess, ServerFnError> {
     let db = expect_context::<crate::db::Db>();
-    require_share_owner(&db, &id).await?;
-    let row = db
-        .get_mutable_share(&id)
+    let user = require_login(&db).await?;
+    get_mutable_access_core(&db, &user.github_id, &id)
         .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
-        .ok_or_else(|| ServerFnError::new("share not found"))?;
-    let grants = db
-        .list_read_grants(&id)
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
-        .into_iter()
-        .map(|u| ironpad_common::ShareGrant {
-            github_id: u.github_id,
-            login: u.login,
-            avatar_url: u.avatar_url,
-        })
-        .collect();
-    Ok(ironpad_common::ShareAccess {
-        private: row.private,
-        grants,
-    })
+        .map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 /// Enumerate the notebooks stored in the signed-in user's account: every
@@ -4483,6 +4533,130 @@ mod tests {
     /// The OWNER gate's non-oracle property, pinned in the one place it is
     /// written: a share someone else owns and an id that does not exist
     /// must be indistinguishable to the caller, byte for byte.
+    /// Every owner-only core refuses a stranger and a missing id with the
+    /// same `unauthorized` error, and leaves the share untouched (review
+    /// soc-app-server-1). These gates used to live in the `#[server]`
+    /// wrappers, which need a live request, so five of them had no test at
+    /// any level.
+    #[tokio::test]
+    async fn owner_only_cores_refuse_strangers_and_missing_ids() {
+        let (_dbdir, db) = accounts_db().await;
+        // Published AND dirty, so a discard that got through would show.
+        let id = published_share_with_manifest(&db, "1", VALID_NOTEBOOK_JSON).await;
+        db.save_draft(&id, &zero_cell_notebook_json("Draft"))
+            .await
+            .unwrap();
+        db.upsert_user("3", "carol", "").await.unwrap();
+        let missing = "0000000000000000";
+
+        for target in [id.as_str(), missing] {
+            let refusals: [(&str, anyhow::Result<()>); 6] = [
+                (
+                    "get_mutable_for_edit",
+                    get_mutable_for_edit_core(&db, "2", target).await.map(drop),
+                ),
+                (
+                    "discard_mutable_draft",
+                    discard_mutable_draft_core(&db, "2", target).await.map(drop),
+                ),
+                (
+                    "set_mutable_private",
+                    set_mutable_private_core(&db, "2", target, true).await,
+                ),
+                (
+                    "grant_mutable_read",
+                    grant_mutable_read_core(&db, "2", target, "carol")
+                        .await
+                        .map(drop),
+                ),
+                (
+                    "revoke_mutable_read",
+                    revoke_mutable_read_core(&db, "2", target, "1").await,
+                ),
+                (
+                    "get_mutable_access",
+                    get_mutable_access_core(&db, "2", target).await.map(drop),
+                ),
+            ];
+            for (name, result) in refusals {
+                let err = result.expect_err(name).to_string();
+                assert!(err.contains("unauthorized"), "{name} on {target}: {err}");
+            }
+        }
+
+        // Nothing moved: still public, no grants, and the draft intact.
+        assert!(!db.get_mutable_share(&id).await.unwrap().unwrap().private);
+        assert!(db.list_read_grants(&id).await.unwrap().is_empty());
+        let edit = db.get_share_for_edit(&id).await.unwrap().unwrap();
+        assert!(edit.dirty, "the stranger's discard must not have landed");
+    }
+
+    /// The grant core normalizes the login and refuses the three cases the
+    /// Access UI reports, with the exact wording it shows.
+    #[tokio::test]
+    async fn grant_core_normalizes_and_refuses() {
+        let (_dbdir, db) = accounts_db().await;
+        db.upsert_user("3", "carol", "https://a/c.png")
+            .await
+            .unwrap();
+        let id = db
+            .create_account_notebook("1", VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
+
+        let grant = grant_mutable_read_core(&db, "1", &id, " @Carol ")
+            .await
+            .expect("whitespace, `@` and case are normalized away");
+        assert_eq!(grant.login, "carol");
+        assert_eq!(grant.github_id, "3");
+        assert_eq!(grant.avatar_url, "https://a/c.png");
+
+        let err = |result: anyhow::Result<ironpad_common::ShareGrant>| {
+            result.expect_err("must be refused").to_string()
+        };
+        assert_eq!(
+            err(grant_mutable_read_core(&db, "1", &id, "  ").await),
+            "enter a GitHub username"
+        );
+        assert!(err(grant_mutable_read_core(&db, "1", &id, "nobody").await)
+            .starts_with("no ironpad user named \"nobody\""),);
+        assert_eq!(
+            err(grant_mutable_read_core(&db, "1", &id, "alice").await),
+            "you already own this share"
+        );
+    }
+
+    /// The owner's two read cores round-trip what the write cores stored.
+    #[tokio::test]
+    async fn owner_read_cores_round_trip() {
+        let (_dbdir, db) = accounts_db().await;
+        let id = db
+            .create_account_notebook("1", VALID_NOTEBOOK_JSON)
+            .await
+            .unwrap();
+
+        let edit = get_mutable_for_edit_core(&db, "1", &id)
+            .await
+            .unwrap()
+            .expect("the owner's notebook exists");
+        assert_eq!(edit.notebook.title, "Test Notebook");
+        assert!(edit.dirty && !edit.published && !edit.private);
+
+        set_mutable_private_core(&db, "1", &id, true).await.unwrap();
+        let granted = grant_mutable_read_core(&db, "1", &id, "bob").await.unwrap();
+        let access = get_mutable_access_core(&db, "1", &id).await.unwrap();
+        assert!(access.private);
+        assert_eq!(access.grants.len(), 1);
+        assert_eq!(access.grants[0].github_id, granted.github_id);
+
+        revoke_mutable_read_core(&db, "1", &id, "2").await.unwrap();
+        assert!(get_mutable_access_core(&db, "1", &id)
+            .await
+            .unwrap()
+            .grants
+            .is_empty());
+    }
+
     #[tokio::test]
     async fn the_owner_gate_cannot_tell_a_strangers_share_from_a_missing_one() {
         let (_dbdir, db) = accounts_db().await;
