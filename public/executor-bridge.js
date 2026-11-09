@@ -88,6 +88,7 @@
     this._workerRapidFailures = 0;   // consecutive rapid failures
     this._mainExecutor = null;       // Lazy main-thread CellExecutor for fallback
     this._mainExecutorPromise = null; // In-flight fallback load (memoized)
+    this._fallbackAborts = new Set(); // reject fns of in-flight main-thread retries
 
     this._spawnWorker();
   }
@@ -257,11 +258,22 @@
 
     // Retry even after a worker panic: crates that need the DOM panic in the
     // worker and succeed here.
+    // The retry is raced against terminate(): a run that never settles on the
+    // main thread (an async cell whose trap escaped) is not in _pending, so
+    // without this Stop could not reach it.
+    var abort;
+    var aborted = new Promise(function (_resolve, reject) {
+      abort = reject;
+    });
+    this._fallbackAborts.add(abort);
     var result;
     try {
-      result = await exec[method].apply(exec, args);
+      result = await Promise.race([exec[method].apply(exec, args), aborted]);
     } catch (retryError) {
+      if (retryError && retryError.name === "AbortError") throw retryError;
       throw _retryFailure(method, workerError, retryError);
+    } finally {
+      this._fallbackAborts.delete(abort);
     }
     result.fallback = true;
     return result;
@@ -475,12 +487,16 @@
       this._worker = null;
     }
 
-    // Reject all pending requests.
+    // Reject all pending requests, and every main-thread retry in flight.
     this._pending.forEach(function (entry) {
       var err = new DOMException("Worker terminated", "AbortError");
       entry.reject(err);
     });
     this._pending.clear();
+    this._fallbackAborts.forEach(function (abort) {
+      abort(new DOMException("Worker terminated", "AbortError"));
+    });
+    this._fallbackAborts.clear();
 
     // Reset state and spawn a fresh Worker. An explicit user-driven
     // terminate also resets the rapid-failure counter — it is a deliberate

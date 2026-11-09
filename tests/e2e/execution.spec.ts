@@ -261,4 +261,51 @@ test.describe("Cell execution and output", () => {
 
     expect(jsErrors).toEqual([]);
   });
+
+  test("an async cell that panics fails cleanly and leaves the worker alive", async ({
+    page,
+  }) => {
+    // Regression (review bug-js-3): the panic traps inside a
+    // wasm-bindgen-futures microtask, so it never rejected cell_main's
+    // promise. In the worker it crashed the worker; the main-thread retry
+    // then never settled, and the cell sat on Running with Stop unable to
+    // reach it, holding up every cell after it.
+    test.setTimeout(240_000);
+    const jsErrors = trackJsErrors(page);
+
+    const cells = await newNotebookWithCells(page, [
+      [
+        'async fn fetch_rows() -> Vec<i32> { panic!("async-kaboom-456") }',
+        "let rows = fetch_rows().await;",
+        'CellOutput::text(format!("{}", rows.len()))',
+      ].join("\n"),
+      'CellOutput::text("after the panic".to_string())',
+    ]);
+    const hasWorker = await page.evaluate(() => {
+      const w = (window as any).IronpadExecutor._worker;
+      (window as any).__e2eWorkerBefore = w;
+      return w !== null;
+    });
+    expect(hasWorker).toBe(true);
+
+    await page.locator('button[title="Run cell"]').first().click();
+    await expect(cells.nth(0).locator(".ironpad-cell-status--error")).toBeVisible({
+      timeout: 120_000,
+    });
+    await expect(cells.nth(0).locator(".ironpad-output-panel")).toContainText(
+      "async-kaboom-456"
+    );
+
+    await page.locator('button[title="Run cell"]').nth(1).click();
+    await expect(cells.nth(1).locator(".ironpad-cell-status--success")).toBeVisible({
+      timeout: 120_000,
+    });
+
+    const sameWorker = await page.evaluate(
+      () => (window as any).IronpadExecutor._worker === (window as any).__e2eWorkerBefore
+    );
+    expect(sameWorker).toBe(true);
+
+    expect(jsErrors).toEqual([]);
+  });
 });

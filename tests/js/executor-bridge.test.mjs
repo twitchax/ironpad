@@ -16,7 +16,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { loadCore, makeMemory, rawEntry, writeTickResult } from "./executor-harness.mjs";
+import {
+  loadCore,
+  makeMemory,
+  rawEntry,
+  settle,
+  within,
+  writeTickResult,
+} from "./executor-harness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_SOURCE = readFileSync(
@@ -256,3 +263,38 @@ test("a parked worker never ran the call, so the retry's own error surfaces", as
 
   await assert.rejects(bridge.tick("c1"), /real/);
 });
+
+// ── Cancelling a main-thread retry (review bug-js-3) ───────────────────────
+
+test("terminate() cancels a main-thread retry that never settles", async () => {
+  // An async cell that traps on the main thread used to leave its retry
+  // pending forever, and that promise was not in _pending, so Stop could
+  // not reach it: the cell sat on Running with a dead Stop button.
+  const { bridge, workers } = loadBridge();
+  const main = fakeMainExecutor();
+  main.execute = () => new Promise(() => {});
+  bridge._mainExecutor = main;
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+
+  const pending = bridge.execute("c1", new Uint8Array(0));
+  const request = workers[0].posted.at(-1);
+  bridge._onWorkerMessage({ type: "error", id: request.id, error: "Worker crashed: unreachable" });
+  await settle();
+  bridge.terminate();
+
+  await assert.rejects(within(pending), (e) => e.name === "AbortError");
+});
+
+test("a settled retry is not cancelled by a later terminate()", async () => {
+  const { bridge, workers } = loadBridge();
+  bridge._mainExecutor = fakeMainExecutor();
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+
+  const pending = bridge.execute("c1", new Uint8Array(0));
+  bridge._onWorkerMessage({ type: "error", id: workers[0].posted.at(-1).id, error: "boom" });
+  const result = await within(pending);
+  bridge.terminate();
+
+  assert.equal(result.fallback, true);
+});
+

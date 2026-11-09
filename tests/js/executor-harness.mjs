@@ -81,6 +81,19 @@ function makeGlobal() {
   };
   g.self = g;
   g.constructor = function WorkerGlobalScope() {};
+  // The global's event target: an uncaught error inside a cell (an async
+  // cell's trap runs in a microtask) is an `error` event here.
+  const listeners = new Map();
+  g.addEventListener = (type, fn) => {
+    if (!listeners.has(type)) listeners.set(type, new Set());
+    listeners.get(type).add(fn);
+  };
+  g.removeEventListener = (type, fn) => listeners.get(type)?.delete(fn);
+  g.dispatchEvent = (event) => {
+    for (const fn of [...(listeners.get(event.type) ?? [])]) fn(event);
+    return !event.defaultPrevented;
+  };
+  g.listenerCount = (type) => listeners.get(type)?.size ?? 0;
   const fakeConsole = {
     log() {},
     error() {},
@@ -215,4 +228,31 @@ export function writeLiveTickResult(cell, content) {
   const { len } = cell.putText(512, content);
   cell.putU32s(256, [1, 512, len]);
   return { ptr: 256, len };
+}
+
+/** An uncaught-error event as the global dispatches it, with `preventDefault`. */
+export function errorEvent(error) {
+  return {
+    type: "error",
+    error,
+    message: String(error),
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+}
+
+/** Let pending promise reactions and one macrotask turn run. */
+export function settle() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** `promise`, or a rejection naming the hang if it has not settled in `ms`. */
+export function within(promise, ms = 1000) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`still pending after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

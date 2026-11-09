@@ -34,7 +34,12 @@ When the worker fails to load, execute, or tick a cell for any reason other than
 - **THEN** the call fails with "Worker unavailable (respawn limit reached)"
 
 ### Requirement: Worker crash recovery
-When the execution worker raises an uncaught error, the system SHALL reject every in-flight executor request with "Worker crashed: <message>" so no cell hangs, terminate that worker, and spawn a fresh one. After 3 consecutive crashes, each within 5 s of its worker's spawn, it SHALL stop respawning and run cells on the main-thread fallback until the next cancel. (PRD-0033)
+When the execution worker raises an uncaught error, the system SHALL reject every in-flight executor request with "Worker crashed: <message>" so no cell hangs, terminate that worker, and spawn a fresh one. A WASM trap in an async cell's body, which runs outside the call that started the cell, SHALL instead fail that run with the trap's diagnosis, in the worker and on the main thread, and SHALL NOT reach the worker's error handler. After 3 consecutive crashes, each within 5 s of its worker's spawn, it SHALL stop respawning and run cells on the main-thread fallback until the next cancel. (PRD-0033)
+
+#### Scenario: An async cell's trap is not a crash
+- **WHEN** a cell containing `.await` panics inside its async body
+- **THEN** the cell shows error with its panic message and the worker is not replaced
+- **AND** the next cell runs normally
 
 #### Scenario: Crash, cap, and recovery
 - **WHEN** the worker crashes once
@@ -43,7 +48,7 @@ When the execution worker raises an uncaught error, the system SHALL reject ever
 - **AND** a cancel then spawns a worker again and resets the crash count
 
 ### Requirement: Cancelling a cell
-While an editor cell compiles or runs, its Run button SHALL become a Stop button titled "Cancel execution". Stopping a run SHALL terminate and respawn the worker, return the cell to idle and empty the run queue, and SHALL NOT re-run the cell on the main thread. Stopping a compile SHALL return the cell to idle at once and discard the compile result when it arrives. (PRD-0013, PRD-0032)
+While an editor cell compiles or runs, its Run button SHALL become a Stop button titled "Cancel execution". Stopping a run SHALL terminate and respawn the worker, return the cell to idle and empty the run queue, and SHALL NOT re-run the cell on the main thread; a run already retrying on the main thread SHALL be abandoned with an `AbortError`. Stopping a compile SHALL return the cell to idle at once and discard the compile result when it arrives. (PRD-0013, PRD-0032)
 
 #### Scenario: Stop during execution
 - **WHEN** an author clicks "Cancel execution" on a cell whose WASM is running

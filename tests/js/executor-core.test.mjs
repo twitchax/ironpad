@@ -14,10 +14,13 @@ import assert from "node:assert/strict";
 
 import {
   bindgenEntry,
+  errorEvent,
   loadCore,
   loadWorker,
   makeMemory,
   rawEntry,
+  settle,
+  within,
   writeLiveTickResult,
   writeTickResult,
 } from "./executor-harness.mjs";
@@ -427,4 +430,45 @@ test("an uncaptured unreachable trap no longer claims the cell ran out of memory
     assert.doesNotMatch(e.message, /ran out of memory/);
     return true;
   });
+});
+
+// ── Async-cell traps (review bug-js-3) ──────────────────────────────────────
+
+test("an async cell that traps in a microtask rejects execute instead of hanging", async () => {
+  // The trap runs inside wasm-bindgen-futures' microtask, so it never
+  // rejects cell_main's promise: it is an uncaught error on the global. Left
+  // alone it killed the worker, and on the main thread nothing settled.
+  const { executor, g, console } = loadCore();
+  const cell = makeMemory();
+  executor.modules.set("c", bindgenEntry(cell, { cell_main: () => new Promise(() => {}) }));
+
+  const pending = executor.execute("c", new Uint8Array(0));
+  await settle();
+  console.error("panicked at src/lib.rs:3:5:\nasync-boom");
+  const trap = errorEvent(new WebAssembly.RuntimeError("unreachable"));
+  g.dispatchEvent(trap);
+
+  await assert.rejects(within(pending), /async-boom/);
+  assert.equal(trap.defaultPrevented, true, "kept from reaching Worker.onerror");
+  assert.equal(g.listenerCount("error"), 0, "the listener is removed once execute settles");
+});
+
+test("an unrelated uncaught error is not claimed by a running async cell", async () => {
+  const { executor, g } = loadCore();
+  const cell = makeMemory();
+  const result = cell.putU32s(256, [0, 0, 0, 0, 0, 0]);
+  let finish;
+  executor.modules.set(
+    "c",
+    bindgenEntry(cell, { cell_main: () => new Promise((resolve) => (finish = resolve)) }),
+  );
+
+  const pending = executor.execute("c", new Uint8Array(0));
+  await settle();
+  const other = errorEvent(new TypeError("not a trap"));
+  g.dispatchEvent(other);
+  finish(result);
+
+  await within(pending);
+  assert.equal(other.defaultPrevented, false);
 });

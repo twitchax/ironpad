@@ -162,6 +162,33 @@
     _origConsoleError.apply(console, arguments);
   };
 
+  // ── Uncaught traps in async cells ─────────────────────────────────────────
+  //
+  // An async cell's body runs in a wasm-bindgen-futures microtask, so a trap
+  // there never rejects the promise cell_main returned: it is an uncaught
+  // error on the global. In the worker it reached Worker.onerror, which
+  // killed the worker and every loaded cell with it; on the main thread
+  // nothing settled at all. Racing the call against the global `error` event
+  // turns the trap into this run's rejection, and preventDefault keeps it
+  // from reaching Worker.onerror. Two interleaved async cells can claim each
+  // other's trap, the same caveat the panic capture carries.
+
+  function _raceUncaughtTrap(pending) {
+    if (typeof self.addEventListener !== "function") return pending;
+    var onError;
+    var trapped = new Promise(function (_resolve, reject) {
+      onError = function (ev) {
+        if (!(ev.error instanceof WebAssembly.RuntimeError)) return;
+        ev.preventDefault();
+        reject(ev.error);
+      };
+    });
+    self.addEventListener("error", onError);
+    return Promise.race([pending, trapped]).finally(function () {
+      self.removeEventListener("error", onError);
+    });
+  }
+
   // ── Host -> cell copies ───────────────────────────────────────────────────
 
   /// Allocate `4 + bytes.length` in the cell and write `[u32-LE length][bytes]`
@@ -666,7 +693,7 @@
           }
           resultPtr = await WebAssembly.promising(wasm.cell_main)(inputPtr, inputLen);
         } else {
-          resultPtr = await mod.cell_main(inputPtr, inputLen);
+          resultPtr = await _raceUncaughtTrap(mod.cell_main(inputPtr, inputLen));
         }
       } catch (e) {
         throw new Error(_describeWasmTrap(e, memory));
