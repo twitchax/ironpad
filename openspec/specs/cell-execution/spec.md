@@ -17,11 +17,32 @@ The system SHALL load each Code cell's compiled WASM into a dedicated Web Worker
 - **THEN** the SVG chart renders from the worker, which answers the text measurement plotters would otherwise ask the DOM for
 - **AND** the output carries no "main thread" badge
 
+### Requirement: Worker confinement
+The system SHALL confine the executor worker and each rayon sub-worker before any cell runs in it: every `fetch` a cell makes, directly or through `ironpad_cell::http` or `blocking::fetch_*`, SHALL leave without credentials, and `indexedDB`, `caches` and `XMLHttpRequest` SHALL be absent. This is a mitigation, not a security boundary: a worker a cell creates itself is not confined. (review bug-db-auth-1)
+
+#### Scenario: A stranger's cell makes a request as nobody
+- **WHEN** a signed-in reader runs, on `/shared`, cells that request the reader page of a private notebook the reader owns and POST `list_mutable_shares`, through `ironpad_cell::http`, `blocking::fetch_text` and an eval'd `fetch`
+- **THEN** each request reaches the server without the session cookie and its response holds neither the notebook's title nor its id
+- **AND** the same requests made from the page's main thread return both
+
+#### Scenario: No browser storage in the worker
+- **WHEN** a cell evaluates `typeof indexedDB`, `typeof caches` and `typeof XMLHttpRequest`
+- **THEN** each is `undefined`
+
 ### Requirement: Main-thread fallback
-When the worker fails to load, execute, or tick a cell for any reason other than a user cancel, the system SHALL retry that call once on a main-thread executor with the cell's most recent blob and SHALL flag a result produced there, so its output wears a "main thread" badge. With no blob to retry, the worker's error is reported. When the retry fails too, the system SHALL report the worker's error if it carried a panic message the retry's lacks, or if the call was a tick of a worker that ran it (the fallback instance never ran the cell, so its tick fails on missing state); otherwise it SHALL report the retry's error. A new blob that fails to load in the worker SHALL leave the cell unloaded there rather than keep the previous version, so the next run takes the fallback with the new blob. (PRD-0017, PRD-0033)
+When the worker fails to load, execute, or tick a cell for any reason other than a user cancel, on a page that grants the fallback, the system SHALL retry that call once on a main-thread executor with the cell's most recent blob and SHALL flag a result produced there, so its output wears a "main thread" badge. With no blob to retry, the worker's error is reported. When the retry fails too, the system SHALL report the worker's error if it carried a panic message the retry's lacks, or if the call was a tick of a worker that ran it (the fallback instance never ran the cell, so its tick fails on missing state); otherwise it SHALL report the retry's error. A new blob that fails to load in the worker SHALL leave the cell unloaded there rather than keep the previous version, so the next run takes the fallback with the new blob. Only the editor and first-party `/public` notebooks grant the fallback; `/shared`, the `/mutable` reader and every `/embed` page SHALL NOT retry on the main thread, and SHALL report the worker's error followed by a note that the cell was not retried there and that forking the notebook runs it. The grant in force when a call is made decides that call's fallback, and the executor grants nothing until a page does. (PRD-0017, PRD-0033, review bug-db-auth-1)
+
+#### Scenario: A stranger's cell is not retried on the main thread
+- **WHEN** a reader runs, on `/shared`, a cell that panics only inside the worker
+- **THEN** the cell shows its error with the advice to fork the notebook to run it
+- **AND** it produces no output and no "main thread" badge
+
+#### Scenario: The author's cell is retried on the main thread
+- **WHEN** the same cell runs in the editor
+- **THEN** it is retried on the main thread, its output appears and wears the "main thread" badge
 
 #### Scenario: Ticks run on the fallback once the worker is gone
-- **WHEN** the worker has stopped respawning and the page loads a Simulation blob and a LiveView blob and ticks each
+- **WHEN** the worker has stopped respawning and a page that grants the fallback loads a Simulation blob and a LiveView blob and ticks each
 - **THEN** both ticks return results flagged `fallback: true`, a 1x1 frame of `[10, 20, 30]` and the text `hi`
 - **AND** neither blob is reported as loaded in the worker
 
@@ -38,7 +59,7 @@ When the worker fails to load, execute, or tick a cell for any reason other than
 - **THEN** the call fails with "Worker unavailable (respawn limit reached)"
 
 ### Requirement: Worker crash recovery
-When the execution worker raises an uncaught error, the system SHALL reject every in-flight executor request with "Worker crashed: <message>" so no cell hangs, terminate that worker, and spawn a fresh one. A WASM trap in an async cell's body, which runs outside the call that started the cell, SHALL instead fail that run with the trap's diagnosis, in the worker and on the main thread, and SHALL NOT reach the worker's error handler. After 3 consecutive crashes, each within 5 s of its worker's spawn, it SHALL stop respawning and run cells on the main-thread fallback until the next cancel. (PRD-0033)
+When the execution worker raises an uncaught error, the system SHALL reject every in-flight executor request with "Worker crashed: <message>" so no cell hangs, terminate that worker, and spawn a fresh one. A WASM trap in an async cell's body, which runs outside the call that started the cell, SHALL instead fail that run with the trap's diagnosis, in the worker and on the main thread, and SHALL NOT reach the worker's error handler. After 3 consecutive crashes, each within 5 s of its worker's spawn, it SHALL stop respawning and leave cells to the main-thread fallback, where the page grants it, until the next cancel. (PRD-0033)
 
 #### Scenario: An async cell's trap is not a crash
 - **WHEN** a cell containing `.await` panics inside its async body

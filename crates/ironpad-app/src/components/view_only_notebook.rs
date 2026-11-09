@@ -92,6 +92,14 @@ pub(crate) fn ViewOnlyNotebook(
     /// (PRD-0040 scopes auto-run to the trust boundary).
     #[prop(optional)]
     autorun: bool,
+    /// Whether a cell that fails in the confined executor worker may retry on
+    /// the page's main thread. `Allowed` only for content the viewer already
+    /// trusts: first-party `/public` notebooks and the editor's own view
+    /// mode. `Refused` by default, so `/shared`, the `/mutable` reader and
+    /// every `/embed` page never re-run a stranger's cell where the viewer's
+    /// session cookie and `IndexedDB` are reachable.
+    #[prop(optional)]
+    main_thread_fallback: crate::components::executor::MainThreadFallback,
     /// Hide the Fork button without the rest of embed mode. The editor's
     /// view mode uses this: forking your own open notebook from its preview
     /// is a duplicate-with-extra-steps.
@@ -121,6 +129,9 @@ pub(crate) fn ViewOnlyNotebook(
     // Leptos's optional-prop setter takes the bare String, so callers with no
     // spec pass ""; normalize that back to None here.
     let embed_spec = embed_spec.filter(|s| !s.is_empty());
+    // Declared on mount, before anything below can queue a run: the executor
+    // is page-global, so the previous page's grant must not carry over.
+    crate::components::executor::set_main_thread_fallback(main_thread_fallback);
     // Threaded (rayon) cells need SharedArrayBuffer, which requires a
     // crossOriginIsolated context — impossible inside a cross-origin iframe.
     // Detect the combination and explain it instead of letting cells fail

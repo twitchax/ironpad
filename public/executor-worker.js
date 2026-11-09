@@ -6,6 +6,12 @@
 
 "use strict";
 
+// ── Confinement (first, before anything a cell can reach) ───────────────────
+//
+// Uncredentialed fetch, no IndexedDB, Cache Storage or XMLHttpRequest. See
+// executor-confine.js for what it does and does not stop.
+importScripts("/executor-confine.js" + (self.location.search || ""));
+
 // ── DOM shim for wasm text measurement ──────────────────────────────────────
 //
 // plotters (and anything else compiled for wasm32-unknown-unknown) measures

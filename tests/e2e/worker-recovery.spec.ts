@@ -171,6 +171,9 @@ test.describe("Executor worker recovery", () => {
         if (!exec || !exec._worker) {
           return { precondition: false };
         }
+        // The home page runs no cells, so nothing has granted the fallback;
+        // grant it the way a trusted page (editor, /public) does on mount.
+        exec.setMainThreadFallback(true);
         const crash = () =>
           exec._worker.dispatchEvent(
             new ErrorEvent("error", { message: "synthetic crash" }),

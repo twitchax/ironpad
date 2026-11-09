@@ -148,7 +148,7 @@ The system SHALL show run timings: in the editor, a successful cell's status bad
 - **THEN** no timing badge is shown and the error block is shown instead
 
 ### Requirement: Main-thread badge
-The system SHALL mark an output produced by re-running the cell on the page's main thread, instead of in the executor worker, with a `main thread` badge in the output header whose tooltip explains that the cell needed DOM access, in the editor and on read-only pages. (PRD-0013)
+The system SHALL mark an output produced by re-running the cell on the page's main thread, instead of in the executor worker, with a `main thread` badge in the output header whose tooltip explains that the cell needed DOM access, in the editor and on the read-only pages that allow the main-thread fallback (`cell-execution`). (PRD-0013)
 
 #### Scenario: A chart renders in the worker
 - **WHEN** a cell ending with `Plot::scatter(&data).title("Squares").x_label("x").y_label("x squared")` runs

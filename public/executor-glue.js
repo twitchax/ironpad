@@ -75,6 +75,16 @@
     };
   }
 
+  /// The confinement prelude (executor-confine.js) as rayon sub-workers
+  /// import it. Absolute, because a blob: worker has no base URL to resolve a
+  /// relative one against. In the executor worker `location.search` is its
+  /// own ?v={release} (see executor-bridge.js); on the main thread it is the
+  /// page's query, which names no release, so it is left off there.
+  function confineUrl() {
+    var search = typeof document === "undefined" ? self.location.search || "" : "";
+    return self.location.origin + "/executor-confine.js" + search;
+  }
+
   /// Rewrite wasm-bindgen ESM glue so it loads from a blob URL: replace the
   /// bare `import * from 'env'` with an inline shim, replace the
   /// wasm-bindgen-rayon workerHelpers import with an inline startWorkers,
@@ -174,6 +184,9 @@
         "        // patched console.error captured (cut at the hook's Stack: suffix,\n" +
         "        // mirroring executor-core.js).\n" +
         "        var subWorkerCode =\n" +
+        // First, so the static import confines the sub-worker before its
+        // module body (and so the cell's glue) runs.
+        "          " + JSON.stringify("import " + JSON.stringify(confineUrl()) + ";") + " +\n" +
         "          'self.onmessage = async function(e) {' +\n" +
         "          '  if (e.data && e.data.type === \"wasm_bindgen_worker_init\") {' +\n" +
         "          '    var panicText = null;' +\n" +

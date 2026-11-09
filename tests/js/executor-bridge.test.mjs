@@ -5,9 +5,10 @@
  *
  * loadBlob, execute, tick and tickLive share ONE policy for a failed worker
  * call: retry on the main-thread executor, tagging the result `fallback:
- * true`, except for a deliberate cancellation. These run the real bridge
- * against a fake Worker, with the worker made to fail by parking it (the
- * state the respawn cap leaves behind) or by answering with an error.
+ * true`, except for a deliberate cancellation — and only on a page that
+ * granted the fallback (`setMainThreadFallback(true)`). These run the real
+ * bridge against a fake Worker, with the worker made to fail by parking it
+ * (the state the respawn cap leaves behind) or by answering with an error.
  */
 
 import { test } from "node:test";
@@ -33,8 +34,12 @@ const BRIDGE_SOURCE = readFileSync(path.join(PUBLIC, "executor-bridge.js"), "utf
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 
-/** A fresh bridge over a fake Worker that records what it is sent. */
-function loadBridge() {
+/**
+ * A fresh bridge over a fake Worker that records what it is sent. `trusted`
+ * grants the main-thread fallback the way a trusted page does; the bridge
+ * starts without it.
+ */
+function loadBridge({ trusted = false } = {}) {
   const workers = [];
   class FakeWorker {
     constructor(url) {
@@ -73,7 +78,9 @@ function loadBridge() {
     fakeConsole,
     FakeBroadcastChannel,
   );
-  return { bridge: window.IronpadExecutor, workers, warnings, channels };
+  const bridge = window.IronpadExecutor;
+  if (trusted) bridge.setMainThreadFallback(true);
+  return { bridge, workers, warnings, channels };
 }
 
 /** A main-thread executor stand-in that records every call it receives. */
@@ -115,7 +122,7 @@ function park(bridge) {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 test("every call path falls back to the main thread and tags its result", async () => {
-  const { bridge, warnings } = loadBridge();
+  const { bridge, warnings } = loadBridge({ trusted: true });
   const main = fakeMainExecutor();
   bridge._mainExecutor = main;
   park(bridge);
@@ -141,7 +148,7 @@ test("every call path falls back to the main thread and tags its result", async 
 test("a loadBlob fallback leaves the worker's loaded cache alone", async () => {
   // _loadedCache tracks what the WORKER holds; claiming the blob there would
   // make a respawned worker skip a load it never did.
-  const { bridge } = loadBridge();
+  const { bridge } = loadBridge({ trusted: true });
   bridge._mainExecutor = fakeMainExecutor();
   park(bridge);
 
@@ -152,7 +159,7 @@ test("a loadBlob fallback leaves the worker's loaded cache alone", async () => {
 });
 
 test("a worker error reply falls back too, not only a parked worker", async () => {
-  const { bridge, workers } = loadBridge();
+  const { bridge, workers } = loadBridge({ trusted: true });
   const main = fakeMainExecutor();
   bridge._mainExecutor = main;
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
@@ -168,7 +175,7 @@ test("a worker error reply falls back too, not only a parked worker", async () =
 
 test("a terminate() cancellation is rethrown, never re-run on the main thread", async () => {
   // Re-running a runaway cell on the main thread would freeze the tab.
-  const { bridge, warnings } = loadBridge();
+  const { bridge, warnings } = loadBridge({ trusted: true });
   const main = fakeMainExecutor();
   bridge._mainExecutor = main;
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
@@ -182,7 +189,7 @@ test("a terminate() cancellation is rethrown, never re-run on the main thread", 
 });
 
 test("with no cached blob, or no such method on the main thread, the worker error surfaces", async () => {
-  const { bridge } = loadBridge();
+  const { bridge } = loadBridge({ trusted: true });
   bridge._mainExecutor = fakeMainExecutor({ without: ["tickLive"] });
   park(bridge);
 
@@ -195,7 +202,7 @@ test("with no cached blob, or no such method on the main thread, the worker erro
 test("the fallback drives the real core executor's tick", async () => {
   // End to end on the core side: the bridge hands the call to a CellExecutor,
   // whose raw tick path reads the frame out of the cell's memory.
-  const { bridge } = loadBridge();
+  const { bridge } = loadBridge({ trusted: true });
   const { executor } = loadCore();
   const cell = makeMemory();
   const retptr = writeTickResult(cell);
@@ -215,7 +222,7 @@ test("the fallback drives the real core executor's tick", async () => {
 
 /** Send `c1` through a worker error reply, then let the retry fail too. */
 async function failTwice(method, args, workerText, retryText) {
-  const { bridge, workers } = loadBridge();
+  const { bridge, workers } = loadBridge({ trusted: true });
   const main = fakeMainExecutor();
   main[method] = async () => {
     throw new Error(retryText);
@@ -261,7 +268,7 @@ test("a failed tick retry keeps the worker's error", async () => {
 });
 
 test("a parked worker never ran the call, so the retry's own error surfaces", async () => {
-  const { bridge } = loadBridge();
+  const { bridge } = loadBridge({ trusted: true });
   const main = fakeMainExecutor();
   main.tick = async () => {
     throw new Error("panicked at sim.rs: real");
@@ -279,7 +286,7 @@ test("terminate() cancels a main-thread retry that never settles", async () => {
   // An async cell that traps on the main thread used to leave its retry
   // pending forever, and that promise was not in _pending, so Stop could
   // not reach it: the cell sat on Running with a dead Stop button.
-  const { bridge, workers } = loadBridge();
+  const { bridge, workers } = loadBridge({ trusted: true });
   const main = fakeMainExecutor();
   main.execute = () => new Promise(() => {});
   bridge._mainExecutor = main;
@@ -295,7 +302,7 @@ test("terminate() cancels a main-thread retry that never settles", async () => {
 });
 
 test("a settled retry is not cancelled by a later terminate()", async () => {
-  const { bridge, workers } = loadBridge();
+  const { bridge, workers } = loadBridge({ trusted: true });
   bridge._mainExecutor = fakeMainExecutor();
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
 
@@ -323,8 +330,8 @@ test("each bridge listens for rayon traps on its own channel and tells its worke
 test("a rayon trap fails pending requests with the panic text and replaces the worker", async () => {
   // The executor worker is parked in Atomics.wait on the job's latch, so it
   // can never answer; and rayon cannot block on the main thread either, so
-  // there is nothing to fall back to.
-  const { bridge, workers, channels, warnings } = loadBridge();
+  // there is nothing to fall back to, even on a page that grants it.
+  const { bridge, workers, channels, warnings } = loadBridge({ trusted: true });
   const main = fakeMainExecutor();
   bridge._mainExecutor = main;
   bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
@@ -349,7 +356,7 @@ test("a worker that fails to load a new blob no longer counts as holding the old
   // The worker drops a cell whose reload failed, so the bridge must not keep
   // claiming it holds the old hash: execute would skip the load and the
   // worker would answer "not loaded" at best.
-  const { bridge, workers } = loadBridge();
+  const { bridge, workers } = loadBridge({ trusted: true });
   bridge._mainExecutor = fakeMainExecutor();
 
   const first = bridge.loadBlob("c1", "h1", new Uint8Array([1]), null);
@@ -543,3 +550,76 @@ test("the bridge's sim-bus ring cap agrees with the core's", async () => {
   assert.equal(bridgeRing[0], coreRing[0]);
 });
 
+
+// ── Pages that refuse the fallback (review bug-db-auth-1) ──────────────────
+//
+// The main thread holds the viewer's session cookie and the origin's
+// IndexedDB; the worker is confined (executor-confine.js). A stranger's cell
+// that panics on purpose must not be re-run where that confinement is gone.
+
+test("the main-thread fallback is off until a page grants it", async () => {
+  const { bridge, warnings } = loadBridge();
+  const main = fakeMainExecutor();
+  bridge._mainExecutor = main;
+  park(bridge);
+
+  await assert.rejects(
+    bridge.loadBlob("c1", "h1", new Uint8Array([0]), null),
+    /Worker unavailable/,
+  );
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+  for (const call of [
+    () => bridge.execute("c1", new Uint8Array([7])),
+    () => bridge.tick("c1"),
+    () => bridge.tickLive("c1"),
+  ]) {
+    await assert.rejects(call(), /Worker unavailable/);
+  }
+
+  assert.deepEqual(main.calls, [], "nothing runs on the main thread");
+  assert.deepEqual(warnings, [], "no 'retrying on main thread' warning");
+});
+
+test("a refused fallback keeps the worker's error and says to fork", async () => {
+  const { bridge, workers } = loadBridge();
+  bridge.setMainThreadFallback(false);
+  const main = fakeMainExecutor();
+  bridge._mainExecutor = main;
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+
+  const pending = bridge.execute("c1", new Uint8Array([7]));
+  const request = workers[0].posted.at(-1);
+  bridge._onWorkerMessage({ type: "error", id: request.id, error: "panicked at boom" });
+
+  await assert.rejects(pending, (e) => {
+    assert.match(e.message, /panicked at boom/);
+    assert.match(e.message, /needs the main thread/);
+    assert.match(e.message, /fork/i);
+    return true;
+  });
+  assert.deepEqual(main.calls, []);
+});
+
+test("the policy in force when a call was made decides its fallback", async () => {
+  // A stranger's cell still running when the reader navigates to a trusted
+  // page (which grants the fallback) must not inherit that grant when it
+  // finally fails, and a trusted page's call keeps its grant the other way.
+  const { bridge, workers } = loadBridge();
+  const main = fakeMainExecutor();
+  bridge._mainExecutor = main;
+  bridge._blobCache.set("c1", { hash: "h1", wasmBytes: new Uint8Array(0), jsGlue: null });
+
+  const refused = bridge.tick("c1");
+  const refusedId = workers[0].posted.at(-1).id;
+  bridge.setMainThreadFallback(true);
+  const granted = bridge.tick("c1");
+  const grantedId = workers[0].posted.at(-1).id;
+  bridge.setMainThreadFallback(false);
+
+  bridge._onWorkerMessage({ type: "error", id: refusedId, error: "unreachable" });
+  bridge._onWorkerMessage({ type: "error", id: grantedId, error: "unreachable" });
+
+  await assert.rejects(refused, /needs the main thread/);
+  assert.equal((await granted).fallback, true);
+  assert.deepEqual(main.calls.map((c) => c[0]), ["loadBlob", "tick"]);
+});

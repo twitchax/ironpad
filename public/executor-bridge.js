@@ -3,9 +3,11 @@
 // all WASM compilation and execution to a Web Worker via postMessage.
 //
 // When worker execution fails (e.g. WASM panic from DOM-dependent libraries
-// like plotters), the bridge automatically retries on the main thread using
-// a lazily-loaded CellExecutor.  Results from this fallback path include a
-// `fallback: true` field so the UI can show a diagnostic indicator.
+// like plotters), the bridge retries on the main thread using a
+// lazily-loaded CellExecutor, on pages that grant it
+// (`setMainThreadFallback(true)`: the editor and first-party /public
+// notebooks). Results from this fallback path include a `fallback: true`
+// field so the UI can show a diagnostic indicator.
 //
 // See PRD-0013 for architecture.  The bridge maintains a local isLoaded cache
 // so the synchronous `isLoaded(cellId, hash)` call works without a round-trip
@@ -76,6 +78,13 @@
   var WORKER_RAPID_FAIL_MS = 5000;
   var WORKER_MAX_RAPID_FAILURES = 3;
 
+  // Appended to the worker's error when a page that refuses the main-thread
+  // fallback has a cell fail in the worker.
+  var FALLBACK_REFUSED_HINT =
+    "This page runs cells only in the confined worker, so the cell was not " +
+    "retried on the main thread. If it needs the main thread, fork the " +
+    "notebook to run it.";
+
   function BridgeExecutor() {
     this._nextId = 1;
     this._pending = new Map();       // reqId -> { resolve, reject }
@@ -89,6 +98,7 @@
     this._mainExecutor = null;       // Lazy main-thread CellExecutor for fallback
     this._mainExecutorPromise = null; // In-flight fallback load (memoized)
     this._fallbackAborts = new Set(); // reject fns of in-flight main-thread retries
+    this._fallbackAllowed = false;   // see setMainThreadFallback
 
     // A rayon pool thread that traps cannot reach the executor worker, which
     // is parked in Atomics.wait on the job's latch, so it reports to this
@@ -201,6 +211,18 @@
 
   // ── Main-thread fallback executor ─────────────────────────────────────────
 
+  /// Grant or refuse the main-thread fallback for the calls made from now on.
+  /// Each page that runs cells sets it when it mounts: on for content the
+  /// viewer already trusts (their own notebooks in the editor, first-party
+  /// /public notebooks), off for everything else (/shared, the /mutable
+  /// reader, every /embed page). The main thread is not confined the way the
+  /// worker is (executor-confine.js): it holds the viewer's session cookie and
+  /// the origin's IndexedDB, so a stranger's cell that fails on purpose must
+  /// not be re-run there. Off until a page grants it.
+  BridgeExecutor.prototype.setMainThreadFallback = function (enabled) {
+    this._fallbackAllowed = enabled === true;
+  };
+
   BridgeExecutor.prototype._ensureMainExecutor = function () {
     if (this._mainExecutor) return Promise.resolve(this._mainExecutor);
     // Memoize the in-flight load so two concurrent fallbacks don't both inject
@@ -286,8 +308,11 @@
   /// `method` with `args` and tags the result `fallback: true` so the UI can
   /// show where it ran. A null `method` stops after the load (the loadBlob
   /// case). Rethrows `workerError` when there is nothing to fall back with.
+  /// `allowed` is the page's grant as it stood when the call was MADE, so a
+  /// stranger's cell still running when the reader moves to a trusted page
+  /// does not inherit that page's grant.
   BridgeExecutor.prototype._mainThreadFallback = async function (
-    cellId, what, workerError, method, args
+    cellId, what, workerError, method, args, allowed
   ) {
     // A deliberate cancellation (terminate() rejects pending requests with an
     // AbortError) must NOT fall back to the main thread — re-running a runaway
@@ -295,6 +320,11 @@
     // Neither may a rayon trap (`noFallback`): the main thread cannot block.
     if (workerError && (workerError.name === "AbortError" || workerError.noFallback)) {
       throw workerError;
+    }
+    if (!allowed) {
+      throw new Error(
+        (workerError && workerError.message) + "\n\n" + FALLBACK_REFUSED_HINT
+      );
     }
     console.warn(
       "ironpad: worker " + what + " failed for " + cellId +
@@ -365,6 +395,7 @@
   /// local isLoaded cache so `isLoaded()` can answer synchronously.
   BridgeExecutor.prototype.loadBlob = function (cellId, hash, wasmBytes, jsGlue) {
     var self = this;
+    var allowed = this._fallbackAllowed;
 
     // Cache blob data for potential main-thread fallback.
     this._blobCache.set(cellId, {
@@ -397,7 +428,9 @@
       // claim this blob there, and drop the old hash, since a worker whose
       // reload failed has dropped the cell (executor-core.js loadBlob).
       self._loadedCache.delete(cellId);
-      return self._mainThreadFallback(cellId, "loadBlob", workerError, null, null);
+      return self._mainThreadFallback(
+        cellId, "loadBlob", workerError, null, null, allowed
+      );
     });
   };
 
@@ -408,6 +441,7 @@
   /// and marks the result with `fallback: true`.
   BridgeExecutor.prototype.execute = function (cellId, inputBytes) {
     var self = this;
+    var allowed = this._fallbackAllowed;
 
     return this._postRequest({
       type: "execute",
@@ -415,7 +449,7 @@
       inputBytes: inputBytes,
     }).catch(function (workerError) {
       return self._mainThreadFallback(
-        cellId, "execution", workerError, "execute", [cellId, inputBytes]
+        cellId, "execution", workerError, "execute", [cellId, inputBytes], allowed
       );
     });
   };
@@ -427,12 +461,15 @@
   /// and marks the result with `fallback: true`.
   BridgeExecutor.prototype.tick = function (cellId) {
     var self = this;
+    var allowed = this._fallbackAllowed;
 
     return this._postRequest({
       type: "tick",
       cellId: cellId,
     }).catch(function (workerError) {
-      return self._mainThreadFallback(cellId, "tick", workerError, "tick", [cellId]);
+      return self._mainThreadFallback(
+        cellId, "tick", workerError, "tick", [cellId], allowed
+      );
     });
   };
 
@@ -442,13 +479,14 @@
   /// If the worker tick fails, automatically retries on the main thread.
   BridgeExecutor.prototype.tickLive = function (cellId) {
     var self = this;
+    var allowed = this._fallbackAllowed;
 
     return this._postRequest({
       type: "tick_live",
       cellId: cellId,
     }).catch(function (workerError) {
       return self._mainThreadFallback(
-        cellId, "tickLive", workerError, "tickLive", [cellId]
+        cellId, "tickLive", workerError, "tickLive", [cellId], allowed
       );
     });
   };

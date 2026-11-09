@@ -76,8 +76,11 @@ function source(name) {
 function makeGlobal({ globals = {} } = {}) {
   const stats = { decodes: 0, codecs: 0, warnings: [] };
   const posted = [];
+  // Every script evaluated, in order: the worker entry's import order is
+  // part of its contract (the confinement prelude must come first).
+  const scripts = [];
   const g = {
-    location: { search: "" },
+    location: { origin: "https://ironpad.test", search: "" },
     postMessage: (msg) => posted.push(msg),
   };
   g.self = g;
@@ -105,6 +108,7 @@ function makeGlobal({ globals = {} } = {}) {
 
   const extraNames = Object.keys(globals);
   function run(name) {
+    scripts.push(name);
     // eslint-disable-next-line no-new-func
     new Function(
       "self",
@@ -120,7 +124,7 @@ function makeGlobal({ globals = {} } = {}) {
     run(url.replace(/^\//, "").replace(/\?.*$/, ""));
   }
 
-  return { g, run, stats, posted, console: fakeConsole };
+  return { g, run, stats, posted, scripts, console: fakeConsole };
 }
 
 /** The core executor, loaded exactly as the main-thread fallback chain does. */

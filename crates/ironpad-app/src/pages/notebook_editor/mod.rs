@@ -28,6 +28,7 @@ use crate::components::toaster::ToastIntent;
 use crate::model::NotebookModel;
 use crate::session::SessionState;
 
+use crate::components::executor::MainThreadFallback;
 use crate::components::session_panel::SessionButton;
 use crate::components::view_only_notebook::ViewOnlyNotebook;
 
@@ -116,6 +117,11 @@ pub fn NotebookEditor(
     #[prop(default = None)]
     server_draft: Option<ServerDraftMount>,
 ) -> impl IntoView {
+    // The viewer's own notebook: a cell the confined worker cannot run may
+    // retry on the main thread. Declared on mount because the executor is
+    // page-global and a /shared page before this one refused it.
+    crate::components::executor::set_main_thread_fallback(MainThreadFallback::Allowed);
+
     // Set up notebook-level reactive state.
 
     let cell_outputs = RwSignal::new(HashMap::new());
@@ -1060,6 +1066,7 @@ fn NotebookContent() -> impl IntoView {
                             notebook=nb
                             hide_fork=true
                             autorun=true
+                            main_thread_fallback=MainThreadFallback::Allowed
                             cell_outputs=state.cell_outputs
                         />
                     }

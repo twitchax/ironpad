@@ -3,6 +3,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::app_layout::LayoutContext;
+use crate::components::executor::MainThreadFallback;
 use crate::components::notice::{ErrorNotice, LoadingNotice};
 use crate::components::social_meta::{mark_not_found, SocialMeta};
 use crate::components::view_only_notebook::ViewOnlyNotebook;
@@ -63,6 +64,9 @@ pub fn PublicNotebookPage() -> impl IntoView {
                                 // First-party showcase content auto-runs
                                 // (PRD-0040); shared notebooks never do.
                                 autorun=true
+                                // ...and is trusted enough to retry on the
+                                // main thread (review bug-db-auth-1).
+                                main_thread_fallback=MainThreadFallback::Allowed
                             />
                         }
                         .into_any(),

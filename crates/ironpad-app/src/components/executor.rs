@@ -45,6 +45,12 @@ mod js {
         /// A fresh Worker is automatically respawned by the bridge.
         #[wasm_bindgen(js_namespace = IronpadExecutor)]
         pub fn terminate();
+
+        /// Grant or refuse the main-thread fallback for calls made from now
+        /// on. `catch`: with no bridge loaded there is nothing to fall back
+        /// to, and a throw must not unwind through the component body.
+        #[wasm_bindgen(js_namespace = IronpadExecutor, js_name = "setMainThreadFallback", catch)]
+        pub fn set_main_thread_fallback(enabled: bool) -> Result<(), JsValue>;
     }
 }
 
@@ -71,6 +77,38 @@ pub fn hash_wasm_blob(bytes: &[u8]) -> String {
 #[cfg(feature = "hydrate")]
 pub fn terminate_executor() {
     js::terminate();
+}
+
+/// Whether a cell that fails in the confined executor worker may be retried
+/// on the page's main thread. Every surface that runs cells declares it when
+/// it mounts ([`set_main_thread_fallback`]).
+///
+/// Allow it only for content the viewer already trusts: their own notebooks
+/// in the editor and first-party `/public` notebooks. The main thread is not
+/// confined the way the worker is (`public/executor-confine.js`): it carries
+/// the viewer's session cookie and the origin's `IndexedDB`, so on `/shared`,
+/// the `/mutable` reader and every `/embed` page a stranger's cell that
+/// panics on purpose would otherwise escape there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MainThreadFallback {
+    /// Report the worker's error instead. The default, so a surface that
+    /// forgets to choose refuses.
+    #[default]
+    Refused,
+    /// Retry the call on the main thread.
+    Allowed,
+}
+
+/// Declare the page's [`MainThreadFallback`] policy to the executor bridge,
+/// which refuses until a surface allows it and applies the policy in force
+/// when each call is made. A no-op during SSR.
+pub fn set_main_thread_fallback(policy: MainThreadFallback) {
+    #[cfg(feature = "hydrate")]
+    if let Err(e) = js::set_main_thread_fallback(policy == MainThreadFallback::Allowed) {
+        leptos::logging::warn!("executor: could not set the main-thread fallback: {e:?}");
+    }
+    #[cfg(not(feature = "hydrate"))]
+    let _ = policy;
 }
 
 /// Load a compiled WASM blob into the executor's cache.
@@ -509,7 +547,7 @@ pub fn dependents_in_queue<C: PipingCell>(
 mod tests {
     use super::{
         assemble_cell_inputs, dependents_in_queue, encode_cell_inputs, runnable_ids,
-        unexecuted_dependencies,
+        unexecuted_dependencies, MainThreadFallback,
     };
     use crate::components::output_render::CellOutputData;
     use ironpad_common::{CellManifest, CellType};
@@ -525,6 +563,13 @@ mod tests {
             collapsed: false,
             output_collapsed: false,
         }
+    }
+
+    #[test]
+    fn a_surface_that_does_not_choose_refuses_the_main_thread_fallback() {
+        // The viewer's prop and the bridge both start here: a new read-only
+        // surface must opt in to the unconfined main thread, never out.
+        assert_eq!(MainThreadFallback::default(), MainThreadFallback::Refused);
     }
 
     #[test]
