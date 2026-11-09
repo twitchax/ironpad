@@ -235,8 +235,16 @@ async fn github_json<T: serde::de::DeserializeOwned>(
 }
 
 /// Delete the session and clear the cookie.
+///
+/// Only for a navigation the user made (see [`is_user_navigation`]): logout
+/// is a GET, so anything that can make the browser fetch a URL could
+/// otherwise end the session.
 #[tracing::instrument(name = "auth_logout", level = "info", skip_all)]
 async fn logout(State(state): State<AuthState>, headers: HeaderMap) -> Response {
+    if !is_user_navigation(&headers) {
+        tracing::info!("refused a logout that was not a top-level navigation");
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if let Some(token) = cookie_value(&headers, SESSION_COOKIE) {
         if let Err(e) = state.db.delete_session(token).await {
             tracing::warn!(error = %e, "session delete failed during logout");
@@ -332,6 +340,21 @@ fn safe_redirect_path(path: Option<&str>) -> String {
     }
 }
 
+/// Whether Fetch Metadata says this request is a top-level navigation from
+/// this site (or typed, bookmarked, or otherwise user-initiated: `none`).
+///
+/// A notebook's markdown may embed `![](/auth/logout)`, and that image request
+/// is same-origin, so `SameSite` does not keep the cookie off it: the headers
+/// are what tell it apart from the header's Sign out link. A request with
+/// neither header (a non-browser client) is let through.
+fn is_user_navigation(headers: &HeaderMap) -> bool {
+    let value = |name: &str| headers.get(name).map(axum::http::HeaderValue::as_bytes);
+    let dest_ok = value("sec-fetch-dest").is_none_or(|dest| dest == b"document");
+    let site_ok =
+        value("sec-fetch-site").is_none_or(|site| site == b"same-origin" || site == b"none");
+    dest_ok && site_ok
+}
+
 // The session cookie itself (mint/clear) lives in `ironpad_app::auth` — one
 // definition shared with the sliding-expiry re-issue path in `current_user`.
 // `Secure` is safe on localhost too: every modern browser treats it as a
@@ -413,15 +436,30 @@ mod tests {
     }
 
     async fn get_response(router: Router, uri: &str) -> axum::response::Response {
+        get_response_with_headers(router, uri, &[]).await
+    }
+
+    async fn get_response_with_headers(
+        router: Router,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> axum::response::Response {
+        let mut request = axum::http::Request::builder().uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
         router
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri(uri)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request.body(axum::body::Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    /// A signed-in user: the session token and its `Cookie` header value.
+    async fn signed_in(state: &AuthState) -> (String, String) {
+        state.db.upsert_user("test-bob", "bob", "").await.unwrap();
+        let token = state.db.create_session("test-bob").await.unwrap();
+        let cookie = format!("{SESSION_COOKIE}={token}");
+        (token, cookie)
     }
 
     /// The uat-006 anchor: `/auth/test-login` must not exist unless the env
@@ -528,6 +566,73 @@ mod tests {
         )
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn logout_refuses_subresource_and_cross_site_requests() {
+        let (_dir, state) = test_state(false, false).await;
+        let (token, cookie) = signed_in(&state).await;
+
+        for refused in [
+            &[
+                ("sec-fetch-dest", "image"),
+                ("sec-fetch-site", "same-origin"),
+            ][..],
+            &[
+                ("sec-fetch-dest", "empty"),
+                ("sec-fetch-site", "same-origin"),
+            ][..],
+            &[
+                ("sec-fetch-dest", "document"),
+                ("sec-fetch-site", "cross-site"),
+            ][..],
+            &[("sec-fetch-site", "cross-site")][..],
+        ] {
+            let mut headers = vec![("cookie", cookie.as_str())];
+            headers.extend_from_slice(refused);
+            let res = get_response_with_headers(router(state.clone()), "/logout", &headers).await;
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{refused:?}");
+            assert!(
+                res.headers().get(header::SET_COOKIE).is_none(),
+                "{refused:?} must not touch the cookie"
+            );
+            assert!(
+                state.db.session_user(&token).await.unwrap().is_some(),
+                "{refused:?} must not delete the session"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_signs_out_a_top_level_same_origin_navigation() {
+        for allowed in [
+            &[
+                ("sec-fetch-dest", "document"),
+                ("sec-fetch-site", "same-origin"),
+            ][..],
+            // Typed into the address bar or opened from a bookmark.
+            &[("sec-fetch-dest", "document"), ("sec-fetch-site", "none")][..],
+            // A non-browser client sends neither header.
+            &[][..],
+        ] {
+            let (_dir, state) = test_state(false, false).await;
+            let (token, cookie) = signed_in(&state).await;
+            let mut headers = vec![("cookie", cookie.as_str())];
+            headers.extend_from_slice(allowed);
+            let res = get_response_with_headers(router(state.clone()), "/logout", &headers).await;
+            assert_eq!(res.status(), StatusCode::SEE_OTHER, "{allowed:?}");
+            let set_cookie = res
+                .headers()
+                .get(header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(set_cookie.contains("Max-Age=0"), "{allowed:?}");
+            assert!(
+                state.db.session_user(&token).await.unwrap().is_none(),
+                "{allowed:?} must delete the session"
+            );
+        }
     }
 
     #[tokio::test]

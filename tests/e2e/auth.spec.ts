@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { loginTestUser, logout } from "./helpers/auth";
 import { menuClick } from "./helpers/menu";
-import { createNotebook } from "./helpers/session";
+import { setCellSource } from "./helpers/monaco";
+import { ADD_MARKDOWN, createNotebook } from "./helpers/session";
 
 /**
  * PRD-0053: GitHub-account sign-in. The e2e server runs with
@@ -103,6 +104,70 @@ test.describe("Accounts (PRD-0053)", () => {
     await expect(
       page.locator(".ironpad-toast-body", { hasText: "sign in" }),
     ).toBeVisible({ timeout: 30_000 });
+  });
+
+  // Logout is a GET and the markdown sanitizer keeps relative image URLs, so
+  // `![](/auth/logout)` in a notebook signed out everyone who viewed it: the
+  // image request is same-origin, so SameSite does not hold the cookie back.
+  test("a notebook embedding /auth/logout does not sign its reader out", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+
+    // Author the trap anonymously and share it.
+    await createNotebook(page);
+    await page.locator(ADD_MARKDOWN).first().click();
+    const cell = page.locator(".ironpad-cell-card").first();
+    await cell.locator(".ironpad-markdown-cell-preview").dblclick();
+    await expect(cell.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await setCellSource(page, cell, "![](/auth/logout)");
+    await cell.locator(".ironpad-cell-header").click();
+    await menuClick(page, "Share Immutable");
+    const toastBody = page.locator(".ironpad-toast-body", {
+      hasText: "/shared/",
+    });
+    await expect(toastBody).toContainText("/shared/", { timeout: 30_000 });
+    const hash = (await toastBody.textContent())!.match(
+      /\/shared\/([0-9a-f]{16})/,
+    )![1];
+
+    // A signed-in reader in a fresh context, so nothing the author's page
+    // already fetched can stand in for the reader's own request.
+    const reader = await browser.newContext({ baseURL: BASE });
+    try {
+      const readerPage = await reader.newPage();
+      await loginTestUser(readerPage, "dave");
+      const logoutStatuses: number[] = [];
+      readerPage.on("response", (r) => {
+        if (new URL(r.url()).pathname === "/auth/logout") {
+          logoutStatuses.push(r.status());
+        }
+      });
+
+      await readerPage.goto(`/shared/${hash}`);
+      const trap = readerPage.locator('img[src$="/auth/logout"]');
+      await expect(trap).toHaveCount(1, { timeout: 30_000 });
+      // The browser has made the request once the image settles (loaded or
+      // broken), so the reload below cannot outrun it.
+      await expect
+        .poll(() => trap.evaluate((img: HTMLImageElement) => img.complete))
+        .toBe(true);
+
+      await readerPage.reload();
+      await expect(readerPage.locator(".ironpad-auth")).toHaveAttribute(
+        "title",
+        "@dave",
+        { timeout: 15_000 },
+      );
+      // ...and the reason is that the request was refused, not skipped.
+      expect(logoutStatuses.length).toBeGreaterThan(0);
+      expect(logoutStatuses.every((status) => status === 403)).toBe(true);
+    } finally {
+      await reader.close();
+    }
   });
 
   test("logged-out users keep full anonymous functionality", async ({

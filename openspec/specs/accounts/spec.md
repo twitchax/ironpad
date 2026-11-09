@@ -80,7 +80,7 @@ A session SHALL expire 30 days after its last renewal. It SHALL renew at most on
 - **AND** expired sessions are also swept when the server boots
 
 ### Requirement: Sign out
-`GET /auth/logout` SHALL delete the caller's session, clear the cookie with `Max-Age=0`, and redirect 303 to `/`, also when the request carries no session. (PRD-0053)
+`GET /auth/logout` SHALL delete the caller's session, clear the cookie with `Max-Age=0`, and redirect 303 to `/`, also when the request carries no session. Only a top-level navigation may sign out: a request whose `Sec-Fetch-Dest` is present and not `document`, or whose `Sec-Fetch-Site` is present and not `same-origin` or `none`, SHALL get 403 with no session deleted and no `Set-Cookie`. A request carrying neither header (a non-browser client) SHALL sign out as before. (PRD-0053)
 
 #### Scenario: Header sign-out
 - **WHEN** a signed-in user clicks "Sign out" in the header
@@ -89,6 +89,11 @@ A session SHALL expire 30 days after its last renewal. It SHALL renew at most on
 #### Scenario: No session
 - **WHEN** `/auth/logout` is requested without a session cookie
 - **THEN** the response is still 303 with a clearing `Set-Cookie` carrying `Max-Age=0`
+
+#### Scenario: A notebook cannot sign its reader out
+- **WHEN** a signed-in user views a shared notebook whose markdown embeds `![](/auth/logout)`
+- **THEN** the image request gets 403 and the user is still signed in after a reload
+- **AND** a `fetch` (`Sec-Fetch-Dest: empty`) or a cross-site navigation to `/auth/logout` gets 403 too
 
 ### Requirement: Env-gated test login
 When `IRONPAD_TEST_AUTH` (flag `--test-auth`) is truthy, `GET /auth/test-login?login={name}` SHALL sign in a synthetic user through the same session path as OAuth and honour `redirect_to`; when it is not set, the route SHALL not exist. The server SHALL log a warning at startup whenever it is set. (PRD-0053, PRD-0063 T-001)
