@@ -1079,11 +1079,12 @@
   /// value to `json`, push to the ring buffer, and cap the ring at
   /// SIM_BUS_RING_CAP.
   ///
-  /// Single source of truth for the executors that load this module: executor.js
-  /// (main thread) and executor-worker.js (worker) both call this helper.
+  /// Single source of truth for the executors that load this module:
+  /// simBusWrite below and executor-worker.js's sim_emit handler call it.
   /// executor-bridge.js does NOT — executor-core.js isn't loaded on the main
   /// thread when the bridge initializes, so the bridge keeps its own
-  /// `_updateSimBus` copy (kept in sync with this one).
+  /// `_updateSimBus` copy (kept in sync with this one; a test in
+  /// tests/js/executor-bridge.test.mjs pins the two ring caps together).
   CellExecutor.updateSimBus = function (bus, key, json) {
     var entry = bus.get(key);
     if (!entry) {

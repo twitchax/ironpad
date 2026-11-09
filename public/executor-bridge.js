@@ -39,7 +39,7 @@
   // runs on the main thread, where executor-core.js is NOT loaded at init time
   // (it's only injected lazily for the fallback path), so the static helper
   // isn't reachable here — keep this copy in sync with the core one, including
-  // the ring cap.
+  // the ring cap (tests/js/executor-bridge.test.mjs pins the two caps).
   var SIM_BUS_RING_CAP = 1000; // mirrors SIM_BUS_RING_CAP in executor-core.js
   function _updateSimBus(bus, key, json) {
     var entry = bus.get(key);
@@ -242,14 +242,10 @@
         var prev = window.IronpadExecutor;
         script.src = versionedPath("/executor.js");
         script.onload = function () {
-          self._mainExecutor = window.IronpadExecutor;
+          var exec = window.IronpadExecutor;
           window.IronpadExecutor = prev;
-          // Register host message handlers on the main-thread executor so
-          // progress bars etc. work in fallback mode too.
-          for (var type in self._messageHandlers) {
-            self._mainExecutor.onHostMessage(type, self._messageHandlers[type]);
-          }
-          resolve(self._mainExecutor);
+          self._adoptMainExecutor(exec);
+          resolve(exec);
         };
         script.onerror = function () {
           self._mainExecutorPromise = null; // allow a later retry
@@ -260,6 +256,27 @@
       loadNext();
     });
     return this._mainExecutorPromise;
+  };
+
+  /// Make `exec`, the freshly loaded main-thread CellExecutor, this bridge's
+  /// fallback: the bridge's host handlers (progress bars etc.) and ONE sim
+  /// bus shared with the worker.
+  BridgeExecutor.prototype._adoptMainExecutor = function (exec) {
+    var self = this;
+    this._mainExecutor = exec;
+    // Seed its bus, so values written before it loaded (a slider's) read back.
+    this._simBus.forEach(function (entry, key) {
+      exec._simBus.set(key, { latest: entry.latest, ring: entry.ring.slice() });
+    });
+    for (var type in this._messageHandlers) {
+      exec.onHostMessage(type, this._messageHandlers[type]);
+    }
+    // A fallback cell's emit goes through simBusWrite, the one fan-out: the
+    // bridge bus, the worker, and this executor's own bus, which its sim
+    // reads serve. (The copied bridge handler writes the bridge bus alone.)
+    exec.onHostMessage("sim_emit", function (msg) {
+      self.simBusWrite(msg.key, msg.value);
+    });
   };
 
   /// Retry a failed worker call on the main-thread fallback executor: the ONE
@@ -558,10 +575,8 @@
 
   // ── Built-in host message handlers ────────────────────────────────────────
   //
-  // NOTE: These built-in handlers are intentionally duplicated in executor.js
-  // (the main-thread fallback executor). The bridge can't load executor-core.js
-  // on the main thread at init time, so there is no shared home for them — keep
-  // the two copies in sync.
+  // The only copies: the bridge is executor.js's only loader, and
+  // _adoptMainExecutor hands these to the main-thread fallback when it loads.
 
   executor.onHostMessage("progress_update", function (msg, _cellId) {
     var el = document.querySelector('[data-progress-id="' + msg.id + '"]');
@@ -583,8 +598,16 @@
     }
   });
 
+  // Serves emits forwarded from the worker (the fallback's own go through
+  // _adoptMainExecutor's simBusWrite). Mirror into the fallback's bus, but do
+  // NOT post back to the worker: it already applied the value, and a re-post
+  // would append it to its ring twice.
   executor.onHostMessage("sim_emit", function (msg, _cellId) {
-    _updateSimBus(executor._simBus, msg.key, JSON.stringify(msg.value));
+    var json = JSON.stringify(msg.value);
+    _updateSimBus(executor._simBus, msg.key, json);
+    if (executor._mainExecutor) {
+      _updateSimBus(executor._mainExecutor._simBus, msg.key, json);
+    }
   });
 
   window.IronpadExecutor = executor;

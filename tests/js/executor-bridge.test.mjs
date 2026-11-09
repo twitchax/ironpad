@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import vm from "node:vm";
 
 import {
   loadCore,
@@ -27,10 +28,8 @@ import {
 } from "./executor-harness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const BRIDGE_SOURCE = readFileSync(
-  path.join(HERE, "..", "..", "public", "executor-bridge.js"),
-  "utf8",
-);
+const PUBLIC = path.join(HERE, "..", "..", "public");
+const BRIDGE_SOURCE = readFileSync(path.join(PUBLIC, "executor-bridge.js"), "utf8");
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 
@@ -403,5 +402,144 @@ test("a worker respawned after a crash gets the sim bus back too", () => {
     workers[1].posted.filter((m) => m.type === "sim_bus_write"),
     [{ type: "sim_bus_write", key: "k", json: "3" }],
   );
+});
+
+// ── One sim bus across the fallback (review soc-platform-1, bug-js-9) ──────
+
+/**
+ * The bridge in a page-like realm (`window === self === globalThis`) whose
+ * `document.head.appendChild` runs the named public script and fires its
+ * onload, so `_ensureMainExecutor` loads the REAL gpu -> glue -> core ->
+ * executor.js chain. Its `document.querySelector` finds one progress bar,
+ * `progress`.
+ */
+/** A vm-realm value as a plain main-realm one, for deep-equality asserts. */
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+function loadBridgeChain() {
+  const workers = [];
+  class FakeWorker {
+    constructor(url) {
+      this.url = url;
+      this.posted = [];
+      workers.push(this);
+    }
+    postMessage(msg) {
+      this.posted.push(msg);
+    }
+    terminate() {
+      this.terminated = true;
+    }
+  }
+  const progress = {
+    fill: { style: {} },
+    label: {},
+    querySelector(sel) {
+      return sel === ".ironpad-progress-fill" ? this.fill : this.label;
+    },
+  };
+  const context = vm.createContext({
+    console: { log() {}, error() {}, warn() {} },
+    TextDecoder,
+    TextEncoder,
+    DOMException,
+    Worker: FakeWorker,
+    BroadcastChannel: class {},
+    queueMicrotask,
+  });
+  context.window = context;
+  context.self = context;
+  context.document = {
+    currentScript: null,
+    querySelector: (sel) => (sel === '[data-progress-id="p1"]' ? progress : null),
+    createElement: () => ({}),
+    head: {
+      appendChild(script) {
+        const name = path.basename(script.src.replace(/\?.*$/, ""));
+        vm.runInContext(readFileSync(path.join(PUBLIC, name), "utf8"), context);
+        queueMicrotask(() => script.onload());
+      },
+    },
+  };
+  vm.runInContext(BRIDGE_SOURCE, context);
+  return { bridge: context.IronpadExecutor, workers, progress };
+}
+
+test("a fallback cell's sim::emit lands in its own bus, the bridge's and the worker's", async () => {
+  // The bridge's handler used to replace the fallback's own on load: the
+  // value landed in the bridge's bus only, so the next sim::read on the
+  // fallback came back None and no worker cell ever saw it.
+  const { bridge, workers } = loadBridgeChain();
+  const main = await bridge._ensureMainExecutor();
+  const worker = workers[0];
+  worker.posted.length = 0;
+
+  main._handleHostMessage("c1", '{"type":"sim_emit","key":"k","value":42}');
+
+  assert.equal(main._simBus.get("k").latest, "42");
+  assert.equal(bridge._simBus.get("k").latest, "42");
+  assert.deepEqual(plain(worker.posted), [{ type: "sim_bus_write", key: "k", json: "42" }]);
+
+  // And the fallback's own sim read serves it to a cell.
+  const cell = makeMemory();
+  main.modules.set("c2", rawEntry(cell));
+  const key = cell.putText(64, "k");
+  assert.equal(cell.readLengthPrefixed(main._simRead("c2", key.ptr, key.len)), "42");
+});
+
+test("a worker cell's sim::emit reaches the fallback's bus without echoing back", async () => {
+  // The worker already applied its own emit; posting it back would append
+  // the value to its ring twice.
+  const { bridge, workers } = loadBridgeChain();
+  const main = await bridge._ensureMainExecutor();
+  workers[0].posted.length = 0;
+
+  bridge._onWorkerMessage({
+    type: "hostMessage",
+    cellId: "w1",
+    messageJson: '{"type":"sim_emit","key":"k","value":5}',
+  });
+
+  assert.equal(main.simBusRead("k"), 5);
+  assert.equal(bridge.simBusRead("k"), 5);
+  assert.deepEqual(plain(workers[0].posted), []);
+});
+
+test("a value written before the fallback loaded is readable there, in a ring of its own", async () => {
+  const { bridge } = loadBridgeChain();
+  bridge.simBusWrite("speed", 3);
+  bridge.simBusWrite("speed", 7);
+
+  const main = await bridge._ensureMainExecutor();
+
+  assert.equal(main.simBusRead("speed"), 7);
+  assert.deepEqual(plain(main._simBus.get("speed").ring), ["3", "7"]);
+  assert.notEqual(main._simBus.get("speed").ring, bridge._simBus.get("speed").ring);
+});
+
+test("a progress update from a fallback cell still reaches its bar", async () => {
+  const { bridge, progress } = loadBridgeChain();
+  const main = await bridge._ensureMainExecutor();
+
+  main._handleHostMessage("c1", '{"type":"progress_update","id":"p1","value":40}');
+
+  assert.equal(progress.fill.style.width, "40%");
+  assert.equal(progress.label.textContent, "40%");
+});
+
+test("the bridge's sim-bus ring cap agrees with the core's", async () => {
+  // The bridge keeps its own copy of updateSimBus (executor-core.js is not
+  // loaded on the page until a fallback is needed); this pins the two caps.
+  const { bridge } = loadBridgeChain();
+  const main = await bridge._ensureMainExecutor();
+  for (let i = 0; i < 1001; i += 1) {
+    bridge.simBusWrite("via-bridge", i);
+    main.simBusWrite("via-core", i);
+  }
+
+  const bridgeRing = bridge._simBus.get("via-bridge").ring;
+  const coreRing = main._simBus.get("via-core").ring;
+  assert.equal(bridgeRing.length, coreRing.length);
+  assert.equal(bridgeRing[0], coreRing[0]);
 });
 
