@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use ironpad_common::cell_deps;
 use ironpad_common::notebook_ops;
 use ironpad_common::protocol::*;
-use ironpad_common::{CellManifest, CellType, IronpadCell, IronpadNotebook};
+use ironpad_common::{
+    CellManifest, CellType, IronpadCell, IronpadNotebook, DEFAULT_CELL_CARGO_TOML,
+};
 use leptos::prelude::*;
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -332,7 +334,7 @@ impl NotebookModel {
         let cargo_toml = if new_cell.cell_type == CellType::Code {
             new_cell
                 .cargo_toml
-                .or_else(|| Some(default_cell_cargo_toml(&new_id)))
+                .or_else(|| Some(DEFAULT_CELL_CARGO_TOML.to_string()))
         } else {
             None
         };
@@ -601,14 +603,6 @@ fn generate_cell_id(_cell_count: usize) -> String {
     {
         format!("cell_{_cell_count}")
     }
-}
-
-/// Default `Cargo.toml` template for a new code cell.
-/// Dependencies (e.g. `ironpad-cell`) come from the notebook's shared Cargo.toml.
-fn default_cell_cargo_toml(cell_id: &str) -> String {
-    format!(
-        "[package]\nname = \"{cell_id}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n"
-    )
 }
 
 /// Whether a mutation from `by` is a remote (non-browser) edit that changes a
@@ -1153,6 +1147,40 @@ mod collapse_tests {
                 )
                 .expect("no-op reorder applies");
             assert!(stale_ids(stale).is_empty(), "{:?}", stale_ids(stale));
+        });
+    }
+
+    /// Regression (review dry-app-6): a new code cell's manifest named the
+    /// cell's own id and edition 2021, both of which the scaffold discards,
+    /// and the id made every editor-authored cell's cache key unique.
+    #[test]
+    fn new_code_cells_get_the_default_manifest() {
+        Owner::new().with(|| {
+            let (model, _) = positional_model();
+            let mut manifests = Vec::new();
+            for _ in 0..2 {
+                let (MutationResult::CellAdded { cell_id, .. }, _) = model
+                    .apply(add_after(None), ClientId::browser())
+                    .expect("add applies")
+                else {
+                    panic!("expected CellAdded");
+                };
+                let cargo = model
+                    .query(Query::CellGet {
+                        cell_id: cell_id.clone(),
+                    })
+                    .map(|r| match r {
+                        Response::Cell { cell } => cell.cargo_toml,
+                        other => panic!("unexpected response: {other:?}"),
+                    })
+                    .expect("the cell exists")
+                    .expect("a code cell carries a manifest");
+                assert_eq!(cargo, DEFAULT_CELL_CARGO_TOML);
+                assert!(!cargo.contains("edition"), "{cargo}");
+                assert!(!cargo.contains(&cell_id), "{cargo}");
+                manifests.push(cargo);
+            }
+            assert_eq!(manifests[0], manifests[1]);
         });
     }
 

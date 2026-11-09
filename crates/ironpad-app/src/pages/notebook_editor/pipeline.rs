@@ -729,7 +729,7 @@ fn dispatch_live_check_with_retries(
     // THEIR manifest with the shared one), so its check compiles under the
     // default cell manifest.
     let current_cargo_toml = if shared {
-        "[dependencies]".to_string()
+        ironpad_common::DEFAULT_CELL_CARGO_TOML.to_string()
     } else {
         cargo_toml.get_untracked()
     };

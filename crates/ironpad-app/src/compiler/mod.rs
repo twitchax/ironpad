@@ -1952,7 +1952,10 @@ impl LiveView for Counter {
                 }
 
                 total_cells += 1;
-                let cell_cargo = cell.cargo_toml.as_deref().unwrap_or("[dependencies]");
+                let cell_cargo = cell
+                    .cargo_toml
+                    .as_deref()
+                    .unwrap_or(ironpad_common::DEFAULT_CELL_CARGO_TOML);
 
                 // Prefix cell_id with notebook stem to avoid collisions
                 // (many notebooks use cell_0, cell_1, etc.).

@@ -22,6 +22,7 @@ The system SHALL render an add-cell row with Code, Markdown and Linux buttons ab
 #### Scenario: First code cell
 - **WHEN** the author clicks Code in an empty notebook
 - **THEN** one code cell labelled "Cell 0" appears with the source `42` in a Monaco editor
+- **AND** its Cargo.toml tab holds `[dependencies]`, the same for every new cell
 
 #### Scenario: Markdown and Linux seeds
 - **WHEN** the author clicks Markdown

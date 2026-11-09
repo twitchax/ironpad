@@ -477,6 +477,13 @@ codegen-units = 16\n";
 /// relay's message cap, and the CLI daemon's IPC frame.
 pub const MAX_SHARE_BYTES: usize = 4 * 1024 * 1024;
 
+/// Default `Cargo.toml` for a new Code cell, and the manifest a cell without
+/// one compiles under: an empty dependency table. The scaffold owns
+/// `[package]`, `[lib]` and the edition, and the notebook's shared manifest
+/// supplies `ironpad-cell`, so nothing else belongs here (least of all
+/// anything per cell, since the manifest is hashed into the cache key).
+pub const DEFAULT_CELL_CARGO_TOML: &str = "[dependencies]";
+
 /// Per-cell budget for a saved output payload (PRD-0056). Inside the 4 MiB
 /// notebook cap with headroom; an over-budget output degrades to
 /// [`SAVED_OUTPUT_TOO_LARGE`] rather than failing the share.
