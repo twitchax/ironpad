@@ -17,6 +17,12 @@ const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ironpad-e2e-home-"));
 const DAEMON_DIR = path.join(TEST_HOME, ".ironpad");
 const CLI_ENV = { ...process.env, HOME: TEST_HOME };
 
+// Node's execFileSync caps captured output at 1 MiB by default and fails an
+// overflow with ENOBUFS (no exit status), which reads as a CLI failure. A
+// `cells run` on a large Canvas legitimately prints more than that, up to
+// the daemon's 16 MiB IPC frame (MAX_IPC_FRAME in ironpad-cli's ipc.rs).
+const CLI_MAX_BUFFER = 32 * 1024 * 1024;
+
 export interface CliHandle {
   process: ChildProcess;
   token: string;
@@ -69,6 +75,7 @@ export function cliExec(command: string[], timeoutMs: number = 15_000): any {
     encoding: "utf-8",
     timeout: timeoutMs,
     env: CLI_ENV,
+    maxBuffer: CLI_MAX_BUFFER,
   });
   return JSON.parse(result.trim());
 }
@@ -83,6 +90,7 @@ export function cliExecRaw(
       encoding: "utf-8",
       timeout: timeoutMs,
       env: CLI_ENV,
+      maxBuffer: CLI_MAX_BUFFER,
     });
     return { stdout: stdout.trim(), stderr: "", exitCode: 0 };
   } catch (e: any) {
