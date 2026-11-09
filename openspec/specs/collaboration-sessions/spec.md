@@ -133,11 +133,15 @@ The relay SHALL tell the host `GuestConnected` and `GuestDisconnected` for each 
 - **AND** either one disconnecting leaves the other connected and receiving its own responses
 
 ### Requirement: Connection liveness
-The browser host SHALL send a `Heartbeat` every 30 seconds. The server SHALL close a host connection after 120 seconds without any inbound frame, close a guest connection after its configurable idle timeout (30 minutes by default), and every 5 minutes end expired sessions, sending their guests `SessionEnded` before disconnecting them. A guest frame arriving after its session ended or expired SHALL close that guest's connection without being relayed, a guest whose session ends between token validation and registration SHALL be closed rather than registered, and any connection whose outbound socket write does not complete within 120 seconds (a peer that stopped reading) SHALL be closed. (PRD-0035, PRD-0038)
+The browser host SHALL send a `Heartbeat` every 30 seconds. The server SHALL close a host connection after 120 seconds without any inbound frame, close a guest connection after its configurable idle timeout (30 minutes by default; any inbound frame resets it, a Ping included, so a CLI daemon pinging every 30 seconds is never reaped while its agent only reads or waits), and every 5 minutes end expired sessions, sending their guests `SessionEnded` before disconnecting them. A guest frame arriving after its session ended or expired SHALL close that guest's connection without being relayed, a guest whose session ends between token validation and registration SHALL be closed rather than registered, and any connection whose outbound socket write does not complete within 120 seconds (a peer that stopped reading) SHALL be closed. (PRD-0035, PRD-0038)
 
 #### Scenario: Silent guest is reaped
 - **WHEN** a guest connects and sends nothing for longer than the guest idle timeout (200 ms in the test)
 - **THEN** the server closes its connection
+
+#### Scenario: Pinging guest outlives the idle timeout
+- **WHEN** a guest sends only WebSocket Pings, more often than the guest idle timeout, for longer than that timeout
+- **THEN** the server keeps its connection open and answers its Pings with Pongs
 
 #### Scenario: Expired session with an active agent
 - **WHEN** a session passes its 24-hour expiry while its agent keeps sending frames
