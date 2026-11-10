@@ -38,7 +38,7 @@ The system SHALL end every embed with a "Powered by ironpad · Open" badge linki
 - **THEN** the badge's `href` is `/mutable/{id}`
 
 ### Requirement: Click-to-run by default
-The system SHALL leave embeds idle on load unless the embedder opts in: `/embed/public/{name}` SHALL run every runnable code cell on load when its query carries `autorun=1` or `autorun=true`, and `/embed/shared` and `/embed/mutable` SHALL ignore that parameter. (PRD-0040, PRD-0057)
+The system SHALL leave embeds idle on load unless the embedder opts in: `/embed/public/{name}` SHALL run every runnable code cell on load when its query carries `autorun=1` or `autorun=true`, and `/embed/shared` and `/embed/mutable` SHALL ignore that parameter. A notebook's saved Reactive Mode SHALL NOT start an embed. (PRD-0040, PRD-0057)
 
 #### Scenario: Default public embed stays idle
 - **WHEN** a client opens `/embed/public/welcome.ironpad` and waits 3 seconds
@@ -49,8 +49,13 @@ The system SHALL leave embeds idle on load unless the embedder opts in: `/embed/
 - **THEN** cells compile and run without a click and timing badges appear
 
 #### Scenario: Shared and published embeds refuse autorun
-- **WHEN** a client opens `/embed/shared/{hash}?autorun=1` or `/embed/mutable/{id}?autorun=1` for a notebook without reactive mode
+- **WHEN** a client opens `/embed/shared/{hash}?autorun=1` or `/embed/mutable/{id}?autorun=1`
 - **THEN** no cell runs until the reader clicks a run control
+
+#### Scenario: Reactive notebooks wait like any other
+- **WHEN** a client opens `/embed/public/reactive-demo.ironpad`, `/embed/shared/{hash}` or `/embed/mutable/{id}` for a notebook saved in Reactive Mode, without `autorun`
+- **THEN** the embed neither compiles a cell nor fetches a share blob on load
+- **AND** clicking Run All starts that traffic
 
 ### Requirement: Compact error panels in embeds
 The system SHALL render an embed whose notebook cannot be shown as one terse error panel inside the frame, with no app chrome: "Public notebook not found", "Shared notebook not found or expired", or "Published notebook not found", each followed by the reason. (PRD-0039, PRD-0057)

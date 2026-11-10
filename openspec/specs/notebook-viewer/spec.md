@@ -84,7 +84,7 @@ The system SHALL give each runnable code cell on a read-only page an icon-only r
 - **THEN** its run control is disabled, its accessible name is "Compiling…", and its frame header shows a "compiling" pill
 
 ### Requirement: Autorun follows the route's trust boundary
-The system SHALL queue every runnable code cell once on page load on `/public/{name}`, whose notebooks ship with ironpad, and the `/shared/{hash}` and `/mutable/{id}` reader routes SHALL NOT grant autorun to the user content they serve. (PRD-0040)
+The system SHALL queue every runnable code cell once on page load on `/public/{name}`, whose notebooks ship with ironpad, and SHALL NOT run any cell on load on `/shared/{hash}` or the `/mutable/{id}` reader, whatever the notebook's saved Reactive Mode: only the route grants autorun, never the notebook. (PRD-0040)
 
 #### Scenario: Showcase notebook runs on load and continues past a failure
 - **WHEN** a reader opens `/public/dynosaur` and clicks nothing
@@ -92,8 +92,13 @@ The system SHALL queue every runnable code cell once on page load on `/public/{n
 - **AND** its deliberate compile-fail teaching cell shows its error inline
 
 #### Scenario: Shared notebook stays idle
-- **WHEN** a reader opens a `/shared/{hash}` notebook saved without reactive mode
+- **WHEN** a reader opens a `/shared/{hash}` notebook
 - **THEN** no cell compiles or runs until the reader clicks a run control
+
+#### Scenario: A reactive notebook cannot opt itself in
+- **WHEN** a notebook saved in Reactive Mode is opened in a fresh browser at `/shared/{hash}` or the `/mutable/{id}` reader
+- **THEN** the page neither compiles a cell nor fetches a share blob on load
+- **AND** clicking Run All starts that traffic
 
 ### Requirement: Saved outputs are the initial state
 The system SHALL render each code cell's saved output (the panels captured from the author's last run) as its initial output, marked as a serialized snapshot, until that cell's first live result or error replaces it; showing it SHALL require no compile or run. (PRD-0056)
