@@ -41,13 +41,30 @@ The published image `ghcr.io/twitchax/ironpad` SHALL serve on port 3111 with one
 - **WHEN** the image runs without `-v`
 - **THEN** the app still serves, with its state on an anonymous `/ironpad` volume
 
+#### Scenario: The image carries its editor and optimizer
+- **WHEN** the image is built from a clean checkout, where `public/monaco/vs` is absent
+- **THEN** it serves `/monaco/vs/loader.js` and every Monaco worker `init.js` names, from the exact `monaco-editor` pin in `package.json`
+- **AND** `wasm-opt --version` runs in the runtime image, and the image build fails when either is missing
+
 ### Requirement: Warm caches seeded into the volume
-On start, the image's entrypoint SHALL copy its pre-built default cell target directory and its atomics std sysroot into `/ironpad/cache/targets/` when the volume lacks them, so the first compile and the first live check are warm. If the image carries neither, it SHALL log a warning and start anyway. (PRD-0024, PRD-0045 T-004)
+On start, the image's entrypoint SHALL copy its pre-built cargo registry to `/ironpad/cache/cargo-home` (the exact path its warm target directories were built against, since cargo fingerprints a registry crate by its absolute path), and its pre-built default cell target directory and atomics std sysroot into `/ironpad/cache/targets/`, each only when the volume lacks it, so the first compile and the first live check are warm. If the image carries none of them, it SHALL log a warning and start anyway. (PRD-0024, PRD-0045 T-004)
 
 #### Scenario: First boot on an empty volume
 - **WHEN** the container starts against a new volume
-- **THEN** it logs "Seeding default cell target dir into volume..." and "Seeding atomics sysroot into volume..." before the server starts
+- **THEN** it logs "Seeding cargo registry into volume...", "Seeding default cell target dir into volume..." and "Seeding atomics sysroot into volume..." before the server starts
 - **AND** a second start against the same volume copies nothing
+
+### Requirement: The image hands the build cache to the build user
+The image SHALL carry a `cellbuild` user and group at uid and gid 2000, and its entrypoint SHALL export `IRONPAD_BUILD_UID=2000` so cell builds run as that user. Before the server starts, the entrypoint SHALL hand `/ironpad/cache/targets`, `/ironpad/cache/cargo-home` and `/ironpad/cache/build-home` recursively to uid 2000 without following symlinks, once per volume as recorded by `/ironpad/cache/.build-owner` and again whenever a seed has just copied files in, and SHALL set `/ironpad/data` and `/ironpad/cache/blobs` to mode 0700 so the build user can read neither. (PRD-0030, PRD-0038 T-015)
+
+#### Scenario: First boot of the build user on an existing volume
+- **WHEN** the container starts against a volume with no `/ironpad/cache/.build-owner`
+- **THEN** it logs "Handing the build cache to uid 2000..." before the server starts and writes `2000` to the marker
+- **AND** a second start against the same volume does not hand anything over
+
+#### Scenario: The build user cannot reach account data
+- **WHEN** a process running as uid 2000 lists `/ironpad/data` or `/ironpad/cache/blobs`
+- **THEN** it is refused
 
 ### Requirement: Compose file
 `docker/docker-compose.yml` SHALL run the image tagged `ironpad:latest`, publish port 3111, mount a named volume `ironpad` at `/ironpad`, set the data, cache, port, and cell-path variables to the image's values, and restart unless stopped. (PRD-0001)

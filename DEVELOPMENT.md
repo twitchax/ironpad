@@ -648,10 +648,11 @@ They run on the server and are automatically serialized/called from the client.
    - `cargo chef cook`, then `cargo leptos build --release` → compiles server + frontend WASM
 
 3. **Runtime stage** (rust:1.93.0-slim):
-   - Installs the three pinned nightly cell toolchains (`CELL_TOOLCHAIN`, `AUTODIFF_TOOLCHAIN` + enzyme, `ATOMICS_TOOLCHAIN`), then uninstalls the base image's stable toolchain (nothing uses it)
-   - `wasm-opt` copied from the builder
-   - Pre-warms the cargo registry and target dirs with ironpad-cell dependencies; `entrypoint.sh` seeds them into the volume
-   - Copies the server binary + site assets, enables the compilation proxy, exposes port 3111
+   - Installs the one pinned cell toolchain (`CELL_TOOLCHAIN`, with `rust-src` and `enzyme`) plus the BrowserPod pack, then uninstalls the base image's stable toolchain (nothing uses it)
+   - `wasm-opt` from apt `binaryen`, not copied from the builder: the Debian binary loads `libbinaryen.so`, and a copied binary alone fails to start
+   - Creates the `cellbuild` user (uid/gid 2000) that cell builds run as
+   - Pre-warms the cargo registry and target dirs with ironpad-cell dependencies; `entrypoint.sh` seeds them into the volume, hands the build cache to uid 2000 once per volume (marker `/ironpad/cache/.build-owner`), and makes `/ironpad/data` and `/ironpad/cache/blobs` 0700
+   - Copies the server binary + site assets (including the Monaco pin from a node stage), enables the compilation proxy, exposes port 3111
 
 **docker-compose.yml** (`docker/docker-compose.yml`):
 ```yaml
