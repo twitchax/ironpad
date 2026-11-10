@@ -94,6 +94,18 @@ Files served from `/pkg/` (content-hashed bundles) and `/share-blobs/` SHALL car
 - **THEN** the first is `public, max-age=31536000, immutable` and the second is `no-cache`
 - **AND** `/`, `/monaco/vs/loader.js`, `/notebooks/cannon.ironpad`, and `/pkgx/evil.js` are all `no-cache`
 
+### Requirement: Request body cap
+The server SHALL refuse a request body over 8 MiB, twice the 4 MiB share cap, while reading it and before any server function runs, with an error naming the length limit; a body of exactly 8 MiB still reaches its function. (PRD-0038)
+
+#### Scenario: One byte over the cap
+- **WHEN** a client posts an 8,388,609-byte form body to the share server function
+- **THEN** the response is an error naming "length limit exceeded"
+- **AND** the share function never runs and no share is written
+
+#### Scenario: Exactly at the cap
+- **WHEN** a client posts an 8,388,608-byte form body carrying an over-size notebook
+- **THEN** the share function runs and refuses it with "notebook too large"
+
 ### Requirement: Logging
 The server SHALL log to stdout through `tracing`, filtered by `RUST_LOG` and defaulting to `info`, and SHALL log its data directory, cache directory, cell-crate path, and listen address at startup. (PRD-0001)
 

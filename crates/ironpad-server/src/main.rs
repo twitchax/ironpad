@@ -11,7 +11,6 @@ mod otel;
 
 use std::net::SocketAddr;
 
-use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue};
 use axum::routing::get;
 use axum::Router;
@@ -33,12 +32,6 @@ use crate::cache_valve::{cache_pressure_valve, fs_usage};
 use crate::config::CliArgs;
 use crate::http_policy::{cache_control_header, embed_corp_header, share_blob_handler};
 use crate::otel::{init_otel, otel_log_filter};
-
-/// Framework-level cap on any request body: derived from the per-share cap
-/// enforced in `share_notebook` (with 2x headroom for encoding overhead) so
-/// raising one cannot silently strand the other — a body over THIS limit is
-/// rejected at the router before the handler's clearer per-share error.
-const MAX_REQUEST_BODY_BYTES: usize = 2 * ironpad_app::server_fns::MAX_SHARE_BYTES;
 
 #[tokio::main]
 async fn main() {
@@ -250,7 +243,7 @@ async fn main() {
         // `MAX_SHARE_BYTES` (4 MiB) check isn't the only guard. Sized above the
         // largest legitimate body (a max-size shared notebook) so real uploads
         // pass while a truly huge body is rejected before it reaches a handler.
-        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .layer(routes::request_body_limit())
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("content-security-policy"),
             HeaderValue::from_static(http_policy::CONTENT_SECURITY_POLICY),
