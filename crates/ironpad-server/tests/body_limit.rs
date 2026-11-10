@@ -4,7 +4,7 @@
 //! `DefaultBodyLimit` only records the limit on the request; the code that
 //! reads the body has to honour it. Every route but the server functions is a
 //! GET, so the cap rests entirely on the server-fn request reader, and through
-//! server_fn 0.8.11 that reader collected the raw body and ignored the limit.
+//! `server_fn` 0.8.11 that reader collected the raw body and ignored the limit.
 //! The 8 MiB cap bound nothing; only `share_notebook`'s own 4 MiB check, run
 //! AFTER the whole body was buffered, stood in the way. These tests pin both
 //! sides of the line on the endpoint the cap is sized for: one byte over, the

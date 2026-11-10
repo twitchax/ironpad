@@ -24,7 +24,7 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 2 * ironpad_app::server_fns::MAX_SHARE
 /// `DefaultBodyLimit` only records the limit on the request; whatever reads
 /// the body has to honour it. Every route but the server functions is a GET,
 /// so the server-fn request reader is the one that matters, and it only reads
-/// through the limit from server_fn 0.8.13 on: below that the cap bound
+/// through the limit from `server_fn` 0.8.13 on: below that the cap bound
 /// nothing. `tests/body_limit.rs` holds that line.
 pub fn request_body_limit() -> DefaultBodyLimit {
     DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES)
